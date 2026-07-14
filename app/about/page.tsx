@@ -4,6 +4,7 @@ import Link from "next/link";
 import { GezelligTerm } from "@/components/gezellig-term";
 import { SiteHeader } from "@/components/site-header";
 import { SocialLinks } from "@/components/social-links";
+import { LINKS } from "@/lib/links";
 
 export const metadata: Metadata = {
   title: "About",
@@ -108,6 +109,19 @@ export default function AboutPage() {
             </li>
           ))}
         </ul>
+
+        <a
+          href={LINKS.pitchDeck}
+          className="group mt-[30px] inline-flex min-h-11 items-center gap-2.5 self-start border-2 border-ink px-5 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-ink transition-colors duration-200 hover:bg-ink hover:text-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange focus-visible:ring-offset-2 focus-visible:ring-offset-cream"
+        >
+          View the pitch deck
+          <span
+            aria-hidden="true"
+            className="text-orange transition-colors duration-200 group-hover:text-cream"
+          >
+            →
+          </span>
+        </a>
 
         <div className="mt-auto pt-[30px]">
           <SocialLinks />
