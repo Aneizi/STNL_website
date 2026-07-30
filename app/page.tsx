@@ -1,6 +1,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { ExternalMark } from "@/components/external-mark";
+import { JoinMenu } from "@/components/join-menu";
 import { LINKS } from "@/lib/links";
 
 const FOCUS_RING =
@@ -90,18 +91,7 @@ export default function HomePage() {
           <span aria-hidden="true" className="text-faded">
             /
           </span>
-          <a
-            href={LINKS.join}
-            target="_blank"
-            rel="noreferrer"
-            className={NAV_ITEM}
-          >
-            <span className="relative pr-[11px]">
-              Join
-              <ExternalMark />
-            </span>
-            <span className="sr-only"> (opens in new tab)</span>
-          </a>
+          <JoinMenu className={NAV_ITEM} align="center" side="top" />
         </nav>
       </div>
     </main>
