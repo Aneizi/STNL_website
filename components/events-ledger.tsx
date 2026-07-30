@@ -2,7 +2,8 @@
 
 import Image from "next/image";
 import { useMemo, useState } from "react";
-import type { LedgerEvent, PastLedgerEvent } from "@/lib/luma";
+import { IconArrowRight } from "symbols-react";
+import { TINTS, type LedgerEvent, type PastLedgerEvent } from "@/lib/luma";
 import { LINKS } from "@/lib/links";
 
 const FOCUS_RING =
@@ -31,9 +32,11 @@ function FeaturedCard({ event }: { event: LedgerEvent }) {
       )}
       <div className="flex flex-1 flex-col gap-2.5 px-[30px] py-[26px]">
         <div className="flex items-center gap-2.5 font-mono text-[11.5px] font-semibold uppercase tracking-[0.08em]">
-          <span className="rounded-full bg-ink px-2.5 py-1 text-cream">
-            Featured
-          </span>
+          {event.featured && (
+            <span className="rounded-full bg-ink px-2.5 py-1 text-cream">
+              Featured
+            </span>
+          )}
           <span className="text-ink/60">
             {event.dow} {event.day} {event.mon} · {event.city}
           </span>
@@ -51,9 +54,15 @@ function FeaturedCard({ event }: { event: LedgerEvent }) {
             href={event.url}
             target="_blank"
             rel="noreferrer"
-            className={`rounded-full bg-ink px-[19px] py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-cream transition-colors duration-200 hover:bg-orange ${FOCUS_RING}`}
+            className={`inline-flex items-center gap-2 rounded-full bg-ink px-[19px] py-2.5 text-xs font-semibold uppercase tracking-[0.12em] text-cream transition-colors duration-200 hover:bg-orange ${FOCUS_RING}`}
           >
-            RSVP →<span className="sr-only"> {event.title} (opens in new tab)</span>
+            RSVP
+            <IconArrowRight
+              aria-hidden="true"
+              fill="currentColor"
+              className="h-[10px] w-[12.5px]"
+            />
+            <span className="sr-only"> {event.title} (opens in new tab)</span>
           </a>
           <span className="font-mono text-[13px] font-medium text-ink/60">
             {event.time} · {event.venue ?? event.city}
@@ -91,9 +100,13 @@ function EventRow({ event }: { event: LedgerEvent }) {
         target="_blank"
         rel="noreferrer"
         aria-label={`${event.title} on Luma (opens in new tab)`}
-        className={`text-xl text-ink transition-colors duration-200 hover:text-orange ${FOCUS_RING}`}
+        className={`flex h-[34px] w-[34px] items-center justify-center text-ink transition-colors duration-200 hover:text-orange ${FOCUS_RING}`}
       >
-        →
+        <IconArrowRight
+          aria-hidden="true"
+          fill="currentColor"
+          className="h-[13px] w-[16px]"
+        />
       </a>
     </div>
   );
@@ -132,9 +145,13 @@ export function EventsLedger({
   const pastFiltered =
     activeCity === "All" ? past : past.filter((e) => e.city === activeCity);
 
-  // With nothing upcoming, open the archive so the page isn't just the
-  // empty-state line next to a tall sidebar illustration.
-  const [pastOpen, setPastOpen] = useState(events.length === 0);
+  // With one or two events on the calendar, promote them to featured-style
+  // cards so they carry the page instead of two thin rows in empty space.
+  const spotlight = events.length <= 2;
+
+  // With little or nothing upcoming, open the archive so the page reads as
+  // a full ledger instead of a mostly empty column.
+  const [pastOpen, setPastOpen] = useState(spotlight);
 
   return (
     <div className="flex flex-col gap-10 px-6 pb-16 pt-8 min-[900px]:flex-row min-[900px]:gap-[60px] min-[900px]:px-14 min-[900px]:pb-16 min-[900px]:pt-[54px]">
@@ -174,7 +191,10 @@ export function EventsLedger({
             synced with lu.ma/stnl
           </div>
         </div>
-        <div className="relative mt-2 hidden h-[970px] flex-none overflow-hidden rounded-2xl min-[900px]:flex">
+        {/* Grows with the ledger column (min/max keeps the crop pleasant)
+            instead of a fixed height that forces a tall page when the
+            calendar is quiet. */}
+        <div className="relative mt-2 hidden max-h-[970px] min-h-[420px] flex-1 overflow-hidden rounded-2xl min-[900px]:flex">
           <Image
             src="/landing/city-illustration.png"
             alt=""
@@ -203,8 +223,15 @@ export function EventsLedger({
               </span>
             </div>
             {g.events.map((e) =>
-              e.featured ? (
-                <FeaturedCard key={e.id} event={e} />
+              e.featured || spotlight ? (
+                <FeaturedCard
+                  key={e.id}
+                  event={
+                    e.featured
+                      ? e
+                      : { ...e, tint: TINTS[filtered.indexOf(e) % TINTS.length] }
+                  }
+                />
               ) : (
                 <EventRow key={e.id} event={e} />
               )
@@ -223,7 +250,12 @@ export function EventsLedger({
                   rel="noreferrer"
                   className={`text-orange transition-colors hover:text-orange-deep ${FOCUS_RING}`}
                 >
-                  find everything on lu.ma/stnl →
+                  find everything on lu.ma/stnl{" "}
+                  <IconArrowRight
+                    aria-hidden="true"
+                    fill="currentColor"
+                    className="inline h-[0.55em] w-[0.69em]"
+                  />
                   <span className="sr-only"> (opens in new tab)</span>
                 </a>
               </>
@@ -236,7 +268,12 @@ export function EventsLedger({
                   rel="noreferrer"
                   className={`text-orange transition-colors hover:text-orange-deep ${FOCUS_RING}`}
                 >
-                  propose an event →
+                  propose an event{" "}
+                  <IconArrowRight
+                    aria-hidden="true"
+                    fill="currentColor"
+                    className="inline h-[0.55em] w-[0.69em]"
+                  />
                   <span className="sr-only"> (opens in new tab)</span>
                 </a>
               </>

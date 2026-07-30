@@ -4,6 +4,7 @@ import Link from "next/link";
 import { GezelligTerm } from "@/components/gezellig-term";
 import { SiteHeader } from "@/components/site-header";
 import { SocialLinks } from "@/components/social-links";
+import { IconArrowRight } from "symbols-react";
 import { LINKS } from "@/lib/links";
 
 export const metadata: Metadata = {
@@ -117,9 +118,12 @@ export default function AboutPage() {
           View the pitch deck
           <span
             aria-hidden="true"
-            className="text-orange transition-colors duration-200 group-hover:text-cream"
+            className="inline-flex text-orange transition-colors duration-200 group-hover:text-cream"
           >
-            →
+            <IconArrowRight
+              fill="currentColor"
+              className="h-[11px] w-[13.75px]"
+            />
           </span>
         </a>
 

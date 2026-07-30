@@ -10,7 +10,7 @@ const ENDPOINT = "https://api.lu.ma/calendar/get-items";
 const REVALIDATE_SECONDS = 300;
 
 /** Featured-card background tints, cycled per featured event. */
-const TINTS = ["#F7E4D4", "#DFE8F0", "#E4E9DB", "#F3EBD3"];
+export const TINTS = ["#F7E4D4", "#DFE8F0", "#E4E9DB", "#F3EBD3"];
 
 export type LedgerEvent = {
   id: string;
