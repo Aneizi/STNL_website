@@ -39,3 +39,74 @@ body {
     animation-iteration-count: 1 !important;
   }
 }
+
+/* ── Join popover ─────────────────────────────────────────────
+ * Native Popover API: the browser owns light dismiss, Escape and
+ * focus return; CSS owns the whole animation (compositor-only
+ * transform/opacity, card + icons move as one unit).
+ *
+ * Enter: 220ms springy pop from the trigger (via @starting-style).
+ * Exit: one 130ms ease-out beat — fade leads, slight shrink, no hold.
+ * `display`/`overlay` transition with allow-discrete keeps the card
+ * rendered in the top layer until the exit finishes.
+ */
+.join-trigger {
+  anchor-name: --join-button;
+}
+
+.join-popover {
+  position: fixed;
+  position-anchor: --join-button;
+  inset: auto;
+  top: calc(anchor(bottom) + 10px);
+  right: anchor(right);
+  display: none;
+  margin: 0;
+  border: 0;
+  transform-origin: top right;
+  opacity: 0;
+  transform: scale(0.82) translateY(-4px);
+  transition:
+    opacity 0.13s ease-out,
+    transform 0.13s ease-out,
+    display 0.13s allow-discrete,
+    overlay 0.13s allow-discrete;
+}
+
+.join-popover:popover-open {
+  display: flex;
+  opacity: 1;
+  transform: none;
+  transition:
+    opacity 0.15s ease-out,
+    transform 0.22s cubic-bezier(0.34, 1.56, 0.64, 1),
+    display 0.22s allow-discrete,
+    overlay 0.22s allow-discrete;
+}
+
+.join-popover--center {
+  right: auto;
+  justify-self: anchor-center;
+  transform-origin: top center;
+}
+
+.join-popover--top {
+  top: auto;
+  bottom: calc(anchor(top) + 10px);
+  transform-origin: bottom right;
+  transform: scale(0.82) translateY(4px);
+}
+
+.join-popover--top.join-popover--center {
+  transform-origin: bottom center;
+}
+
+@starting-style {
+  .join-popover:popover-open {
+    opacity: 0;
+    transform: scale(0.82) translateY(-4px);
+  }
+  .join-popover--top:popover-open {
+    transform: scale(0.82) translateY(4px);
+  }
+}

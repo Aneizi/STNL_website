@@ -1,28 +1,19 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
+import type { ToggleEvent } from "react";
 import { IconChevronDown } from "symbols-react";
 import { LINKS } from "@/lib/links";
 import { SOCIAL_GLYPHS } from "@/lib/social-glyphs";
 
-/* ─────────────────────────────────────────────────────────
- * ANIMATION STORYBOARD — Join popover
+/**
+ * "Join" nav item that pops a small card with the community channels.
  *
- *    0ms   card pops from under the button (scale .82 -> 1,
- *          4px drop-in, springy overshoot), chevron flips
- *   50ms   Telegram icon pops in (scale .5 -> 1)
- *  100ms   WhatsApp icon pops in
- *  270ms   idle
- *
- * Exit: card shrinks + fades in one quick 130ms ease-in beat.
- * Reduced motion: globals.css collapses all of it to instant.
- * ───────────────────────────────────────────────────────── */
-const POP = {
-  open: "duration-[220ms] ease-[cubic-bezier(.34,1.56,.64,1)]",
-  close: "duration-[130ms] ease-in",
-  iconDelays: ["delay-[50ms]", "delay-[100ms]"],
-};
-
+ * Built on the native Popover API: the browser handles open/close,
+ * outside-click and Escape dismissal, and focus return. Placement is
+ * CSS anchor positioning; the animation lives entirely in globals.css
+ * (`.join-popover`). React state only drives the chevron.
+ */
 const CHANNELS = [
   { label: "Telegram", href: LINKS.telegram, ...SOCIAL_GLYPHS.telegram },
   { label: "WhatsApp", href: LINKS.whatsapp, ...SOCIAL_GLYPHS.whatsapp },
@@ -40,44 +31,33 @@ export function JoinMenu({
   side?: "bottom" | "top";
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popoverId = useId();
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent) => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-        buttonRef.current?.focus();
-      }
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  // Browsers without CSS anchor positioning still get the top-layer
+  // popover; place it against the trigger by hand.
+  const positionFallback = (popover: HTMLElement) => {
+    if (CSS.supports("position-anchor: --a")) return;
+    const anchor = buttonRef.current?.getBoundingClientRect();
+    if (!anchor) return;
+    const card = popover.getBoundingClientRect();
+    popover.style.top =
+      side === "top"
+        ? `${anchor.top - 10 - card.height}px`
+        : `${anchor.bottom + 10}px`;
+    popover.style.left =
+      align === "center"
+        ? `${anchor.left + anchor.width / 2 - card.width / 2}px`
+        : `${anchor.right - card.width}px`;
+  };
 
   return (
-    <div
-      ref={rootRef}
-      className="relative"
-      onBlur={(e) => {
-        if (!rootRef.current?.contains(e.relatedTarget as Node)) setOpen(false);
-      }}
-    >
+    <>
       <button
         ref={buttonRef}
         type="button"
-        aria-expanded={open}
-        aria-controls={popoverId}
-        onClick={() => setOpen((o) => !o)}
-        className={`uppercase ${className}`}
+        popoverTarget={popoverId}
+        className={`join-trigger uppercase ${className}`}
       >
         <span className="relative pr-[11px]">
           Join
@@ -94,35 +74,26 @@ export function JoinMenu({
 
       <div
         id={popoverId}
-        aria-hidden={!open}
-        className={`absolute z-20 flex gap-0.5 rounded-2xl bg-ink p-1.5 shadow-lg shadow-ink/20 transition-[transform,opacity] ${
-          side === "top" ? "bottom-full mb-2.5" : "top-full mt-2.5"
-        } ${
-          align === "center"
-            ? `left-1/2 -translate-x-1/2 ${side === "top" ? "origin-bottom" : "origin-top"}`
-            : `right-0 ${side === "top" ? "origin-bottom-right" : "origin-top-right"}`
-        } ${
-          open
-            ? `translate-y-0 scale-100 opacity-100 ${POP.open}`
-            : `pointer-events-none scale-[.82] opacity-0 ${POP.close} ${
-                side === "top" ? "translate-y-1" : "-translate-y-1"
-              }`
-        }`}
+        popover="auto"
+        onToggle={(e: ToggleEvent<HTMLDivElement>) => {
+          setOpen(e.newState === "open");
+          if (e.newState === "open") positionFallback(e.currentTarget);
+        }}
+        className={`join-popover${side === "top" ? " join-popover--top" : ""}${
+          align === "center" ? " join-popover--center" : ""
+        } gap-0.5 rounded-2xl bg-ink p-1.5 shadow-lg shadow-ink/20`}
       >
-        {CHANNELS.map(({ label, href, path, viewBox }, i) => (
+        {CHANNELS.map(({ label, href, path, viewBox }) => (
           <a
             key={label}
             href={href}
             target="_blank"
             rel="noreferrer"
-            tabIndex={open ? 0 : -1}
             aria-label={`Join on ${label} (opens in new tab)`}
-            onClick={() => setOpen(false)}
-            className={`flex h-11 w-11 items-center justify-center rounded-xl text-cream transition-[transform,opacity,color,background-color] hover:bg-cream/10 hover:text-orange focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange focus-visible:ring-offset-2 focus-visible:ring-offset-ink ${
-              open
-                ? `scale-100 opacity-100 ${POP.open} ${POP.iconDelays[i]}`
-                : `scale-50 opacity-0 ${POP.close}`
-            }`}
+            onClick={(e) =>
+              e.currentTarget.closest<HTMLElement>("[popover]")?.hidePopover()
+            }
+            className="flex h-11 w-11 items-center justify-center rounded-xl text-cream transition-colors duration-200 hover:bg-cream/10 hover:text-orange focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange focus-visible:ring-offset-2 focus-visible:ring-offset-ink"
           >
             <svg
               width="22"
@@ -137,6 +108,6 @@ export function JoinMenu({
           </a>
         ))}
       </div>
-    </div>
+    </>
   );
 }
