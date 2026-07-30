@@ -38,7 +38,7 @@ function FeaturedCard({ event }: { event: LedgerEvent }) {
             </span>
           )}
           <span className="text-ink/60">
-            {event.dow} {event.day} {event.mon} · {event.city}
+            {event.dow} {event.day} {event.mon}
           </span>
         </div>
         <h3 className="font-serif text-[30px]/[1.08] font-normal text-ink [text-wrap:pretty]">
@@ -65,7 +65,7 @@ function FeaturedCard({ event }: { event: LedgerEvent }) {
             <span className="sr-only"> {event.title} (opens in new tab)</span>
           </a>
           <span className="font-mono text-[13px] font-medium text-ink/60">
-            {event.time} · {event.venue ?? event.city}
+            {event.time} / {event.venue ?? event.city}
           </span>
         </div>
       </div>
@@ -89,7 +89,7 @@ function EventRow({ event }: { event: LedgerEvent }) {
           {event.title}
         </h3>
         <div className="text-[13px] text-subtle">
-          {event.venue ? `${event.venue} · ${event.city}` : event.city}
+          {event.venue ? `${event.venue} / ${event.city}` : event.city}
         </div>
       </div>
       <div className="hidden font-mono text-[13px] font-medium text-subtle sm:block">
@@ -322,7 +322,7 @@ export function EventsLedger({
                       {e.title}
                     </h3>
                     <div className="text-[13px] text-faded">
-                      {e.venue ? `${e.venue} · ${e.city}` : e.city}
+                      {e.venue ? `${e.venue} / ${e.city}` : e.city}
                     </div>
                   </div>
                   <div className="hidden font-mono text-[13px] font-medium text-faded sm:block">
