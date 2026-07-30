@@ -1,0 +1,38 @@
+# Deploys via the Vercel CLI instead of the Git integration, which is
+# unavailable for org-owned repos on the Hobby plan. Pushes to main go to
+# production; pull requests get a preview deployment.
+#
+# Requires one repo secret: VERCEL_TOKEN (vercel.com → Account Settings →
+# Tokens). The org/project IDs below are identifiers, not credentials.
+name: Deploy to Vercel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  VERCEL_ORG_ID: team_u599h0NxQ1LphYknSCXs9FBY
+  VERCEL_PROJECT_ID: prj_RiQpf32ZwTcYTeO4pZgDij4wwj3G
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@58
+
+      - name: Pull Vercel environment
+        run: vercel pull --yes --environment=${{ github.event_name == 'push' && 'production' || 'preview' }} --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build ${{ github.event_name == 'push' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy
+        run: vercel deploy --prebuilt ${{ github.event_name == 'push' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
