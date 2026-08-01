@@ -13,6 +13,26 @@ function countLabel(n: number) {
   return n === 1 ? "1 event" : `${n} events`;
 }
 
+/** Featured-chip date: "Mon 04 May", "Mon 04 – Sat 09 May", "Fri 30 May – Mon 02 Jun". */
+function chipDate(e: LedgerEvent) {
+  if (!e.end) return `${e.dow} ${e.day} ${e.mon}`;
+  return e.mon === e.end.mon
+    ? `${e.dow} ${e.day} – ${e.end.dow} ${e.end.day} ${e.mon}`
+    : `${e.dow} ${e.day} ${e.mon} – ${e.end.dow} ${e.end.day} ${e.end.mon}`;
+}
+
+function NowBadge() {
+  return (
+    <span className="inline-flex items-center gap-[7px] font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-orange">
+      <span aria-hidden="true" className="relative flex h-[7px] w-[7px]">
+        <span className="absolute h-full w-full animate-ping rounded-full bg-orange opacity-60" />
+        <span className="relative h-[7px] w-[7px] rounded-full bg-orange" />
+      </span>
+      Now
+    </span>
+  );
+}
+
 function FeaturedCard({ event }: { event: LedgerEvent }) {
   return (
     <article
@@ -37,9 +57,8 @@ function FeaturedCard({ event }: { event: LedgerEvent }) {
               Featured
             </span>
           )}
-          <span className="text-ink/60">
-            {event.dow} {event.day} {event.mon}
-          </span>
+          <span className="text-ink/60">{chipDate(event)}</span>
+          {event.live && <NowBadge />}
         </div>
         <h3 className="font-serif text-[30px]/[1.08] font-normal text-ink [text-wrap:pretty]">
           {event.title}
@@ -76,17 +95,41 @@ function FeaturedCard({ event }: { event: LedgerEvent }) {
 function EventRow({ event }: { event: LedgerEvent }) {
   return (
     <div className="grid grid-cols-[72px_minmax(0,1fr)_34px] items-center gap-4 rounded-lg border-b border-ink/10 px-2 py-[15px] transition-colors duration-150 hover:bg-[#F5EEE1] sm:grid-cols-[120px_minmax(0,1fr)_130px_34px]">
-      <div className="flex items-baseline gap-[7px]">
-        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-subtle">
-          {event.dow}
-        </span>
-        <span className="font-serif text-[28px]/[normal] text-ink">
-          {event.day}
-        </span>
+      <div
+        className={`flex items-baseline ${
+          event.end ? "flex-wrap gap-x-[7px]" : "gap-[7px]"
+        }`}
+      >
+        {event.end ? (
+          <>
+            <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-subtle">
+              {event.mon === event.end.mon
+                ? event.mon
+                : `${event.mon}–${event.end.mon}`}
+            </span>
+            <span className="font-serif text-[22px]/[normal] text-ink">
+              {event.day}–{event.end.day}
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-subtle">
+              {event.dow}
+            </span>
+            <span className="font-serif text-[28px]/[normal] text-ink">
+              {event.day}
+            </span>
+          </>
+        )}
       </div>
       <div className="flex flex-col gap-0.5">
         <h3 className="text-[16.5px]/[1.25] font-semibold text-ink">
           {event.title}
+          {event.live && (
+            <span className="ml-2.5 inline-flex align-[-1px]">
+              <NowBadge />
+            </span>
+          )}
         </h3>
         <div className="text-[13px] text-subtle">
           {event.venue ? `${event.venue} / ${event.city}` : event.city}
@@ -306,16 +349,35 @@ export function EventsLedger({
                   key={e.id}
                   className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-4 border-b border-ink/[.08] px-2 py-[13px] sm:grid-cols-[120px_minmax(0,1fr)_130px]"
                 >
-                  <div className="flex items-baseline gap-[7px]">
-                    <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
-                      {e.dow}
-                    </span>
-                    <span className="font-serif text-[26px]/[normal] text-subtle">
-                      {e.day}
-                    </span>
-                    <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
-                      {e.mon}
-                    </span>
+                  <div
+                    className={`flex items-baseline ${
+                      e.end ? "flex-wrap gap-x-[7px]" : "gap-[7px]"
+                    }`}
+                  >
+                    {e.end ? (
+                      <>
+                        <span className="font-serif text-[22px]/[normal] text-subtle">
+                          {e.day}–{e.end.day}
+                        </span>
+                        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
+                          {e.mon === e.end.mon
+                            ? e.mon
+                            : `${e.mon}–${e.end.mon}`}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
+                          {e.dow}
+                        </span>
+                        <span className="font-serif text-[26px]/[normal] text-subtle">
+                          {e.day}
+                        </span>
+                        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
+                          {e.mon}
+                        </span>
+                      </>
+                    )}
                   </div>
                   <div className="flex flex-col gap-0.5">
                     <h3 className="text-[15.5px]/[1.25] font-semibold text-ink/55">

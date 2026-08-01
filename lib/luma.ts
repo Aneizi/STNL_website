@@ -12,6 +12,12 @@ const REVALIDATE_SECONDS = 300;
 /** Featured-card background tints, cycled per featured event. */
 export const TINTS = ["#F7E4D4", "#DFE8F0", "#E4E9DB", "#F3EBD3"];
 
+export type EventDateParts = {
+  dow: string;
+  day: string;
+  mon: string;
+};
+
 export type LedgerEvent = {
   id: string;
   title: string;
@@ -22,7 +28,14 @@ export type LedgerEvent = {
   day: string;
   mon: string;
   monthLabel: string;
+  /** Clock range for single-day events, duration ("6 days") for multi-day. */
   time: string;
+  /** End-date parts when the event spans multiple calendar days. */
+  end: EventDateParts | null;
+  /** Inclusive calendar-day span; 1 for single-day events. */
+  days: number;
+  /** Started but not yet ended, as of the last revalidation. */
+  live: boolean;
   img: string | null;
   tint: string;
   featured: boolean;
@@ -38,6 +51,8 @@ export type PastLedgerEvent = {
   day: string;
   mon: string;
   time: string;
+  end: EventDateParts | null;
+  days: number;
 };
 
 type LumaGeo = {
@@ -88,6 +103,47 @@ function part(
   return new Intl.DateTimeFormat("en-US", { ...options, timeZone }).format(
     date
   );
+}
+
+function dateParts(date: Date, timeZone: string): EventDateParts {
+  return {
+    dow: part(date, timeZone, { weekday: "short" }),
+    day: part(date, timeZone, { day: "2-digit" }),
+    mon: part(date, timeZone, { month: "short" }),
+  };
+}
+
+/** Calendar date (YYYY-MM-DD) of an instant in the event's timezone. */
+function dateKey(date: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    timeZone,
+  }).format(date);
+}
+
+/** End parts + inclusive day count, or null when start and end share a calendar day. */
+function multiDaySpan(
+  ev: LumaEvent,
+  timeZone: string
+): { end: EventDateParts; days: number } | null {
+  if (!ev.end_at) return null;
+  const start = new Date(ev.start_at);
+  const end = new Date(ev.end_at);
+  if (end <= start) return null;
+  const startKey = dateKey(start, timeZone);
+  const endKey = dateKey(end, timeZone);
+  if (startKey === endKey) return null;
+  const days =
+    Math.round((Date.parse(endKey) - Date.parse(startKey)) / 86_400_000) + 1;
+  return { end: dateParts(end, timeZone), days };
+}
+
+function isLive(ev: LumaEvent): boolean {
+  if (!ev.end_at) return false;
+  const now = Date.now();
+  return Date.parse(ev.start_at) <= now && now <= Date.parse(ev.end_at);
 }
 
 function timeRange(ev: LumaEvent, timeZone: string): string {
@@ -150,17 +206,19 @@ export async function getUpcomingEvents(): Promise<LedgerEvent[]> {
       const start = new Date(ev.start_at);
       const featured = isFeatured(entry);
       const city = cityOf(ev);
+      const span = multiDaySpan(ev, tz);
       return {
         id: ev.api_id || ev.url,
         title: ev.name,
         blurb: ev.description_snippet || ev.description || null,
         venue: venueOf(ev),
         city,
-        dow: part(start, tz, { weekday: "short" }),
-        day: part(start, tz, { day: "2-digit" }),
-        mon: part(start, tz, { month: "short" }),
+        ...dateParts(start, tz),
         monthLabel: monthLabel(start, tz),
-        time: timeRange(ev, tz),
+        time: span ? `${span.days} days` : timeRange(ev, tz),
+        end: span?.end ?? null,
+        days: span?.days ?? 1,
+        live: isLive(ev),
         img: ev.cover_url || null,
         tint: featured ? TINTS[featuredIndex++ % TINTS.length] : TINTS[0],
         featured,
@@ -181,15 +239,16 @@ export async function getPastEvents(): Promise<PastLedgerEvent[]> {
       const tz = ev.timezone || "Europe/Amsterdam";
       const start = new Date(ev.start_at);
       const city = cityOf(ev);
+      const span = multiDaySpan(ev, tz);
       return {
         id: ev.api_id || ev.url,
         title: ev.name,
         venue: venueOf(ev),
         city,
-        dow: part(start, tz, { weekday: "short" }),
-        day: part(start, tz, { day: "2-digit" }),
-        mon: part(start, tz, { month: "short" }),
-        time: timeRange(ev, tz),
+        ...dateParts(start, tz),
+        time: span ? `${span.days} days` : timeRange(ev, tz),
+        end: span?.end ?? null,
+        days: span?.days ?? 1,
       };
     });
 }
