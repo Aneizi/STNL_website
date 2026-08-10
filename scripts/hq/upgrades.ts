@@ -113,4 +113,40 @@ export async function applyUpgrades(sql: SqlRunner) {
       }.`,
     );
   }
+
+  // Luma mirroring. Fresh databases get these from schema.sql; the ADD COLUMN
+  // IF NOT EXISTS form makes the statements no-ops there and on re-runs.
+  await sql.query(`
+    ALTER TABLE hq_events
+      ADD COLUMN IF NOT EXISTS luma_id text,
+      ADD COLUMN IF NOT EXISTS luma_url text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS pinned_fields text[] NOT NULL DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS archived_at timestamptz,
+      ADD COLUMN IF NOT EXISTS archived_reason text
+  `);
+  // UNIQUE and CHECK cannot ride along with ADD COLUMN IF NOT EXISTS, so they
+  // are added separately and only when absent.
+  const [lumaIdIndex] = await sql.query(`SELECT to_regclass('hq_events_luma_id_key') AS idx`);
+  if (!lumaIdIndex?.idx) {
+    await sql.query(`CREATE UNIQUE INDEX hq_events_luma_id_key ON hq_events (luma_id)`);
+  }
+  const archivedReasonCheck = await sql.query(`
+    SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'hq_events'::regclass AND conname = 'hq_events_archived_reason_check'
+  `);
+  if (archivedReasonCheck.length === 0) {
+    await sql.query(`
+      ALTER TABLE hq_events ADD CONSTRAINT hq_events_archived_reason_check
+      CHECK (archived_reason IN ('manual', 'missing'))
+    `);
+  }
+
+  await sql.query(`
+    CREATE TABLE IF NOT EXISTS hq_luma_sync (
+      id boolean PRIMARY KEY DEFAULT true CHECK (id),
+      last_success_at timestamptz NOT NULL DEFAULT 'epoch'
+    )
+  `);
+  // The sync locks this row, so it has to exist before the first sync runs.
+  await sql.query(`INSERT INTO hq_luma_sync (id) VALUES (true) ON CONFLICT DO NOTHING`);
 }

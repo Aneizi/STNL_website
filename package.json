@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "hq:migrate": "tsx scripts/hq/migrate.ts",
-    "hq:seed": "tsx scripts/hq/seed.ts"
+    "hq:seed": "tsx scripts/hq/seed.ts",
+    "hq:reconcile-luma": "tsx scripts/hq/reconcile-luma.ts"
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",

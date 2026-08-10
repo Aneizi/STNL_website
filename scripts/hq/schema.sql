@@ -213,8 +213,30 @@ CREATE TABLE IF NOT EXISTS hq_events (
   attendance int NOT NULL DEFAULT 0,
   leads int NOT NULL DEFAULT 0,
   spend int NOT NULL DEFAULT 0,
+  -- Luma-sourced events carry the calendar's event id; NULL means the event
+  -- was added by hand in HQ. There is deliberately no separate "source"
+  -- column, so the two can never disagree.
+  luma_id text UNIQUE,
+  luma_url text NOT NULL DEFAULT '',
+  -- Column names of Luma-backed fields an HQ edit has pinned; the sync leaves
+  -- these alone. See PINNABLE in lib/hq/actions/events.ts.
+  pinned_fields text[] NOT NULL DEFAULT '{}',
+  archived_at timestamptz,
+  -- 'manual' survives every sync; 'missing' clears if the event reappears in
+  -- Luma. Without the distinction, active Luma events (which are present in
+  -- every sync) would un-archive themselves within minutes.
+  archived_reason text CHECK (archived_reason IN ('manual', 'missing')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Single row. Holds the last successful Luma sync, and doubles as the lock
+-- concurrent syncs serialise on (SELECT ... FOR UPDATE).
+CREATE TABLE IF NOT EXISTS hq_luma_sync (
+  id boolean PRIMARY KEY DEFAULT true CHECK (id),
+  last_success_at timestamptz NOT NULL DEFAULT 'epoch'
+);
+
+INSERT INTO hq_luma_sync (id) VALUES (true) ON CONFLICT DO NOTHING;
 
 -- Databases created before the demo-day integrity constraints below are
 -- upgraded in code by scripts/hq/migrate.ts (constraint rewrites and the

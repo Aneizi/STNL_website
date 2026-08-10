@@ -1,5 +1,6 @@
 import "server-only";
 import { getSql } from "./db";
+import { attributeOutputs, type AttributableProject } from "./event-attribution";
 import { fmtDate, normName, todayInTz } from "./format";
 import type {
   ActivityItem,
@@ -281,7 +282,8 @@ export async function getEventsWithOutputs(): Promise<HqEvent[]> {
   const [events, projects, gateTotalRows] = await Promise.all([
     sql`
       SELECT id, name, date::text AS date, end_date::text AS end_date, type_id,
-        venue, cohost, attendance, leads, spend
+        venue, cohost, attendance, leads, spend,
+        luma_id, luma_url, pinned_fields, archived_at, archived_reason
       FROM hq_events
       ORDER BY date, created_at
     `,
@@ -295,23 +297,11 @@ export async function getEventsWithOutputs(): Promise<HqEvent[]> {
   ]);
   const gateTotal = Number(gateTotalRows[0]?.total ?? 0);
 
-  const firstEventByName = new Map<string, string>(); // norm name -> event id
-  for (const e of events) {
-    const key = normName(e.name);
-    if (!firstEventByName.has(key)) firstEventByName.set(key, e.id);
-  }
-  const outputs = new Map<string, { q: number; a: number; s: number }>();
-  for (const p of projects) {
-    const key = normName(p.event_src);
-    if (!key) continue; // an unset source must never match a blank-named event
-    const eventId = firstEventByName.get(key);
-    if (!eventId) continue;
-    const out = outputs.get(eventId) ?? { q: 0, a: 0, s: 0 };
-    out.q += 1;
-    if (p.counts_as_active) out.a += 1;
-    if (gateTotal > 0 && p.gates_done === gateTotal) out.s += 1;
-    outputs.set(eventId, out);
-  }
+  const outputs = attributeOutputs(
+    events.map((e) => ({ id: e.id, name: e.name, archived: Boolean(e.archived_at) })),
+    projects as unknown as AttributableProject[],
+    gateTotal,
+  );
 
   return events.map((e) => ({
     id: e.id,
@@ -324,6 +314,11 @@ export async function getEventsWithOutputs(): Promise<HqEvent[]> {
     attendance: e.attendance,
     leads: e.leads,
     spend: e.spend,
+    lumaId: e.luma_id,
+    lumaUrl: e.luma_url,
+    pinned: (e.pinned_fields ?? []) as string[],
+    archived: Boolean(e.archived_at),
+    archivedReason: e.archived_reason,
     outputs: outputs.get(e.id) ?? { q: 0, a: 0, s: 0 },
   }));
 }

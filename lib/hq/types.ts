@@ -116,8 +116,17 @@ export type HqEvent = {
   attendance: number;
   leads: number;
   spend: number;
+  /** Luma calendar id, or null for an event added by hand in HQ. */
+  lumaId: string | null;
+  lumaUrl: string;
+  /** Column names of Luma-backed fields an HQ edit has pinned. */
+  pinned: string[];
+  archived: boolean;
+  /** 'manual' survives every sync; 'missing' clears if the event returns. */
+  archivedReason: "manual" | "missing" | null;
   // Derived from tracked projects; each project counts once, at the first
-  // event (by date) whose normalized name matches its event_src.
+  // event (by date) whose normalized name matches its event_src. Active
+  // events claim a name ahead of archived ones.
   outputs: { q: number; a: number; s: number };
 };
 

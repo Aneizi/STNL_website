@@ -3,6 +3,8 @@
 import { z } from "zod";
 import { requireUser } from "../auth";
 import { getSql } from "../db";
+import { syncLumaEvents } from "../luma-sync";
+import { pinnedColumn, type PinnableField } from "../luma-sync-sql";
 import type { ActionResult } from "../types";
 import { activityStmt, refreshHq } from "./util";
 
@@ -104,7 +106,131 @@ export async function updateEvent(
       break;
   }
 
-  await sql.transaction([update, activityStmt(user.id, `Updated event ${name}`)]);
+  // Editing a Luma-backed field pins it, so later syncs stop overwriting it.
+  // The statement guards itself on luma_id, so external events are unaffected
+  // and no branch is needed here.
+  const column = pinnedColumn(data.field);
+  const statements = [update, activityStmt(user.id, `Updated event ${name}`)];
+  if (column) {
+    statements.unshift(sql`
+      UPDATE hq_events SET pinned_fields = array_append(pinned_fields, ${column})
+      WHERE id = ${eventId} AND luma_id IS NOT NULL
+        AND NOT (${column} = ANY(pinned_fields))
+    `);
+  }
+
+  await sql.transaction(statements);
+  refreshHq();
+  return { ok: true };
+}
+
+/**
+ * Releases a pinned field back to Luma's control; the next sync restores its
+ * value.
+ */
+export async function unpinEventField(
+  eventId: string,
+  field: PinnableField,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(eventId).success) return { ok: false };
+  const column = pinnedColumn(field);
+  if (!column) return { ok: false, error: "That field is not synced from Luma." };
+
+  const sql = getSql();
+  const rows = await sql`SELECT name FROM hq_events WHERE id = ${eventId}`;
+  if (!rows[0]) return { ok: false, error: "Event not found." };
+
+  await sql.transaction([
+    sql`
+      UPDATE hq_events SET pinned_fields = array_remove(pinned_fields, ${column})
+      WHERE id = ${eventId}
+    `,
+    activityStmt(user.id, `Reset ${field} to Luma for ${rows[0].name as string}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
+/**
+ * Archiving is the only way to retire a Luma event: the row may carry HQ
+ * metrics and project attributions that a delete would take with it. The
+ * 'manual' reason is what stops the next sync from un-archiving it.
+ */
+export async function archiveEvent(eventId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  return setArchived(user.id, eventId, true);
+}
+
+export async function unarchiveEvent(eventId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  return setArchived(user.id, eventId, false);
+}
+
+/** Shared body; both callers authenticate before reaching it. */
+async function setArchived(
+  userId: string,
+  eventId: string,
+  archived: boolean,
+): Promise<ActionResult> {
+  if (!id.safeParse(eventId).success) return { ok: false };
+
+  const sql = getSql();
+  const rows = await sql`SELECT name FROM hq_events WHERE id = ${eventId}`;
+  if (!rows[0]) return { ok: false, error: "Event not found." };
+  const name = rows[0].name as string;
+
+  await sql.transaction([
+    archived
+      ? sql`
+          UPDATE hq_events SET archived_at = now(), archived_reason = 'manual'
+          WHERE id = ${eventId}
+        `
+      : sql`
+          UPDATE hq_events SET archived_at = NULL, archived_reason = NULL
+          WHERE id = ${eventId}
+        `,
+    activityStmt(userId, `${archived ? "Archived" : "Unarchived"} event ${name}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
+/**
+ * Only external events can be deleted. A Luma-sourced row would reappear on
+ * the next sync anyway, minus whatever HQ had recorded against it.
+ */
+export async function deleteEvent(eventId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(eventId).success) return { ok: false };
+
+  const sql = getSql();
+  const rows = await sql`SELECT name, luma_id FROM hq_events WHERE id = ${eventId}`;
+  if (!rows[0]) return { ok: false, error: "Event not found." };
+  if (rows[0].luma_id) {
+    return { ok: false, error: "Luma events can be archived, not deleted." };
+  }
+  const name = rows[0].name as string;
+
+  await sql.transaction([
+    // The luma_id guard is repeated in SQL so the rule holds even if the row
+    // became Luma-backed between the check above and this delete.
+    sql`DELETE FROM hq_events WHERE id = ${eventId} AND luma_id IS NULL`,
+    activityStmt(user.id, `Deleted event ${name}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
+/**
+ * The Sync button's entry point. components/hq/events.tsx is a client
+ * component and cannot reach lib/hq/luma-sync directly, so this authenticated
+ * action is the only exposed path to it.
+ */
+export async function syncLuma(): Promise<ActionResult> {
+  await requireUser();
+  const result = await syncLumaEvents({ force: true });
+  if (!result.ok) return { ok: false, error: `Luma sync failed: ${result.error}` };
   refreshHq();
   return { ok: true };
 }

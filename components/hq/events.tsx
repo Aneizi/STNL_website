@@ -9,15 +9,37 @@ import {
   useState,
   type CSSProperties,
 } from "react";
-import { FormField, input, pageTitle } from "@/components/hq/ui";
-import { createEvent, updateEvent } from "@/lib/hq/actions/events";
+import { FormField, LumaMark, input, pageTitle } from "@/components/hq/ui";
+import {
+  archiveEvent,
+  createEvent,
+  deleteEvent,
+  syncLuma,
+  unarchiveEvent,
+  unpinEventField,
+  updateEvent,
+} from "@/lib/hq/actions/events";
 import { fmtDate, fmtMoney } from "@/lib/hq/format";
+import { PINNABLE, type PinnableField } from "@/lib/hq/luma-sync-sql";
 import type { Classifiers, HqEvent, Settings } from "@/lib/hq/types";
 
 type EventField = Parameters<typeof updateEvent>[1];
 
+// Date · Event · Type · Venue · Cohost · Attend · Leads · Spend · Output · actions.
+// The numeric columns are sized for their widest realistic value plus room to
+// breathe, so a long figure never crowds the column beside it.
 const GRID =
-  "132px minmax(0,1.4fr) 110px minmax(0,1.5fr) minmax(0,1.3fr) 70px 62px 84px 150px 40px";
+  "118px minmax(0,1.5fr) 120px minmax(0,1.5fr) minmax(0,1.3fr) 76px 68px 96px 150px 122px";
+
+// Wide enough that a cell's content ends well before the next column starts,
+// so a long name or a trailing Luma mark never reads as touching the column
+// beside it.
+const COLUMN_GAP = 20;
+
+// The table scrolls inside its card rather than squeezing columns. Below this
+// the text columns get narrow enough that most event names wrap to three lines,
+// which costs more legibility than a horizontal scroll does.
+const TABLE_MIN_WIDTH = 1400;
 
 const OUTPUT_TOOLTIP =
   "Qualified teams / active teams / verified submissions. Derived from tracked projects; each team counts once, at the first event it appeared at.";
@@ -27,7 +49,7 @@ const rowGrid: CSSProperties = {
   textAlign: "left",
   overflowWrap: "break-word",
   gridTemplateColumns: GRID,
-  gap: 10,
+  columnGap: COLUMN_GAP,
 };
 
 // Design's inline-edit inputs: 6px 8px on the tinted row (ui.editInput differs).
@@ -42,6 +64,27 @@ const editField: CSSProperties = {
 };
 
 const dateInput: CSSProperties = { ...input, padding: "7px 10px" };
+
+/** Luma-backed fields, in row order, with labels for the override chips. */
+const PIN_FIELDS: PinnableField[] = ["date", "endDate", "name", "venue", "cohost"];
+
+const PIN_LABELS: Record<PinnableField, string> = {
+  name: "name",
+  date: "date",
+  endDate: "end date",
+  venue: "venue",
+  cohost: "cohost",
+};
+
+/** Text buttons in the row's trailing actions column. */
+const rowAction: CSSProperties = {
+  border: "none",
+  cursor: "pointer",
+  background: "none",
+  color: "var(--label-3)",
+  fontSize: 12,
+  padding: 2,
+};
 
 const MONTH_NAMES = [
   "January", "February", "March", "April", "May", "June",
@@ -83,6 +126,13 @@ export function Events(props: {
   const [eventsView, setEventsView] = useState<"list" | "cal">("list");
   const [newEventOpen, setNewEventOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  // Inline two-step delete; a window.confirm would block the whole tab.
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  // Deleted rows vanish immediately; useOptimistic cannot express a removal.
+  const [deletedIds, setDeletedIds] = useState<ReadonlySet<string>>(new Set());
   const drafts = useRef({ name: "", date: "", end: "", typeId: "", venue: "", cohost: "", spend: "" });
 
   // ⌘K navigation contract: a ?view=list arrival forces the list view.
@@ -99,15 +149,45 @@ export function Events(props: {
 
   const [optimistic, patchEvent] = useOptimistic(
     events,
-    (state: HqEvent[], p: EventField & { id: string }) =>
-      state.map((e) => (e.id === p.id ? ({ ...e, [p.field]: p.value } as HqEvent) : e)),
+    (state: HqEvent[], p: { id: string } & Partial<HqEvent>) =>
+      state.map((e) => (e.id === p.id ? { ...e, ...p } : e)),
   );
 
   const commit = (id: string, field: EventField) => {
     startTransition(async () => {
-      patchEvent({ id, ...field });
+      // Field names match HqEvent's keys, so the edit is also the patch.
+      patchEvent({ id, [field.field]: field.value });
       await updateEvent(id, field);
     });
+  };
+
+  const setArchived = (id: string, archived: boolean) => {
+    startTransition(async () => {
+      patchEvent({ id, archived });
+      await (archived ? archiveEvent(id) : unarchiveEvent(id));
+    });
+  };
+
+  const removeEvent = (id: string) => {
+    setConfirmingDelete(null);
+    setDeletedIds((ids) => new Set(ids).add(id));
+    startTransition(async () => {
+      await deleteEvent(id);
+    });
+  };
+
+  const releasePin = (id: string, field: PinnableField) => {
+    startTransition(async () => {
+      await unpinEventField(id, field);
+    });
+  };
+
+  const runSync = async () => {
+    setSyncing(true);
+    setSyncError(null);
+    const result = await syncLuma();
+    setSyncing(false);
+    if (!result.ok) setSyncError(result.error ?? "Sync failed.");
   };
 
   const addEvent = () => {
@@ -133,22 +213,21 @@ export function Events(props: {
 
   const typeById = (id: string) => classifiers.eventTypes.find((t) => t.id === id);
 
-  const evs = optimistic.slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+  // The comparator must return 0 for equal dates. Anything else is an
+  // inconsistent comparator, whose result is implementation-defined — and the
+  // server sorts under Node's V8 while the browser sorts under Chrome's, so
+  // same-day events could land in different orders and break hydration.
+  // Returning 0 also keeps the query's own `ORDER BY date, created_at` for
+  // ties, since Array#sort is stable.
+  const sorted = optimistic
+    .filter((e) => !deletedIds.has(e.id))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const active = sorted.filter((e) => !e.archived);
+  const archived = sorted.filter((e) => e.archived);
+  // Archived events are out of the picture entirely: hidden behind the toggle
+  // and absent from the calendar.
+  const evs = showArchived ? archived : active;
   const isPast = (e: HqEvent) => e.date <= today;
-
-  const totalAttend = evs.reduce((s, e) => s + e.attendance, 0);
-  const totalLeads = evs.reduce((s, e) => s + e.leads, 0);
-  const totalSpend = fmtMoney(evs.reduce((s, e) => s + e.spend, 0));
-  const totalOut = evs.reduce(
-    (acc, e) => {
-      if (!isPast(e)) return acc;
-      acc.q += e.outputs.q;
-      acc.a += e.outputs.a;
-      acc.s += e.outputs.s;
-      return acc;
-    },
-    { q: 0, a: 0, s: 0 },
-  );
 
   const seg = (on: boolean): CSSProperties => ({
     border: "none",
@@ -178,7 +257,7 @@ export function Events(props: {
     }
     for (let d = 1; d <= daysIn; d++) {
       const iso = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-      const ev = optimistic.find(
+      const ev = active.find(
         (e) => iso >= e.date && iso <= (e.endDate && e.endDate > e.date ? e.endDate : e.date),
       );
       cells.push({
@@ -206,7 +285,7 @@ export function Events(props: {
         }}
       >
         <h1 style={pageTitle}>
-          Events <span style={{ fontWeight: 400, color: "var(--faded)" }}>{evs.length}</span>
+          Events <span style={{ fontWeight: 400, color: "var(--faded)" }}>{active.length}</span>
         </h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", boxShadow: "0 0 0 1px var(--sep)", padding: 2 }}>
@@ -217,6 +296,45 @@ export function Events(props: {
               Calendar
             </button>
           </div>
+          {archived.length > 0 ? (
+            <button
+              onClick={() => {
+                setShowArchived((on) => !on);
+                setEditingId(null);
+              }}
+              style={{
+                border: "none",
+                cursor: "pointer",
+                padding: "7px 12px",
+                borderRadius: 0,
+                fontSize: 13,
+                fontWeight: 600,
+                background: showArchived ? "var(--fill-2)" : "none",
+                color: "var(--label-2)",
+                boxShadow: "0 0 0 1px var(--sep)",
+              }}
+            >
+              Archived {archived.length}
+            </button>
+          ) : null}
+          <button
+            onClick={() => void runSync()}
+            disabled={syncing}
+            title="Pull the latest events from luma.com/stnl"
+            style={{
+              border: "none",
+              cursor: syncing ? "progress" : "pointer",
+              padding: "7px 12px",
+              borderRadius: 0,
+              fontSize: 13,
+              fontWeight: 600,
+              background: "none",
+              color: "var(--label-2)",
+              boxShadow: "0 0 0 1px var(--sep)",
+            }}
+          >
+            {syncing ? "Syncing…" : "Sync Luma"}
+          </button>
           <button
             onClick={() => setNewEventOpen((open) => !open)}
             style={{
@@ -234,6 +352,26 @@ export function Events(props: {
           </button>
         </div>
       </div>
+      {syncError ? (
+        <div
+          role="alert"
+          style={{
+            marginTop: 12,
+            padding: "9px 14px",
+            background: "var(--accent-fill)",
+            color: "var(--accent-deep)",
+            fontSize: 13,
+          }}
+        >
+          {syncError}
+        </div>
+      ) : null}
+      {showArchived ? (
+        <div style={{ marginTop: 12, fontSize: 13, color: "var(--label-3)" }}>
+          Archived events are hidden from the list and the calendar. Luma still holds
+          them; archiving only affects HQ.
+        </div>
+      ) : null}
       {newEventOpen ? (
         <div
           className="hq-fade-in"
@@ -315,7 +453,7 @@ export function Events(props: {
             overflowX: "auto",
           }}
         >
-          <div style={{ minWidth: 1120 }}>
+          <div style={{ minWidth: TABLE_MIN_WIDTH }}>
             <div
               style={{
                 ...rowGrid,
@@ -373,7 +511,18 @@ export function Events(props: {
                         ? `${fmtDate(e.date)} – ${fmtDate(e.endDate)}`
                         : fmtDate(e.date)}
                     </span>
-                    <span style={{ fontWeight: 600 }}>{e.name}</span>
+                    <span
+                      style={{
+                        fontWeight: 600,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 4,
+                        minWidth: 0,
+                      }}
+                    >
+                      <span style={{ overflowWrap: "anywhere" }}>{e.name}</span>
+                      {e.lumaId ? <LumaMark href={e.lumaUrl} /> : null}
+                    </span>
                     <span style={{ color: "var(--label-2)", fontSize: 13 }}>
                       {typeById(e.typeId)?.label ?? ""}
                     </span>
@@ -397,21 +546,45 @@ export function Events(props: {
                     >
                       {past ? `${e.outputs.q} / ${e.outputs.a} / ${e.outputs.s}` : "upcoming"}
                     </span>
-                    <button
-                      className="hq-hover-accent"
-                      onClick={() => toggleEdit(e.id)}
-                      style={{
-                        border: "none",
-                        cursor: "pointer",
-                        background: "none",
-                        color: "var(--label-3)",
-                        fontSize: 12,
-                        padding: 2,
-                        justifySelf: "start",
-                      }}
-                    >
-                      Edit
-                    </button>
+                    <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <button className="hq-hover-accent" onClick={() => toggleEdit(e.id)} style={rowAction}>
+                        Edit
+                      </button>
+                      {e.archived ? (
+                        <button
+                          className="hq-hover-accent"
+                          onClick={() => setArchived(e.id, false)}
+                          style={rowAction}
+                        >
+                          Unarchive
+                        </button>
+                      ) : e.lumaId ? (
+                        // A Luma row is never deletable: it would return on the
+                        // next sync, minus everything HQ recorded against it.
+                        <button
+                          className="hq-hover-accent"
+                          onClick={() => setArchived(e.id, true)}
+                          style={rowAction}
+                        >
+                          Archive
+                        </button>
+                      ) : confirmingDelete === e.id ? (
+                        <button
+                          onClick={() => removeEvent(e.id)}
+                          style={{ ...rowAction, color: "var(--accent)", fontWeight: 600 }}
+                        >
+                          Sure?
+                        </button>
+                      ) : (
+                        <button
+                          className="hq-hover-accent"
+                          onClick={() => setConfirmingDelete(e.id)}
+                          style={rowAction}
+                        >
+                          Delete
+                        </button>
+                      )}
+                    </span>
                   </div>
                 );
               }
@@ -420,10 +593,10 @@ export function Events(props: {
                   key={e.id}
                   style={{
                     display: "flex",
-                    gap: 8,
+                    gap: 12,
                     flexWrap: "wrap",
                     alignItems: "center",
-                    padding: "10px 16px",
+                    padding: "12px 16px",
                     borderBottom: "1px solid var(--sep)",
                     background: "var(--fill-4)",
                   }}
@@ -520,6 +693,38 @@ export function Events(props: {
                     placeholder="leads"
                     style={{ width: 90, flex: "none", ...editField }}
                   />
+                  {e.lumaId && e.pinned.length > 0 ? (
+                    <span
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        flexWrap: "wrap",
+                        fontSize: 11,
+                        color: "var(--label-3)",
+                      }}
+                    >
+                      <span>Overriding Luma:</span>
+                      {PIN_FIELDS.filter((f) => e.pinned.includes(PINNABLE[f])).map((f) => (
+                        <button
+                          key={f}
+                          onClick={() => releasePin(e.id, f)}
+                          title={`Stop overriding ${PIN_LABELS[f]} — the next sync restores Luma's value`}
+                          style={{
+                            border: "1px solid var(--sep)",
+                            cursor: "pointer",
+                            background: "var(--card)",
+                            color: "var(--label-2)",
+                            borderRadius: 999,
+                            fontSize: 11,
+                            padding: "1px 8px",
+                          }}
+                        >
+                          {PIN_LABELS[f]} ×
+                        </button>
+                      ))}
+                    </span>
+                  ) : null}
                   <button
                     onClick={() => toggleEdit(e.id)}
                     style={{
@@ -537,26 +742,15 @@ export function Events(props: {
                 </div>
               );
             })}
-            <div style={{ ...rowGrid, padding: "11px 16px", fontSize: 13, fontWeight: 600 }}>
-              <span></span>
-              <span>Total</span>
-              <span></span>
-              <span></span>
-              <span></span>
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>{totalAttend}</span>
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>{totalLeads}</span>
-              <span style={{ fontVariantNumeric: "tabular-nums" }}>{totalSpend}</span>
-              <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--label-2)" }}>
-                {`${totalOut.q} / ${totalOut.a} / ${totalOut.s}`}
-              </span>
-            </div>
           </div>
         </div>
       ) : (
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(auto-fit,minmax(290px,1fr))",
+            // min() so a month card never forces the page wider than the
+            // viewport on narrow phones.
+            gridTemplateColumns: "repeat(auto-fit,minmax(min(290px,100%),1fr))",
             gap: 12,
             marginTop: 14,
           }}
@@ -590,7 +784,15 @@ export function Events(props: {
                   <div
                     key={c.key}
                     title={c.title}
-                    style={{ minHeight: 36, borderRadius: 0, padding: "2px 3px", background: c.bg }}
+                    // Centered like the weekday header above it: both are 1fr
+                    // columns with symmetric padding, so their centers line up.
+                    style={{
+                      minHeight: 36,
+                      borderRadius: 0,
+                      padding: "2px 3px",
+                      background: c.bg,
+                      textAlign: "center",
+                    }}
                   >
                     <div
                       style={{
@@ -609,6 +811,7 @@ export function Events(props: {
                         color: "var(--accent-deep)",
                         fontWeight: 600,
                         overflow: "hidden",
+                        overflowWrap: "anywhere",
                       }}
                     >
                       {c.evt}
