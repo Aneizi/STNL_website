@@ -43,3 +43,6 @@ next-env.d.ts
 # local
 .DS_Store
 .idea
+
+# campaign-specific seed data (never committed; see scripts/hq/seed-data.example.json)
+/scripts/hq/seed-data.json
