@@ -1,0 +1,42 @@
+{
+  "users": [
+    { "username": "alex", "displayName": "Alex" },
+    { "username": "sam", "displayName": "Sam" }
+  ],
+  "partnerChannels": [
+    "Universities",
+    "Local communities",
+    "Technical partners"
+  ],
+  "submissionGates": [
+    "Team profiles complete",
+    "Working demo",
+    "All links tested"
+  ],
+  "awards": [
+    { "name": "Grand Prize", "sponsor": "Example Sponsor", "amount": 5000 },
+    { "name": "Runner-up", "sponsor": "", "amount": 2500 }
+  ],
+  "milestones": [
+    { "date": "2026-01-05", "label": "Kickoff" },
+    { "date": "2026-02-16", "label": "Demo day" }
+  ],
+  "settings": {
+    "prospects_reached": 0,
+    "prospects_target": 100,
+    "committed_manual": 0,
+    "committed_target": 50,
+    "committed_glide": 40,
+    "active_at_kickoff": 0,
+    "active_target": 50,
+    "verified_target": 25,
+    "stale_days": 7,
+    "finalist_cap": 30,
+    "verified_only_finalists": false,
+    "timezone": "Europe/Amsterdam",
+    "cal_start": "2026-01",
+    "cal_end": "2026-03",
+    "prospects_sub": "",
+    "active_sub": ""
+  }
+}

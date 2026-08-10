@@ -1,0 +1,159 @@
+/* Campaign HQ design tokens and base rules, ported 1:1 from the design
+ * (Campaign HQ Editorial). Everything is scoped under .hq so the public
+ * site's styles and Tailwind preflight stay untouched elsewhere. */
+
+.hq {
+  --label-1: #16130f;
+  --label-2: #57534a;
+  --label-3: #8a8579;
+  --faded: #b4ac9d;
+  --bg: #fbf7f0;
+  --card: #fffdf8;
+  --fill-2: rgba(22, 19, 15, 0.1);
+  --fill-3: rgba(22, 19, 15, 0.055);
+  --fill-4: rgba(22, 19, 15, 0.035);
+  --sep: rgba(22, 19, 15, 0.15);
+  --accent: #ee5b23;
+  --accent-deep: #d14e16;
+  --accent-fill: rgba(238, 91, 35, 0.1);
+  --green: #3e7c4f;
+  --green-fill: rgba(62, 124, 79, 0.12);
+  --orange: #a8760f;
+  --orange-fill: rgba(168, 118, 15, 0.12);
+  --red: #c03b2d;
+  --red-fill: rgba(192, 59, 45, 0.1);
+  --indigo: #16130f;
+  --shadow-1: 0 0 0 1px rgba(22, 19, 15, 0.13);
+  --shadow-2: 0 0 0 1px rgba(22, 19, 15, 0.16), 0 12px 32px rgba(22, 19, 15, 0.07);
+  --shadow-pop: 0 0 0 1px rgba(22, 19, 15, 0.18), 0 18px 48px rgba(22, 19, 15, 0.16);
+  --chrome: rgba(251, 247, 240, 0.9);
+  --font: var(--font-archivo), system-ui, sans-serif;
+  --serif: var(--font-instrument-serif), Georgia, serif;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  color-scheme: light;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--label-1);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.hq a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.hq a:hover {
+  color: var(--accent-deep);
+  text-decoration: underline;
+}
+
+.hq input,
+.hq select,
+.hq textarea,
+.hq button {
+  font-family: var(--font);
+}
+
+.hq ::selection {
+  background: rgba(238, 91, 35, 0.22);
+}
+
+.hq :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.hq input::placeholder,
+.hq textarea::placeholder {
+  color: var(--faded);
+}
+
+@keyframes hq-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.96);
+  }
+}
+@keyframes hq-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes hq-slide-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+@keyframes hq-drop-fade {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.hq .hq-pop-in {
+  animation: hq-pop-in 160ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hq .hq-pop-in-modal {
+  animation: hq-pop-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hq .hq-fade-in {
+  animation: hq-fade-in 200ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hq .hq-fade-in-page {
+  animation: hq-fade-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hq .hq-slide-in {
+  animation: hq-slide-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* style-hover ports from the design */
+.hq .hq-hover-fill:hover {
+  background: var(--fill-4);
+}
+.hq .hq-hover-accent:hover {
+  color: var(--accent);
+}
+.hq .hq-row-hover:hover {
+  background: var(--fill-4);
+}
+.hq .hq-card-hover {
+  transition:
+    box-shadow 160ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 160ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hq .hq-card-hover:hover {
+  box-shadow: var(--shadow-2);
+  transform: translateY(-1px);
+}
+
+/* Kanban drop flash: the ::before overlay from the design's style-before */
+.hq .hq-drop-flash {
+  position: relative;
+}
+.hq .hq-drop-flash::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: var(--hq-drop-color, transparent);
+  opacity: 0;
+}
+.hq .hq-drop-flash.hq-just-dropped::before {
+  animation: hq-drop-fade 3s ease-out forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hq *,
+  .hq ::before,
+  .hq ::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
