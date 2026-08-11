@@ -1,4 +1,5 @@
 import "server-only";
+import { CLASSIFIERS_SELECT, toClassifiers } from "./classifiers-sql";
 import { getSql } from "./db";
 import { attributeOutputs, type AttributableProject } from "./event-attribution";
 import { fmtDate, normName, todayInTz } from "./format";
@@ -27,54 +28,8 @@ import type {
 
 export async function getClassifiers(): Promise<Classifiers> {
   const sql = getSql();
-  const [channels, eventTypes, roles, stages, statuses, forecasts, gates, exchangeItems] =
-    await Promise.all([
-      sql`SELECT id, label FROM hq_partner_channels ORDER BY sort`,
-      sql`SELECT id, label, supports_end_date FROM hq_event_types ORDER BY sort`,
-      sql`SELECT id, label, filter_label, color, bg, is_judge FROM hq_people_roles ORDER BY sort`,
-      sql`SELECT id, slug, label, drop_color FROM hq_partner_stages ORDER BY sort`,
-      sql`SELECT id, slug, label, color, counts_as_active FROM hq_project_statuses ORDER BY sort`,
-      sql`SELECT id, slug, label, color FROM hq_project_forecasts ORDER BY sort`,
-      sql`SELECT id, label FROM hq_submission_gates ORDER BY sort`,
-      sql`SELECT id, slug, label FROM hq_exchange_items ORDER BY sort`,
-    ]);
-  return {
-    channels: channels.map((r) => ({ id: r.id, label: r.label })),
-    eventTypes: eventTypes.map((r) => ({
-      id: r.id,
-      label: r.label,
-      supportsEndDate: r.supports_end_date,
-    })),
-    roles: roles.map((r) => ({
-      id: r.id,
-      label: r.label,
-      filterLabel: r.filter_label,
-      color: r.color,
-      bg: r.bg,
-      isJudge: r.is_judge,
-    })),
-    stages: stages.map((r) => ({
-      id: r.id,
-      slug: r.slug,
-      label: r.label,
-      dropColor: r.drop_color,
-    })),
-    statuses: statuses.map((r) => ({
-      id: r.id,
-      slug: r.slug,
-      label: r.label,
-      color: r.color,
-      countsAsActive: r.counts_as_active,
-    })),
-    forecasts: forecasts.map((r) => ({
-      id: r.id,
-      slug: r.slug,
-      label: r.label,
-      color: r.color,
-    })),
-    gates: gates.map((r) => ({ id: r.id, label: r.label })),
-    exchangeItems: exchangeItems.map((r) => ({ id: r.id, slug: r.slug, label: r.label })),
-  };
+  const [row] = await sql.query(CLASSIFIERS_SELECT);
+  return toClassifiers(row ?? {});
 }
 
 const SETTING_KEYS: Record<string, keyof Settings> = {
