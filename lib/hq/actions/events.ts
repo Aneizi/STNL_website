@@ -225,7 +225,8 @@ export async function deleteEvent(eventId: string): Promise<ActionResult> {
 /**
  * The Sync button's entry point. components/hq/events.tsx is a client
  * component and cannot reach lib/hq/luma-sync directly, so this authenticated
- * action is the only exposed path to it.
+ * action is the browser-facing path to it. The hourly server-to-server path is
+ * separately authenticated by GitHub OIDC.
  */
 export async function syncLuma(): Promise<ActionResult> {
   await requireUser();

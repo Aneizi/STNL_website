@@ -185,9 +185,14 @@ export function Events(props: {
   const runSync = async () => {
     setSyncing(true);
     setSyncError(null);
-    const result = await syncLuma();
-    setSyncing(false);
-    if (!result.ok) setSyncError(result.error ?? "Sync failed.");
+    try {
+      const result = await syncLuma();
+      if (!result.ok) setSyncError(result.error ?? "Sync failed.");
+    } catch {
+      setSyncError("Could not sync Luma. Try again.");
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const addEvent = () => {
@@ -320,20 +325,41 @@ export function Events(props: {
           <button
             onClick={() => void runSync()}
             disabled={syncing}
-            title="Pull the latest events from luma.com/stnl"
+            aria-busy={syncing}
+            aria-label={syncing ? "Syncing Luma events" : "Sync Luma events now"}
+            title={syncing ? "Syncing Luma events…" : "Sync Luma events now"}
             style={{
               border: "none",
               cursor: syncing ? "progress" : "pointer",
-              padding: "7px 12px",
+              width: 40,
+              height: 40,
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
               borderRadius: 0,
-              fontSize: 13,
-              fontWeight: 600,
               background: "none",
               color: "var(--label-2)",
               boxShadow: "0 0 0 1px var(--sep)",
             }}
           >
-            {syncing ? "Syncing…" : "Sync Luma"}
+            <svg
+              className={syncing ? "hq-sync-icon hq-sync-icon-active" : "hq-sync-icon"}
+              aria-hidden="true"
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M20 6v5h-5M4 18v-5h5M5.6 9a7 7 0 0 1 11.9-2.5L20 9M4 15l2.5 2.5A7 7 0 0 0 18.4 15"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
           </button>
           <button
             onClick={() => setNewEventOpen((open) => !open)}

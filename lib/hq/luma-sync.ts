@@ -48,11 +48,10 @@ async function fetchAll(): Promise<NormalizedLumaEvent[]> {
 }
 
 /**
- * Never throws. The events page calls this before reading the mirror, and a
- * sync problem — an unreachable Luma, a database that has not been migrated
- * yet — must not take the page down with it: the already-mirrored rows are
- * still worth serving. Callers that want to show the failure read the result;
- * the page ignores it, and the Sync button surfaces it.
+ * Never throws. Scheduled and manual callers need a structured failure so an
+ * unreachable Luma (or an unmigrated database) does not discard the existing
+ * mirror. The scheduler returns a non-2xx response, while the manual button
+ * surfaces the error to the operator.
  */
 export async function syncLumaEvents(
   options: { force?: boolean } = {},

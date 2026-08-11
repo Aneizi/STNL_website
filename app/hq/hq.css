@@ -96,6 +96,11 @@
     opacity: 0;
   }
 }
+@keyframes hq-sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 .hq .hq-pop-in {
   animation: hq-pop-in 160ms cubic-bezier(0.32, 0.72, 0, 1);
@@ -111,6 +116,12 @@
 }
 .hq .hq-slide-in {
   animation: hq-slide-in 240ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hq .hq-sync-icon {
+  display: block;
+}
+.hq .hq-sync-icon-active {
+  animation: hq-sync-spin 800ms linear infinite;
 }
 
 /* style-hover ports from the design */
