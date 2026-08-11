@@ -17,10 +17,10 @@ export default async function PartnerDetailPage({
 }: {
   params: Promise<{ id: string }>;
 }) {
-  const user = await requireUser();
   const { id } = await params;
   if (!UUID.test(id)) notFound();
-  const [partner, classifiers, settings] = await Promise.all([
+  const [user, partner, classifiers, settings] = await Promise.all([
+    requireUser(),
     getPartnerDetail(id),
     getClassifiers(),
     getSettings(),

@@ -8,8 +8,10 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Admin" };
 
 export default async function AdminPage() {
-  const user = await requireUser();
-  void user;
-  const [settings, milestones] = await Promise.all([getSettings(), getMilestones()]);
+  const [, settings, milestones] = await Promise.all([
+    requireUser(),
+    getSettings(),
+    getMilestones(),
+  ]);
   return <Admin settings={settings} milestones={milestones} />;
 }

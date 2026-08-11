@@ -10,9 +10,8 @@ export const metadata: Metadata = { title: "People" };
 export default async function PeoplePage(props: {
   searchParams: Promise<{ reset?: string | string[] }>;
 }) {
-  const user = await requireUser();
-  void user;
-  const [people, partners, roles] = await Promise.all([
+  const [, people, partners, roles] = await Promise.all([
+    requireUser(),
     getPeople(),
     getPartnerOptions(),
     getRoles(),

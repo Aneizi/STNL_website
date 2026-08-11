@@ -14,9 +14,8 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
-  const user = await requireUser();
-  void user;
-  const [settings, projects, milestones, classifiers] = await Promise.all([
+  const [, settings, projects, milestones, classifiers] = await Promise.all([
+    requireUser(),
     getSettings(),
     getProjects(),
     getMilestones(),

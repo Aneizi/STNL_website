@@ -8,8 +8,10 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Partners" };
 
 export default async function PartnersPage() {
-  const user = await requireUser();
-  void user;
-  const [partners, classifiers] = await Promise.all([getPartners(), getClassifiers()]);
+  const [, partners, classifiers] = await Promise.all([
+    requireUser(),
+    getPartners(),
+    getClassifiers(),
+  ]);
   return <PartnersBoard partners={partners} classifiers={classifiers} />;
 }

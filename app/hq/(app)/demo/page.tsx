@@ -16,10 +16,9 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Demo day" };
 
 export default async function DemoDayPage() {
-  const user = await requireUser();
-  void user;
-  const [projects, finalists, awards, scores, judges, gatesTotal, settings] =
+  const [, projects, finalists, awards, scores, judges, gatesTotal, settings] =
     await Promise.all([
+      requireUser(),
       getDemoProjects(),
       getFinalists(),
       getAwards(),

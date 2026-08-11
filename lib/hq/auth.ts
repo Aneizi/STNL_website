@@ -57,6 +57,14 @@ export async function currentUser(): Promise<HqUser | null> {
   return loadUser();
 }
 
+/**
+ * The gate every page opens with. It is a database round trip of its own, and
+ * no page's reads depend on the identity, so pages start it *alongside* their
+ * queries — `Promise.all([requireUser(), ...])` — rather than in front of them.
+ * That keeps the check strictly before anything renders while taking its
+ * latency off every navigation. An unauthenticated request still returns
+ * nothing: the redirect rejects the group and the reads are discarded.
+ */
 export async function requireUser(opts?: { allowMustChange?: boolean }): Promise<HqUser> {
   const user = await loadUser();
   if (!user) redirect("/hq/login");

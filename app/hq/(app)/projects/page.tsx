@@ -17,10 +17,9 @@ export const metadata: Metadata = { title: "Projects" };
 export default async function ProjectsPage(props: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const user = await requireUser();
-  void user;
   const { expand } = await props.searchParams;
-  const [projects, partners, eventOptions, classifiers, settings] = await Promise.all([
+  const [, projects, partners, eventOptions, classifiers, settings] = await Promise.all([
+    requireUser(),
     getProjects(),
     getPartners(),
     getEventOptions(),
