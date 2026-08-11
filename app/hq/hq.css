@@ -124,6 +124,115 @@
   animation: hq-sync-spin 800ms linear infinite;
 }
 
+/* Prefetched loading shell for dynamic HQ routes. It deliberately stays
+ * still: the immediate route swap is the feedback, and a static skeleton
+ * avoids a repetitive pulse on every navbar transition. */
+.hq .hq-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.hq .hq-route-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.hq .hq-loading-heading {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.hq .hq-skeleton {
+  display: block;
+  min-width: 0;
+  height: 14px;
+  background: var(--fill-2);
+}
+.hq .hq-loading-title {
+  width: min(220px, 52vw);
+  height: 38px;
+  background: var(--fill-3);
+}
+.hq .hq-loading-action {
+  flex: none;
+  width: 96px;
+  height: 36px;
+}
+.hq .hq-loading-panel {
+  padding: 16px 18px;
+  background: var(--card);
+  box-shadow: var(--shadow-1);
+}
+.hq .hq-loading-tools {
+  display: flex;
+  gap: 8px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--sep);
+}
+.hq .hq-loading-filter {
+  width: 112px;
+  height: 30px;
+}
+.hq .hq-loading-filter-short {
+  width: 76px;
+}
+.hq .hq-loading-list {
+  display: flex;
+  flex-direction: column;
+}
+.hq .hq-loading-row {
+  min-height: 52px;
+  display: grid;
+  grid-template-columns: minmax(140px, 1.5fr) minmax(100px, 1fr) 88px;
+  align-items: center;
+  gap: 20px;
+  border-bottom: 1px solid var(--sep);
+}
+.hq .hq-loading-row:last-child {
+  border-bottom: 0;
+}
+.hq .hq-loading-secondary {
+  background: var(--fill-3);
+}
+.hq .hq-loading-meta {
+  width: 72px;
+  justify-self: end;
+  background: var(--fill-3);
+}
+
+@media (max-width: 640px) {
+  .hq .hq-route-loading {
+    gap: 16px;
+  }
+  .hq .hq-loading-heading {
+    align-items: flex-start;
+  }
+  .hq .hq-loading-title {
+    height: 34px;
+  }
+  .hq .hq-loading-panel {
+    padding: 16px;
+  }
+  .hq .hq-loading-row {
+    grid-template-columns: minmax(120px, 1fr) 72px;
+    gap: 16px;
+  }
+  .hq .hq-loading-secondary {
+    display: none;
+  }
+  .hq .hq-loading-meta {
+    width: 56px;
+  }
+}
+
 /* style-hover ports from the design */
 .hq .hq-hover-fill:hover {
   background: var(--fill-4);
