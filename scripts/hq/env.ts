@@ -2,8 +2,14 @@
 // Files are read in Next.js's own precedence order and the first value found
 // wins, so a local database configured for `next dev` is also what these
 // scripts target. Values already present in the environment beat both.
+import { setDefaultResultOrder } from "node:dns";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+
+// Node 18+ resolves AAAA first, and networks without working IPv6 egress fail
+// to reach Neon's endpoint with EHOSTUNREACH rather than falling back. These
+// scripts are short-lived CLI tools, so preferring IPv4 costs nothing.
+setDefaultResultOrder("ipv4first");
 
 const ENV_FILES = [".env.development.local", ".env.local"];
 

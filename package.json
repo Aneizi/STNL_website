@@ -10,6 +10,7 @@
     "test": "vitest run",
     "hq:migrate": "tsx scripts/hq/migrate.ts",
     "hq:seed": "tsx scripts/hq/seed.ts",
+    "hq:reset": "tsx scripts/hq/reset.ts",
     "hq:reconcile-luma": "tsx scripts/hq/reconcile-luma.ts"
   },
   "dependencies": {
