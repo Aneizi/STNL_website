@@ -19,7 +19,7 @@ import {
   unpinEventField,
   updateEvent,
 } from "@/lib/hq/actions/events";
-import { fmtDate, fmtMoney } from "@/lib/hq/format";
+import { fmtAgo, fmtDate, fmtMoney } from "@/lib/hq/format";
 import { PINNABLE, type PinnableField } from "@/lib/hq/luma-sync-sql";
 import type { Classifiers, HqEvent, Settings } from "@/lib/hq/types";
 
@@ -40,6 +40,12 @@ const COLUMN_GAP = 20;
 // the text columns get narrow enough that most event names wrap to three lines,
 // which costs more legibility than a horizontal scroll does.
 const TABLE_MIN_WIDTH = 1400;
+
+// The mirror refreshes hourly (.github/workflows/sync-luma.yml), and no page
+// view refreshes it any more. Three missed runs is past what a delayed GitHub
+// schedule explains, so it is worth saying out loud rather than quietly
+// serving stale events.
+const MIRROR_STALE_MS = 3 * 60 * 60 * 1000;
 
 const OUTPUT_TOOLTIP =
   "Qualified teams / active teams / verified submissions. Derived from tracked projects; each team counts once, at the first event it appeared at.";
@@ -119,9 +125,11 @@ export function Events(props: {
   settings: Settings;
   now: number;
   today: string;
+  /** Last successful Luma mirror refresh; null if it has never run. */
+  syncedAt: string | null;
   view?: string;
 }) {
-  const { events, classifiers, settings, today, view } = props;
+  const { events, classifiers, settings, now, today, syncedAt, view } = props;
   const router = useRouter();
   const [eventsView, setEventsView] = useState<"list" | "cal">("list");
   const [newEventOpen, setNewEventOpen] = useState(false);
@@ -194,6 +202,10 @@ export function Events(props: {
       setSyncing(false);
     }
   };
+
+  const syncedAgo = syncedAt ? fmtAgo(syncedAt, now) : "never synced";
+  const syncedLabel = syncedAt ? `last synced ${syncedAgo}` : "never synced";
+  const mirrorStale = !syncedAt || now - Date.parse(syncedAt) > MIRROR_STALE_MS;
 
   const addEvent = () => {
     const d = drafts.current;
@@ -322,12 +334,30 @@ export function Events(props: {
               Archived {archived.length}
             </button>
           ) : null}
+          {mirrorStale ? (
+            <span
+              style={{
+                alignSelf: "center",
+                padding: "6px 10px",
+                fontSize: 12,
+                fontWeight: 600,
+                whiteSpace: "nowrap",
+                background: "var(--accent-fill)",
+                color: "var(--accent-deep)",
+              }}
+              title={`The hourly Luma sync ${syncedLabel}. Check .github/workflows/sync-luma.yml, or sync now.`}
+            >
+              Mirror stale · {syncedAgo}
+            </span>
+          ) : null}
           <button
             onClick={() => void runSync()}
             disabled={syncing}
             aria-busy={syncing}
-            aria-label={syncing ? "Syncing Luma events" : "Sync Luma events now"}
-            title={syncing ? "Syncing Luma events…" : "Sync Luma events now"}
+            aria-label={
+              syncing ? "Syncing Luma events" : `Sync Luma events now — ${syncedLabel}`
+            }
+            title={syncing ? "Syncing Luma events…" : `Sync Luma events now — ${syncedLabel}`}
             style={{
               border: "none",
               cursor: syncing ? "progress" : "pointer",

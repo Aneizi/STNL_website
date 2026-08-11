@@ -228,6 +228,21 @@ export async function getPeople(): Promise<Person[]> {
 }
 
 /**
+ * When the Luma mirror last refreshed, or null if it never has. Nothing
+ * refreshes it during a page view any more — the hourly workflow is the only
+ * scheduled writer — so this timestamp is the Events page's only evidence that
+ * the schedule is still running.
+ */
+export async function getLumaSyncedAt(): Promise<string | null> {
+  const sql = getSql();
+  const [row] = await sql`SELECT last_success_at FROM hq_luma_sync WHERE id = true`;
+  const at = row ? Date.parse(String(row.last_success_at)) : NaN;
+  // The column defaults to the epoch, which means "never synced", not 1970.
+  if (!Number.isFinite(at) || at <= 0) return null;
+  return new Date(at).toISOString();
+}
+
+/**
  * Events with their derived outputs (qualified / active / verified-submission
  * counts). Mirrors the design: each project is attributed to the FIRST event
  * (by date) whose normalized name matches its event_src.

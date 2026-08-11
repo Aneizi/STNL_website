@@ -78,6 +78,20 @@ export function isStale(lastCheckIn: string, staleDays: number, nowMs: number): 
   return (nowMs - new Date(lastCheckIn).getTime()) / 86400000 > staleDays;
 }
 
+/**
+ * Coarse elapsed time for freshness labels: "4m ago", "3h ago", "2d ago".
+ * `now` is passed in rather than read, so a server-rendered label and its
+ * hydration agree.
+ */
+export function fmtAgo(iso: string, nowMs: number): string {
+  const minutes = Math.floor(Math.max(0, nowMs - Date.parse(iso)) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export function fmtMoney(amount: number): string {
   return `$${amount.toLocaleString("en")}`;
 }
