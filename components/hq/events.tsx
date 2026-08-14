@@ -234,11 +234,11 @@ export function Events(props: {
   // inconsistent comparator, whose result is implementation-defined — and the
   // server sorts under Node's V8 while the browser sorts under Chrome's, so
   // same-day events could land in different orders and break hydration.
-  // Returning 0 also keeps the query's own `ORDER BY date, created_at` for
-  // ties, since Array#sort is stable.
+  // Returning 0 also keeps the query's own `created_at` order for ties, since
+  // Array#sort is stable.
   const sorted = optimistic
     .filter((e) => !deletedIds.has(e.id))
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    .sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : 0));
   const active = sorted.filter((e) => !e.archived);
   const archived = sorted.filter((e) => e.archived);
   // Archived events are out of the picture entirely: hidden behind the toggle
