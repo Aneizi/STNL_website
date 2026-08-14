@@ -127,6 +127,10 @@ describe("schema migration", () => {
     await expect(migrate(db)).resolves.not.toThrow();
     const [{ idx }] = await db.query(`SELECT to_regclass('hq_finalists_position_key') AS idx`);
     expect(idx).toBeTruthy();
+    const [otherRole] = await db.query(
+      `SELECT filter_label, is_judge, sort FROM hq_people_roles WHERE label = 'Other'`,
+    );
+    expect(otherRole).toEqual({ filter_label: "Other", is_judge: false, sort: 4 });
   });
 });
 

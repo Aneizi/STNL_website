@@ -11,6 +11,20 @@ export type SqlRunner = {
 };
 
 export async function applyUpgrades(sql: SqlRunner) {
+  // "Other" lets operators capture roles outside the fixed taxonomy. The
+  // People form stores the clarification in the person's existing notes.
+  await sql.query(`
+    INSERT INTO hq_people_roles
+      (label, filter_label, color, bg, is_judge, sort)
+    VALUES ('Other', 'Other', 'label-2', 'fill-4', false, 4)
+    ON CONFLICT (label) DO UPDATE SET
+      filter_label = EXCLUDED.filter_label,
+      color = EXCLUDED.color,
+      bg = EXCLUDED.bg,
+      is_judge = EXCLUDED.is_judge,
+      sort = EXCLUDED.sort
+  `);
+
   // Finalist positions must be unique so concurrent max+1 inserts cannot
   // assign the same slot. Fresh databases already have this index under the
   // same name (schema.sql's inline UNIQUE), so the check skips them; on an

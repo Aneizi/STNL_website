@@ -123,7 +123,7 @@ export function PartnersBoard({
               ))}
             </select>
           </FormField>
-          <FormField label="Captain" flex={1} minWidth={140}>
+          <FormField label="Contact person" flex={1} minWidth={140}>
             <input
               onChange={(e) => {
                 drafts.current.captain = e.target.value;
@@ -131,7 +131,7 @@ export function PartnersBoard({
               style={input}
             />
           </FormField>
-          <FormField label="Captain contact" flex={1} minWidth={140}>
+          <FormField label="Contact details" flex={1} minWidth={140}>
             <input
               placeholder="tg or email"
               onChange={(e) => {

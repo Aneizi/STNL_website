@@ -84,6 +84,7 @@ const PEOPLE_ROLES: Array<
   ["Judge", "Judges", "indigo", "fill-3", true],
   ["Mentor", "Mentors", "green", "green-fill", false],
   ["Sponsor", "Sponsors", "orange", "orange-fill", false],
+  ["Other", "Other", "label-2", "fill-4", false],
 ];
 
 const PARTNER_STAGES: Array<[slug: string, label: string, dropColor: string]> = [

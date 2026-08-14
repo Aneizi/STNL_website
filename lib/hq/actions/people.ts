@@ -15,21 +15,22 @@ const createSchema = z.object({
   org: text(200),
   contact: text(200),
   partnerId: id.nullable(),
+  notes: text(1000),
 });
 
 export async function createPerson(input: z.infer<typeof createSchema>): Promise<ActionResult> {
   const user = await requireUser();
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Name is required." };
-  const { roleId, org, contact, partnerId } = parsed.data;
+  const { roleId, org, contact, partnerId, notes } = parsed.data;
   const name = parsed.data.name.trim();
   if (!name) return { ok: false, error: "Name is required." };
 
   const sql = getSql();
   await sql.transaction([
     sql`
-      INSERT INTO hq_people (name, role_id, org, contact, partner_id)
-      VALUES (${name}, ${roleId}, ${org}, ${contact}, ${partnerId})
+      INSERT INTO hq_people (name, role_id, org, contact, partner_id, notes)
+      VALUES (${name}, ${roleId}, ${org}, ${contact}, ${partnerId}, ${notes})
     `,
     activityStmt(user.id, `Added ${name} to people`),
   ]);

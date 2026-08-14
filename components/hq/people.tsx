@@ -51,9 +51,23 @@ type OptimisticAction =
   | { type: "add"; person: Person }
   | { type: "update"; id: string; edit: FieldEdit };
 
-type Drafts = { name: string; roleId: string; org: string; contact: string; partnerId: string };
+type Drafts = {
+  name: string;
+  roleId: string;
+  org: string;
+  contact: string;
+  partnerId: string;
+  notes: string;
+};
 
-const emptyDrafts: Drafts = { name: "", roleId: "", org: "", contact: "", partnerId: "" };
+const emptyDrafts: Drafts = {
+  name: "",
+  roleId: "",
+  org: "",
+  contact: "",
+  partnerId: "",
+  notes: "",
+};
 
 export function People({
   people: peopleProp,
@@ -128,7 +142,7 @@ export function People({
       contact: d.contact,
       partnerId,
       partnerName: partnerNameOf(partnerId),
-      notes: "",
+      notes: d.notes,
     };
     startTransition(async () => {
       applyOptimistic({ type: "add", person });
@@ -138,9 +152,10 @@ export function People({
         org: person.org,
         contact: person.contact,
         partnerId,
+        notes: person.notes,
       });
     });
-    drafts.current = { ...d, name: "", org: "", contact: "" };
+    drafts.current = { ...d, name: "", org: "", contact: "", notes: "" };
     setNewPersonOpen(false);
   };
 
@@ -208,7 +223,7 @@ export function People({
             >
               {roles.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.label}
+                  {r.label === "Other" ? "Other — specify in Notes" : r.label}
                 </option>
               ))}
             </select>
@@ -243,6 +258,23 @@ export function People({
                 </option>
               ))}
             </select>
+          </FormField>
+          <FormField label="Notes" flex={1} minWidth={180}>
+            <>
+              <input
+                id="new-person-notes"
+                maxLength={1000}
+                placeholder="e.g. Community organizer"
+                aria-describedby="new-person-notes-help"
+                onChange={(e) => {
+                  drafts.current.notes = e.target.value;
+                }}
+                style={input}
+              />
+              <span id="new-person-notes-help" style={{ color: "var(--label-3)", fontSize: 11 }}>
+                If you choose Other, specify the role here.
+              </span>
+            </>
           </FormField>
           <button
             onClick={create}
