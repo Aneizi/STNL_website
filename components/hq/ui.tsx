@@ -81,6 +81,8 @@ export const columnHeader: CSSProperties = {
 /* ── Form controls (the design's default input/select/button) ────── */
 
 export const input: CSSProperties = {
+  boxSizing: "border-box",
+  height: 36,
   padding: "8px 10px",
   border: "1px solid var(--sep)",
   borderRadius: 0,

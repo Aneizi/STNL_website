@@ -41,11 +41,9 @@ const COLUMN_GAP = 20;
 // which costs more legibility than a horizontal scroll does.
 const TABLE_MIN_WIDTH = 1400;
 
-// The mirror refreshes hourly (.github/workflows/sync-luma.yml), and no page
-// view refreshes it any more. Three missed runs is past what a delayed GitHub
-// schedule explains, so it is worth saying out loud rather than quietly
-// serving stale events.
-const MIRROR_STALE_MS = 3 * 60 * 60 * 1000;
+// Surface the last update time once it is old enough to be useful, while the
+// daily workflow continues refreshing the mirror in the background.
+const FRESHNESS_STATUS_AFTER_MS = 3 * 60 * 60 * 1000;
 
 const OUTPUT_TOOLTIP =
   "Qualified teams / active teams / verified submissions. Derived from tracked projects; each team counts once, at the first event it appeared at.";
@@ -205,7 +203,8 @@ export function Events(props: {
 
   const syncedAgo = syncedAt ? fmtAgo(syncedAt, now) : "never synced";
   const syncedLabel = syncedAt ? `last synced ${syncedAgo}` : "never synced";
-  const mirrorStale = !syncedAt || now - Date.parse(syncedAt) > MIRROR_STALE_MS;
+  const showFreshnessStatus =
+    !syncedAt || now - Date.parse(syncedAt) > FRESHNESS_STATUS_AFTER_MS;
 
   const addEvent = () => {
     const d = drafts.current;
@@ -334,7 +333,7 @@ export function Events(props: {
               Archived {archived.length}
             </button>
           ) : null}
-          {mirrorStale ? (
+          {showFreshnessStatus ? (
             <span
               style={{
                 alignSelf: "center",
@@ -345,9 +344,9 @@ export function Events(props: {
                 background: "var(--accent-fill)",
                 color: "var(--accent-deep)",
               }}
-              title={`The hourly Luma sync ${syncedLabel}. Check .github/workflows/sync-luma.yml, or sync now.`}
+              title={`Luma events ${syncedLabel}. Use the refresh button to sync now.`}
             >
-              Mirror stale · {syncedAgo}
+              {syncedAt ? `Updated ${syncedAgo}` : "Not updated yet"}
             </span>
           ) : null}
           <button

@@ -20,6 +20,7 @@ const editField: CSSProperties = {
   width: "100%",
   minWidth: 0,
   boxSizing: "border-box",
+  height: 32,
   padding: "6px 8px",
   border: "1px solid var(--sep)",
   borderRadius: 0,
@@ -29,14 +30,8 @@ const editField: CSSProperties = {
 };
 
 const editSelect: CSSProperties = {
-  width: "100%",
-  minWidth: 0,
+  ...editField,
   padding: "6px 4px",
-  border: "1px solid var(--sep)",
-  borderRadius: 0,
-  background: "var(--card)",
-  color: "var(--label-1)",
-  fontSize: 12,
 };
 
 type FieldEdit =
@@ -57,7 +52,6 @@ type Drafts = {
   org: string;
   contact: string;
   partnerId: string;
-  notes: string;
 };
 
 const emptyDrafts: Drafts = {
@@ -66,7 +60,6 @@ const emptyDrafts: Drafts = {
   org: "",
   contact: "",
   partnerId: "",
-  notes: "",
 };
 
 export function People({
@@ -142,7 +135,7 @@ export function People({
       contact: d.contact,
       partnerId,
       partnerName: partnerNameOf(partnerId),
-      notes: d.notes,
+      notes: "",
     };
     startTransition(async () => {
       applyOptimistic({ type: "add", person });
@@ -155,7 +148,7 @@ export function People({
         notes: person.notes,
       });
     });
-    drafts.current = { ...d, name: "", org: "", contact: "", notes: "" };
+    drafts.current = { ...d, name: "", org: "", contact: "" };
     setNewPersonOpen(false);
   };
 
@@ -223,7 +216,7 @@ export function People({
             >
               {roles.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.label === "Other" ? "Other — specify in Notes" : r.label}
+                  {r.label === "Other" ? "Other (specify in Notes)" : r.label}
                 </option>
               ))}
             </select>
@@ -259,29 +252,14 @@ export function People({
               ))}
             </select>
           </FormField>
-          <FormField label="Notes" flex={1} minWidth={180}>
-            <>
-              <input
-                id="new-person-notes"
-                maxLength={1000}
-                placeholder="e.g. Community organizer"
-                aria-describedby="new-person-notes-help"
-                onChange={(e) => {
-                  drafts.current.notes = e.target.value;
-                }}
-                style={input}
-              />
-              <span id="new-person-notes-help" style={{ color: "var(--label-3)", fontSize: 11 }}>
-                If you choose Other, specify the role here.
-              </span>
-            </>
-          </FormField>
           <button
             onClick={create}
             style={{
               border: "none",
               cursor: "pointer",
-              padding: "9px 16px",
+              boxSizing: "border-box",
+              height: 36,
+              padding: "0 16px",
               borderRadius: 0,
               fontSize: 14,
               fontWeight: 600,
