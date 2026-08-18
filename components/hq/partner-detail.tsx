@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useOptimistic, useState, useTransition } from "react";
 import {
   Badge,
@@ -13,6 +14,7 @@ import {
 } from "@/components/hq/ui";
 import {
   addPartnerContact,
+  deletePartner,
   setPartnerStage,
   togglePartnerExchange,
   updatePartnerDetail,
@@ -72,10 +74,27 @@ export function PartnerDetail({
   timezone: string;
   userName: string;
 }) {
+  const router = useRouter();
   const [, startTransition] = useTransition();
   const [view, patch] = useOptimistic(partner, applyPatch);
   const [editingName, setEditingName] = useState(false);
   const [contactDraft, setContactDraft] = useState("");
+  // Inline two-step delete; a window.confirm would block the whole tab.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  const onDelete = () => {
+    setDeleting(true);
+    startTransition(async () => {
+      const result = await deletePartner(partner.id);
+      if (result.ok) {
+        router.push("/hq/partners");
+      } else {
+        setDeleting(false);
+        setConfirmingDelete(false);
+      }
+    });
+  };
 
   const mutate = (p: Patch | null, act: () => Promise<unknown>) =>
     startTransition(async () => {
@@ -200,6 +219,40 @@ export function PartnerDetail({
             </option>
           ))}
         </select>
+        {confirmingDelete ? (
+          <button
+            onClick={onDelete}
+            disabled={deleting}
+            style={{
+              border: "none",
+              cursor: "pointer",
+              background: "none",
+              color: "var(--accent)",
+              fontSize: 12,
+              fontWeight: 600,
+              padding: 2,
+              marginLeft: "auto",
+            }}
+          >
+            {deleting ? "Deleting…" : "Sure?"}
+          </button>
+        ) : (
+          <button
+            className="hq-hover-accent"
+            onClick={() => setConfirmingDelete(true)}
+            style={{
+              border: "none",
+              cursor: "pointer",
+              background: "none",
+              color: "var(--label-3)",
+              fontSize: 12,
+              padding: 2,
+              marginLeft: "auto",
+            }}
+          >
+            Delete
+          </button>
+        )}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
         <label

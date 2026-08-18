@@ -191,6 +191,26 @@ export async function togglePartnerExchange(
   return { ok: true };
 }
 
+/**
+ * Cascades take the exchange checklist and contact log with the partner;
+ * attributed projects keep their rows with the attribution cleared
+ * (partner_id is ON DELETE SET NULL).
+ */
+export async function deletePartner(partnerId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(partnerId).success) return { ok: false };
+  const name = await getPartnerName(partnerId);
+  if (name === null) return { ok: false, error: "Partner not found." };
+
+  const sql = getSql();
+  await sql.transaction([
+    sql`DELETE FROM hq_partners WHERE id = ${partnerId}`,
+    activityStmt(user.id, `Deleted partner ${name}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
 export async function addPartnerContact(partnerId: string, body: string): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(partnerId).success) return { ok: false };
