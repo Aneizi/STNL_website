@@ -110,7 +110,7 @@ const PROJECT_FORECASTS: Array<[slug: string, label: string, color: string]> = [
 ];
 
 const EXCHANGE_ITEMS: Array<[slug: string, label: string]> = [
-  ["mailing", "Mailing sent to their list"],
+  ["mailing", "Communicated with community members"],
   ["event", "Event cohosted"],
   ["captain", "Captain named"],
   ["weekly", "Weekly follow-up active"],

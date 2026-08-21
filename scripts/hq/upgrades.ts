@@ -37,6 +37,13 @@ export async function applyUpgrades(sql: SqlRunner) {
       sort = EXCLUDED.sort
   `);
 
+  // The "mailing" exchange item outgrew mailing lists — the exchange it
+  // tracks is any communication with the partner's community.
+  await sql.query(`
+    UPDATE hq_exchange_items SET label = 'Communicated with community members'
+    WHERE slug = 'mailing'
+  `);
+
   // Finalist positions must be unique so concurrent max+1 inserts cannot
   // assign the same slot. Fresh databases already have this index under the
   // same name (schema.sql's inline UNIQUE), so the check skips them; on an
