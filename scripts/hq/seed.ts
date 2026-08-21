@@ -92,6 +92,7 @@ const PARTNER_STAGES: Array<[slug: string, label: string, dropColor: string]> = 
   ["sent", "Sent", "#a8760f"],
   ["call", "Called", "#ee5b23"],
   ["agreed", "Agreed", "#3e7c4f"],
+  ["rejected", "Rejected", "#c03b2d"],
 ];
 
 const PROJECT_STATUSES: Array<

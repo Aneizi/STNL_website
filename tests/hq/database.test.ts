@@ -131,6 +131,10 @@ describe("schema migration", () => {
       `SELECT filter_label, is_judge, sort FROM hq_people_roles WHERE label = 'Other'`,
     );
     expect(otherRole).toEqual({ filter_label: "Other", is_judge: false, sort: 4 });
+    const [rejectedStage] = await db.query(
+      `SELECT drop_color, sort FROM hq_partner_stages WHERE slug = 'rejected'`,
+    );
+    expect(rejectedStage).toEqual({ drop_color: "#c03b2d", sort: 4 });
   });
 });
 

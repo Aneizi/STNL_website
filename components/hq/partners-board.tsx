@@ -4,9 +4,19 @@ import { useRouter } from "next/navigation";
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { FormField, card, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { createPartner, setPartnerStage } from "@/lib/hq/actions/partners";
-import type { Classifiers, Partner } from "@/lib/hq/types";
+import type { Classifiers, Partner, Stage } from "@/lib/hq/types";
 
 type StageMove = { id: string; stageSlug: string };
+
+// Outcome stages get a tinted column so the board reads at a glance:
+// agreed is a win (green), rejected is a loss (red). The tints reuse the
+// theme fills so they track light/dark palettes.
+const STAGE_FILLS: Record<string, string> = {
+  agreed: "var(--green-fill)",
+  rejected: "var(--red-fill)",
+};
+
+const isOutcomeStage = (s: Stage) => s.slug === "agreed" || s.slug === "rejected";
 
 type Drafts = {
   name: string;
@@ -33,6 +43,8 @@ export function PartnersBoard({
   const [justDropped, setJustDropped] = useState<string | null>(null);
   const dropTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const drafts = useRef<Drafts>({ name: "", channelId: "", captain: "", contact: "", target: "" });
+  // Agreed and rejected share the board's last cell, stacked win-over-loss.
+  const outcomeStages = classifiers.stages.filter(isOutcomeStage);
 
   useEffect(
     () => () => {
@@ -164,125 +176,138 @@ export function PartnersBoard({
           alignItems: "stretch",
         }}
       >
-        {classifiers.stages.map((stage) => {
-          const cards = board.filter((p) => p.stageSlug === stage.slug);
-          return (
+        {classifiers.stages.filter((s) => !isOutcomeStage(s)).map((stage) => renderStage(stage))}
+        {outcomeStages.length > 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* flex-basis 0 splits the cell evenly, so an empty Rejected
+                mirrors Agreed instead of collapsing to its header. */}
+            {outcomeStages.map((stage) => renderStage(stage, { flex: "1 1 0" }))}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  function renderStage(stage: Stage, extraStyle?: React.CSSProperties) {
+    const cards = board.filter((p) => p.stageSlug === stage.slug);
+    return (
+      <div
+        key={stage.id}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (dragOverStage !== stage.slug) setDragOverStage(stage.slug);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          const pid = e.dataTransfer.getData("text/plain");
+          setDragOverStage(null);
+          const target = board.find((p) => p.id === pid);
+          if (!target || target.stageSlug === stage.slug) return;
+          startTransition(async () => {
+            moveCard({ id: pid, stageSlug: stage.slug });
+            await setPartnerStage(pid, stage.slug);
+          });
+          setJustDropped(pid);
+          if (dropTimer.current) clearTimeout(dropTimer.current);
+          dropTimer.current = setTimeout(() => setJustDropped(null), 3000);
+        }}
+        style={{
+          border: "1px solid var(--sep)",
+          padding: 10,
+          display: "flex",
+          flexDirection: "column",
+          background:
+            dragOverStage === stage.slug
+              ? "var(--accent-fill)"
+              : (STAGE_FILLS[stage.slug] ?? "transparent"),
+          transition: "background 120ms",
+          ...extraStyle,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            gap: 8,
+            padding: "2px 4px 10px",
+            borderBottom: "1px solid var(--sep)",
+            marginBottom: 10,
+          }}
+        >
+          <span
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+            }}
+          >
+            {stage.label}
+          </span>
+          <span
+            style={{
+              fontSize: 12,
+              color: "var(--label-3)",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {cards.length}
+          </span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
+          {cards.map((p) => (
             <div
-              key={stage.id}
-              onDragOver={(e) => {
-                e.preventDefault();
-                if (dragOverStage !== stage.slug) setDragOverStage(stage.slug);
+              key={p.id}
+              draggable
+              onClick={() => router.push(`/hq/partners/${p.id}`)}
+              onDragStart={(e) => {
+                e.dataTransfer.setData("text/plain", p.id);
+                e.dataTransfer.effectAllowed = "move";
               }}
-              onDrop={(e) => {
-                e.preventDefault();
-                const pid = e.dataTransfer.getData("text/plain");
-                setDragOverStage(null);
-                const target = board.find((p) => p.id === pid);
-                if (!target || target.stageSlug === stage.slug) return;
-                startTransition(async () => {
-                  moveCard({ id: pid, stageSlug: stage.slug });
-                  await setPartnerStage(pid, stage.slug);
-                });
-                setJustDropped(pid);
-                if (dropTimer.current) clearTimeout(dropTimer.current);
-                dropTimer.current = setTimeout(() => setJustDropped(null), 3000);
-              }}
-              style={{
-                border: "1px solid var(--sep)",
-                padding: 10,
-                display: "flex",
-                flexDirection: "column",
-                background: dragOverStage === stage.slug ? "var(--accent-fill)" : "transparent",
-                transition: "background 120ms",
-              }}
+              className={`hq-card-hover hq-drop-flash${
+                justDropped === p.id ? " hq-just-dropped" : ""
+              }`}
+              style={
+                {
+                  background: "var(--card)",
+                  borderRadius: 0,
+                  boxShadow: "var(--shadow-1)",
+                  padding: "12px 14px",
+                  cursor: "grab",
+                  "--hq-drop-color": stage.dropColor,
+                } as React.CSSProperties
+              }
             >
               <div
                 style={{
                   display: "flex",
+                  justifyContent: "space-between",
                   alignItems: "baseline",
                   gap: 8,
-                  padding: "2px 4px 10px",
-                  borderBottom: "1px solid var(--sep)",
-                  marginBottom: 10,
                 }}
               >
+                <span style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</span>
                 <span
                   style={{
                     fontSize: 12,
-                    fontWeight: 600,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.08em",
-                  }}
-                >
-                  {stage.label}
-                </span>
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "var(--label-3)",
+                    color: "var(--label-2)",
                     fontVariantNumeric: "tabular-nums",
+                    whiteSpace: "nowrap",
                   }}
                 >
-                  {cards.length}
+                  {p.attributed}/{p.target}
                 </span>
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
-                {cards.map((p) => (
-                  <div
-                    key={p.id}
-                    draggable
-                    onClick={() => router.push(`/hq/partners/${p.id}`)}
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData("text/plain", p.id);
-                      e.dataTransfer.effectAllowed = "move";
-                    }}
-                    className={`hq-card-hover hq-drop-flash${
-                      justDropped === p.id ? " hq-just-dropped" : ""
-                    }`}
-                    style={
-                      {
-                        background: "var(--card)",
-                        borderRadius: 0,
-                        boxShadow: "var(--shadow-1)",
-                        padding: "12px 14px",
-                        cursor: "grab",
-                        "--hq-drop-color": stage.dropColor,
-                      } as React.CSSProperties
-                    }
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "baseline",
-                        gap: 8,
-                      }}
-                    >
-                      <span style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</span>
-                      <span
-                        style={{
-                          fontSize: 12,
-                          color: "var(--label-2)",
-                          fontVariantNumeric: "tabular-nums",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {p.attributed}/{p.target}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 2 }}>
-                      {p.channelLabel}
-                    </div>
-                    <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 6 }}>
-                      {p.captainName}
-                    </div>
-                  </div>
-                ))}
+              <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 2 }}>
+                {p.channelLabel}
+              </div>
+              <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 6 }}>
+                {p.captainName}
               </div>
             </div>
-          );
-        })}
+          ))}
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 }

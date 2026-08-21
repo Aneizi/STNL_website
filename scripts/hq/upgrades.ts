@@ -25,6 +25,18 @@ export async function applyUpgrades(sql: SqlRunner) {
       sort = EXCLUDED.sort
   `);
 
+  // "Rejected" closes out partner conversations that fell through, so they
+  // stop lingering in the pipeline columns. Databases seeded before it
+  // existed get the stage here; the board tints it red next to Agreed.
+  await sql.query(`
+    INSERT INTO hq_partner_stages (slug, label, drop_color, sort)
+    VALUES ('rejected', 'Rejected', '#c03b2d', 4)
+    ON CONFLICT (slug) DO UPDATE SET
+      label = EXCLUDED.label,
+      drop_color = EXCLUDED.drop_color,
+      sort = EXCLUDED.sort
+  `);
+
   // Finalist positions must be unique so concurrent max+1 inserts cannot
   // assign the same slot. Fresh databases already have this index under the
   // same name (schema.sql's inline UNIQUE), so the check skips them; on an
