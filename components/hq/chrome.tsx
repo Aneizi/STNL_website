@@ -74,18 +74,7 @@ export function HqChrome({ displayName }: { displayName: string }) {
           borderBottom: "1px solid var(--sep)",
         }}
       >
-        <div
-          style={{
-            maxWidth: 1280,
-            margin: "0 auto",
-            padding: "0 20px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 14,
-            height: 52,
-          }}
-        >
+        <div className="hq-chrome-inner">
           <div
             style={{
               display: "flex",
@@ -116,11 +105,13 @@ export function HqChrome({ displayName }: { displayName: string }) {
               Campaign HQ
             </span>
           </div>
-          <nav style={{ display: "flex", gap: 8, alignItems: "center", overflowX: "auto" }}>
+          <nav className="hq-chrome-nav">
+            {/* Separator and link render as one flex item so a wrapped nav
+                line never starts with a dangling slash. */}
             {TABS.map((tab, i) => (
               <span
                 key={tab.href}
-                style={{ display: "contents" }}
+                style={{ display: "flex", alignItems: "center", gap: 8 }}
               >
                 {i > 0 ? (
                   <span style={{ color: "var(--faded)", fontSize: 12, flex: "none" }}>/</span>

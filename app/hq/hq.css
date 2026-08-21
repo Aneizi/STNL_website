@@ -233,6 +233,39 @@
   }
 }
 
+/* Chrome header: one 52px row on wide screens. Below the width where the
+ * six tabs stop fitting, the nav drops onto its own wrapping row instead
+ * of scrolling horizontally. */
+.hq .hq-chrome-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  height: 52px;
+}
+.hq .hq-chrome-nav {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+@media (max-width: 960px) {
+  .hq .hq-chrome-inner {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 10px 20px 4px;
+    row-gap: 2px;
+  }
+  .hq .hq-chrome-nav {
+    order: 1;
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+}
+
 /* style-hover ports from the design */
 .hq .hq-hover-fill:hover {
   background: var(--fill-4);
