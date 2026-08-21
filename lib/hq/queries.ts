@@ -11,6 +11,7 @@ import type {
   EventOption,
   FinalistProject,
   HqEvent,
+  HqLink,
   Judge,
   Milestone,
   Partner,
@@ -85,11 +86,17 @@ export async function getProjects(): Promise<Project[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT
-      p.id, p.name, p.lead_name, p.lead_contact, p.members,
+      p.id, p.name, p.lead_name, p.lead_contact,
       p.partner_id, COALESCE(pa.name, '') AS partner_name,
       p.event_src, s.slug AS status_slug, f.slug AS forecast_slug,
       p.last_check_in::text AS last_check_in, p.blocker,
       COALESCE(u.display_name, '') AS touched_by, p.touched_at::text AS touched_at,
+      COALESCE(
+        (SELECT json_agg(json_build_object('id', m.id, 'name', m.name, 'contact', m.contact)
+           ORDER BY m.sort, m.id)
+         FROM hq_project_members m WHERE m.project_id = p.id),
+        '[]'
+      ) AS members,
       COALESCE(
         (SELECT array_agg(g.gate_id::text) FROM hq_project_gates g WHERE g.project_id = p.id),
         '{}'
@@ -422,6 +429,35 @@ export async function getEventOptions(): Promise<EventOption[]> {
     options.push({ id: r.id, name: r.name });
   }
   return options;
+}
+
+/** Shared links with their note logs, newest link first. */
+export async function getLinks(): Promise<HqLink[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT l.id, l.title, l.url, l.highlighted,
+      COALESCE(
+        (SELECT json_agg(json_build_object(
+            'id', n.id,
+            'author', COALESCE(au.display_name, ''),
+            'body', n.body,
+            'createdAt', to_char(n.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+          ) ORDER BY n.created_at DESC)
+          FROM hq_link_notes n
+          LEFT JOIN hq_users au ON au.id = n.author_user_id
+          WHERE n.link_id = l.id),
+        '[]'
+      ) AS notes
+    FROM hq_links l
+    ORDER BY l.created_at DESC
+  `;
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    url: r.url,
+    highlighted: r.highlighted,
+    notes: r.notes ?? [],
+  }));
 }
 
 /** Id/name pairs for partner dropdowns — no captain contact or metadata. */

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   Fragment,
@@ -9,19 +10,24 @@ import {
   useState,
   useTransition,
 } from "react";
+import { showToast } from "@/components/hq/toast";
 import { Badge, FormField, accentBtn, input, pageTitle, primaryBtn } from "@/components/hq/ui";
+import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
 import {
+  addProjectMember,
   addProjectNote,
   createProject,
   logMondayReview,
+  removeProjectMember,
   saveProjectBlocker,
   setProjectForecast,
   setProjectStatus,
   toggleProjectGate,
   updateProjectDetail,
+  updateProjectMember,
 } from "@/lib/hq/actions/projects";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
-import type { Classifiers, Project, Settings } from "@/lib/hq/types";
+import type { Classifiers, Project, ProjectMember, Settings } from "@/lib/hq/types";
 
 type PartnerOption = { id: string; name: string };
 type EventOption = { id: string; name: string };
@@ -30,7 +36,9 @@ type ProjectPatch =
   | { kind: "status"; id: string; slug: string }
   | { kind: "forecast"; id: string; slug: string }
   | { kind: "gate"; id: string; gateId: string; done: boolean }
-  | { kind: "partner"; id: string; partnerId: string | null; partnerName: string };
+  | { kind: "partner"; id: string; partnerId: string | null; partnerName: string }
+  | { kind: "memberAdd"; id: string; member: ProjectMember }
+  | { kind: "memberRemove"; id: string; memberId: string };
 
 function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
   return list.map((p) => {
@@ -49,6 +57,10 @@ function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
         };
       case "partner":
         return { ...p, partnerId: patch.partnerId, partnerName: patch.partnerName };
+      case "memberAdd":
+        return { ...p, members: [...p.members, patch.member] };
+      case "memberRemove":
+        return { ...p, members: p.members.filter((m) => m.id !== patch.memberId) };
     }
   });
 }
@@ -62,6 +74,27 @@ const filterSelect: React.CSSProperties = {
   border: "1px solid var(--sep)",
   borderRadius: 0,
   background: "transparent",
+  color: "var(--label-1)",
+  fontSize: 13,
+};
+
+/** Micro-label in the details panel's left column (and the team modal). */
+const microLabel: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  color: "var(--label-3)",
+};
+
+/** Shared field style for the details panel and team modal inputs. */
+const panelField: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "6px 8px",
+  border: "1px solid var(--sep)",
+  borderRadius: 0,
+  background: "var(--card)",
   color: "var(--label-1)",
   fontSize: 13,
 };
@@ -99,7 +132,10 @@ export function Projects({
   const [forecastFilter, setForecastFilter] = useState("");
   const [partnerFilter, setPartnerFilter] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [teamModalFor, setTeamModalFor] = useState<string | null>(null);
+  // One commit path: every panel control saves on change or blur, and this
+  // flash beside the "Details" heading is the only confirmation.
+  const { phase: savedPhase, flash } = useSavedFlash();
   // Mirrors the design's instance-level draft map: drafts survive re-renders
   // and expand/collapse, and are only cleared where the design clears them.
   const drafts = useRef<Record<string, string | undefined>>({});
@@ -163,12 +199,56 @@ export function Projects({
 
   const saveDetail = (
     projectId: string,
-    field: "name" | "leadName" | "leadContact" | "members" | "eventSrc",
+    field: "leadName" | "leadContact" | "eventSrc",
     value: string,
   ) => {
     startTransition(async () => {
       await updateProjectDetail(projectId, { field, value });
     });
+  };
+
+  const saveBlocker = (projectId: string, value: string) => {
+    startTransition(async () => {
+      await saveProjectBlocker(projectId, value);
+    });
+  };
+
+  const onAddMember = (projectId: string, name: string, contact: string) => {
+    startTransition(async () => {
+      patch({
+        kind: "memberAdd",
+        id: projectId,
+        member: { id: `new-${Date.now()}`, name, contact },
+      });
+      await addProjectMember(projectId, name, contact);
+    });
+  };
+
+  const onUpdateMember = (memberId: string, field: "name" | "contact", value: string) => {
+    startTransition(async () => {
+      await updateProjectMember(
+        memberId,
+        field === "name" ? { field: "name", value } : { field: "contact", value },
+      );
+    });
+  };
+
+  const onRemoveMember = (projectId: string, memberId: string) => {
+    startTransition(async () => {
+      patch({ kind: "memberRemove", id: projectId, memberId });
+      await removeProjectMember(memberId);
+    });
+  };
+
+  // Every chip in the Team row copies that person's contact; chips with no
+  // contact recorded raise the toast without writing to the clipboard.
+  const copyChip = (name: string, contact: string) => {
+    if (contact) {
+      if (navigator.clipboard) navigator.clipboard.writeText(contact).catch(() => {});
+      showToast(`Copied ${name}'s contact`);
+    } else {
+      showToast(`No contact on file for ${name}`);
+    }
   };
 
   const onCreateProject = () => {
@@ -205,6 +285,10 @@ export function Projects({
     drafts.current["note" + p.id] = "";
     if (noteInputRef.current) noteInputRef.current.value = "";
   };
+
+  const teamProject = teamModalFor
+    ? (optimistic.find((x) => x.id === teamModalFor) ?? null)
+    : null;
 
   const q = projSearch.toLowerCase();
   const filtered = optimistic.filter(
@@ -590,7 +674,6 @@ export function Projects({
                 const done = p.gates.length;
                 const stale = isStale(p.lastCheckIn, settings.staleDays, now);
                 const expanded = expandedId === p.id;
-                const editing = editingId === p.id;
                 const status = statusBySlug.get(p.statusSlug);
                 const source = srcOf(p) || "Direct";
                 return (
@@ -746,12 +829,15 @@ export function Projects({
                             })}
                           </div>
                           <div>
+                            {/* minHeight reserves the flash's line so it can't
+                                shift the panel when it appears. */}
                             <div
                               style={{
                                 display: "flex",
                                 justifyContent: "space-between",
                                 alignItems: "baseline",
-                                marginBottom: 8,
+                                marginBottom: 4,
+                                minHeight: 18,
                               }}
                             >
                               <span
@@ -765,195 +851,190 @@ export function Projects({
                               >
                                 Details
                               </span>
-                              <button
-                                onClick={() => setEditingId(editing ? null : p.id)}
+                              {savedPhase !== "hidden" && (
+                                <span
+                                  style={{
+                                    fontSize: 12,
+                                    fontWeight: 600,
+                                    color: "var(--green)",
+                                    opacity: savedPhase === "fading" ? 0 : 1,
+                                    transition: "opacity 600ms ease",
+                                  }}
+                                >
+                                  Saved
+                                </span>
+                              )}
+                            </div>
+                            <div
+                              style={{
+                                display: "grid",
+                                gridTemplateColumns: "62px minmax(0,1fr)",
+                                columnGap: 10,
+                                rowGap: 7,
+                                alignItems: "center",
+                              }}
+                            >
+                              <span style={microLabel}>Lead</span>
+                              <input
+                                defaultValue={p.leadName}
+                                onBlur={(e) => {
+                                  if (e.target.value !== p.leadName) {
+                                    saveDetail(p.id, "leadName", e.target.value);
+                                    flash();
+                                  }
+                                }}
+                                style={panelField}
+                              />
+                              <span style={microLabel}>Contact</span>
+                              <div style={{ display: "flex", gap: 6, minWidth: 0 }}>
+                                <input
+                                  defaultValue={p.leadContact}
+                                  onBlur={(e) => {
+                                    if (e.target.value !== p.leadContact) {
+                                      saveDetail(p.id, "leadContact", e.target.value);
+                                      flash();
+                                    }
+                                  }}
+                                  aria-label="Lead contact"
+                                  style={{
+                                    ...panelField,
+                                    flex: 1,
+                                    minWidth: 0,
+                                    fontFamily: "var(--mono)",
+                                    fontSize: 12,
+                                  }}
+                                />
+                                <CopyButton value={p.leadContact} />
+                              </div>
+                              <span style={microLabel}>Team</span>
+                              <div
                                 style={{
-                                  border: "none",
-                                  cursor: "pointer",
-                                  background: "none",
-                                  color: editing ? "var(--accent)" : "var(--label-3)",
-                                  fontSize: 12,
-                                  fontWeight: 600,
-                                  padding: 0,
+                                  display: "flex",
+                                  flexWrap: "wrap",
+                                  gap: 5,
+                                  alignItems: "center",
                                 }}
                               >
-                                {editing ? "Done" : "Edit"}
-                              </button>
-                            </div>
-                            {editing ? (
-                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                <input
-                                  defaultValue={p.name}
-                                  onBlur={(e) => {
-                                    if (e.target.value.trim())
-                                      saveDetail(p.id, "name", e.target.value.trim());
-                                  }}
-                                  placeholder="Project name"
+                                {/* The lead is always on the team: first, always
+                                    present, not removable. */}
+                                <button
+                                  className="hq-chip-lead"
+                                  onClick={() => copyChip(p.leadName, p.leadContact)}
+                                  title={
+                                    p.leadContact
+                                      ? `Copy ${p.leadContact}`
+                                      : "No contact on file"
+                                  }
                                   style={{
-                                    boxSizing: "border-box",
-                                    padding: "7px 9px",
-                                    border: "1px solid var(--sep)",
-                                    borderRadius: 0,
-                                    background: "var(--card)",
-                                    color: "var(--label-1)",
-                                    fontSize: 13,
-                                    minWidth: 0,
+                                    border: "none",
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                    padding: "4px 8px",
+                                    fontWeight: 600,
                                   }}
-                                />
-                                <div style={{ display: "flex", gap: 6 }}>
-                                  <input
-                                    defaultValue={p.leadName}
-                                    onBlur={(e) => saveDetail(p.id, "leadName", e.target.value)}
-                                    placeholder="Lead"
-                                    style={{
-                                      flex: 1,
-                                      boxSizing: "border-box",
-                                      padding: "7px 9px",
-                                      border: "1px solid var(--sep)",
-                                      borderRadius: 0,
-                                      background: "var(--card)",
-                                      color: "var(--label-1)",
-                                      fontSize: 13,
-                                      minWidth: 0,
-                                    }}
-                                  />
-                                  <input
-                                    defaultValue={p.leadContact}
-                                    onBlur={(e) => saveDetail(p.id, "leadContact", e.target.value)}
-                                    placeholder="Contact"
-                                    style={{
-                                      flex: 1,
-                                      boxSizing: "border-box",
-                                      padding: "7px 9px",
-                                      border: "1px solid var(--sep)",
-                                      borderRadius: 0,
-                                      background: "var(--card)",
-                                      color: "var(--label-1)",
-                                      fontSize: 13,
-                                      minWidth: 0,
-                                    }}
-                                  />
-                                </div>
-                                <input
-                                  defaultValue={p.members.join(", ")}
-                                  onBlur={(e) => saveDetail(p.id, "members", e.target.value)}
-                                  placeholder="Team, comma separated"
-                                  style={{
-                                    boxSizing: "border-box",
-                                    padding: "7px 9px",
-                                    border: "1px solid var(--sep)",
-                                    borderRadius: 0,
-                                    background: "var(--card)",
-                                    color: "var(--label-1)",
-                                    fontSize: 13,
-                                    minWidth: 0,
-                                  }}
-                                />
-                                <div style={{ display: "flex", gap: 6 }}>
-                                  <select
-                                    value={p.partnerId ?? ""}
-                                    onChange={(e) => pickPartner(p.id, e.target.value)}
-                                    style={{
-                                      flex: 1,
-                                      minWidth: 0,
-                                      padding: "7px 9px",
-                                      border: "1px solid var(--sep)",
-                                      borderRadius: 0,
-                                      background: "var(--card)",
-                                      color: "var(--label-1)",
-                                      fontSize: 13,
-                                    }}
-                                  >
-                                    <option value="">No partner</option>
-                                    {partnerOptions.map((o) => (
-                                      <option key={o.id} value={o.id}>
-                                        {o.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                  <select
-                                    defaultValue={p.eventSrc}
-                                    onChange={(e) =>
-                                      saveDetail(p.id, "eventSrc", e.target.value)
+                                >
+                                  {p.leadName}
+                                </button>
+                                {p.members.map((m) => (
+                                  <button
+                                    key={m.id}
+                                    className="hq-chip-member"
+                                    onClick={() => copyChip(m.name, m.contact)}
+                                    title={
+                                      m.contact ? `Copy ${m.contact}` : "No contact on file"
                                     }
                                     style={{
-                                      flex: 1,
-                                      boxSizing: "border-box",
-                                      padding: "7px 9px",
-                                      border: "1px solid var(--sep)",
-                                      borderRadius: 0,
-                                      background: "var(--card)",
-                                      color: "var(--label-1)",
-                                      fontSize: 13,
-                                      minWidth: 0,
-                                    }}
-                                  >
-                                    <option value="">No source event</option>
-                                    {eventOptionsFor(p.eventSrc).map((o) => (
-                                      <option key={o.id} value={o.name}>
-                                        {o.name}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </div>
-                              </div>
-                            ) : (
-                              <div style={{ fontSize: 14, lineHeight: "22px" }}>
-                                <div>
-                                  <span style={{ color: "var(--label-3)" }}>Lead:</span>{" "}
-                                  {p.leadName}{" "}
-                                  <span
-                                    style={{
-                                      color: "var(--label-2)",
-                                      fontFamily: "var(--mono)",
+                                      border: "none",
+                                      cursor: "pointer",
                                       fontSize: 12,
+                                      padding: "4px 8px",
                                     }}
                                   >
-                                    {p.leadContact}
-                                  </span>
-                                </div>
-                                <div>
-                                  <span style={{ color: "var(--label-3)" }}>Team:</span>{" "}
-                                  <span style={{ color: "var(--label-2)" }}>
-                                    {p.members.join(", ")}
-                                  </span>
-                                </div>
-                                <div>
-                                  <span style={{ color: "var(--label-3)" }}>Source:</span>{" "}
-                                  <span style={{ color: "var(--label-2)" }}>{source}</span>
-                                </div>
+                                    {m.name}
+                                  </button>
+                                ))}
+                                <button
+                                  onClick={() => setTeamModalFor(p.id)}
+                                  style={{ ...accentBtn, padding: "4px 9px", fontSize: 12 }}
+                                >
+                                  {p.members.length ? "Edit" : "Add"}
+                                </button>
                               </div>
-                            )}
-                            <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                              <span style={microLabel}>Partner</span>
                               <select
-                                value={p.statusSlug}
-                                onChange={(e) => pickStatus(p.id, e.target.value, false)}
-                                style={{
-                                  padding: "6px 10px",
-                                  border: "1px solid var(--sep)",
-                                  borderRadius: 0,
-                                  background: "var(--card)",
-                                  color: "var(--label-1)",
-                                  fontSize: 13,
+                                value={p.partnerId ?? ""}
+                                onChange={(e) => {
+                                  pickPartner(p.id, e.target.value);
+                                  flash();
                                 }}
+                                style={panelField}
                               >
-                                {classifiers.statuses.map((s) => (
-                                  <option key={s.id} value={s.slug}>
-                                    {s.label}
+                                <option value="">No partner</option>
+                                {partnerOptions.map((o) => (
+                                  <option key={o.id} value={o.id}>
+                                    {o.name}
                                   </option>
                                 ))}
                               </select>
+                              <span style={microLabel}>Event</span>
+                              <select
+                                defaultValue={p.eventSrc}
+                                onChange={(e) => {
+                                  saveDetail(p.id, "eventSrc", e.target.value);
+                                  flash();
+                                }}
+                                style={panelField}
+                              >
+                                <option value="">No source event</option>
+                                {eventOptionsFor(p.eventSrc).map((o) => (
+                                  <option key={o.id} value={o.name}>
+                                    {o.name}
+                                  </option>
+                                ))}
+                              </select>
+                              <span style={microLabel}>Status</span>
+                              {/* Status is the panel's most-changed field; one
+                                  click beats opening a select. No review flag —
+                                  only Monday review stamps the check-in date. */}
+                              <div style={{ display: "flex", gap: 4 }}>
+                                {classifiers.statuses.map((s) => {
+                                  const selected = p.statusSlug === s.slug;
+                                  return (
+                                    <button
+                                      key={s.id}
+                                      aria-pressed={selected}
+                                      onClick={() => {
+                                        pickStatus(p.id, s.slug, false);
+                                        flash();
+                                      }}
+                                      style={{
+                                        border: "none",
+                                        cursor: "pointer",
+                                        padding: "5px 11px",
+                                        borderRadius: 2,
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        textTransform: "uppercase",
+                                        letterSpacing: "0.08em",
+                                        background: selected
+                                          ? `var(--${s.color})`
+                                          : "var(--fill-3)",
+                                        color: selected ? "#fff" : "var(--label-2)",
+                                      }}
+                                    >
+                                      {s.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              <span style={microLabel}>Forecast</span>
                               <select
                                 value={uiForecast(p.forecastSlug)}
-                                onChange={(e) => pickForecast(p.id, slugForecast(e.target.value))}
-                                style={{
-                                  padding: "6px 10px",
-                                  border: "1px solid var(--sep)",
-                                  borderRadius: 0,
-                                  background: "var(--card)",
-                                  color: "var(--label-1)",
-                                  fontSize: 13,
+                                onChange={(e) => {
+                                  pickForecast(p.id, slugForecast(e.target.value));
+                                  flash();
                                 }}
+                                style={panelField}
                               >
                                 {classifiers.forecasts.map((f) => (
                                   <option key={f.id} value={uiForecast(f.slug)}>
@@ -961,41 +1042,23 @@ export function Projects({
                                   </option>
                                 ))}
                               </select>
-                            </div>
-                            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                              <span style={microLabel}>Blocker</span>
                               <input
-                                onChange={(e) => {
-                                  drafts.current["blk" + p.id] = e.target.value;
-                                }}
                                 defaultValue={p.blocker}
-                                placeholder="Current blocker"
-                                style={{
-                                  flex: 1,
-                                  minWidth: 0,
-                                  padding: "7px 10px",
-                                  border: "1px solid var(--sep)",
-                                  borderRadius: 0,
-                                  background: "var(--card)",
-                                  color: "var(--label-1)",
-                                  fontSize: 13,
+                                placeholder="None"
+                                onBlur={(e) => {
+                                  if (e.target.value !== p.blocker) {
+                                    saveBlocker(p.id, e.target.value);
+                                    flash();
+                                  }
                                 }}
+                                style={panelField}
                               />
-                              <button
-                                onClick={() => {
-                                  const draft = drafts.current["blk" + p.id];
-                                  const value = draft !== undefined ? draft : p.blocker;
-                                  startTransition(async () => {
-                                    await saveProjectBlocker(p.id, value);
-                                  });
-                                }}
-                                style={accentBtn}
-                              >
-                                Save
-                              </button>
                             </div>
                             <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 12 }}>
                               Last touched by {p.touchedBy}
-                              {p.touchedAt ? `, ${fmtDate(p.touchedAt)}` : ""}
+                              {p.touchedAt ? `, ${fmtDate(p.touchedAt)}` : ""}. Changes save as
+                              you make them.
                             </div>
                           </div>
                           <div>
@@ -1053,8 +1116,253 @@ export function Projects({
               })}
             </div>
           </div>
+          {/* Demo day is used on one day of the campaign, so it is entered
+              from here rather than holding a permanent navbar tab. Same
+              ghost treatment as the "Archived {n}" button on Events. */}
+          <div style={{ display: "flex", justifyContent: "flex-start", marginTop: 14 }}>
+            <Link
+              href="/hq/demo"
+              className="hq-ghost-btn"
+              style={{
+                border: "none",
+                cursor: "pointer",
+                padding: "8px 14px",
+                fontSize: 13,
+                fontWeight: 600,
+                boxShadow: "0 0 0 1px var(--sep)",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                textDecoration: "none",
+              }}
+            >
+              Demo day
+              <span style={{ color: "var(--faded)" }}>&#8250;</span>
+            </Link>
+          </div>
         </>
       )}
+      {teamProject ? (
+        <TeamModal
+          project={teamProject}
+          onClose={() => setTeamModalFor(null)}
+          onAdd={(name, contact) => onAddMember(teamProject.id, name, contact)}
+          onUpdate={onUpdateMember}
+          onRemove={(memberId) => onRemoveMember(teamProject.id, memberId)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// Name · contact · action, shared by the lead row, member rows, and add row.
+const teamModalGrid: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "minmax(0,1fr) minmax(0,1.1fr) 58px",
+  columnGap: 10,
+  alignItems: "center",
+};
+
+/**
+ * Same shell as ScoreModal in demo-day.tsx, at 380 wide — it holds three
+ * columns, not a form. The lead row is read-only: the lead is edited in
+ * the details panel.
+ */
+function TeamModal({
+  project,
+  onClose,
+  onAdd,
+  onUpdate,
+  onRemove,
+}: {
+  project: Project;
+  onClose: () => void;
+  onAdd: (name: string, contact: string) => void;
+  onUpdate: (memberId: string, field: "name" | "contact", value: string) => void;
+  onRemove: (memberId: string) => void;
+}) {
+  const armed = useConfirmDelete();
+  const [nameDraft, setNameDraft] = useState("");
+  const [contactDraft, setContactDraft] = useState("");
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const add = () => {
+    const name = nameDraft.trim();
+    if (!name) return;
+    onAdd(name, contactDraft.trim());
+    setNameDraft("");
+    setContactDraft("");
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        background: "rgba(22,19,15,0.35)",
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: "12vh 16px 16px",
+      }}
+    >
+      <div
+        className="hq-pop-in-modal"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          width: 380,
+          maxWidth: "100%",
+          boxSizing: "border-box",
+          background: "var(--card)",
+          boxShadow: "var(--shadow-pop)",
+          padding: "20px 22px",
+          transformOrigin: "top center",
+        }}
+      >
+        <div style={{ fontFamily: "var(--serif)", fontSize: 24, fontWeight: 400 }}>
+          {project.name} team
+        </div>
+        <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 2 }}>
+          The lead is always on the team.
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", marginTop: 14 }}>
+          <div
+            style={{
+              ...teamModalGrid,
+              padding: "9px 0",
+              borderBottom: "1px solid var(--sep)",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 14,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {project.leadName}
+            </span>
+            <span
+              style={{
+                fontSize: 12,
+                color: "var(--label-2)",
+                fontFamily: "var(--mono)",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {project.leadContact}
+            </span>
+            <span style={{ justifySelf: "end" }}>
+              <Badge label="Lead" color="accent" bg="accent-fill" />
+            </span>
+          </div>
+          {project.members.map((m) => {
+            const del = armed(`mem-${m.id}`, "Remove", () => onRemove(m.id));
+            return (
+              <div
+                key={m.id}
+                style={{
+                  ...teamModalGrid,
+                  padding: "7px 0",
+                  borderBottom: "1px solid var(--sep)",
+                }}
+              >
+                <input
+                  defaultValue={m.name}
+                  aria-label="Teammate name"
+                  onBlur={(e) => {
+                    const value = e.target.value.trim();
+                    if (value && value !== m.name) onUpdate(m.id, "name", value);
+                  }}
+                  style={panelField}
+                />
+                <input
+                  defaultValue={m.contact}
+                  aria-label="Teammate contact"
+                  placeholder="tg or email"
+                  onBlur={(e) => {
+                    if (e.target.value !== m.contact)
+                      onUpdate(m.id, "contact", e.target.value);
+                  }}
+                  style={{ ...panelField, fontFamily: "var(--mono)", fontSize: 12 }}
+                />
+                <button
+                  className="hq-hover-accent"
+                  onClick={del.onClick}
+                  title={del.title}
+                  style={{
+                    justifySelf: "end",
+                    border: "none",
+                    cursor: "pointer",
+                    background: "none",
+                    color: del.color,
+                    fontSize: 12,
+                    fontWeight: del.fontWeight,
+                    padding: 2,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {del.label}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ ...teamModalGrid, marginTop: 14 }}>
+          <input
+            value={nameDraft}
+            onChange={(e) => setNameDraft(e.target.value)}
+            placeholder="Name"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "8px 10px",
+              border: "1px solid var(--sep)",
+              borderRadius: 0,
+              background: "transparent",
+              color: "var(--label-1)",
+              fontSize: 13,
+            }}
+          />
+          <input
+            value={contactDraft}
+            onChange={(e) => setContactDraft(e.target.value)}
+            placeholder="tg or email"
+            style={{
+              width: "100%",
+              boxSizing: "border-box",
+              padding: "8px 10px",
+              border: "1px solid var(--sep)",
+              borderRadius: 0,
+              background: "transparent",
+              color: "var(--label-1)",
+              fontFamily: "var(--mono)",
+              fontSize: 12,
+            }}
+          />
+          <button onClick={add} style={{ ...accentBtn, width: "100%", padding: "8px 4px" }}>
+            Add
+          </button>
+        </div>
+        <button
+          onClick={onClose}
+          style={{ ...primaryBtn, width: "100%", marginTop: 14, padding: 9 }}
+        >
+          Done
+        </button>
+      </div>
     </div>
   );
 }

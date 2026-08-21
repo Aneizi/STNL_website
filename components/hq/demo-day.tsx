@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import type { CSSProperties } from "react";
 import { startTransition, useEffect, useOptimistic, useState } from "react";
 import { card, cardTitle, pageTitle } from "@/components/hq/ui";
+import { useConfirmDelete } from "@/components/hq/ui-client";
 import {
   addAward,
   addFinalist,
@@ -138,6 +140,7 @@ export function DemoDay({
         : state.filter((s) => s.projectId !== patch.projectId),
   );
 
+  const armed = useConfirmDelete();
   const [draftFinalist, setDraftFinalist] = useState("");
   const [awardName, setAwardName] = useState("");
   const [awardAmount, setAwardAmount] = useState("");
@@ -305,7 +308,10 @@ export function DemoDay({
 
   return (
     <div>
-      <h1 style={pageTitle}>Demo day</h1>
+      <Link href="/hq/projects" style={{ color: "var(--accent)", fontSize: 14, padding: 0 }}>
+        &#8249; Projects
+      </Link>
+      <h1 style={{ ...pageTitle, margin: "8px 0 0" }}>Demo day</h1>
       <div
         style={{
           display: "flex",
@@ -377,50 +383,59 @@ export function DemoDay({
                 {finalistError}
               </div>
             ) : null}
-            {finalists.map((f) => (
-              <div
-                key={f.projectId}
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 8,
-                  padding: "8px 0",
-                  borderBottom: "1px solid var(--sep)",
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{f.name}</div>
-                  <div style={{ fontSize: 12, color: "var(--label-3)" }}>{f.source}</div>
+            {finalists.map((f) => {
+              const del = armed(`finalist-${f.projectId}`, "Remove", () =>
+                onRemoveFinalist(f.projectId),
+              );
+              return (
+                <div
+                  key={f.projectId}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "8px 0",
+                    borderBottom: "1px solid var(--sep)",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{f.name}</div>
+                    <div style={{ fontSize: 12, color: "var(--label-3)" }}>{f.source}</div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color:
+                          f.gatesDone === f.gatesTotal ? "var(--green)" : "var(--orange)",
+                      }}
+                    >
+                      {f.gatesDone === f.gatesTotal
+                        ? "Verified"
+                        : `${f.gatesDone}/${f.gatesTotal} gates`}
+                    </span>
+                    <button
+                      className="hq-hover-accent"
+                      onClick={del.onClick}
+                      title={del.title}
+                      style={{
+                        border: "none",
+                        cursor: "pointer",
+                        background: "none",
+                        color: del.color,
+                        fontSize: 12,
+                        fontWeight: del.fontWeight,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {del.label}
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color:
-                        f.gatesDone === f.gatesTotal ? "var(--green)" : "var(--orange)",
-                    }}
-                  >
-                    {f.gatesDone === f.gatesTotal
-                      ? "Verified"
-                      : `${f.gatesDone}/${f.gatesTotal} gates`}
-                  </span>
-                  <button
-                    onClick={() => onRemoveFinalist(f.projectId)}
-                    style={{
-                      border: "none",
-                      cursor: "pointer",
-                      background: "none",
-                      color: "var(--label-3)",
-                      fontSize: 12,
-                    }}
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div style={card}>
             <div style={cardTitle}>Awards</div>
@@ -461,65 +476,71 @@ export function DemoDay({
               <div style={{ fontSize: 12, color: "var(--red)", marginTop: 8 }}>{awardError}</div>
             ) : null}
             <div style={{ marginTop: 4 }}>
-              {awards.map((a) => (
-                <div
-                  key={a.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "6px 0",
-                    borderBottom: "1px solid var(--sep)",
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14 }}>{a.name}</div>
-                    <div style={{ fontSize: 11, color: "var(--label-3)" }}>
-                      {[a.sponsor, a.amount ? fmtMoney(a.amount) : ""]
-                        .filter(Boolean)
-                        .join(", ")}
+              {awards.map((a) => {
+                const del = armed(`award-${a.id}`, "×", () => onRemoveAward(a.id));
+                return (
+                  <div
+                    key={a.id}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "6px 0",
+                      borderBottom: "1px solid var(--sep)",
+                    }}
+                  >
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14 }}>{a.name}</div>
+                      <div style={{ fontSize: 11, color: "var(--label-3)" }}>
+                        {[a.sponsor, a.amount ? fmtMoney(a.amount) : ""]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, flex: "none" }}>
+                      <select
+                        value={a.winnerProjectId ?? ""}
+                        onChange={(e) => onWinner(a.id, e.target.value)}
+                        style={{
+                          padding: "5px 8px",
+                          border: "1px solid var(--sep)",
+                          borderRadius: 0,
+                          background: "transparent",
+                          color: "var(--label-1)",
+                          fontSize: 12,
+                          maxWidth: 140,
+                        }}
+                      >
+                        <option value="">Undecided</option>
+                        {finalistOptions.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        className="hq-hover-accent"
+                        onClick={del.onClick}
+                        title={del.title}
+                        style={{
+                          border: "none",
+                          cursor: "pointer",
+                          background: "none",
+                          color: del.color,
+                          fontSize: 12,
+                          fontWeight: del.fontWeight,
+                          lineHeight: 1,
+                          padding: 2,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {del.label}
+                      </button>
                     </div>
                   </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 4, flex: "none" }}>
-                    <select
-                      value={a.winnerProjectId ?? ""}
-                      onChange={(e) => onWinner(a.id, e.target.value)}
-                      style={{
-                        padding: "5px 8px",
-                        border: "1px solid var(--sep)",
-                        borderRadius: 0,
-                        background: "transparent",
-                        color: "var(--label-1)",
-                        fontSize: 12,
-                        maxWidth: 140,
-                      }}
-                    >
-                      <option value="">Undecided</option>
-                      {finalistOptions.map((o) => (
-                        <option key={o.id} value={o.id}>
-                          {o.name}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      onClick={() => onRemoveAward(a.id)}
-                      title="Remove award"
-                      style={{
-                        border: "none",
-                        cursor: "pointer",
-                        background: "none",
-                        color: "var(--label-3)",
-                        fontSize: 16,
-                        lineHeight: 1,
-                        padding: 2,
-                      }}
-                    >
-                      {"×"}
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
             <div style={{ paddingTop: 10 }}>
               <div style={{ fontSize: 14 }}>Total</div>
@@ -585,10 +606,12 @@ export function DemoDay({
               </button>
             </div>
             {results.length > 0 ? (
+              // The last track is 52px so the delete's armed "Sure?" label
+              // is never clipped (at 24px it was unreadable).
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "26px 1fr 80px 80px 24px",
+                  gridTemplateColumns: "26px 1fr 80px 80px 52px",
                   gap: 8,
                   marginTop: 14,
                   padding: "10px 0 6px",
@@ -607,63 +630,70 @@ export function DemoDay({
                 <span />
               </div>
             ) : null}
-            {results.map((r, i) => (
-              <div
-                key={r.pid}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "26px 1fr 80px 80px 24px",
-                  gap: 8,
-                  padding: "9px 0",
-                  borderBottom: "1px solid rgba(251,247,240,0.14)",
-                  fontSize: 13,
-                  alignItems: "baseline",
-                }}
-              >
-                <span
+            {results.map((r, i) => {
+              const del = armed(`score-${r.pid}`, "×", () => onClearScores(r.pid));
+              return (
+                <div
+                  key={r.pid}
                   style={{
-                    color: "rgba(251,247,240,0.5)",
-                    fontVariantNumeric: "tabular-nums",
+                    display: "grid",
+                    gridTemplateColumns: "26px 1fr 80px 80px 52px",
+                    gap: 8,
+                    padding: "9px 0",
+                    borderBottom: "1px solid rgba(251,247,240,0.14)",
+                    fontSize: 13,
+                    alignItems: "baseline",
                   }}
                 >
-                  {i + 1}
-                </span>
-                <span style={{ fontWeight: 600 }}>{r.name}</span>
-                <span
-                  style={{
-                    color: "rgba(251,247,240,0.5)",
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  {r.count}x
-                </span>
-                <span
-                  style={{
-                    fontVariantNumeric: "tabular-nums",
-                    fontWeight: 600,
-                    color: "var(--accent)",
-                  }}
-                >
-                  {r.avg.toFixed(1)}
-                </span>
-                <button
-                  onClick={() => onClearScores(r.pid)}
-                  title="Remove result"
-                  style={{
-                    border: "none",
-                    cursor: "pointer",
-                    background: "none",
-                    color: "rgba(251,247,240,0.45)",
-                    fontSize: 15,
-                    lineHeight: 1,
-                    padding: 0,
-                    textAlign: "right",
-                  }}
-                >
-                  {"×"}
-                </button>
-              </div>
-            ))}
+                  <span
+                    style={{
+                      color: "rgba(251,247,240,0.5)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+                  <span style={{ fontWeight: 600 }}>{r.name}</span>
+                  <span
+                    style={{
+                      color: "rgba(251,247,240,0.5)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {r.count}x
+                  </span>
+                  <span
+                    style={{
+                      fontVariantNumeric: "tabular-nums",
+                      fontWeight: 600,
+                      color: "var(--accent)",
+                    }}
+                  >
+                    {r.avg.toFixed(1)}
+                  </span>
+                  {/* This card is inverted, so the hook's label-3 rest colour
+                      is swapped for the card's own muted cream. */}
+                  <button
+                    onClick={del.onClick}
+                    title={del.title}
+                    style={{
+                      border: "none",
+                      cursor: "pointer",
+                      background: "none",
+                      color: del.armed ? "var(--accent)" : "rgba(251,247,240,0.45)",
+                      fontSize: 12,
+                      fontWeight: del.fontWeight,
+                      lineHeight: 1,
+                      padding: 0,
+                      textAlign: "right",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {del.label}
+                  </button>
+                </div>
+              );
+            })}
             {results.length === 0 ? (
               <div style={{ fontSize: 13, color: "rgba(251,247,240,0.55)", marginTop: 8 }}>
                 No scores entered yet.

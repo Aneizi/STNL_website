@@ -1,6 +1,10 @@
 // Shared style atoms ported verbatim from the design. Screens compose these
 // and add screen-specific inline styles; when in doubt the design's exact
 // inline style wins over reuse.
+//
+// Stateful shared pieces (useSavedFlash, useConfirmDelete, CopyButton) live
+// in ui-client.tsx: server components import this file's plain atoms, and a
+// module reachable from a Server Component may not import React hooks.
 import type { CSSProperties } from "react";
 
 /* ── Auth card (login / change password) ─────────────────────────── */

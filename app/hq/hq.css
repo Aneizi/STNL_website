@@ -273,6 +273,32 @@
 .hq .hq-hover-accent:hover {
   color: var(--accent);
 }
+/* Team chips and the Demo day ghost button carry their rest colors here,
+ * not inline, so the hover state can actually take over. */
+.hq .hq-chip-lead {
+  background: var(--accent-fill);
+  color: var(--accent-deep);
+}
+.hq .hq-chip-lead:hover {
+  background: var(--accent);
+  color: #fbf7f0;
+}
+.hq .hq-chip-member {
+  background: var(--fill-3);
+  color: var(--label-2);
+}
+.hq .hq-chip-member:hover {
+  background: var(--fill-2);
+  color: var(--accent);
+}
+.hq .hq-ghost-btn {
+  background: none;
+  color: var(--label-2);
+}
+.hq .hq-ghost-btn:hover {
+  background: var(--fill-4);
+  color: var(--accent);
+}
 .hq .hq-row-hover:hover {
   background: var(--fill-4);
 }

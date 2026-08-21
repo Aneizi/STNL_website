@@ -9,13 +9,15 @@ import { ActivityDrawer } from "./activity-drawer";
 import { SearchModal } from "./search-modal";
 
 // Admin is not a tab — it lives in the account menu, above Sign out.
+// Demo day is not one either: it is used on one day of the campaign, so it
+// is entered from the button below the Projects table instead.
 const TABS: Array<{ href: string; label: string }> = [
   { href: "/hq", label: "Dashboard" },
   { href: "/hq/projects", label: "Projects" },
   { href: "/hq/partners", label: "Partners" },
   { href: "/hq/people", label: "People" },
   { href: "/hq/events", label: "Events" },
-  { href: "/hq/demo", label: "Demo day" },
+  { href: "/hq/links", label: "Links" },
 ];
 
 export function HqChrome({ displayName }: { displayName: string }) {

@@ -142,7 +142,6 @@ CREATE TABLE IF NOT EXISTS hq_projects (
   name text NOT NULL,
   lead_name text NOT NULL DEFAULT '',
   lead_contact text NOT NULL DEFAULT '',
-  members text[] NOT NULL DEFAULT '{}',
   partner_id uuid REFERENCES hq_partners (id) ON DELETE SET NULL,
   event_src text NOT NULL DEFAULT '',
   status_id uuid NOT NULL REFERENCES hq_project_statuses (id),
@@ -173,6 +172,21 @@ CREATE TABLE IF NOT EXISTS hq_project_notes (
 
 CREATE INDEX IF NOT EXISTS hq_project_notes_project_idx
   ON hq_project_notes (project_id, created_at DESC);
+
+-- Individually editable teammates with contacts; the lead lives on the
+-- project row and is always on the team. sort preserves display order.
+-- Databases that predate this table have their old comma-joined members
+-- migrated in by scripts/hq/upgrades.ts.
+CREATE TABLE IF NOT EXISTS hq_project_members (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES hq_projects (id) ON DELETE CASCADE,
+  name text NOT NULL,
+  contact text NOT NULL DEFAULT '',
+  sort int NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS hq_project_members_project_idx
+  ON hq_project_members (project_id, sort);
 
 CREATE TABLE IF NOT EXISTS hq_partner_exchange (
   partner_id uuid NOT NULL REFERENCES hq_partners (id) ON DELETE CASCADE,
@@ -289,3 +303,26 @@ CREATE TABLE IF NOT EXISTS hq_settings (
   key text PRIMARY KEY,
   value jsonb NOT NULL
 );
+
+-- The campaign's shared URLs (Links tab), each carrying a running note log.
+-- touched_* mirrors the auditing on projects and partners.
+CREATE TABLE IF NOT EXISTS hq_links (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  title text NOT NULL,
+  url text NOT NULL,
+  highlighted boolean NOT NULL DEFAULT false,
+  touched_by_user_id uuid REFERENCES hq_users (id) ON DELETE SET NULL,
+  touched_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS hq_link_notes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  link_id uuid NOT NULL REFERENCES hq_links (id) ON DELETE CASCADE,
+  author_user_id uuid REFERENCES hq_users (id) ON DELETE SET NULL,
+  body text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS hq_link_notes_link_idx
+  ON hq_link_notes (link_id, created_at DESC);

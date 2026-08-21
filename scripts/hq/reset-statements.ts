@@ -15,12 +15,15 @@ export const CLEAR_TABLES = [
   "hq_finalists",
   "hq_project_gates",
   "hq_project_notes",
+  "hq_project_members",
   "hq_partner_exchange",
   "hq_partner_contacts",
+  "hq_link_notes",
   "hq_projects",
   "hq_partners",
   "hq_people",
   "hq_events",
+  "hq_links",
   "hq_activity",
 ] as const;
 

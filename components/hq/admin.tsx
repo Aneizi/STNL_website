@@ -1,7 +1,7 @@
 "use client";
 
 import type { CSSProperties, FormEvent, ReactNode } from "react";
-import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
+import { useOptimistic, useRef, useState, useTransition } from "react";
 import {
   FormField,
   card,
@@ -11,6 +11,7 @@ import {
   primaryBtn,
   smallInput,
 } from "@/components/hq/ui";
+import { useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
 import {
   addMilestone,
   deleteMilestone,
@@ -84,24 +85,6 @@ function buildSetupPatch(fd: FormData, settings: Settings): SettingsPatch {
   return patch;
 }
 
-function useSavedFlash() {
-  const [phase, setPhase] = useState<"hidden" | "shown" | "fading">("hidden");
-  const timers = useRef<Array<ReturnType<typeof setTimeout>>>([]);
-  useEffect(() => {
-    const list = timers.current;
-    return () => list.forEach(clearTimeout);
-  }, []);
-  const flash = () => {
-    timers.current.forEach(clearTimeout);
-    setPhase("shown");
-    timers.current = [
-      setTimeout(() => setPhase("fading"), 1400),
-      setTimeout(() => setPhase("hidden"), 2000),
-    ];
-  };
-  return { phase, flash };
-}
-
 function SettingsCard({
   title,
   mt,
@@ -169,10 +152,17 @@ function milestoneReducer(state: Milestone[], a: MilestoneAction): Milestone[] {
 
 function MilestoneRow({
   milestone,
-  onRemove,
+  del,
 }: {
   milestone: Milestone;
-  onRemove: () => void;
+  /** Two-step delete props from the card's useConfirmDelete instance. */
+  del: {
+    label: string;
+    color: string;
+    fontWeight: number;
+    title: string;
+    onClick: (e?: React.MouseEvent) => void;
+  };
 }) {
   const [, startTransition] = useTransition();
   const dateRef = useRef<HTMLInputElement>(null);
@@ -225,19 +215,23 @@ function MilestoneRow({
         }}
       />
       <button
-        onClick={onRemove}
-        title="Remove milestone"
+        className="hq-hover-accent"
+        onClick={del.onClick}
+        title={del.title}
         style={{
+          flex: "none",
           border: "none",
           cursor: "pointer",
           background: "none",
-          color: "var(--label-3)",
-          fontSize: 16,
+          color: del.color,
+          fontSize: 12,
+          fontWeight: del.fontWeight,
           lineHeight: 1,
           padding: 2,
+          whiteSpace: "nowrap",
         }}
       >
-        &#215;
+        {del.label}
       </button>
     </div>
   );
@@ -246,6 +240,7 @@ function MilestoneRow({
 function MilestonesCard({ milestones }: { milestones: Milestone[] }) {
   const [, startTransition] = useTransition();
   const [rows, applyOptimistic] = useOptimistic(milestones, milestoneReducer);
+  const armed = useConfirmDelete();
   const [draftDate, setDraftDate] = useState("");
   const [draftLabel, setDraftLabel] = useState("");
 
@@ -301,7 +296,11 @@ function MilestonesCard({ milestones }: { milestones: Milestone[] }) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", marginTop: 8 }}>
         {rows.map((m) => (
-          <MilestoneRow key={m.id} milestone={m} onRemove={() => remove(m.id)} />
+          <MilestoneRow
+            key={m.id}
+            milestone={m}
+            del={armed(`ms-${m.id}`, "×", () => remove(m.id))}
+          />
         ))}
         {rows.length === 0 && (
           <div style={{ fontSize: 13, color: "var(--label-3)", padding: "10px 0" }}>

@@ -91,6 +91,13 @@ async function seedEverything() {
   await run(`INSERT INTO hq_awards (name, sponsor, amount, winner_project_id, sort)
              VALUES ('Best','S',100,'${project}',0)`);
   await run(`INSERT INTO hq_activity (user_id, message) VALUES ('${user}','did a thing')`);
+  await run(`INSERT INTO hq_project_members (project_id, name, contact, sort)
+             VALUES ('${project}','Teammate','tm@example.com',1)`);
+  const link = await id(
+    `INSERT INTO hq_links (title, url) VALUES ('Form','https://x.y') RETURNING id`,
+  );
+  await run(`INSERT INTO hq_link_notes (link_id, author_user_id, body)
+             VALUES ('${link}','${user}','note')`);
 }
 
 beforeEach(async () => {

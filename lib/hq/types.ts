@@ -55,12 +55,15 @@ export type Settings = {
 
 export type NoteItem = { id: string; author: string; body: string; createdAt: string };
 
+/** Individually editable teammate; the lead lives on the project itself. */
+export type ProjectMember = { id: string; name: string; contact: string };
+
 export type Project = {
   id: string;
   name: string;
   leadName: string;
   leadContact: string;
-  members: string[];
+  members: ProjectMember[];
   partnerId: string | null;
   partnerName: string;
   eventSrc: string;
@@ -93,6 +96,21 @@ export type PartnerDetail = Partner & {
   contacts: NoteItem[];
   teams: Array<{ id: string; name: string; statusSlug: string }>;
 };
+
+export type HqLink = {
+  id: string;
+  title: string;
+  url: string;
+  highlighted: boolean;
+  notes: NoteItem[]; // reuses the existing NoteItem shape
+};
+
+/**
+ * Most links that can be highlighted (pinned to the top of the Links list).
+ * A constant, not an hq_settings row — promote it only if it ever needs to
+ * be operator-editable.
+ */
+export const HIGHLIGHT_CAP = 5;
 
 export type Person = {
   id: string;

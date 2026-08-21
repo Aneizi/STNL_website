@@ -147,6 +147,28 @@ export async function applyUpgrades(sql: SqlRunner) {
     );
   }
 
+  // Team members: hq_projects.members (comma-joined text[], no contacts) →
+  // hq_project_members rows, individually editable with a contact each.
+  // Order is preserved in sort; contacts start empty. The NOT EXISTS guard
+  // makes a re-run after a mid-upgrade crash skip already-migrated projects.
+  const membersCol = await sql.query(`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'hq_projects' AND column_name = 'members'
+  `);
+  if (membersCol.length > 0) {
+    await sql.query(`
+      INSERT INTO hq_project_members (project_id, name, contact, sort)
+      SELECT p.id, m.name, '', m.ord::int
+      FROM hq_projects p, unnest(p.members) WITH ORDINALITY AS m(name, ord)
+      WHERE NOT EXISTS (
+        SELECT 1 FROM hq_project_members pm WHERE pm.project_id = p.id
+      )
+    `);
+    await sql.query(`ALTER TABLE hq_projects DROP COLUMN members`);
+    console.log("Upgraded hq_projects: members moved to hq_project_members.");
+  }
+
   // Luma mirroring. Fresh databases get these from schema.sql; the ADD COLUMN
   // IF NOT EXISTS form makes the statements no-ops there and on re-runs.
   await sql.query(`

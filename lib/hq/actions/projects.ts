@@ -33,16 +33,15 @@ export async function createProject(input: z.infer<typeof createSchema>): Promis
 
   const sql = getSql();
   const today = await hqToday();
-  // Mirrors the design: new projects start green/likely with the lead as
-  // the first team member.
+  // Mirrors the design: new projects start green/likely. The lead is always
+  // on the team, so there is no separate member row to create.
   await sql.transaction([
     sql`
       INSERT INTO hq_projects
-        (name, lead_name, lead_contact, members, partner_id, event_src,
+        (name, lead_name, lead_contact, partner_id, event_src,
          status_id, forecast_id, last_check_in, touched_by_user_id, touched_at)
       VALUES
-        (${name}, ${leadName}, ${leadContact},
-         ${leadName ? [leadName] : []}::text[], ${partnerId}, ${eventSrc},
+        (${name}, ${leadName}, ${leadContact}, ${partnerId}, ${eventSrc},
          (SELECT id FROM hq_project_statuses WHERE slug = 'green'),
          (SELECT id FROM hq_project_forecasts WHERE slug = 'likely'),
          ${today}, ${user.id}, ${today})
@@ -57,7 +56,6 @@ const detailField = z.discriminatedUnion("field", [
   z.object({ field: z.literal("name"), value: z.string().min(1).max(200) }),
   z.object({ field: z.literal("leadName"), value: text(200) }),
   z.object({ field: z.literal("leadContact"), value: text(200) }),
-  z.object({ field: z.literal("members"), value: text(1000) }),
   z.object({ field: z.literal("eventSrc"), value: text(200) }),
   z.object({ field: z.literal("partnerId"), value: id.nullable() }),
 ]);
@@ -100,12 +98,6 @@ export async function updateProjectDetail(
       update = sql`UPDATE hq_projects SET lead_contact = ${data.value} WHERE id = ${projectId}`;
       message = `Updated ${name}`;
       break;
-    case "members": {
-      const members = data.value.split(",").map((s) => s.trim()).filter(Boolean);
-      update = sql`UPDATE hq_projects SET members = ${members}::text[] WHERE id = ${projectId}`;
-      message = `Updated team on ${name}`;
-      break;
-    }
     case "eventSrc":
       update = sql`UPDATE hq_projects SET event_src = ${data.value} WHERE id = ${projectId}`;
       message = `Updated ${name}`;
@@ -117,6 +109,112 @@ export async function updateProjectDetail(
   }
 
   await sql.transaction([update, touch, activityStmt(user.id, message)]);
+  refreshHq();
+  return { ok: true };
+}
+
+/** The member's project (for touch + activity), or null for a stale id. */
+async function getMemberProject(
+  memberId: string,
+): Promise<{ projectId: string; projectName: string } | null> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT m.project_id, p.name FROM hq_project_members m
+    JOIN hq_projects p ON p.id = m.project_id
+    WHERE m.id = ${memberId}
+  `;
+  return rows[0] ? { projectId: rows[0].project_id, projectName: rows[0].name } : null;
+}
+
+export async function addProjectMember(
+  projectId: string,
+  memberName: string,
+  memberContact: string,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(projectId).success) return { ok: false };
+  const parsedName = text(200).safeParse(memberName);
+  const parsedContact = text(200).safeParse(memberContact);
+  if (!parsedName.success || !parsedContact.success) return { ok: false };
+  const trimmedName = parsedName.data.trim();
+  if (!trimmedName) return { ok: false };
+  const name = await getProjectName(projectId);
+  if (name === null) return { ok: false };
+
+  const sql = getSql();
+  const today = await hqToday();
+  // max+1 keeps new teammates at the end; parameters carry explicit casts
+  // because a bare SELECT list gives Postgres nothing to infer types from.
+  await sql.transaction([
+    sql`
+      INSERT INTO hq_project_members (project_id, name, contact, sort)
+      SELECT ${projectId}::uuid, ${trimmedName}::text, ${parsedContact.data}::text,
+        COALESCE(max(sort), 0) + 1
+      FROM hq_project_members WHERE project_id = ${projectId}::uuid
+    `,
+    sql`
+      UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
+      WHERE id = ${projectId}
+    `,
+    activityStmt(user.id, `Updated team on ${name}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
+const memberField = z.discriminatedUnion("field", [
+  z.object({ field: z.literal("name"), value: z.string().min(1).max(200) }),
+  z.object({ field: z.literal("contact"), value: text(200) }),
+]);
+
+export async function updateProjectMember(
+  memberId: string,
+  input: z.infer<typeof memberField>,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(memberId).success) return { ok: false };
+  const parsed = memberField.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Invalid value." };
+  const member = await getMemberProject(memberId);
+  if (!member) return { ok: false };
+
+  const sql = getSql();
+  const today = await hqToday();
+  const data = parsed.data;
+  const trimmedName = data.field === "name" ? data.value.trim() : "";
+  if (data.field === "name" && !trimmedName) return { ok: false };
+  const update =
+    data.field === "name"
+      ? sql`UPDATE hq_project_members SET name = ${trimmedName} WHERE id = ${memberId}`
+      : sql`UPDATE hq_project_members SET contact = ${data.value} WHERE id = ${memberId}`;
+  await sql.transaction([
+    update,
+    sql`
+      UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
+      WHERE id = ${member.projectId}
+    `,
+    activityStmt(user.id, `Updated team on ${member.projectName}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
+export async function removeProjectMember(memberId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(memberId).success) return { ok: false };
+  const member = await getMemberProject(memberId);
+  if (!member) return { ok: false };
+
+  const sql = getSql();
+  const today = await hqToday();
+  await sql.transaction([
+    sql`DELETE FROM hq_project_members WHERE id = ${memberId}`,
+    sql`
+      UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
+      WHERE id = ${member.projectId}
+    `,
+    activityStmt(user.id, `Updated team on ${member.projectName}`),
+  ]);
   refreshHq();
   return { ok: true };
 }

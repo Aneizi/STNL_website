@@ -10,6 +10,7 @@ import {
   type CSSProperties,
 } from "react";
 import { FormField, LumaMark, input, pageTitle } from "@/components/hq/ui";
+import { useConfirmDelete } from "@/components/hq/ui-client";
 import {
   archiveEvent,
   createEvent,
@@ -133,8 +134,8 @@ export function Events(props: {
   const [newEventOpen, setNewEventOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showArchived, setShowArchived] = useState(false);
-  // Inline two-step delete; a window.confirm would block the whole tab.
-  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
+  // Shared two-step delete; a window.confirm would block the whole tab.
+  const armed = useConfirmDelete();
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   // Deleted rows vanish immediately; useOptimistic cannot express a removal.
@@ -175,7 +176,6 @@ export function Events(props: {
   };
 
   const removeEvent = (id: string) => {
-    setConfirmingDelete(null);
     setDeletedIds((ids) => new Set(ids).add(id));
     startTransition(async () => {
       await deleteEvent(id);
@@ -542,6 +542,10 @@ export function Events(props: {
             </div>
             {evs.map((e) => {
               const past = isPast(e);
+              const del =
+                !e.archived && !e.lumaId
+                  ? armed(`event-${e.id}`, "Delete", () => removeEvent(e.id))
+                  : null;
               if (editingId !== e.id) {
                 return (
                   <div
@@ -616,6 +620,7 @@ export function Events(props: {
                       ) : e.lumaId ? (
                         // A Luma row is never deletable: it would return on the
                         // next sync, minus everything HQ recorded against it.
+                        // Archiving is reversible, so it stays one-click.
                         <button
                           className="hq-hover-accent"
                           onClick={() => setArchived(e.id, true)}
@@ -623,22 +628,16 @@ export function Events(props: {
                         >
                           Archive
                         </button>
-                      ) : confirmingDelete === e.id ? (
-                        <button
-                          onClick={() => removeEvent(e.id)}
-                          style={{ ...rowAction, color: "var(--accent)", fontWeight: 600 }}
-                        >
-                          Sure?
-                        </button>
-                      ) : (
+                      ) : del ? (
                         <button
                           className="hq-hover-accent"
-                          onClick={() => setConfirmingDelete(e.id)}
-                          style={rowAction}
+                          onClick={del.onClick}
+                          title={del.title}
+                          style={{ ...rowAction, color: del.color, fontWeight: del.fontWeight }}
                         >
-                          Delete
+                          {del.label}
                         </button>
-                      )}
+                      ) : null}
                     </span>
                   </div>
                 );

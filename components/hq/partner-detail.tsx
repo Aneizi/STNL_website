@@ -10,8 +10,8 @@ import {
   cardTitle,
   pageTitle,
   smallInput,
-  smallSelect,
 } from "@/components/hq/ui";
+import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
 import {
   addPartnerContact,
   deletePartner,
@@ -26,6 +26,8 @@ type Patch =
   | { kind: "stage"; slug: string }
   | { kind: "channel"; id: string }
   | { kind: "name"; value: string }
+  | { kind: "captain"; value: string }
+  | { kind: "captainContact"; value: string }
   | { kind: "target"; value: number }
   | { kind: "exchange"; itemId: string; done: boolean }
   | { kind: "contact"; body: string; author: string; createdAt: string };
@@ -38,6 +40,10 @@ function applyPatch(cur: PartnerDetailData, p: Patch): PartnerDetailData {
       return { ...cur, channelId: p.id };
     case "name":
       return { ...cur, name: p.value };
+    case "captain":
+      return { ...cur, captainName: p.value };
+    case "captainContact":
+      return { ...cur, captainContact: p.value };
     case "target":
       return { ...cur, target: p.value };
     case "exchange":
@@ -63,6 +69,45 @@ function applyPatch(cur: PartnerDetailData, p: Patch): PartnerDetailData {
   }
 }
 
+// Header badge tones per stage; label-3 falls back to a plain fill.
+const STAGE_TONES: Record<string, string> = {
+  agreed: "green",
+  rejected: "red",
+  call: "accent",
+  sent: "orange",
+  draft: "label-3",
+};
+
+/** One labelled row in the header's details grid. */
+const detailRow: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "70px minmax(0,1fr)",
+  columnGap: 10,
+  alignItems: "center",
+};
+
+const detailLabel: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  color: "var(--label-3)",
+};
+
+const detailValue: React.CSSProperties = { fontSize: 14, padding: "6px 0" };
+
+/** Edit-mode inputs sit on the page, so they get the card background. */
+const detailField: React.CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  padding: "6px 8px",
+  border: "1px solid var(--sep)",
+  borderRadius: 0,
+  background: "var(--card)",
+  color: "var(--label-1)",
+  fontSize: 13,
+};
+
 export function PartnerDetail({
   partner,
   classifiers,
@@ -77,10 +122,12 @@ export function PartnerDetail({
   const router = useRouter();
   const [, startTransition] = useTransition();
   const [view, patch] = useOptimistic(partner, applyPatch);
-  const [editingName, setEditingName] = useState(false);
+  // One Edit toggle for the whole header; every control saves on change or
+  // blur, confirmed only by the Saved flash beside the name.
+  const [editing, setEditing] = useState(false);
+  const { phase: savedPhase, flash } = useSavedFlash();
+  const armed = useConfirmDelete();
   const [contactDraft, setContactDraft] = useState("");
-  // Inline two-step delete; a window.confirm would block the whole tab.
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const onDelete = () => {
@@ -91,7 +138,6 @@ export function PartnerDetail({
         router.push("/hq/partners");
       } else {
         setDeleting(false);
-        setConfirmingDelete(false);
       }
     });
   };
@@ -108,14 +154,21 @@ export function PartnerDetail({
     mutate({ kind: "name", value }, () =>
       updatePartnerDetail(partner.id, { field: "name", value }),
     );
+    flash();
   };
   const onCaptain = (value: string) => {
     if (value === partner.captainName) return;
-    mutate(null, () => updatePartnerDetail(partner.id, { field: "captainName", value }));
+    mutate({ kind: "captain", value }, () =>
+      updatePartnerDetail(partner.id, { field: "captainName", value }),
+    );
+    flash();
   };
   const onCaptainContact = (value: string) => {
     if (value === partner.captainContact) return;
-    mutate(null, () => updatePartnerDetail(partner.id, { field: "captainContact", value }));
+    mutate({ kind: "captainContact", value }, () =>
+      updatePartnerDetail(partner.id, { field: "captainContact", value }),
+    );
+    flash();
   };
   const onTarget = (raw: string) => {
     const value = Math.max(0, Math.trunc(Number(raw) || 0));
@@ -123,6 +176,17 @@ export function PartnerDetail({
     mutate({ kind: "target", value }, () =>
       updatePartnerDetail(partner.id, { field: "target", value }),
     );
+    flash();
+  };
+  const onChannel = (id: string) => {
+    mutate({ kind: "channel", id }, () =>
+      updatePartnerDetail(partner.id, { field: "channelId", value: id }),
+    );
+    flash();
+  };
+  const onStage = (slug: string) => {
+    mutate({ kind: "stage", slug }, () => setPartnerStage(partner.id, slug));
+    flash();
   };
   const onAddContact = () => {
     const body = contactDraft;
@@ -140,6 +204,11 @@ export function PartnerDetail({
         ? 100
         : 0;
   const statusBySlug = new Map(classifiers.statuses.map((s) => [s.slug, s]));
+  const stage = classifiers.stages.find((s) => s.slug === view.stageSlug);
+  const channelLabel =
+    classifiers.channels.find((c) => c.id === view.channelId)?.label ?? "";
+  const tone = STAGE_TONES[view.stageSlug] ?? "label-3";
+  const del = armed(`partner-${partner.id}`, "Delete", onDelete);
 
   return (
     <div>
@@ -149,147 +218,231 @@ export function PartnerDetail({
       <div
         style={{
           display: "flex",
-          alignItems: "baseline",
+          alignItems: "center",
           gap: 12,
           flexWrap: "wrap",
-          marginTop: 10,
+          marginTop: 8,
         }}
       >
-        {!editingName ? (
-          <h1 style={pageTitle}>{view.name}</h1>
-        ) : (
+        {editing ? (
           <input
             defaultValue={view.name}
             onBlur={(e) => onName(e.target.value)}
+            aria-label="Partner name"
             style={{
+              flex: "none",
+              width: 340,
+              maxWidth: "100%",
+              boxSizing: "border-box",
               fontFamily: "var(--serif)",
-              fontSize: 30,
+              fontSize: 38,
+              fontWeight: 400,
+              letterSpacing: "-0.01em",
               padding: "2px 8px",
+              marginLeft: -9,
               border: "1px solid var(--sep)",
               borderRadius: 0,
               background: "var(--card)",
               color: "var(--label-1)",
-              width: 280,
-              maxWidth: "100%",
-              boxSizing: "border-box",
             }}
           />
+        ) : (
+          <h1
+            style={{
+              ...pageTitle,
+              flex: "none",
+              minWidth: 0,
+              maxWidth: "100%",
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            {view.name}
+          </h1>
+        )}
+        <span
+          style={{
+            flex: "none",
+            fontSize: 11,
+            fontWeight: 600,
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            padding: "4px 9px",
+            borderRadius: 2,
+            color: `var(--${tone})`,
+            background: tone === "label-3" ? "var(--fill-3)" : `var(--${tone}-fill)`,
+          }}
+        >
+          {stage?.label ?? ""}
+        </span>
+        {savedPhase !== "hidden" && (
+          <span
+            style={{
+              flex: "none",
+              fontSize: 12,
+              fontWeight: 600,
+              color: "var(--green)",
+              opacity: savedPhase === "fading" ? 0 : 1,
+              transition: "opacity 600ms ease",
+            }}
+          >
+            Saved
+          </span>
         )}
         <button
-          onClick={() => setEditingName(!editingName)}
+          className="hq-hover-accent"
+          onClick={() => setEditing(!editing)}
           style={{
+            flex: "none",
             border: "none",
             cursor: "pointer",
             background: "none",
-            color: editingName ? "var(--accent)" : "var(--label-3)",
+            color: editing ? "var(--accent)" : "var(--label-3)",
             fontSize: 12,
             fontWeight: 600,
-            padding: 0,
+            padding: 2,
+            marginLeft: "auto",
           }}
         >
-          {editingName ? "Done" : "Edit"}
+          {editing ? "Done" : "Edit"}
         </button>
-        <select
-          value={view.channelId}
-          onChange={(e) =>
-            mutate({ kind: "channel", id: e.target.value }, () =>
-              updatePartnerDetail(partner.id, { field: "channelId", value: e.target.value }),
-            )
-          }
-          style={smallSelect}
+        <button
+          className="hq-hover-accent"
+          onClick={del.onClick}
+          disabled={deleting}
+          title={del.title}
+          style={{
+            flex: "none",
+            border: "none",
+            cursor: "pointer",
+            background: "none",
+            color: del.color,
+            fontSize: 12,
+            fontWeight: del.fontWeight,
+            padding: 2,
+            whiteSpace: "nowrap",
+          }}
         >
-          {classifiers.channels.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </select>
-        <select
-          value={view.stageSlug}
-          onChange={(e) =>
-            mutate({ kind: "stage", slug: e.target.value }, () =>
-              setPartnerStage(partner.id, e.target.value),
-            )
-          }
-          style={smallSelect}
-        >
-          {classifiers.stages.map((s) => (
-            <option key={s.id} value={s.slug}>
-              {s.label}
-            </option>
-          ))}
-        </select>
-        {confirmingDelete ? (
-          <button
-            onClick={onDelete}
-            disabled={deleting}
-            style={{
-              border: "none",
-              cursor: "pointer",
-              background: "none",
-              color: "var(--accent)",
-              fontSize: 12,
-              fontWeight: 600,
-              padding: 2,
-              marginLeft: "auto",
-            }}
-          >
-            {deleting ? "Deleting…" : "Sure?"}
-          </button>
-        ) : (
-          <button
-            className="hq-hover-accent"
-            onClick={() => setConfirmingDelete(true)}
-            style={{
-              border: "none",
-              cursor: "pointer",
-              background: "none",
-              color: "var(--label-3)",
-              fontSize: 12,
-              padding: 2,
-              marginLeft: "auto",
-            }}
-          >
-            Delete
-          </button>
-        )}
+          {deleting ? "Deleting…" : del.label}
+        </button>
       </div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginTop: 10 }}>
-        <label
-          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--label-3)" }}
-        >
-          Captain
-          <input
-            defaultValue={partner.captainName}
-            onBlur={(e) => onCaptain(e.target.value)}
-            style={{ ...smallSelect, width: 150 }}
-          />
-        </label>
-        <label
-          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--label-3)" }}
-        >
-          Contact
-          <input
-            defaultValue={partner.captainContact}
-            onBlur={(e) => onCaptainContact(e.target.value)}
-            style={{ ...smallSelect, width: 170, fontFamily: "var(--mono)", fontSize: 12 }}
-          />
-        </label>
-        <label
-          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--label-3)" }}
-        >
-          Target
-          <input
-            type="number"
-            min={0}
-            defaultValue={partner.target}
-            onBlur={(e) => onTarget(e.target.value)}
-            style={{ ...smallSelect, width: 64 }}
-          />
-        </label>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
+          columnGap: 20,
+          rowGap: 8,
+          marginTop: 14,
+          maxWidth: 820,
+        }}
+      >
+        <div style={detailRow}>
+          <span style={detailLabel}>Channel</span>
+          {editing ? (
+            <select
+              value={view.channelId}
+              onChange={(e) => onChannel(e.target.value)}
+              style={detailField}
+            >
+              {classifiers.channels.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span style={detailValue}>{channelLabel}</span>
+          )}
+        </div>
+        <div style={detailRow}>
+          <span style={detailLabel}>Stage</span>
+          {editing ? (
+            <select
+              value={view.stageSlug}
+              onChange={(e) => onStage(e.target.value)}
+              style={detailField}
+            >
+              {classifiers.stages.map((s) => (
+                <option key={s.id} value={s.slug}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <span style={detailValue}>{stage?.label ?? ""}</span>
+          )}
+        </div>
+        <div style={detailRow}>
+          <span style={detailLabel}>Captain</span>
+          {editing ? (
+            <input
+              defaultValue={partner.captainName}
+              onBlur={(e) => onCaptain(e.target.value)}
+              style={detailField}
+            />
+          ) : (
+            <span style={detailValue}>{view.captainName}</span>
+          )}
+        </div>
+        <div style={detailRow}>
+          <span style={detailLabel}>Contact</span>
+          {/* flex 0 1 auto in view mode: the text shrinks to its content, so
+              the copy icon sits beside the address, not at the cell's edge. */}
+          <div style={{ display: "flex", gap: 6, minWidth: 0, alignItems: "center" }}>
+            {editing ? (
+              <input
+                defaultValue={partner.captainContact}
+                onBlur={(e) => onCaptainContact(e.target.value)}
+                aria-label="Captain contact"
+                style={{
+                  ...detailField,
+                  flex: 1,
+                  minWidth: 0,
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                }}
+              />
+            ) : (
+              <span
+                style={{
+                  flex: "0 1 auto",
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  padding: "6px 0",
+                  color: "var(--label-2)",
+                  fontFamily: "var(--mono)",
+                  fontSize: 12,
+                }}
+              >
+                {view.captainContact}
+              </span>
+            )}
+            <CopyButton value={view.captainContact} />
+          </div>
+        </div>
+        <div style={detailRow}>
+          <span style={detailLabel}>Target</span>
+          {editing ? (
+            <input
+              type="number"
+              min={0}
+              defaultValue={partner.target}
+              onBlur={(e) => onTarget(e.target.value)}
+              style={{ ...detailField, width: 74 }}
+            />
+          ) : (
+            <span style={{ ...detailValue, fontVariantNumeric: "tabular-nums" }}>
+              {view.target}
+            </span>
+          )}
+        </div>
       </div>
-      <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 8 }}>
+      <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 14 }}>
         Last touched by {view.touchedBy}, {fmtDate(view.touchedAt ?? "")}
+        {editing ? ". Changes save as you make them." : "."}
       </div>
       <div
         style={{
