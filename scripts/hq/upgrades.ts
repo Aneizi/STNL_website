@@ -44,6 +44,56 @@ export async function applyUpgrades(sql: SqlRunner) {
     WHERE slug = 'mailing'
   `);
 
+  // The submission gates were reworded and reordered to follow the run a team
+  // actually makes: register, then build, then submit. Renaming in place (by
+  // the old label) keeps hq_project_gates rows pointing at the same gate, so
+  // teams don't lose the boxes they already ticked. "Colosseum URL verified"
+  // split in two — the rename keeps it as the closing submission gate and the
+  // registration gate is inserted fresh. Each statement is keyed on the old
+  // label, so a re-run after the rename matches nothing and changes nothing.
+  const GATE_RENAMES: [string, string][] = [
+    ["Team profiles complete", "Social profile"],
+    ["Working MVP of core flow", "Working MVP"],
+    ["Solana rationale written", "Solana rationale established"],
+    ["Colosseum URL verified", "Colosseum submission"],
+  ];
+  for (const [before, after] of GATE_RENAMES) {
+    await sql.query(`
+      UPDATE hq_submission_gates SET label = '${after}'
+      WHERE label = '${before}'
+        AND NOT EXISTS (
+          SELECT 1 FROM hq_submission_gates existing WHERE existing.label = '${after}')
+    `);
+  }
+  // Only databases carrying this gate set get the new registration gate;
+  // one keyed on other labels (a test fixture, a differently seeded campaign)
+  // is left alone.
+  await sql.query(`
+    INSERT INTO hq_submission_gates (label, sort)
+    SELECT 'Colosseum registration', 0
+    WHERE EXISTS (SELECT 1 FROM hq_submission_gates WHERE label = 'Colosseum submission')
+    ON CONFLICT (label) DO NOTHING
+  `);
+  // Re-sort every gate that survives under its new name; gates an operator
+  // added themselves keep their own order after these.
+  const GATE_ORDER = [
+    "Colosseum registration",
+    "Social profile",
+    "Solana rationale established",
+    "Working MVP",
+    "Repo accessible",
+    "Validation evidence",
+    "Pitch video, 2 min max",
+    "Technical video, 2 min max",
+    "All links tested",
+    "Colosseum submission",
+  ];
+  for (const [i, label] of GATE_ORDER.entries()) {
+    await sql.query(
+      `UPDATE hq_submission_gates SET sort = ${i} WHERE label = '${label}'`,
+    );
+  }
+
   // Finalist positions must be unique so concurrent max+1 inserts cannot
   // assign the same slot. Fresh databases already have this index under the
   // same name (schema.sql's inline UNIQUE), so the check skips them; on an

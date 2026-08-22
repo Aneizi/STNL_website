@@ -54,7 +54,7 @@ export function Dashboard({
       label: "Verified submissions",
       cur: verified,
       target: settings.verifiedTarget,
-      sub: "All nine gates checked",
+      sub: "Every submission gate checked",
     },
   ].map((f) => ({
     ...f,
