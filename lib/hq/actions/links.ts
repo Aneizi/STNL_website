@@ -132,7 +132,7 @@ export async function setLinkHighlighted(
     RETURNING id
   `;
   if (updated.length === 0) {
-    return { ok: false, error: `Highlight limit reached — ${HIGHLIGHT_CAP} max` };
+    return { ok: false, error: `Highlight limit reached - ${HIGHLIGHT_CAP} max` };
   }
   await activityStmt(user.id, `Highlighted ${title}`);
   refreshHq();

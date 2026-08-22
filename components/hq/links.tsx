@@ -127,7 +127,7 @@ export function Links({
 
   const onToggleHighlight = (l: HqLink) => {
     if (!l.highlighted && highlightedCount >= HIGHLIGHT_CAP) {
-      showToast(`Highlight limit reached — ${HIGHLIGHT_CAP} max`);
+      showToast(`Highlight limit reached - ${HIGHLIGHT_CAP} max`);
       return;
     }
     startTransition(async () => {

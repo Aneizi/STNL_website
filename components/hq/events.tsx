@@ -354,9 +354,9 @@ export function Events(props: {
             disabled={syncing}
             aria-busy={syncing}
             aria-label={
-              syncing ? "Syncing Luma events" : `Sync Luma events now — ${syncedLabel}`
+              syncing ? "Syncing Luma events" : `Sync Luma events now - ${syncedLabel}`
             }
-            title={syncing ? "Syncing Luma events…" : `Sync Luma events now — ${syncedLabel}`}
+            title={syncing ? "Syncing Luma events…" : `Sync Luma events now - ${syncedLabel}`}
             style={{
               border: "none",
               cursor: syncing ? "progress" : "pointer",
@@ -763,7 +763,7 @@ export function Events(props: {
                         <button
                           key={f}
                           onClick={() => releasePin(e.id, f)}
-                          title={`Stop overriding ${PIN_LABELS[f]} — the next sync restores Luma's value`}
+                          title={`Stop overriding ${PIN_LABELS[f]} - the next sync restores Luma's value`}
                           style={{
                             border: "1px solid var(--sep)",
                             cursor: "pointer",

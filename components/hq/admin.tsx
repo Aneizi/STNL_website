@@ -364,7 +364,7 @@ export function Admin({
         >
           <FormField
             label="Stale after (days)"
-            hint="Days without a check-in before a project counts as stale — highlighted on Projects and listed on the Dashboard."
+            hint="Days without a check-in before a project counts as stale - highlighted on Projects and listed on the Dashboard."
             width={110}
           >
             <input
@@ -428,7 +428,7 @@ export function Admin({
           </FormField>
           <FormField
             label="Prospects subtitle"
-            hint="Caption printed under the Prospects figure on the Dashboard. Text only — it changes nothing that is counted."
+            hint="Caption printed under the Prospects figure on the Dashboard. Text only - it changes nothing that is counted."
             flex={1}
             minWidth={220}
           >
@@ -436,7 +436,7 @@ export function Admin({
           </FormField>
           <FormField
             label="Active subtitle"
-            hint="Caption printed under the Active figure on the Dashboard. Text only — it changes nothing that is counted."
+            hint="Caption printed under the Active figure on the Dashboard. Text only - it changes nothing that is counted."
             flex={1}
             minWidth={220}
           >
