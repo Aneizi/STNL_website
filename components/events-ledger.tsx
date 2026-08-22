@@ -197,9 +197,9 @@ export function EventsLedger({
   const [pastOpen, setPastOpen] = useState(spotlight);
 
   return (
-    <div className="flex flex-col gap-10 px-6 pb-16 pt-8 min-[900px]:flex-row min-[900px]:gap-[60px] min-[900px]:px-14 min-[900px]:pb-16 min-[900px]:pt-[54px]">
+    <div className="grid grid-cols-1 gap-x-[60px] px-6 pb-16 pt-8 min-[900px]:grid-cols-[330px_minmax(0,1fr)] min-[900px]:px-14 min-[900px]:pb-16 min-[900px]:pt-[54px]">
       {/* Sidebar */}
-      <div className="flex w-full flex-col gap-[22px] min-[900px]:w-[330px] min-[900px]:flex-none">
+      <div className="mb-10 flex w-full flex-col gap-[22px] min-[900px]:mb-0">
         <h1 className="font-serif text-[52px]/[0.98] font-normal tracking-[-0.01em] text-ink min-[900px]:text-[72px]/[0.98]">
           What&apos;s <em className="italic text-orange">on</em>
         </h1>
@@ -234,7 +234,7 @@ export function EventsLedger({
             synced with lu.ma/stnl
           </div>
         </div>
-        {/* Grows with the ledger column (min/max keeps the crop pleasant)
+        {/* Grows with the upcoming ledger (min/max keeps the crop pleasant)
             instead of a fixed height that forces a tall page when the
             calendar is quiet. */}
         <div className="relative mt-2 hidden max-h-[970px] min-h-[420px] flex-1 overflow-hidden rounded-2xl min-[900px]:flex">
@@ -249,7 +249,7 @@ export function EventsLedger({
       </div>
 
       {/* Ledger */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-col">
         <p aria-live="polite" className="sr-only">
           {countLabel(filtered.length)} upcoming
           {activeCity === "All" ? "" : ` in ${activeCity}`}
@@ -272,12 +272,15 @@ export function EventsLedger({
                   event={
                     e.featured
                       ? e
-                      : { ...e, tint: TINTS[filtered.indexOf(e) % TINTS.length] }
+                      : {
+                          ...e,
+                          tint: TINTS[filtered.indexOf(e) % TINTS.length],
+                        }
                   }
                 />
               ) : (
                 <EventRow key={e.id} event={e} />
-              )
+              ),
             )}
           </section>
         ))}
@@ -323,78 +326,75 @@ export function EventsLedger({
             )}
           </p>
         )}
-
-        {pastFiltered.length > 0 && (
-          <section className="mt-3.5 flex flex-col">
-            <div className="mb-1 flex items-baseline gap-2.5 border-b-2 border-ink/25 pb-2">
-              <h2 className="font-serif text-[26px]/[normal] font-normal text-subtle">
-                Past events
-              </h2>
-              <span className="font-mono text-xs font-medium text-faded">
-                {countLabel(pastFiltered.length)}
-              </span>
-              <button
-                type="button"
-                aria-expanded={pastOpen}
-                onClick={() => setPastOpen((o) => !o)}
-                className={`ml-auto text-xs font-semibold uppercase tracking-[0.1em] text-subtle transition-colors duration-200 hover:text-orange ${FOCUS_RING}`}
+      </div>
+      {pastFiltered.length > 0 && (
+        <section className="mt-3.5 flex min-w-0 flex-col min-[900px]:col-start-2">
+          <div className="mb-1 flex items-baseline gap-2.5 border-b-2 border-ink/25 pb-2">
+            <h2 className="font-serif text-[26px]/[normal] font-normal text-subtle">
+              Past events
+            </h2>
+            <span className="font-mono text-xs font-medium text-faded">
+              {countLabel(pastFiltered.length)}
+            </span>
+            <button
+              type="button"
+              aria-expanded={pastOpen}
+              onClick={() => setPastOpen((o) => !o)}
+              className={`ml-auto text-xs font-semibold uppercase tracking-[0.1em] text-subtle transition-colors duration-200 hover:text-orange ${FOCUS_RING}`}
+            >
+              {pastOpen ? "Hide −" : "Show +"}
+              <span className="sr-only"> past events</span>
+            </button>
+          </div>
+          {pastOpen &&
+            pastFiltered.map((e) => (
+              <div
+                key={e.id}
+                className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-4 border-b border-ink/[.08] px-2 py-[13px] sm:grid-cols-[120px_minmax(0,1fr)_130px]"
               >
-                {pastOpen ? "Hide −" : "Show +"}
-                <span className="sr-only"> past events</span>
-              </button>
-            </div>
-            {pastOpen &&
-              pastFiltered.map((e) => (
                 <div
-                  key={e.id}
-                  className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-4 border-b border-ink/[.08] px-2 py-[13px] sm:grid-cols-[120px_minmax(0,1fr)_130px]"
+                  className={`flex items-baseline ${
+                    e.end ? "flex-wrap gap-x-[7px]" : "gap-[7px]"
+                  }`}
                 >
-                  <div
-                    className={`flex items-baseline ${
-                      e.end ? "flex-wrap gap-x-[7px]" : "gap-[7px]"
-                    }`}
-                  >
-                    {e.end ? (
-                      <>
-                        <span className="font-serif text-[22px]/[normal] text-subtle">
-                          {e.day}–{e.end.day}
-                        </span>
-                        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
-                          {e.mon === e.end.mon
-                            ? e.mon
-                            : `${e.mon}–${e.end.mon}`}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
-                          {e.dow}
-                        </span>
-                        <span className="font-serif text-[26px]/[normal] text-subtle">
-                          {e.day}
-                        </span>
-                        <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
-                          {e.mon}
-                        </span>
-                      </>
-                    )}
-                  </div>
-                  <div className="flex flex-col gap-0.5">
-                    <h3 className="text-[15.5px]/[1.25] font-semibold text-ink/55">
-                      {e.title}
-                    </h3>
-                    <div className="text-[13px] text-faded">
-                      {e.venue ? `${e.venue} / ${e.city}` : e.city}
-                    </div>
-                  </div>
-                  <div className="hidden font-mono text-[13px] font-medium text-faded sm:block">
-                    {e.time}
+                  {e.end ? (
+                    <>
+                      <span className="font-serif text-[22px]/[normal] text-subtle">
+                        {e.day}–{e.end.day}
+                      </span>
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
+                        {e.mon === e.end.mon ? e.mon : `${e.mon}–${e.end.mon}`}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
+                        {e.dow}
+                      </span>
+                      <span className="font-serif text-[26px]/[normal] text-subtle">
+                        {e.day}
+                      </span>
+                      <span className="font-mono text-[11px] font-semibold uppercase tracking-[0.08em] text-faded">
+                        {e.mon}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex flex-col gap-0.5">
+                  <h3 className="text-[15.5px]/[1.25] font-semibold text-ink/55">
+                    {e.title}
+                  </h3>
+                  <div className="text-[13px] text-faded">
+                    {e.venue ? `${e.venue} / ${e.city}` : e.city}
                   </div>
                 </div>
-              ))}
-          </section>
-        )}
-      </div>
+                <div className="hidden font-mono text-[13px] font-medium text-faded sm:block">
+                  {e.time}
+                </div>
+              </div>
+            ))}
+        </section>
+      )}
     </div>
   );
 }
