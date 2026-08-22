@@ -43,6 +43,40 @@ export async function createLink(input: z.infer<typeof createSchema>): Promise<A
   return { ok: true };
 }
 
+/**
+ * Edits a link in place. Shares createLink's schema and the same bare-domain
+ * normalisation, so an edited URL can never be less usable than a created one.
+ * Highlight state and notes ride along untouched.
+ */
+export async function updateLink(
+  linkId: string,
+  input: z.infer<typeof createSchema>,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(linkId).success) return { ok: false };
+  const parsed = createSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Title and link are required." };
+  const title = parsed.data.title.trim();
+  let url = parsed.data.url.trim();
+  if (!title || !url) return { ok: false, error: "Title and link are required." };
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  const before = await getLinkTitle(linkId);
+  if (before === null) return { ok: false };
+
+  const sql = getSql();
+  await sql.transaction([
+    sql`
+      UPDATE hq_links
+      SET title = ${title}, url = ${url},
+          touched_by_user_id = ${user.id}, touched_at = now()
+      WHERE id = ${linkId}
+    `,
+    activityStmt(user.id, `Edited link ${before}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
 export async function deleteLink(linkId: string): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(linkId).success) return { ok: false };

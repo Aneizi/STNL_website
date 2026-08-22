@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useOptimistic, useState, useTransition } from "react";
+import { IconBubbleAndPencil } from "@/components/hq/icons/IconBubbleAndPencil";
 import { IconSparkles } from "@/components/hq/icons/IconSparkles";
 import { showToast } from "@/components/hq/toast";
 import { FormField, accentBtn, card, input, pageTitle, primaryBtn } from "@/components/hq/ui";
@@ -10,6 +11,7 @@ import {
   createLink,
   deleteLink,
   setLinkHighlighted,
+  updateLink,
 } from "@/lib/hq/actions/links";
 import { fmtWhen } from "@/lib/hq/format";
 import { HIGHLIGHT_CAP, type HqLink, type NoteItem } from "@/lib/hq/types";
@@ -17,7 +19,8 @@ import { HIGHLIGHT_CAP, type HqLink, type NoteItem } from "@/lib/hq/types";
 type LinkPatch =
   | { kind: "create"; link: HqLink }
   | { kind: "highlight"; id: string; on: boolean }
-  | { kind: "note"; id: string; note: NoteItem };
+  | { kind: "note"; id: string; note: NoteItem }
+  | { kind: "edit"; id: string; title: string; url: string };
 
 function applyPatch(list: HqLink[], patch: LinkPatch): HqLink[] {
   switch (patch.kind) {
@@ -29,12 +32,45 @@ function applyPatch(list: HqLink[], patch: LinkPatch): HqLink[] {
       return list.map((l) =>
         l.id === patch.id ? { ...l, notes: [patch.note, ...l.notes] } : l,
       );
+    case "edit":
+      return list.map((l) =>
+        l.id === patch.id ? { ...l, title: patch.title, url: patch.url } : l,
+      );
   }
 }
 
-// Title · Link · Notes · action. The action track is 58px from the start so
-// the two-step delete's "Sure?" is never clipped.
-const GRID = "minmax(0,1.3fr) minmax(0,2fr) 78px 58px";
+// Title · Link · Notes · actions. The action track carries the highlight
+// star, the edit pencil and the two-step delete, and is sized for its widest
+// state — star + "Sure?", or Save + Discard while a row is being edited — so
+// nothing in it is ever clipped.
+const GRID = "minmax(0,1.3fr) minmax(0,2fr) 78px 116px";
+
+/** Editing happens in the row itself, so the fields sit on the row's own
+ *  line height and inherit its type; only a hairline marks them out. */
+const rowField: React.CSSProperties = {
+  flex: 1,
+  width: "100%",
+  minWidth: 0,
+  boxSizing: "border-box",
+  padding: "4px 6px",
+  border: "1px solid var(--sep)",
+  borderRadius: 0,
+  background: "var(--card)",
+  color: "var(--label-1)",
+  fontSize: 14,
+};
+
+/** Text button in the row's action track (Save, Discard, ×, Sure?). */
+const rowAction: React.CSSProperties = {
+  border: "none",
+  cursor: "pointer",
+  background: "none",
+  fontSize: 12,
+  fontWeight: 600,
+  lineHeight: 1,
+  padding: 2,
+  whiteSpace: "nowrap",
+};
 
 export function Links({
   links,
@@ -57,6 +93,11 @@ export function Links({
   // button can't read from CSS alone — track the hovered row id here.
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  // The link being edited, plus its working title/URL. Editing happens in the
+  // expanded panel, so the row itself keeps its shape while the form is open.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editUrl, setEditUrl] = useState("");
   const armed = useConfirmDelete();
 
   const visible = optimistic.filter((l) => !deletedIds.has(l.id));
@@ -112,6 +153,29 @@ export function Links({
         },
       });
       await addLinkNote(l.id, body);
+    });
+  };
+
+  const onStartEdit = (l: HqLink) => {
+    setEditingId(l.id);
+    setEditTitle(l.title);
+    setEditUrl(l.url);
+  };
+
+  const onSaveEdit = (l: HqLink) => {
+    const title = editTitle.trim();
+    let url = editUrl.trim();
+    if (!title || !url) {
+      showToast("Title and link are required.");
+      return;
+    }
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    setEditingId(null);
+    if (title === l.title && url === l.url) return;
+    startTransition(async () => {
+      patch({ kind: "edit", id: l.id, title, url });
+      const res = await updateLink(l.id, { title, url });
+      if (!res.ok && res.error) showToast(res.error);
     });
   };
 
@@ -216,6 +280,7 @@ export function Links({
           </div>
           {sorted.map((l) => {
             const expanded = expandedId === l.id;
+            const editing = editingId === l.id;
             const del = armed(`link-${l.id}`, "×", () => onDelete(l));
             const highlightTitle = l.highlighted
               ? "Remove highlight"
@@ -225,7 +290,10 @@ export function Links({
             return (
               <Fragment key={l.id}>
                 <div
-                  onClick={() => setExpandedId(expanded ? null : l.id)}
+                  onClick={() => {
+                    if (editing) return;
+                    setExpandedId(expanded ? null : l.id);
+                  }}
                   onMouseEnter={() => setHoveredId(l.id)}
                   onMouseLeave={() =>
                     setHoveredId((cur) => (cur === l.id ? null : cur))
@@ -239,29 +307,55 @@ export function Links({
                     padding: "11px 16px",
                     borderBottom: "1px solid var(--sep)",
                     fontSize: 14,
-                    cursor: "pointer",
+                    cursor: editing ? "default" : "pointer",
                     alignItems: "center",
                     background: expanded ? "var(--fill-4)" : undefined,
                   }}
                 >
-                  <span
-                    style={{
-                      fontWeight: 600,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {l.title}
-                  </span>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                  {editing ? (
+                    <input
+                      autoFocus
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") onSaveEdit(l);
+                        if (e.key === "Escape") setEditingId(null);
+                      }}
+                      aria-label="Link title"
+                      style={{ ...rowField, fontWeight: 600 }}
+                    />
+                  ) : (
+                    <span
+                      style={{
+                        fontWeight: 600,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {l.title}
+                    </span>
+                  )}
+                  {editing ? (
+                    <input
+                      value={editUrl}
+                      onChange={(e) => setEditUrl(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") onSaveEdit(l);
+                        if (e.key === "Escape") setEditingId(null);
+                      }}
+                      placeholder="https://"
+                      aria-label="Link URL"
+                      style={{ ...rowField, fontFamily: "var(--mono)", fontSize: 12 }}
+                    />
+                  ) : (
                     <a
                       href={l.url}
                       target="_blank"
                       rel="noreferrer"
                       onClick={(e) => e.stopPropagation()}
                       style={{
-                        flex: 1,
+                        display: "block",
                         minWidth: 0,
                         fontFamily: "var(--mono)",
                         fontSize: 12,
@@ -272,6 +366,24 @@ export function Links({
                     >
                       {l.url}
                     </a>
+                  )}
+                  <span
+                    style={{
+                      fontSize: 13,
+                      color: l.notes.length ? "var(--label-2)" : "var(--faded)",
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {l.notes.length}
+                  </span>
+                  <div
+                    style={{
+                      justifySelf: "end",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
                     {/* Hidden with opacity (not display) so the row never
                         reflows and the button stays keyboard-reachable. */}
                     <button
@@ -282,50 +394,79 @@ export function Links({
                       title={highlightTitle}
                       aria-label={highlightTitle}
                       style={{
-                        flex: "none",
+                        ...rowAction,
                         display: "inline-flex",
                         alignItems: "center",
                         justifyContent: "center",
-                        border: "none",
-                        cursor: "pointer",
-                        background: "none",
                         padding: "0 2px",
                         color: l.highlighted ? "var(--orange)" : "var(--label-3)",
-                        opacity: l.highlighted || hoveredId === l.id ? 1 : 0,
+                        opacity: editing ? 0 : l.highlighted || hoveredId === l.id ? 1 : 0,
+                        pointerEvents: editing ? "none" : undefined,
                         transition: "opacity 120ms, color 120ms",
                       }}
                     >
                       <IconSparkles width={14} height={18} style={{ display: "block" }} />
                     </button>
+                    {editing ? (
+                      <>
+                        <button
+                          className="hq-hover-accent"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSaveEdit(l);
+                          }}
+                          style={{ ...rowAction, color: "var(--accent)" }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          className="hq-hover-accent"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setEditingId(null);
+                          }}
+                          style={{ ...rowAction, color: "var(--label-3)" }}
+                        >
+                          Discard
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          className="hq-hover-accent"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onStartEdit(l);
+                          }}
+                          title="Edit title and link"
+                          aria-label="Edit title and link"
+                          style={{
+                            ...rowAction,
+                            display: "inline-flex",
+                            color: "var(--label-3)",
+                          }}
+                        >
+                          <IconBubbleAndPencil style={{ display: "block" }} />
+                        </button>
+                        {/* The × is a glyph, not an icon: it needs a larger
+                            type size than "Sure?" to read at the same weight
+                            as the star and pencil beside it. */}
+                        <button
+                          className="hq-hover-accent"
+                          onClick={del.onClick}
+                          title={del.title}
+                          style={{
+                            ...rowAction,
+                            color: del.color,
+                            fontWeight: del.fontWeight,
+                            fontSize: del.armed ? 12 : 18,
+                          }}
+                        >
+                          {del.label}
+                        </button>
+                      </>
+                    )}
                   </div>
-                  <span
-                    style={{
-                      fontSize: 13,
-                      color: l.notes.length ? "var(--label-2)" : "var(--faded)",
-                      fontVariantNumeric: "tabular-nums",
-                    }}
-                  >
-                    {l.notes.length}
-                  </span>
-                  <button
-                    className="hq-hover-accent"
-                    onClick={del.onClick}
-                    title={del.title}
-                    style={{
-                      justifySelf: "end",
-                      border: "none",
-                      cursor: "pointer",
-                      background: "none",
-                      color: del.color,
-                      fontSize: 12,
-                      fontWeight: del.fontWeight,
-                      lineHeight: 1,
-                      padding: 2,
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {del.label}
-                  </button>
                 </div>
                 {expanded ? (
                   <div
