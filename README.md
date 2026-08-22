@@ -1,33 +1,9 @@
-Superteam NL's website
+# Superteam NL
 
-## Responsive HQ navigation
+The website for Superteam NL, the Dutch corner of the Solana ecosystem.
 
-Every authenticated HQ page is `force-dynamic`, and Next.js does not prefetch a
-dynamic route that has no `loading` boundary — without one, a navbar click holds
-the previous page, with no feedback at all, until the destination's Postgres
-queries finish. `app/hq/(app)/loading.tsx` is that boundary for the whole group:
-measured on a production build, the click paints a skeleton in under 10ms, the
-shared chrome stays interactive, and another navigation can interrupt an
-in-flight one.
+There are two sides to it. The public side is what most people see: who we are, what we care about, and a running calendar of events that keeps itself up to date so it never goes stale.
 
-The shell is not *statically* prefetchable, because `app/hq/(app)/layout.tsx`
-reads runtime data — `requireUser()` reads cookies and the session row — so each
-prefetch renders that layout on the server. Navbar clicks are unaffected: a soft
-navigation between sibling routes keeps the layout already on screen and swaps
-only the segment below it. What would regress it is a page's data moving up into
-a layout, or a new nested layout that awaits: keep runtime reads in pages, or
-behind their own `<Suspense>`.
+Behind a login sits HQ, the team's own workspace. It is where we track events, partnerships, people, and projects, so the everyday work of running a community lives in one place instead of being scattered across spreadsheets and chat threads.
 
-## Hourly Luma mirror
-
-The HQ Events page reads its local Postgres mirror and never waits for Luma
-during navigation. `.github/workflows/sync-luma.yml` refreshes that mirror at
-minute 17 of every hour; the authenticated refresh button on `/hq/events`
-remains available for an immediate pull.
-
-Vercel's Hobby plan only permits native cron jobs once per day, so the hourly
-schedule runs on GitHub Actions instead. The public repository's standard
-GitHub-hosted runner is free. The workflow authenticates to
-`/api/cron/sync-luma` with GitHub's short-lived OIDC token, restricted to this
-repository's immutable ID, the workflow file on `main`, and scheduled/manual
-workflow events. No shared cron secret or extra environment variable is needed.
+Under the hood it is a Next.js app with a Postgres database, deployed on Vercel. That is about all there is to say without spoiling the fun of reading the code.
