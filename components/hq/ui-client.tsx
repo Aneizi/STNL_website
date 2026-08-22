@@ -34,6 +34,10 @@ export function useSavedFlash() {
  *
  * - Auto-disarm after 4000ms — without it a mis-click leaves a primed button
  *   that deletes on the next stray click.
+ * - A click anywhere else on the page disarms it too, so "Sure?" is never
+ *   left sitting on a button the operator has moved on from. That listener
+ *   runs in the capture phase: the row controls around these buttons stop
+ *   propagation, and a bubble-phase listener would never hear those clicks.
  * - stopPropagation on every handler, since most of these buttons sit inside
  *   clickable rows.
  *
@@ -44,9 +48,24 @@ export function useSavedFlash() {
 export function useConfirmDelete() {
   const [armedKey, setArmedKey] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The armed button itself, so its own second click confirms rather than
+  // being read as a click elsewhere.
+  const armedEl = useRef<HTMLElement | null>(null);
   useEffect(() => () => {
     if (timer.current) clearTimeout(timer.current);
   }, []);
+
+  useEffect(() => {
+    if (!armedKey) return;
+    const onDocClick = (e: MouseEvent) => {
+      const el = armedEl.current;
+      if (el && e.target instanceof Node && el.contains(e.target)) return;
+      if (timer.current) clearTimeout(timer.current);
+      setArmedKey(null);
+    };
+    document.addEventListener("click", onDocClick, true);
+    return () => document.removeEventListener("click", onDocClick, true);
+  }, [armedKey]);
 
   return function armed(key: string, restLabel: string, perform: () => void) {
     const isArmed = armedKey === key;
@@ -60,10 +79,12 @@ export function useConfirmDelete() {
         e?.stopPropagation();
         if (timer.current) clearTimeout(timer.current);
         if (isArmed) {
+          armedEl.current = null;
           setArmedKey(null);
           perform();
           return;
         }
+        armedEl.current = (e?.currentTarget as HTMLElement | undefined) ?? null;
         setArmedKey(key);
         timer.current = setTimeout(() => setArmedKey(null), 4000);
       },
