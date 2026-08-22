@@ -47,18 +47,6 @@ export async function createPartner(input: z.infer<typeof createSchema>): Promis
     `,
     activityStmt(user.id, `Added partner ${name}`),
   ];
-  // Design: naming a captain at creation checks the "Captain named" item.
-  if (captainName) {
-    statements.splice(
-      1,
-      0,
-      sql`
-        INSERT INTO hq_partner_exchange (partner_id, item_id)
-        SELECT ${partnerId}, id FROM hq_exchange_items WHERE slug = 'captain'
-        ON CONFLICT DO NOTHING
-      `,
-    );
-  }
   await sql.transaction(statements);
   refreshHq();
   return { ok: true };
