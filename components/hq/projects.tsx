@@ -10,6 +10,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import { IconBubbleAndPencil } from "@/components/hq/icons/IconBubbleAndPencil";
 import { showToast } from "@/components/hq/toast";
 import { Badge, FormField, accentBtn, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
@@ -17,6 +18,7 @@ import {
   addProjectMember,
   addProjectNote,
   createProject,
+  editProjectNote,
   logMondayReview,
   removeProjectMember,
   saveProjectBlocker,
@@ -27,7 +29,13 @@ import {
   updateProjectMember,
 } from "@/lib/hq/actions/projects";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
-import type { Classifiers, Project, ProjectMember, Settings } from "@/lib/hq/types";
+import type {
+  Classifiers,
+  NoteItem,
+  Project,
+  ProjectMember,
+  Settings,
+} from "@/lib/hq/types";
 
 type PartnerOption = { id: string; name: string };
 type EventOption = { id: string; name: string };
@@ -38,7 +46,8 @@ type ProjectPatch =
   | { kind: "gate"; id: string; gateId: string; done: boolean }
   | { kind: "partner"; id: string; partnerId: string | null; partnerName: string }
   | { kind: "memberAdd"; id: string; member: ProjectMember }
-  | { kind: "memberRemove"; id: string; memberId: string };
+  | { kind: "memberRemove"; id: string; memberId: string }
+  | { kind: "noteEdit"; id: string; noteId: string; body: string; editedAt: string };
 
 function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
   return list.map((p) => {
@@ -61,6 +70,15 @@ function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
         return { ...p, members: [...p.members, patch.member] };
       case "memberRemove":
         return { ...p, members: p.members.filter((m) => m.id !== patch.memberId) };
+      case "noteEdit":
+        return {
+          ...p,
+          notes: p.notes.map((n) =>
+            n.id === patch.noteId
+              ? { ...n, body: patch.body, editedAt: patch.editedAt }
+              : n,
+          ),
+        };
     }
   });
 }
@@ -140,6 +158,10 @@ export function Projects({
   // and expand/collapse, and are only cleared where the design clears them.
   const drafts = useRef<Record<string, string | undefined>>({});
   const noteInputRef = useRef<HTMLInputElement | null>(null);
+  // The note being rewritten, and its working copy. One at a time: the
+  // timeline is narrow, and an open editor replaces the note's own row.
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [noteEditDraft, setNoteEditDraft] = useState("");
   const prevExpandId = useRef<string | null>(null);
 
   useEffect(() => {
@@ -284,6 +306,27 @@ export function Projects({
     });
     drafts.current["note" + p.id] = "";
     if (noteInputRef.current) noteInputRef.current.value = "";
+  };
+
+  const onEditNote = (note: NoteItem) => {
+    setEditingNoteId(note.id);
+    setNoteEditDraft(note.body);
+  };
+
+  const onSaveNote = (projectId: string, note: NoteItem) => {
+    const body = noteEditDraft.trim();
+    setEditingNoteId(null);
+    if (!body || body === note.body) return;
+    startTransition(async () => {
+      patch({
+        kind: "noteEdit",
+        id: projectId,
+        noteId: note.id,
+        body,
+        editedAt: new Date().toISOString(),
+      });
+      await editProjectNote(note.id, body);
+    });
   };
 
   const teamProject = teamModalFor
@@ -679,7 +722,10 @@ export function Projects({
                 return (
                   <Fragment key={p.id}>
                     <div
-                      onClick={() => setExpandedId(expanded ? null : p.id)}
+                      onClick={() => {
+                        setExpandedId(expanded ? null : p.id);
+                        setEditingNoteId(null);
+                      }}
                       className="hq-row-hover"
                       style={{
                         display: "grid",
@@ -1096,17 +1142,76 @@ export function Projects({
                                 Add
                               </button>
                             </div>
-                            {p.notes.map((n) => (
-                              <div
-                                key={n.id}
-                                style={{ padding: "6px 0", borderBottom: "1px solid var(--sep)" }}
-                              >
-                                <div style={{ fontSize: 12, color: "var(--label-3)" }}>
-                                  {fmtWhen(n.createdAt, settings.timezone)}, {n.author}
+                            {p.notes.map((n) => {
+                              const editing = editingNoteId === n.id;
+                              return (
+                                <div
+                                  key={n.id}
+                                  style={{
+                                    padding: "6px 0",
+                                    borderBottom: "1px solid var(--sep)",
+                                  }}
+                                >
+                                  <div
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "center",
+                                      gap: 8,
+                                      fontSize: 12,
+                                      color: "var(--label-3)",
+                                    }}
+                                  >
+                                    <span style={{ flex: 1, minWidth: 0 }}>
+                                      {fmtWhen(n.createdAt, settings.timezone)}, {n.author}
+                                      {n.editedAt
+                                        ? ` (edited ${fmtWhen(n.editedAt, settings.timezone)})`
+                                        : ""}
+                                    </span>
+                                    <button
+                                      className="hq-hover-accent"
+                                      onClick={() =>
+                                        editing ? setEditingNoteId(null) : onEditNote(n)
+                                      }
+                                      title={editing ? "Stop editing" : "Edit note"}
+                                      aria-label={editing ? "Stop editing" : "Edit note"}
+                                      style={{
+                                        flex: "none",
+                                        display: "inline-flex",
+                                        border: "none",
+                                        cursor: "pointer",
+                                        background: "none",
+                                        padding: 2,
+                                        color: editing ? "var(--accent)" : "var(--label-3)",
+                                      }}
+                                    >
+                                      <IconBubbleAndPencil style={{ display: "block" }} />
+                                    </button>
+                                  </div>
+                                  {editing ? (
+                                    <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+                                      <input
+                                        autoFocus
+                                        value={noteEditDraft}
+                                        onChange={(e) => setNoteEditDraft(e.target.value)}
+                                        onKeyDown={(e) => {
+                                          if (e.key === "Enter") onSaveNote(p.id, n);
+                                          if (e.key === "Escape") setEditingNoteId(null);
+                                        }}
+                                        style={{ ...panelField, flex: 1, minWidth: 0 }}
+                                      />
+                                      <button
+                                        onClick={() => onSaveNote(p.id, n)}
+                                        style={{ ...accentBtn, flex: "none" }}
+                                      >
+                                        Save
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div style={{ fontSize: 13, marginTop: 2 }}>{n.body}</div>
+                                  )}
                                 </div>
-                                <div style={{ fontSize: 13, marginTop: 2 }}>{n.body}</div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       </div>

@@ -162,12 +162,15 @@ CREATE TABLE IF NOT EXISTS hq_project_gates (
   PRIMARY KEY (project_id, gate_id)
 );
 
+-- edited_at stays null until a note is rewritten; the timeline reads it as
+-- the "(edited)" marker, so ordering still follows created_at.
 CREATE TABLE IF NOT EXISTS hq_project_notes (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id uuid NOT NULL REFERENCES hq_projects (id) ON DELETE CASCADE,
   author_user_id uuid REFERENCES hq_users (id) ON DELETE SET NULL,
   body text NOT NULL,
-  created_at timestamptz NOT NULL DEFAULT now()
+  created_at timestamptz NOT NULL DEFAULT now(),
+  edited_at timestamptz
 );
 
 CREATE INDEX IF NOT EXISTS hq_project_notes_project_idx

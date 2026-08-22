@@ -360,6 +360,44 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
 }
 
 /**
+ * Rewrites a note in place. The note keeps its author and its position in the
+ * timeline (created_at is untouched); edited_at is what the timeline shows as
+ * "(edited)". Any operator can correct any note — the same open model the rest
+ * of the board uses — so the activity feed records who did it.
+ */
+export async function editProjectNote(noteId: string, body: string): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(noteId).success) return { ok: false };
+  const parsed = z.string().min(1).max(2000).safeParse(body);
+  if (!parsed.success) return { ok: false };
+
+  const sql = getSql();
+  const rows = await sql`
+    SELECT p.id AS project_id, p.name
+    FROM hq_project_notes n
+    JOIN hq_projects p ON p.id = n.project_id
+    WHERE n.id = ${noteId}
+  `;
+  const note = rows[0];
+  if (!note) return { ok: false };
+
+  const today = await hqToday();
+  await sql.transaction([
+    sql`
+      UPDATE hq_project_notes SET body = ${parsed.data}, edited_at = now()
+      WHERE id = ${noteId}
+    `,
+    sql`
+      UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
+      WHERE id = ${note.project_id}
+    `,
+    activityStmt(user.id, `Edited note on ${note.name}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
+/**
  * The Log button in Monday review: stamps today's check-in, saves the
  * blocker draft (when provided), and appends the review note.
  */

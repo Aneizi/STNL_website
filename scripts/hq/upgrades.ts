@@ -94,6 +94,11 @@ export async function applyUpgrades(sql: SqlRunner) {
     );
   }
 
+  // Timeline notes became editable; edited_at carries the "(edited)" marker.
+  await sql.query(`
+    ALTER TABLE hq_project_notes ADD COLUMN IF NOT EXISTS edited_at timestamptz
+  `);
+
   // Finalist positions must be unique so concurrent max+1 inserts cannot
   // assign the same slot. Fresh databases already have this index under the
   // same name (schema.sql's inline UNIQUE), so the check skips them; on an

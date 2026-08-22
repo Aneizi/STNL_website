@@ -53,7 +53,16 @@ export type Settings = {
   activeSub: string;
 };
 
-export type NoteItem = { id: string; author: string; body: string; createdAt: string };
+// `editedAt` only rides along on the project timeline, the one note list whose
+// entries can be rewritten after the fact. It holds the last edit alone, in
+// the same shape as createdAt, and stays null until a note is rewritten.
+export type NoteItem = {
+  id: string;
+  author: string;
+  body: string;
+  createdAt: string;
+  editedAt?: string | null;
+};
 
 /** Individually editable teammate; the lead lives on the project itself. */
 export type ProjectMember = { id: string; name: string; contact: string };

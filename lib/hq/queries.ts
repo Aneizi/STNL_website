@@ -106,7 +106,8 @@ export async function getProjects(): Promise<Project[]> {
             'id', n.id,
             'author', COALESCE(au.display_name, ''),
             'body', n.body,
-            'createdAt', to_char(n.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+            'createdAt', to_char(n.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
+            'editedAt', to_char(n.edited_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
           ) ORDER BY n.created_at DESC)
           FROM hq_project_notes n
           LEFT JOIN hq_users au ON au.id = n.author_user_id
