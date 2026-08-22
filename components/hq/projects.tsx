@@ -263,11 +263,12 @@ export function Projects({
   };
 
   // Every chip in the Team row copies that person's contact; chips with no
-  // contact recorded raise the toast without writing to the clipboard.
+  // contact recorded raise the toast without writing to the clipboard. The
+  // toast repeats the handle so the copy can be eyeballed without pasting.
   const copyChip = (name: string, contact: string) => {
     if (contact) {
       if (navigator.clipboard) navigator.clipboard.writeText(contact).catch(() => {});
-      showToast(`Copied ${name}'s contact`);
+      showToast(`Copied ${name}'s contact - ${contact}`);
     } else {
       showToast(`No contact on file for ${name}`);
     }
@@ -429,7 +430,7 @@ export function Projects({
               onChange={(e) => {
                 drafts.current.ProjContact = e.target.value;
               }}
-              placeholder="tg or email"
+              placeholder="tg, x, or email"
               style={input}
             />
           </FormField>
@@ -942,6 +943,7 @@ export function Projects({
                                     }
                                   }}
                                   aria-label="Lead contact"
+                                  placeholder="tg, x, or email"
                                   style={{
                                     ...panelField,
                                     flex: 1,
@@ -1396,7 +1398,7 @@ function TeamModal({
                 <input
                   defaultValue={m.contact}
                   aria-label="Teammate contact"
-                  placeholder="tg or email"
+                  placeholder="tg, x, or email"
                   onBlur={(e) => {
                     if (e.target.value !== m.contact)
                       onUpdate(m.id, "contact", e.target.value);
@@ -1444,7 +1446,7 @@ function TeamModal({
           <input
             value={contactDraft}
             onChange={(e) => setContactDraft(e.target.value)}
-            placeholder="tg or email"
+            placeholder="tg, x, or email"
             style={{
               width: "100%",
               boxSizing: "border-box",

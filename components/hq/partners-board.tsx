@@ -145,7 +145,7 @@ export function PartnersBoard({
           </FormField>
           <FormField label="Contact details" flex={1} minWidth={140}>
             <input
-              placeholder="tg or email"
+              placeholder="tg, x, or email"
               onChange={(e) => {
                 drafts.current.contact = e.target.value;
               }}
