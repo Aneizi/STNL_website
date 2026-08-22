@@ -360,6 +360,27 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
 }
 
 /**
+ * Deletes a project and everything hanging off it. Gates, notes, members and
+ * the finalist row cascade in the schema; an award won by that finalist has
+ * its winner cleared rather than being deleted. Two-step confirmed in the UI,
+ * so there is no soft-delete to undo it from.
+ */
+export async function deleteProject(projectId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  if (!id.safeParse(projectId).success) return { ok: false };
+  const name = await getProjectName(projectId);
+  if (name === null) return { ok: false, error: "Project not found." };
+
+  const sql = getSql();
+  await sql.transaction([
+    sql`DELETE FROM hq_projects WHERE id = ${projectId}`,
+    activityStmt(user.id, `Deleted project ${name}`),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
+/**
  * Rewrites a note in place. The note keeps its author and its position in the
  * timeline (created_at is untouched); edited_at is what the timeline shows as
  * "(edited)". Any operator can correct any note — the same open model the rest

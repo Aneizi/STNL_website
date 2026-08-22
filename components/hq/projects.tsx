@@ -18,6 +18,7 @@ import {
   addProjectMember,
   addProjectNote,
   createProject,
+  deleteProject,
   editProjectNote,
   logMondayReview,
   removeProjectMember,
@@ -47,9 +48,11 @@ type ProjectPatch =
   | { kind: "partner"; id: string; partnerId: string | null; partnerName: string }
   | { kind: "memberAdd"; id: string; member: ProjectMember }
   | { kind: "memberRemove"; id: string; memberId: string }
-  | { kind: "noteEdit"; id: string; noteId: string; body: string; editedAt: string };
+  | { kind: "noteEdit"; id: string; noteId: string; body: string; editedAt: string }
+  | { kind: "remove"; id: string };
 
 function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
+  if (patch.kind === "remove") return list.filter((p) => p.id !== patch.id);
   return list.map((p) => {
     if (p.id !== patch.id) return p;
     switch (patch.kind) {
@@ -117,8 +120,12 @@ const panelField: React.CSSProperties = {
   fontSize: 13,
 };
 
+// Gates carries a bar and a count, so it gets the widest fixed track; Blocker
+// is only a tick in this view (the text lives in the details panel), so it
+// needs no more than the glyph. The last track is the action column, wide
+// enough for the two-step delete's "Sure?", the same as the one on Links.
 const gridColumns =
-  "minmax(0,1.8fr) minmax(0,1.3fr) minmax(0,1.5fr) 92px 105px 130px 92px minmax(0,1.4fr)";
+  "minmax(0,1.8fr) minmax(0,1.3fr) minmax(0,1.4fr) 92px 105px 176px 92px 64px 46px";
 
 export function Projects({
   projects,
@@ -154,6 +161,7 @@ export function Projects({
   // One commit path: every panel control saves on change or blur, and this
   // flash beside the "Details" heading is the only confirmation.
   const { phase: savedPhase, flash } = useSavedFlash();
+  const armedDelete = useConfirmDelete();
   // Mirrors the design's instance-level draft map: drafts survive re-renders
   // and expand/collapse, and are only cleared where the design clears them.
   const drafts = useRef<Record<string, string | undefined>>({});
@@ -307,6 +315,15 @@ export function Projects({
     });
     drafts.current["note" + p.id] = "";
     if (noteInputRef.current) noteInputRef.current.value = "";
+  };
+
+  const onDeleteProject = (projectId: string) => {
+    if (expandedId === projectId) setExpandedId(null);
+    startTransition(async () => {
+      patch({ kind: "remove", id: projectId });
+      const res = await deleteProject(projectId);
+      if (!res.ok && res.error) showToast(res.error);
+    });
   };
 
   const onEditNote = (note: NoteItem) => {
@@ -688,7 +705,7 @@ export function Projects({
               overflowX: "auto",
             }}
           >
-            <div style={{ minWidth: 940 }}>
+            <div style={{ minWidth: 990 }}>
               <div
                 style={{
                   display: "grid",
@@ -713,9 +730,11 @@ export function Projects({
                 <span>Gates</span>
                 <span>Check-in</span>
                 <span>Blocker</span>
+                <span />
               </div>
               {filtered.map((p) => {
                 const done = p.gates.length;
+                const del = armedDelete(`project-${p.id}`, "×", () => onDeleteProject(p.id));
                 const stale = isStale(p.lastCheckIn, settings.staleDays, now);
                 const expanded = expandedId === p.id;
                 const status = statusBySlug.get(p.statusSlug);
@@ -796,17 +815,37 @@ export function Projects({
                       >
                         {fmtDate(p.lastCheckIn)}
                       </span>
+                      {/* A blocker is a yes/no signal at this altitude; the
+                          text itself is one row-click away, in the panel. */}
                       <span
+                        title={p.blocker || undefined}
+                        aria-label={p.blocker ? `Blocked: ${p.blocker}` : "No blocker"}
+                        style={{ fontSize: 14, color: "var(--orange)", lineHeight: 1 }}
+                      >
+                        {p.blocker ? "✓" : ""}
+                      </span>
+                      {/* The × is a glyph, not an icon: it carries a larger
+                          type size than the armed "Sure?" it swaps with. */}
+                      <button
+                        className="hq-hover-accent"
+                        onClick={del.onClick}
+                        title={del.title}
+                        aria-label={del.armed ? "Confirm delete" : `Delete ${p.name}`}
                         style={{
-                          fontSize: 13,
-                          color: "var(--label-2)",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
+                          justifySelf: "end",
+                          border: "none",
+                          cursor: "pointer",
+                          background: "none",
+                          color: del.color,
+                          fontSize: del.armed ? 12 : 18,
+                          fontWeight: del.fontWeight,
+                          lineHeight: 1,
+                          padding: 2,
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {p.blocker || ""}
-                      </span>
+                        {del.label}
+                      </button>
                     </div>
                     {expanded ? (
                       <div
