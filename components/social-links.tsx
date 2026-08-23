@@ -27,8 +27,7 @@ export function SocialLinks() {
           className="-m-2.5 flex p-2.5 text-ink transition-colors duration-200 hover:text-orange focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange focus-visible:ring-offset-2 focus-visible:ring-offset-cream"
         >
           <svg
-            width="22"
-            height="22"
+            className="h-[33px] w-[33px]"
             viewBox={viewBox}
             fill="currentColor"
             xmlns="http://www.w3.org/2000/svg"

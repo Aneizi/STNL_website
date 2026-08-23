@@ -4,6 +4,8 @@ const nextConfig: NextConfig = {
   images: {
     // Luma event cover images
     remotePatterns: [{ protocol: "https", hostname: "**.lumacdn.com" }],
+    // 90 for the full-bleed illustration panels; 75 stays the default
+    qualities: [75, 90],
   },
   async rewrites() {
     return [
