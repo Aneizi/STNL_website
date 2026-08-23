@@ -90,7 +90,7 @@ const PEOPLE_ROLES: Array<
 const PARTNER_STAGES: Array<[slug: string, label: string, dropColor: string]> = [
   ["draft", "Draft", "#8a8579"],
   ["sent", "Sent", "#a8760f"],
-  ["call", "Called", "#ee5b23"],
+  ["call", "Replied", "#ee5b23"],
   ["agreed", "Agreed", "#3e7c4f"],
   ["rejected", "Rejected", "#c03b2d"],
 ];

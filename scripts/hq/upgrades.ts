@@ -44,6 +44,13 @@ export async function applyUpgrades(sql: SqlRunner) {
     WHERE slug = 'mailing'
   `);
 
+  // The "call" stage rarely means an actual call — what it marks is that the
+  // partner replied. The slug stays, so existing partners keep their stage.
+  await sql.query(`
+    UPDATE hq_partner_stages SET label = 'Replied'
+    WHERE slug = 'call'
+  `);
+
   // The submission gates were reworded and reordered to follow the run a team
   // actually makes: register, then build, then submit. Renaming in place (by
   // the old label) keeps hq_project_gates rows pointing at the same gate, so
