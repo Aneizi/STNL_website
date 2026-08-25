@@ -80,12 +80,14 @@ export default function AboutPage() {
       <div className="flex w-full flex-1 flex-col px-6 pb-12 pt-6 min-[900px]:w-[54%] min-[900px]:flex-none min-[900px]:px-14 min-[900px]:pb-16 min-[900px]:pt-[30px]">
         <SiteHeader active="about" navOverlay />
 
-        {/* On desktop the column's spare height is split evenly around the
-            content (justify-center) instead of pooling below the button, so
-            the text block sits at the panel's vertical centre; py-6 keeps a
-            floor gap to the header and footer on short viewports. Mobile keeps
-            the top-anchored flow. */}
-        <div className="flex flex-1 flex-col min-[900px]:justify-center min-[900px]:py-6">
+        {/* On desktop the column's spare height is split between the spacer
+            above the text block and the button band below the list (both
+            flex-1), so the text block sits near the panel's vertical centre
+            while the button centres in the gap between the list's closing rule
+            and the footer hairline; pt-6 keeps a floor gap to the header on
+            short viewports. Mobile keeps the top-anchored flow. */}
+        <div className="flex flex-1 flex-col min-[900px]:pt-6">
+          <div aria-hidden="true" className="hidden min-[900px]:block min-[900px]:flex-1" />
           {/* Both blocks are capped to a readable measure: uncapped, the intro
             ran the full 666px column at ~83 characters a line. */}
           <div className="mt-14 flex flex-col gap-4 min-[900px]:mt-0">
@@ -130,12 +132,13 @@ export default function AboutPage() {
             ))}
           </ul>
 
-          {/* On mobile the band claims the space between the list's closing rule
-            and the footer hairline and centres the button in it; on desktop it
-            stays at its 76px minimum (flex-none) so the wrapper's
-            justify-center owns the spare height instead. No `self-start` on
-            the anchor: align-self would override the band's align-items. */}
-          <div className="flex min-h-[76px] flex-1 items-center min-[900px]:flex-none">
+          {/* The band claims the space between the list's closing rule and the
+            footer hairline and centres the button in it — on desktop it splits
+            the column's spare height evenly with the spacer above the text
+            block, min-h-[76px] being its floor on short viewports. No
+            `self-start` on the anchor: align-self would override the band's
+            align-items. */}
+          <div className="flex min-h-[76px] flex-1 items-center">
             <a
               href={LINKS.pitchDeck}
               className="group inline-flex min-h-11 items-center gap-2.5 border-2 border-ink px-5 py-3 text-xs font-semibold uppercase tracking-[0.14em] text-ink transition-colors duration-200 hover:bg-ink hover:text-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange focus-visible:ring-offset-2 focus-visible:ring-offset-cream"
