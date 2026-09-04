@@ -1,8 +1,13 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { ExternalMark } from "@/components/external-mark";
 import { JoinMenu } from "@/components/join-menu";
 import { LINKS } from "@/lib/links";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+};
 
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange focus-visible:ring-offset-2 focus-visible:ring-offset-cream";

@@ -5,9 +5,10 @@ import { SiteHeader } from "@/components/site-header";
 import { getPastEvents, getUpcomingEvents } from "@/lib/luma";
 
 export const metadata: Metadata = {
-  title: "Events",
+  title: "Solana Events in the Netherlands",
   description:
-    "Every Superteam NL gathering, in one calendar - meetups, build stations and demo days across the Netherlands.",
+    "Join Superteam NL (STNL) for Solana events in the Netherlands: community meetups, build stations and demo days. Find upcoming gatherings and RSVP.",
+  alternates: { canonical: "/events" },
 };
 
 // Re-fetch the Luma calendar at most every 5 minutes.

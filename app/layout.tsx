@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Archivo, Instrument_Serif } from "next/font/google";
+import { SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 const archivo = Archivo({
@@ -15,12 +16,17 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: "Superteam NL",
+    default: "Superteam NL (STNL) | Solana Netherlands",
     template: "%s - Superteam NL",
   },
   description:
-    "The Dutch chapter of Solana's global builder network - a community of builders, creatives and operators.",
+    "Superteam NL (STNL) is the Solana community in the Netherlands. Meet builders, join events, and find grants and bounties in the Dutch Solana ecosystem.",
+  openGraph: {
+    type: "website",
+    siteName: "Superteam NL",
+  },
   twitter: {
     // the brand mark is square, so use the square card
     card: "summary",

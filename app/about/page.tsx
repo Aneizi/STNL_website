@@ -10,7 +10,8 @@ import { LINKS } from "@/lib/links";
 export const metadata: Metadata = {
   title: "About",
   description:
-    "Superteam NL is the Dutch chapter of Solana's global builder network - a community of builders, creatives and operators.",
+    "Meet Superteam NL (STNL), the Dutch chapter of Solana's global builder network. A community of builders, creatives and operators in the Netherlands.",
+  alternates: { canonical: "/about" },
 };
 
 const PILLARS = [
