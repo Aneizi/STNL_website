@@ -1,7 +1,12 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { IconArrowLeft } from "symbols-react";
+import {
+  COLOSSEUM_INTEREST_COOKIE, COLOSSEUM_INTEREST_COOKIE_VALUE, getInterestDestination,
+} from "@/lib/colosseum-interest";
 import { InterestForm } from "./interest-form";
 import styles from "./interest.module.css";
 
@@ -19,6 +24,10 @@ export default async function InterestPage({
 }) {
   const params = await searchParams;
   const path = params.path === "experienced" ? "experienced" : "beginner";
+  const cookieStore = await cookies();
+  if (cookieStore.get(COLOSSEUM_INTEREST_COOKIE)?.value === COLOSSEUM_INTEREST_COOKIE_VALUE) {
+    redirect(getInterestDestination(path));
+  }
 
   return (
     <div className={styles.page}>

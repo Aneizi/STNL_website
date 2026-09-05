@@ -1,7 +1,16 @@
 import { z } from "zod";
+import { COLOSSEUM_SIGNUP_URL } from "@/lib/colosseum";
 
 export type InterestPath = "beginner" | "experienced";
 export type ContactMethod = "telegram" | "phone";
+
+// A campaign-specific completion marker, with no personal details.
+export const COLOSSEUM_INTEREST_COOKIE = "stnl-colosseum-interest-6";
+export const COLOSSEUM_INTEREST_COOKIE_VALUE = "1";
+
+export function getInterestDestination(path: InterestPath): string {
+  return path === "beginner" ? "/colosseum/start/beginner" : COLOSSEUM_SIGNUP_URL;
+}
 
 export type InterestResult = {
   ok: boolean;

@@ -27,8 +27,8 @@ export function InterestForm({ path }: { path: InterestPath }) {
         return { ok: false, error: "We couldn’t save your details. Please try again." };
       }
       if (result.ok && result.redirectTo) {
-        if (result.redirectTo.startsWith("/")) router.push(result.redirectTo);
-        else window.location.assign(result.redirectTo);
+        if (result.redirectTo.startsWith("/")) router.replace(result.redirectTo);
+        else window.location.replace(result.redirectTo);
       }
       return result;
     },

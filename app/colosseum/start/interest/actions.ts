@@ -1,9 +1,11 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { headers } from "next/headers";
-import { COLOSSEUM_SIGNUP_URL } from "@/lib/colosseum";
-import { parseInterestForm, type InterestResult } from "@/lib/colosseum-interest";
+import { cookies, headers } from "next/headers";
+import {
+  COLOSSEUM_INTEREST_COOKIE, COLOSSEUM_INTEREST_COOKIE_VALUE,
+  getInterestDestination, parseInterestForm, type InterestResult,
+} from "@/lib/colosseum-interest";
 import { getSql } from "@/lib/hq/db";
 import { saveColosseumInterest } from "@/lib/hq/colosseum-interest";
 
@@ -15,6 +17,12 @@ export async function submitInterest(
   if (!parsed.ok) return parsed.result;
 
   try {
+    const cookieStore = await cookies();
+    const redirectTo = getInterestDestination(parsed.data.path);
+    if (cookieStore.get(COLOSSEUM_INTEREST_COOKIE)?.value === COLOSSEUM_INTEREST_COOKIE_VALUE) {
+      return { ok: true, redirectTo };
+    }
+
     const headerStore = await headers();
     // The deployment proxy supplies these headers, as for the HQ limiter.
     // Requests without an address share the same bounded fallback bucket.
@@ -30,12 +38,14 @@ export async function submitInterest(
     if (!result.ok) return result;
 
     revalidatePath("/hq", "layout");
-    return {
-      ok: true,
-      redirectTo: parsed.data.path === "beginner"
-        ? "/colosseum/start/beginner"
-        : COLOSSEUM_SIGNUP_URL,
-    };
+    cookieStore.set(COLOSSEUM_INTEREST_COOKIE, COLOSSEUM_INTEREST_COOKIE_VALUE, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/colosseum",
+      maxAge: 60 * 60 * 24 * 180,
+    });
+    return { ok: true, redirectTo };
   } catch {
     return { ok: false, error: "We couldn't save your interest. Please try again shortly." };
   }
