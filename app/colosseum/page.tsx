@@ -36,6 +36,17 @@ export default function ColosseumPage() {
         Skip to the introduction
       </FairAnchor>
       <ColosseumExperience className={styles.artwork}>
+        <Link href="/" className={styles.homeLink} aria-label="Superteam NL home">
+          <Image
+            src="/landing/st-orange.png"
+            alt=""
+            width={2154}
+            height={2116}
+            sizes="24px"
+            loading="eager"
+          />
+          <span>superteam NL</span>
+        </Link>
         <Image
           src="/ColosseumWorldsFairNL.jpg"
           alt="Colosseum hackathon, with Dutch canals, tulips and orange Superteam NL flags."
