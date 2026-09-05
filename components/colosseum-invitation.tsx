@@ -31,7 +31,7 @@ export function ColosseumInvitation() {
         </span>
         <span
           aria-hidden="true"
-          className={`${styles.caption} absolute inset-0 flex items-center justify-center gap-3 bg-white/85 px-4 text-sm font-medium text-black`}
+          className={`${styles.caption} absolute inset-0 flex items-center justify-center gap-3 bg-white/85 px-4 text-lg font-medium text-black`}
         >
           Embark on an adventure
           <IconArrowRight
