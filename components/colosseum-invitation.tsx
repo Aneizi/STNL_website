@@ -12,9 +12,10 @@ export function ColosseumInvitation() {
     >
       <span className="relative block h-24 overflow-hidden">
         <Image
-          src="/colosseum/worlds-fair-banner.png"
+          src="/colosseum/worlds-fair-garden.png"
           alt=""
           fill
+          loading="eager"
           sizes="(max-width: 368px) calc(100vw - 48px), 320px"
           className="object-cover object-bottom"
         />
