@@ -42,7 +42,7 @@ export default function ColosseumPage() {
             alt=""
             width={2154}
             height={2116}
-            sizes="24px"
+            sizes="(max-width: 599px) 18px, 20px"
             loading="eager"
           />
           <span>superteam NL</span>

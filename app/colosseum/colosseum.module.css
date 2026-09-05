@@ -3,8 +3,10 @@
 .artwork { position: relative; width: 100%; opacity: var(--artwork-opacity, 1); }
 .artwork::after { content: ""; position: absolute; inset: 75% -1px -1px; background: linear-gradient(to bottom, transparent, var(--cream)); pointer-events: none; }
 .poster { display: block; width: 100%; height: auto; }
-.homeLink { position: absolute; z-index: 2; top: 20px; left: 20px; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--cream) 80%, transparent); color: var(--ink); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 14px; font-weight: 700; letter-spacing: -.01em; }
-.homeLink img { width: 24px; height: auto; }
+.homeLink { position: absolute; z-index: 2; top: 12px; left: 12px; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--cream) 80%, transparent); color: var(--ink); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 12px; font-weight: 700; letter-spacing: -.01em; }
+/* Preserve a generous hit area around the smaller visible logo. */
+.homeLink::after { content: ""; position: absolute; inset: -5px; }
+.homeLink img { width: 20px; height: auto; }
 .homeLink:active { background: var(--cream); }
 .scrollCue { position: absolute; z-index: 1; top: min(calc(100svh - 72px), calc(100% - 72px)); left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid color-mix(in srgb, var(--cream) 75%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--cream) 60%, transparent); color: var(--ink); -webkit-backdrop-filter: blur(16px) saturate(140%); backdrop-filter: blur(16px) saturate(140%); box-shadow: 0 4px 16px rgb(22 19 15 / 12%), inset 0 1px 0 rgb(255 255 255 / 45%); font-size: 14px; line-height: 1.5; white-space: nowrap; }
 .scrollCue svg { flex-shrink: 0; }
@@ -38,7 +40,9 @@
 @media (prefers-reduced-motion: reduce) { .artwork { opacity: 1; } }
 @media (max-width: 599px) {
   .scrollCue { display: none; }
-  .homeLink { top: 12px; left: 12px; }
+  .homeLink { top: 10px; left: 10px; min-height: 32px; padding: 7px; }
+  .homeLink::after { inset: -6px; }
+  .homeLink img { width: 18px; }
   .homeLink span { display: none; }
   .artwork::after { inset-block-start: 80%; }
   .intro { min-height: 440px; padding-block: 24px 64px; }
