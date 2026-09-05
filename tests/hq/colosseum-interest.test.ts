@@ -69,14 +69,14 @@ describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) =
     ]);
   });
 
-  it("records phone contact and experienced Solana builders", async () => {
+  it("records WhatsApp contact and experienced Solana builders", async () => {
     await saveColosseumInterest(db, {
       ...INPUT, contactMethod: "phone", contact: "+31612345678",
       builtOnSolana: true, path: "experienced",
     }, "127.0.0.1");
     const [person] = await db.query(`SELECT contact, notes FROM hq_people`);
     expect(person).toEqual({
-      contact: "Phone: +31612345678",
+      contact: "WhatsApp: +31612345678",
       notes: "Colosseum hackathon interest\nPath: Experienced\nBuilt on Solana before: Yes",
     });
   });

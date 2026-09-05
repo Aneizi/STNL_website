@@ -70,9 +70,9 @@
 .contactMethods { min-width: 0; border: 0; padding: 0; }
 .contactMethods legend { margin-bottom: 12px; }
 .toggle { display: flex; padding: 4px; border: 1px solid var(--line); border-radius: 6px; }
-.option { position: relative; flex: 1; min-width: 0; cursor: pointer; }
+.option { position: relative; display: flex; flex: 1; min-width: 0; cursor: pointer; }
 .option input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.option span { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 8px 12px; border-radius: 3px; }
+.option span { display: flex; flex: 1; align-items: center; justify-content: center; min-height: 48px; padding: 8px 12px; border-radius: 3px; text-align: center; }
 .option input:checked + span { background: var(--ink); color: var(--cream); }
 .option input:focus-visible + span { outline: 2px solid var(--orange-deep); outline-offset: 2px; }
 .hint, .privacy { color: var(--muted); }

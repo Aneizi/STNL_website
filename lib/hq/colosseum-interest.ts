@@ -81,7 +81,7 @@ export async function saveColosseumInterest(
   ].join("\n");
   const contact = input.contactMethod === "telegram"
     ? `Telegram: ${input.contact}`
-    : `Phone: ${input.contact}`;
+    : `WhatsApp: ${input.contact}`;
 
   // Only these fixed fragments vary by the capability check; all submitted
   // data stays parameterized. The person and activity are one atomic write.

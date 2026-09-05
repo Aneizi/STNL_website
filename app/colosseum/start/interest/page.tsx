@@ -6,7 +6,7 @@ import { InterestForm } from "./interest-form";
 import styles from "./interest.module.css";
 
 export const metadata: Metadata = {
-  title: "Join the Dutch builders",
+  title: "Express your interest",
   description: "Express your interest in the Colosseum hackathon with Superteam NL.",
   alternates: { canonical: "/colosseum/start/interest" },
   robots: { index: false, follow: true },
@@ -33,7 +33,7 @@ export default async function InterestPage({
         </Link>
       </header>
       <main className={styles.main}>
-        <h1>Count <em>me in.</em></h1>
+        <h1>Express <em>your interest.</em></h1>
         <p className={styles.introduction}>Join the Dutch builders taking on Colosseum.</p>
         <InterestForm key={path} path={path} />
       </main>

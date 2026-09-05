@@ -41,7 +41,7 @@ export function InterestForm({ path }: { path: InterestPath }) {
   }, [state]);
 
   const submitting = pending || state.ok;
-  const contactHint = method === "telegram" ? "Use your username or t.me link." : "Include your country code, such as +31.";
+  const contactHint = method === "telegram" ? "Use your username." : "Include your country code, such as +31.";
   const contactError = submittedMethod === method ? state.fieldErrors?.contact : undefined;
 
   return (
@@ -83,14 +83,14 @@ export function InterestForm({ path }: { path: InterestPath }) {
                 checked={method === option}
                 onChange={() => setMethod(option)}
               />
-              <span>{option === "telegram" ? "Telegram" : "Phone"}</span>
+              <span>{option === "telegram" ? "Telegram" : "WhatsApp number"}</span>
             </label>
           ))}
         </div>
       </fieldset>
 
       <div className={styles.field}>
-        <label htmlFor="interest-contact">{method === "telegram" ? "Telegram username" : "Phone number"}</label>
+        <label htmlFor="interest-contact">{method === "telegram" ? "Telegram username" : "WhatsApp number"}</label>
         <input
           id="interest-contact"
           name="contact"

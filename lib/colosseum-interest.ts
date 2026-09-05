@@ -76,7 +76,7 @@ export function parseInterestForm(
         ok: false,
         fieldErrors: {
           contact: contactMethod === "telegram"
-            ? "Enter your Telegram username or t.me link."
+            ? "Enter your Telegram username."
             : "Include your country code, for example +31 6 1234 5678.",
         },
       },
