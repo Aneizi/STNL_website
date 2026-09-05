@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
-import { IconArrowRight } from "symbols-react";
+import { IconArrowDown, IconArrowRight } from "symbols-react";
 import { ColosseumExperience, FairAnchor } from "./scroll-experience";
 import styles from "./colosseum.module.css";
 
@@ -46,6 +46,10 @@ export default function ColosseumPage() {
           preload
           className={styles.poster}
         />
+        <FairAnchor href="#fair-intro" className={styles.scrollCue}>
+          Scroll down
+          <IconArrowDown width={18} height={18} fill="currentColor" aria-hidden="true" />
+        </FairAnchor>
       </ColosseumExperience>
       <section id="fair-intro" tabIndex={-1} className={styles.intro} aria-labelledby="fair-title">
         <h1 id="fair-title">Small Country.<br /><em>Serious Builders.</em></h1>
