@@ -3,9 +3,10 @@
 .artwork { position: relative; width: 100%; opacity: var(--artwork-opacity, 1); }
 .artwork::after { content: ""; position: absolute; inset: 75% -1px -1px; background: linear-gradient(to bottom, transparent, var(--cream)); pointer-events: none; }
 .poster { display: block; width: 100%; height: auto; }
-.scrollCue { position: absolute; z-index: 1; top: min(calc(100svh - 80px), calc(100% - 80px)); right: clamp(24px, 3vw, 40px); display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 56px; padding: 14px 20px; border: 1px solid var(--line); border-radius: 999px; background: var(--cream); color: var(--ink); box-shadow: 0 4px 20px rgb(22 19 15 / 16%); font-size: 18px; line-height: 1.5; }
+.scrollCue { position: absolute; z-index: 1; top: min(calc(100svh - 72px), calc(100% - 72px)); left: 50%; transform: translateX(-50%); display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 10px 16px; border: 1px solid color-mix(in srgb, var(--cream) 75%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--cream) 60%, transparent); color: var(--ink); -webkit-backdrop-filter: blur(16px) saturate(140%); backdrop-filter: blur(16px) saturate(140%); box-shadow: 0 4px 16px rgb(22 19 15 / 12%), inset 0 1px 0 rgb(255 255 255 / 45%); font-size: 14px; line-height: 1.5; white-space: nowrap; }
 .scrollCue svg { flex-shrink: 0; }
-.scrollCue:active { background: var(--ink); color: var(--cream); }
+.scrollCue:active { background: color-mix(in srgb, var(--cream) 85%, transparent); }
+.scrollCue[data-dismissed="true"] { opacity: 0; visibility: hidden; pointer-events: none; }
 .intro { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 560px; padding: 40px 24px 96px; text-align: center; scroll-margin-top: 24px; }
 .intro:focus { outline: none; }
 .intro h1 { font-family: var(--font-serif); font-size: clamp(48px, 6vw, 80px); font-weight: 400; line-height: 1.05; letter-spacing: -.02em; }
@@ -18,16 +19,16 @@
 
 @media (hover: hover) {
   .button:hover { background: var(--orange-deep); }
-  .scrollCue:hover { background: var(--ink); color: var(--cream); }
+  .scrollCue:hover { background: color-mix(in srgb, var(--cream) 80%, transparent); }
 }
 @media (prefers-reduced-motion: no-preference) {
   .button { transition: background-color 150ms ease-out; }
-  .scrollCue { transition: background-color 150ms ease-out, color 150ms ease-out; }
-  .scrollCue svg { transition: transform 200ms cubic-bezier(.22, 1, .36, 1); }
-  .scrollCue:focus-visible svg { transform: translateY(4px); }
+  .scrollCue { transition: opacity 250ms ease-out, background-color 150ms ease-out, visibility 0s linear; animation: scrollCueBounce 1600ms ease-in-out 500ms 3; }
+  .scrollCue[data-dismissed="true"] { transition-delay: 0s, 0s, 250ms; animation-play-state: paused; }
 }
-@media (hover: hover) and (prefers-reduced-motion: no-preference) {
-  .scrollCue:hover svg { transform: translateY(4px); }
+@keyframes scrollCueBounce {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 4px; }
 }
 @media (prefers-reduced-motion: reduce) { .artwork { opacity: 1; } }
 @media (max-width: 599px) {

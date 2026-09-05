@@ -46,9 +46,9 @@ export default function ColosseumPage() {
           preload
           className={styles.poster}
         />
-        <FairAnchor href="#fair-intro" className={styles.scrollCue}>
+        <FairAnchor href="#fair-intro" className={styles.scrollCue} data-scroll-cue>
           Scroll down
-          <IconArrowDown width={18} height={18} fill="currentColor" aria-hidden="true" />
+          <IconArrowDown width={16} height={16} fill="currentColor" aria-hidden="true" />
         </FairAnchor>
       </ColosseumExperience>
       <section id="fair-intro" tabIndex={-1} className={styles.intro} aria-labelledby="fair-title">

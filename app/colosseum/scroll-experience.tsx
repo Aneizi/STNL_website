@@ -10,16 +10,23 @@ export function ColosseumExperience({ children, className }: { children: ReactNo
     const element = artwork.current;
     if (!element) return;
 
+    const scrollCue = element.querySelector<HTMLAnchorElement>("[data-scroll-cue]");
     const preference = window.matchMedia("(prefers-reduced-motion: reduce)");
     let frame = 0;
 
     const update = () => {
       frame = 0;
+      const bounds = element.getBoundingClientRect();
+      // Dismiss once per visit, including when the user scrolls without clicking.
+      if (bounds.top < -4 && scrollCue && scrollCue.dataset.dismissed !== "true") {
+        scrollCue.dataset.dismissed = "true";
+        scrollCue.inert = true;
+        scrollCue.setAttribute("aria-hidden", "true");
+      }
       if (preference.matches) {
         element.style.removeProperty("--artwork-opacity");
         return;
       }
-      const bounds = element.getBoundingClientRect();
       const progress = Math.min(1, Math.max(0, -bounds.top / bounds.height));
       element.style.setProperty("--artwork-opacity", String(1 - progress * 0.45));
     };
