@@ -6,11 +6,15 @@
 // Split from migrate.ts so tests can drive it against a throwaway Postgres:
 // it only needs `query(text) => rows`, which both the Neon driver and a
 // test harness satisfy.
+import { ensureBuilderRole } from "../../lib/hq/builder-role";
+
 export type SqlRunner = {
   query: (text: string) => Promise<Record<string, unknown>[]>;
 };
 
 export async function applyUpgrades(sql: SqlRunner) {
+  await ensureBuilderRole(sql);
+
   // "Other" lets operators capture roles outside the fixed taxonomy. The
   // People form stores the clarification in the person's existing notes.
   await sql.query(`
