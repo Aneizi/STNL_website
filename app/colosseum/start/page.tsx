@@ -2,13 +2,12 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { IconArrowLeft, IconArrowRight } from "symbols-react";
-import { COLOSSEUM_SIGNUP_URL } from "@/lib/colosseum";
 import styles from "./start.module.css";
 
 export const metadata: Metadata = {
   title: "Choose your path to Colosseum",
   description:
-    "Get help registering for the hackathon or head straight to Colosseum.",
+    "Join the Dutch builders and find your path to the Colosseum hackathon.",
   alternates: { canonical: "/colosseum/start" },
 };
 
@@ -38,7 +37,7 @@ export default function ColosseumStartPage() {
         </div>
 
         <Link
-          href="/colosseum/start/beginner"
+          href="/colosseum/start/interest?path=beginner"
           className={`${styles.choice} ${styles.beginner}`}
           aria-labelledby="beginner-title"
           aria-describedby="beginner-description"
@@ -57,8 +56,8 @@ export default function ColosseumStartPage() {
           </div>
         </Link>
 
-        <a
-          href={COLOSSEUM_SIGNUP_URL}
+        <Link
+          href="/colosseum/start/interest?path=experienced"
           className={`${styles.choice} ${styles.experienced}`}
           aria-labelledby="experienced-title"
           aria-describedby="experienced-description"
@@ -66,7 +65,7 @@ export default function ColosseumStartPage() {
           <div className={styles.content}>
             <h2 id="experienced-title">Experienced</h2>
             <p id="experienced-description">
-              You know the drill. Head straight to Colosseum and sign up.
+              You know the drill. Join the Dutch builders, then sign up.
             </p>
             <span className={styles.action}>
               Enter the arena
@@ -75,7 +74,7 @@ export default function ColosseumStartPage() {
               </span>
             </span>
           </div>
-        </a>
+        </Link>
       </main>
     </div>
   );
