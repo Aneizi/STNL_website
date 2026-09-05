@@ -1,6 +1,7 @@
 import "server-only";
 import { createHash } from "node:crypto";
 import type { InterestInput } from "@/lib/colosseum-interest";
+import { ensureBuilderRole } from "@/lib/hq/builder-role";
 
 type InterestDb = {
   query: (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
@@ -64,24 +65,10 @@ export async function saveColosseumInterest(
     if (!hackathons[0]) return { ok: false, error: UNAVAILABLE_ERROR };
   }
 
-  await db.query(`
-    INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
-    VALUES ('Interested builder', 'Interested builders', 'accent', 'accent-fill', false, 100)
-    ON CONFLICT (label) DO NOTHING
-  `);
-  const [role] = await db.query(`
-    SELECT id FROM hq_people_roles WHERE label = 'Interested builder' AND NOT is_judge
-  `);
-  if (!role) return { ok: false, error: UNAVAILABLE_ERROR };
+  const roleId = await ensureBuilderRole(db);
+  if (!roleId) return { ok: false, error: UNAVAILABLE_ERROR };
 
-  const notes = [
-    "Colosseum hackathon interest",
-    `Path: ${input.path === "beginner" ? "Beginner" : "Experienced"}`,
-    `Built on Solana before: ${input.builtOnSolana ? "Yes" : "No"}`,
-  ].join("\n");
-  const contact = input.contactMethod === "telegram"
-    ? `Telegram: ${input.contact}`
-    : `WhatsApp: ${input.contact}`;
+  const notes = `Built on Solana before: ${input.builtOnSolana ? "Yes" : "No"}`;
 
   // Only these fixed fragments vary by the capability check; all submitted
   // data stays parameterized. The person and activity are one atomic write.
@@ -95,7 +82,7 @@ export async function saveColosseumInterest(
     INSERT INTO hq_activity (message${scoped ? ", hackathon_id" : ""})
     SELECT $6${scoped ? ", $7" : ""} FROM added
   `, [
-    personId(input), input.name, role.id, contact, notes,
+    personId(input), input.name, roleId, input.contact, notes,
     `${input.name} expressed interest in the Colosseum hackathon`,
     ...(scoped ? [HACKATHON_ID] : []),
   ]);

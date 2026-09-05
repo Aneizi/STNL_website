@@ -60,8 +60,8 @@ describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) =
     const [person] = await db.query(`SELECT p.*, r.label FROM hq_people p
       JOIN hq_people_roles r ON r.id = p.role_id`);
     expect(person).toMatchObject({
-      name: "Test Builder", contact: "Telegram: @testbuilder", label: "Interested builder",
-      notes: "Colosseum hackathon interest\nPath: Beginner\nBuilt on Solana before: No",
+      name: "Test Builder", contact: "@testbuilder", label: "Builder",
+      notes: "Built on Solana before: No",
     });
     if (scoped) expect(person.hackathon_id).toBe(6);
     expect(await db.query(`SELECT message FROM hq_activity`)).toEqual([
@@ -76,9 +76,22 @@ describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) =
     }, "127.0.0.1");
     const [person] = await db.query(`SELECT contact, notes FROM hq_people`);
     expect(person).toEqual({
-      contact: "WhatsApp: +31612345678",
-      notes: "Colosseum hackathon interest\nPath: Experienced\nBuilt on Solana before: Yes",
+      contact: "+31612345678",
+      notes: "Built on Solana before: Yes",
     });
+  });
+
+  it("reuses the existing Builder role without changing its HQ settings", async () => {
+    const [role] = await db.query(`
+      INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
+      VALUES ('Builder', 'Our builders', 'green', 'green-fill', false, 42)
+      RETURNING id
+    `);
+    await saveColosseumInterest(db, INPUT, "127.0.0.1");
+    expect(await db.query(`SELECT role_id FROM hq_people`)).toEqual([{ role_id: role.id }]);
+    expect(await db.query(`SELECT label, filter_label, color, bg, sort FROM hq_people_roles`)).toEqual([
+      { label: "Builder", filter_label: "Our builders", color: "green", bg: "green-fill", sort: 42 },
+    ]);
   });
 
   it("deduplicates concurrent retries without overwriting an admin's edits", async () => {
