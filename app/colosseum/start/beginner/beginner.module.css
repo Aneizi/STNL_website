@@ -1,0 +1,31 @@
+.page { min-height: 100dvh; background: var(--cream); color: var(--ink); font-size: 18px; line-height: 1.6; }
+.page a:focus-visible { outline: 2px solid var(--orange); outline-offset: 5px; }
+.header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; min-height: 80px; padding: 16px 32px; border-bottom: 1px solid var(--line); }
+.brand, .backLink { display: inline-flex; align-items: center; gap: 12px; min-height: 48px; }
+.brand { font-weight: 700; letter-spacing: -.02em; }
+.brand img { width: 30px; height: auto; }
+.backLink { color: var(--muted); }
+.guide { max-width: 760px; margin-inline: auto; padding: 72px 32px 80px; }
+.guide h1, .guide h2 { font-family: var(--font-serif); font-weight: 400; line-height: 1.1; letter-spacing: -.02em; }
+.guide h1 { font-size: clamp(48px, 5vw, 64px); }
+.guide h1 em { color: var(--orange); }
+.guide h2 { font-size: 32px; }
+.guide p { color: var(--muted); }
+.introduction { margin-top: 20px; }
+.steps { list-style: none; margin-top: 48px; padding: 0; }
+.steps li { display: grid; grid-template-columns: 36px 1fr; gap: 24px; padding-block: 28px; border-top: 1px solid var(--line); }
+.number { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 50%; font-variant-numeric: tabular-nums; }
+.steps p, .support p { margin-top: 12px; }
+.steps strong { color: var(--ink); font-weight: 600; }
+.externalLink { display: inline-flex; align-items: center; gap: 12px; min-height: 48px; margin-top: 12px; color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 6px; }
+.externalLink svg, .backLink svg { flex-shrink: 0; }
+.support { margin-top: 20px; padding-top: 32px; border-top: 1px solid var(--line); }
+@media (hover: hover) { .externalLink:hover, .backLink:hover { color: var(--orange-deep); text-decoration-color: currentColor; } }
+@media (prefers-reduced-motion: no-preference) { .page a { transition: color 150ms ease-out, text-decoration-color 150ms ease-out; } }
+@media (max-width: 599px) {
+  .header { padding: 12px 24px; }
+  .guide { padding: 48px 24px 64px; }
+  .guide h2 { font-size: 28px; }
+  .steps { margin-top: 32px; }
+  .steps li { gap: 16px; }
+}

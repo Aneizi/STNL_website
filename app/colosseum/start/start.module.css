@@ -1,0 +1,241 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100svh;
+  background: var(--cream);
+  color: var(--ink);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  min-height: 88px;
+  padding: 16px 32px;
+}
+
+.brand,
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: inherit;
+  font-size: 18px;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+.brand {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.brand img {
+  width: 30px;
+  height: auto;
+}
+
+.back {
+  padding-inline: 8px;
+}
+
+.brand:focus-visible,
+.back:focus-visible {
+  outline: 3px solid var(--orange-deep);
+  outline-offset: 5px;
+  border-radius: 4px;
+}
+
+.choices {
+  /* Target width share and motion duration can be tuned here. */
+  --expand-share: 60;
+  --transition-duration: 500ms;
+  --share: clamp(52, var(--expand-share), 72);
+  --grow: calc(var(--share) / (100 - var(--share)));
+  --duration: clamp(150ms, var(--transition-duration), 900ms);
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  flex: 1;
+  min-height: 580px;
+  border-top: 1px solid var(--ink);
+}
+
+.question {
+  position: absolute;
+  top: 40px;
+  left: 50%;
+  z-index: 1;
+  width: max-content;
+  max-width: calc(100% - 48px);
+  padding: 25px 44px 29px;
+  border: 1px solid rgb(22 19 15 / 24%);
+  border-radius: 18px;
+  background: rgb(251 247 240 / 86%);
+  box-shadow: 0 8px 32px rgb(22 19 15 / 10%);
+  text-align: center;
+  pointer-events: none;
+  transform: translateX(-50%);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+.question h1,
+.choice h2 {
+  margin: 0;
+  font-family: var(--font-instrument-serif), Georgia, serif;
+  font-weight: 400;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+}
+
+.question h1 {
+  font-size: 48px;
+}
+
+.question em {
+  color: var(--orange-deep);
+}
+
+.choice {
+  flex: 1 1 0%;
+  min-width: min(100%, 440px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 180px 0 76px;
+  color: inherit;
+  text-align: center;
+  text-decoration: none;
+  transition:
+    flex-grow var(--duration) cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 300ms ease;
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  padding-inline: 36px;
+}
+
+.choice:focus-visible {
+  --cta: var(--orange);
+  --nudge: 6px;
+  outline: 2px solid var(--orange);
+  outline-offset: -8px;
+}
+
+.beginner { background: var(--cream); }
+.beginner:focus-visible { background: #f6efe2; }
+.experienced:focus-visible { background: #201b14; }
+
+.choice h2 {
+  font-size: 64px;
+}
+
+.choice p {
+  max-width: 330px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+.experienced {
+  background: var(--ink);
+  color: var(--cream);
+}
+
+.experienced p {
+  color: rgb(251 247 240 / 75%);
+}
+
+.action {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--cta, inherit);
+  transition: color 200ms ease;
+}
+
+.arrow {
+  display: inline-flex;
+  transform: translateX(var(--nudge, 0px));
+  transition: transform 250ms ease;
+}
+
+@media (hover: hover) {
+  .choice:hover {
+    flex-grow: var(--grow);
+    --cta: var(--orange);
+    --nudge: 6px;
+  }
+
+  .beginner:hover {
+    background: #f6efe2;
+  }
+
+  .experienced:hover {
+    background: #201b14;
+  }
+
+  .back:hover {
+    color: var(--orange-deep);
+  }
+}
+
+@media (max-width: 879px) {
+  .header {
+    min-height: 80px;
+    padding-inline: 20px;
+  }
+
+  .choices {
+    min-height: 0;
+  }
+
+  .question {
+    flex: 0 0 100%;
+    position: static;
+    width: auto;
+    max-width: none;
+    padding: 40px 20px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--cream);
+    box-shadow: none;
+    transform: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .choice {
+    min-height: 330px;
+    padding-block: 48px;
+  }
+
+  .content {
+    gap: 20px;
+    padding-inline: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .choice,
+  .action,
+  .arrow {
+    transition: none;
+  }
+}
