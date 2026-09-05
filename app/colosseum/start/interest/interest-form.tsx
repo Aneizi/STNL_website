@@ -113,6 +113,7 @@ export function InterestForm({ path }: { path: InterestPath }) {
       </div>
 
       <label className={styles.checkbox}>
+        <span>Have you built on Solana before?</span>
         <input
           type="checkbox"
           name="builtOnSolana"
@@ -120,7 +121,6 @@ export function InterestForm({ path }: { path: InterestPath }) {
           onChange={(event) => setBuiltOnSolana(event.target.checked)}
           disabled={submitting}
         />
-        <span>Have you built on Solana before?</span>
       </label>
 
       <p className={styles.privacy}>Superteam NL will use your details to contact you about the hackathon.</p>

@@ -77,7 +77,7 @@
 .option input:focus-visible + span { outline: 2px solid var(--orange-deep); outline-offset: 2px; }
 .hint, .privacy { color: var(--muted); }
 .hint { font-size: 16px; }
-.checkbox { display: flex; align-items: center; gap: 14px; min-height: 48px; cursor: pointer; }
+.checkbox { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 48px; cursor: pointer; }
 .checkbox input { width: 24px; height: 24px; flex-shrink: 0; accent-color: var(--ink); }
 .privacy { font-size: 16px; }
 .error { color: var(--orange-deep); }
