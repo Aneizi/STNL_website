@@ -11,22 +11,12 @@
   opacity: 0;
 }
 
-.invitation:focus-visible .caption,
-.invitation:active .caption {
-  opacity: 1;
-}
-
-.invitation:focus-visible .wordmark,
-.invitation:active .wordmark {
-  opacity: 0;
-}
-
-@media (hover: hover) {
-  .invitation:hover .caption {
+@media (min-width: 600px) and (hover: hover) and (pointer: fine) {
+  .invitation:is(:hover, :focus-visible, :active) .caption {
     opacity: 1;
   }
 
-  .invitation:hover .wordmark {
+  .invitation:is(:hover, :focus-visible, :active) .wordmark {
     opacity: 0;
   }
 }
