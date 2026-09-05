@@ -45,7 +45,7 @@ export default function ColosseumStartPage() {
           <div className={styles.content}>
             <h2 id="beginner-title">Beginner</h2>
             <p id="beginner-description">
-              First hackathon? We&apos;ll walk you through registration.
+              First hackathon or don&apos;t feel confident yet?
             </p>
             <span className={styles.action}>
               Start here
