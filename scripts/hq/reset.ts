@@ -70,7 +70,7 @@ async function main() {
 
   report("Cleared:", await counts(sql, CLEAR_TABLES));
   console.log(
-    "\nDone. Logins, classifiers and settings are untouched; the Luma calendar" +
+    "\nDone. Logins, hackathons, classifiers and settings are untouched; the Luma calendar" +
       "\nre-mirrors on the next load of /hq/events.",
   );
 }

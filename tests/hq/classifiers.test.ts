@@ -11,11 +11,13 @@ import { CLASSIFIERS_SELECT, toClassifiers } from "@/lib/hq/classifiers-sql";
 const SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8");
 
 const pg = new PGlite();
-const query = async (text: string) =>
-  (await pg.query(text)).rows as Array<Record<string, unknown>>;
+const query = async (text: string, params: unknown[] = []) =>
+  (await pg.query(text, params)).rows as Array<Record<string, unknown>>;
 
-async function classifiers() {
-  const [row] = await query(CLASSIFIERS_SELECT);
+let hackathon = "";
+
+async function classifiers(forHackathon = hackathon) {
+  const [row] = await query(CLASSIFIERS_SELECT, [forHackathon]);
   return toClassifiers(row ?? {});
 }
 
@@ -24,6 +26,11 @@ describe("classifier lists", () => {
     for (const statement of SCHEMA.split(/;\s*(?:\n|$)/).map((s) => s.trim()).filter(Boolean)) {
       await query(statement);
     }
+    const [row] = await query(
+      `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
+       VALUES (6,'wf','World''s Fair','2026-09-14','2026-10-12') RETURNING id`,
+    );
+    hackathon = String(row.id);
   });
 
   it("returns empty lists from an empty database", async () => {
@@ -56,7 +63,10 @@ describe("classifier lists", () => {
       `INSERT INTO hq_project_forecasts (slug,label,color,sort)
        VALUES ('at-risk','At risk','red',1),('committed','Committed','green',0)`,
     );
-    await query(`INSERT INTO hq_submission_gates (label, sort) VALUES ('G2',1),('G1',0)`);
+    await query(
+      `INSERT INTO hq_submission_gates (hackathon_id, label, sort) VALUES ($1,'G2',1),($1,'G1',0)`,
+      [hackathon],
+    );
     await query(
       `INSERT INTO hq_exchange_items (slug,label,sort) VALUES ('swag','Swag',1),('cash','Cash',0)`,
     );
@@ -85,6 +95,23 @@ describe("classifier lists", () => {
     expect(all.forecasts.map((f) => f.slug)).toEqual(["committed", "at-risk"]);
     expect(all.gates.map((g) => g.label)).toEqual(["G1", "G2"]);
     expect(all.exchangeItems.map((i) => i.slug)).toEqual(["cash", "swag"]);
+  });
+
+  it("scopes the submission gates to the hackathon asked for", async () => {
+    const [other] = await query(
+      `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
+       VALUES (7,'next','Next','2027-01-01','2027-02-01') RETURNING id`,
+    );
+    await query(
+      `INSERT INTO hq_submission_gates (hackathon_id, label, sort) VALUES ($1,'Only next',0)`,
+      [other.id],
+    );
+
+    const next = await classifiers(String(other.id));
+    expect(next.gates.map((g) => g.label)).toEqual(["Only next"]);
+    // The shared lists come through unchanged for every hackathon.
+    expect(next.channels.map((c) => c.label)).toEqual(["First", "Second"]);
+    expect((await classifiers()).gates.map((g) => g.label)).toEqual(["G1", "G2"]);
   });
 
   it("carries no leftover columns into the payload", async () => {

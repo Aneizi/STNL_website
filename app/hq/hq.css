@@ -336,3 +336,142 @@
     animation-duration: 0.01ms !important;
   }
 }
+
+/* Hackathon picker (/hq/select): the sign-in landing, one banner per
+ * edition. The banner is a submit button; everything visual inside it is
+ * inert, so the whole surface is the target. */
+.hq .hq-picker {
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 56px 20px 48px;
+  box-sizing: border-box;
+}
+.hq .hq-picker-inner {
+  width: 880px;
+  max-width: 100%;
+}
+.hq .hq-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.hq .hq-banner {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 1;
+  min-height: 150px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  overflow: hidden;
+  cursor: pointer;
+  background: #16130f;
+  color: #fbf7f0;
+  text-align: center;
+  box-shadow: var(--shadow-2);
+  transition:
+    box-shadow 160ms cubic-bezier(0.32, 0.72, 0, 1),
+    transform 160ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 160ms ease;
+}
+.hq .hq-banner:hover {
+  box-shadow: var(--shadow-pop);
+  transform: translateY(-1px);
+}
+.hq .hq-banner:disabled {
+  cursor: progress;
+}
+.hq .hq-banner-bg {
+  object-fit: cover;
+  object-position: center;
+  transition: transform 600ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+.hq .hq-banner:hover .hq-banner-bg {
+  transform: scale(1.025);
+}
+/* Lifts the wordmark off the painting's pale sky without dulling the scene;
+ * hovering thins it so the banner brightens under the pointer. */
+.hq .hq-banner-shade {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 70% 80% at 50% 48%, rgba(22, 19, 15, 0.42), rgba(22, 19, 15, 0.12) 100%),
+    linear-gradient(to bottom, rgba(22, 19, 15, 0.08), rgba(22, 19, 15, 0.3));
+  transition: opacity 200ms ease;
+}
+.hq .hq-banner:hover .hq-banner-shade {
+  opacity: 0.72;
+}
+.hq .hq-banner-plain {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 90% at 18% 10%, rgba(238, 91, 35, 0.34), transparent 70%),
+    radial-gradient(ellipse 50% 70% at 88% 100%, rgba(238, 91, 35, 0.16), transparent 70%),
+    #16130f;
+}
+.hq .hq-banner-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  height: 100%;
+  padding: 20px 8%;
+  box-sizing: border-box;
+}
+.hq .hq-banner-wordmark {
+  display: block;
+  max-width: 100%;
+  filter: drop-shadow(0 2px 12px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 2px rgba(0, 0, 0, 0.35));
+}
+.hq .hq-banner-name {
+  font-family: var(--serif);
+  font-size: clamp(28px, 4.6vw, 44px);
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  color: #fbf7f0;
+}
+.hq .hq-banner-dates {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #fbf7f0;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.6);
+}
+.hq .hq-banner-current {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  background: rgba(251, 247, 240, 0.92);
+  color: #16130f;
+}
+.hq .hq-banner-skeleton {
+  width: 100%;
+  aspect-ratio: 3 / 1;
+  min-height: 150px;
+  margin-top: 14px;
+  background: var(--fill-3);
+}
+@media (max-width: 640px) {
+  .hq .hq-picker {
+    padding-top: 36px;
+  }
+  .hq .hq-banner-content {
+    gap: 10px;
+  }
+  .hq .hq-banner-dates {
+    font-size: 11px;
+    letter-spacing: 0.12em;
+  }
+}

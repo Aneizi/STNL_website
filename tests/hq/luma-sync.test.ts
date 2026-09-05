@@ -97,10 +97,23 @@ async function event(lumaId: string): Promise<Row> {
   return found;
 }
 
+/** Inserts a hackathon under an operator-chosen (Colosseum) id and returns it. */
+async function hackathon(id: number, slug: string, start: string, end: string): Promise<number> {
+  const [row] = await run(
+    `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
+     VALUES ($1, $2, $2, $3, $4) RETURNING id`,
+    [id, slug, start, end],
+  );
+  return Number(row.id);
+}
+
+let worldsFair = 0;
+
 beforeEach(async () => {
   pg = new PGlite();
   for (const statement of statements(SCHEMA)) await run(statement);
   await applyUpgrades({ query: (text) => run(text) as Promise<Record<string, unknown>[]> });
+  worldsFair = await hackathon(6, "worlds-fair", "2026-09-14", "2026-10-12");
   await run(
     `INSERT INTO hq_event_types (label, supports_end_date, sort) VALUES
        ('Multi-day program', true, 0), ('Weekly coworking', false, 1),
@@ -118,6 +131,57 @@ describe("luma sync", () => {
     expect(inserted.venue).toBe("AI AM");
     expect(inserted.luma_url).toBe("https://luma.com/evt-a");
     expect(inserted.archived_at).toBeNull();
+    expect(inserted.hackathon_id).toBe(worldsFair);
+  });
+
+  it("files an event under the hackathon whose dates contain it", async () => {
+    const type = await typeId("Weekly coworking");
+    const next = await hackathon(7, "next", "2027-02-01", "2027-03-01");
+    await runSync({
+      rows: [
+        row({ luma_id: "in-first", type_id: type, date: "2026-10-12" }),
+        row({ luma_id: "in-next", type_id: type, date: "2027-02-01" }),
+      ],
+    });
+
+    expect((await event("in-first")).hackathon_id).toBe(worldsFair);
+    expect((await event("in-next")).hackathon_id).toBe(next);
+  });
+
+  it("files an event between hackathons under the nearest one", async () => {
+    const type = await typeId("Weekly coworking");
+    const next = await hackathon(7, "next", "2027-02-01", "2027-03-01");
+    await runSync({
+      rows: [
+        row({ luma_id: "just-after", type_id: type, date: "2026-10-30" }),
+        row({ luma_id: "just-before", type_id: type, date: "2027-01-20" }),
+        row({ luma_id: "long-before", type_id: type, date: "2025-01-01" }),
+      ],
+    });
+
+    expect((await event("just-after")).hackathon_id).toBe(worldsFair);
+    expect((await event("just-before")).hackathon_id).toBe(next);
+    expect((await event("long-before")).hackathon_id).toBe(worldsFair);
+  });
+
+  it("never moves an event to another hackathon on re-sync", async () => {
+    const type = await typeId("Weekly coworking");
+    await runSync({ rows: [row({ luma_id: "evt-a", type_id: type, date: "2026-10-01" })] });
+    const next = await hackathon(7, "next", "2027-02-01", "2027-03-01");
+    await run(`UPDATE hq_events SET hackathon_id = $1 WHERE luma_id = 'evt-a'`, [next]);
+
+    await runSync({ rows: [row({ luma_id: "evt-a", type_id: type, date: "2026-10-01" })] });
+
+    expect((await event("evt-a")).hackathon_id).toBe(next);
+  });
+
+  it("fails loudly, writing nothing, when no hackathon exists to file under", async () => {
+    const type = await typeId("Weekly coworking");
+    await run(`DELETE FROM hq_hackathons`);
+    await expect(
+      runSync({ rows: [row({ luma_id: "evt-a", type_id: type })] }),
+    ).rejects.toThrow(/null/i);
+    expect(await event("evt-a")).toBeUndefined();
   });
 
   it("updates unpinned fields on re-sync but leaves pinned ones alone", async () => {
@@ -317,10 +381,10 @@ describe("event action guards", () => {
 
   async function insert(name: string, lumaId: string | null): Promise<string> {
     const [inserted] = await run(
-      `INSERT INTO hq_events (name, date, type_id, luma_id)
-       VALUES ($1, '2026-08-07', (SELECT id FROM hq_event_types WHERE label='Other'), $2)
+      `INSERT INTO hq_events (hackathon_id, name, date, type_id, luma_id)
+       VALUES ($3, $1, '2026-08-07', (SELECT id FROM hq_event_types WHERE label='Other'), $2)
        RETURNING id`,
-      [name, lumaId],
+      [name, lumaId, worldsFair],
     );
     return String(inserted.id);
   }

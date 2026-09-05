@@ -1,25 +1,52 @@
 {
   "users": [
-    { "username": "alex", "displayName": "Alex" },
-    { "username": "sam", "displayName": "Sam" }
+    {
+      "username": "alex",
+      "displayName": "Alex"
+    },
+    {
+      "username": "sam",
+      "displayName": "Sam"
+    }
   ],
   "partnerChannels": [
     "Universities",
     "Local communities",
     "Technical partners"
   ],
+  "hackathon": {
+    "id": 1,
+    "slug": "example-hackathon-2026",
+    "name": "Example Hackathon 2026",
+    "startDate": "2026-01-05",
+    "endDate": "2026-02-16"
+  },
   "submissionGates": [
     "Team profiles complete",
     "Working demo",
     "All links tested"
   ],
   "awards": [
-    { "name": "Grand Prize", "sponsor": "Example Sponsor", "amount": 5000 },
-    { "name": "Runner-up", "sponsor": "", "amount": 2500 }
+    {
+      "name": "Grand Prize",
+      "sponsor": "Example Sponsor",
+      "amount": 5000
+    },
+    {
+      "name": "Runner-up",
+      "sponsor": "",
+      "amount": 2500
+    }
   ],
   "milestones": [
-    { "date": "2026-01-05", "label": "Kickoff" },
-    { "date": "2026-02-16", "label": "Demo day" }
+    {
+      "date": "2026-01-05",
+      "label": "Kickoff"
+    },
+    {
+      "date": "2026-02-16",
+      "label": "Demo day"
+    }
   ],
   "settings": {
     "prospects_reached": 0,

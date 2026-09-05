@@ -2,8 +2,10 @@ import type { Metadata } from "next";
 import { Dashboard } from "@/components/hq/dashboard";
 import { requireUser } from "@/lib/hq/auth";
 import { nowMs, todayInTz, todayLabel } from "@/lib/hq/format";
+import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
 import {
   getClassifiers,
+  getHackathon,
   getMilestones,
   getProjects,
   getSettings,
@@ -14,13 +16,16 @@ export const dynamic = "force-dynamic";
 export const metadata: Metadata = { title: "Dashboard" };
 
 export default async function DashboardPage() {
-  const [, settings, projects, milestones, classifiers] = await Promise.all([
+  const hackathonId = await requireHackathonId();
+  const [, hackathon, settings, projects, milestones, classifiers] = await Promise.all([
     requireUser(),
-    getSettings(),
-    getProjects(),
-    getMilestones(),
-    getClassifiers(),
+    getHackathon(hackathonId),
+    getSettings(hackathonId),
+    getProjects(hackathonId),
+    getMilestones(hackathonId),
+    getClassifiers(hackathonId),
   ]);
+  ensureHackathon(hackathon);
   const now = nowMs();
   return (
     <Dashboard

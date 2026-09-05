@@ -10,6 +10,7 @@ import type {
   DemoProject,
   EventOption,
   FinalistProject,
+  Hackathon,
   HqEvent,
   HqLink,
   Judge,
@@ -26,10 +27,49 @@ import type {
 } from "./types";
 
 // Dates are cast to text in SQL so no driver/timezone parsing can shift them.
+//
+// Nearly every read takes a hackathonId: each hackathon is its own CRM, and
+// a page only ever shows the one the operator chose (lib/hq/hackathon.ts).
 
-export async function getClassifiers(): Promise<Classifiers> {
+function mapHackathon(r: Record<string, unknown>): Hackathon {
+  return {
+    id: Number(r.id),
+    slug: r.slug as string,
+    name: r.name as string,
+    startDate: r.start_date as string,
+    endDate: r.end_date as string,
+    archived: r.archived_at != null,
+  };
+}
+
+const HACKATHON_SELECT = /* sql */ `
+  SELECT id, slug, name, start_date::text AS start_date, end_date::text AS end_date, archived_at
+  FROM hq_hackathons
+`;
+
+/**
+ * Every hackathon, open editions first and newest first within each group —
+ * the picker and the switcher both show archived editions after the rest.
+ */
+export async function getHackathons(): Promise<Hackathon[]> {
   const sql = getSql();
-  const [row] = await sql.query(CLASSIFIERS_SELECT);
+  const rows = await sql.query(
+    `${HACKATHON_SELECT}
+     ORDER BY (archived_at IS NOT NULL), start_date DESC, created_at DESC`,
+  );
+  return (rows as Record<string, unknown>[]).map(mapHackathon);
+}
+
+export async function getHackathon(id: number): Promise<Hackathon | null> {
+  const sql = getSql();
+  const rows = await sql.query(`${HACKATHON_SELECT} WHERE id = $1`, [id]);
+  const row = (rows as Record<string, unknown>[])[0];
+  return row ? mapHackathon(row) : null;
+}
+
+export async function getClassifiers(hackathonId: number): Promise<Classifiers> {
+  const sql = getSql();
+  const [row] = await sql.query(CLASSIFIERS_SELECT, [hackathonId]);
   return toClassifiers(row ?? {});
 }
 
@@ -71,9 +111,9 @@ const SETTINGS_FALLBACK: Settings = {
   activeSub: "",
 };
 
-export async function getSettings(): Promise<Settings> {
+export async function getSettings(hackathonId: number): Promise<Settings> {
   const sql = getSql();
-  const rows = await sql`SELECT key, value FROM hq_settings`;
+  const rows = await sql`SELECT key, value FROM hq_settings WHERE hackathon_id = ${hackathonId}`;
   const settings = { ...SETTINGS_FALLBACK };
   for (const row of rows) {
     const prop = SETTING_KEYS[row.key as string];
@@ -82,7 +122,7 @@ export async function getSettings(): Promise<Settings> {
   return settings;
 }
 
-export async function getProjects(): Promise<Project[]> {
+export async function getProjects(hackathonId: number): Promise<Project[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT
@@ -119,6 +159,7 @@ export async function getProjects(): Promise<Project[]> {
     JOIN hq_project_forecasts f ON f.id = p.forecast_id
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
     LEFT JOIN hq_users u ON u.id = p.touched_by_user_id
+    WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
   return rows.map((r) => ({
@@ -174,15 +215,27 @@ const PARTNER_SELECT = /* sql */ `
   LEFT JOIN hq_users u ON u.id = pa.touched_by_user_id
 `;
 
-export async function getPartners(): Promise<Partner[]> {
+export async function getPartners(hackathonId: number): Promise<Partner[]> {
   const sql = getSql();
-  const rows = await sql.query(`${PARTNER_SELECT} ORDER BY pa.created_at`);
+  const rows = await sql.query(`${PARTNER_SELECT} WHERE pa.hackathon_id = $1 ORDER BY pa.created_at`, [
+    hackathonId,
+  ]);
   return (rows as Record<string, unknown>[]).map(mapPartner);
 }
 
-export async function getPartnerDetail(id: string): Promise<PartnerDetail | null> {
+/**
+ * One partner, only if it belongs to the hackathon being shown: a partner id
+ * from another edition (an old bookmark, say) reads as not found here.
+ */
+export async function getPartnerDetail(
+  id: string,
+  hackathonId: number,
+): Promise<PartnerDetail | null> {
   const sql = getSql();
-  const rows = await sql.query(`${PARTNER_SELECT} WHERE pa.id = $1`, [id]);
+  const rows = await sql.query(`${PARTNER_SELECT} WHERE pa.id = $1 AND pa.hackathon_id = $2`, [
+    id,
+    hackathonId,
+  ]);
   const row = (rows as Record<string, unknown>[])[0];
   if (!row) return null;
   const [contacts, teams] = await Promise.all([
@@ -214,13 +267,14 @@ export async function getPartnerDetail(id: string): Promise<PartnerDetail | null
   };
 }
 
-export async function getPeople(): Promise<Person[]> {
+export async function getPeople(hackathonId: number): Promise<Person[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT p.id, p.name, p.role_id, p.org, p.contact, p.partner_id,
       COALESCE(pa.name, '') AS partner_name, p.notes
     FROM hq_people p
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
+    WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
   return rows.map((r) => ({
@@ -239,7 +293,8 @@ export async function getPeople(): Promise<Person[]> {
  * When the Luma mirror last refreshed, or null if it never has. Nothing
  * refreshes it during a page view any more — the hourly workflow is the only
  * scheduled writer — so this timestamp is the Events page's only evidence that
- * the schedule is still running.
+ * the schedule is still running. One calendar, one timestamp: it is not per
+ * hackathon.
  */
 export async function getLumaSyncedAt(): Promise<string | null> {
   const sql = getSql();
@@ -255,7 +310,7 @@ export async function getLumaSyncedAt(): Promise<string | null> {
  * counts). Mirrors the design: each project is attributed to the FIRST event
  * (by date) whose normalized name matches its event_src.
  */
-export async function getEventsWithOutputs(): Promise<HqEvent[]> {
+export async function getEventsWithOutputs(hackathonId: number): Promise<HqEvent[]> {
   const sql = getSql();
   const [events, projects, gateTotalRows] = await Promise.all([
     sql`
@@ -263,6 +318,7 @@ export async function getEventsWithOutputs(): Promise<HqEvent[]> {
         venue, cohost, attendance, leads, spend,
         luma_id, luma_url, pinned_fields, archived_at, archived_reason
       FROM hq_events
+      WHERE hackathon_id = ${hackathonId}
       ORDER BY date, created_at
     `,
     sql`
@@ -270,8 +326,11 @@ export async function getEventsWithOutputs(): Promise<HqEvent[]> {
         (SELECT count(*)::int FROM hq_project_gates g WHERE g.project_id = p.id) AS gates_done
       FROM hq_projects p
       JOIN hq_project_statuses s ON s.id = p.status_id
+      WHERE p.hackathon_id = ${hackathonId}
     `,
-    sql`SELECT count(*)::int AS total FROM hq_submission_gates`,
+    sql`
+      SELECT count(*)::int AS total FROM hq_submission_gates WHERE hackathon_id = ${hackathonId}
+    `,
   ]);
   const gateTotal = Number(gateTotalRows[0]?.total ?? 0);
 
@@ -301,11 +360,12 @@ export async function getEventsWithOutputs(): Promise<HqEvent[]> {
   }));
 }
 
-export async function getAwards(): Promise<Award[]> {
+export async function getAwards(hackathonId: number): Promise<Award[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT id, name, sponsor, amount, winner_project_id
     FROM hq_awards
+    WHERE hackathon_id = ${hackathonId}
     ORDER BY sort, name
   `;
   return rows.map((r) => ({
@@ -317,16 +377,18 @@ export async function getAwards(): Promise<Award[]> {
   }));
 }
 
-export async function getFinalists(): Promise<FinalistProject[]> {
+export async function getFinalists(hackathonId: number): Promise<FinalistProject[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT fi.project_id, fi.position, p.name,
       COALESCE(pa.name, '') AS partner_name, p.event_src,
       (SELECT count(*)::int FROM hq_project_gates g WHERE g.project_id = p.id) AS gates_done,
-      (SELECT count(*)::int FROM hq_submission_gates) AS gates_total
+      (SELECT count(*)::int FROM hq_submission_gates sg
+       WHERE sg.hackathon_id = ${hackathonId}) AS gates_total
     FROM hq_finalists fi
     JOIN hq_projects p ON p.id = fi.project_id
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
+    WHERE fi.hackathon_id = ${hackathonId}
     ORDER BY fi.position, fi.project_id
   `;
   return rows.map((r) => ({
@@ -339,12 +401,14 @@ export async function getFinalists(): Promise<FinalistProject[]> {
   }));
 }
 
-export async function getScores(): Promise<Score[]> {
+export async function getScores(hackathonId: number): Promise<Score[]> {
   const sql = getSql();
   const rows = await sql`
-    SELECT id, judge_id, project_id, score, note
-    FROM hq_scores
-    ORDER BY created_at
+    SELECT s.id, s.judge_id, s.project_id, s.score, s.note
+    FROM hq_scores s
+    JOIN hq_finalists fi ON fi.project_id = s.project_id
+    WHERE fi.hackathon_id = ${hackathonId}
+    ORDER BY s.created_at
   `;
   return rows.map((r) => ({
     id: r.id,
@@ -359,13 +423,14 @@ export async function getScores(): Promise<Score[]> {
  * Slim projection for the Demo Day screen: no contact details, blockers,
  * or note history ever reach that Client Component.
  */
-export async function getDemoProjects(): Promise<DemoProject[]> {
+export async function getDemoProjects(hackathonId: number): Promise<DemoProject[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT p.id, p.name, COALESCE(pa.name, '') AS partner_name, p.event_src,
       (SELECT count(*)::int FROM hq_project_gates g WHERE g.project_id = p.id) AS gates_done
     FROM hq_projects p
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
+    WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
   return rows.map((r) => ({
@@ -378,20 +443,22 @@ export async function getDemoProjects(): Promise<DemoProject[]> {
 }
 
 /** People with a judging role — names only, for the score picker. */
-export async function getJudges(): Promise<Judge[]> {
+export async function getJudges(hackathonId: number): Promise<Judge[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT p.id, p.name FROM hq_people p
     JOIN hq_people_roles r ON r.id = p.role_id
-    WHERE r.is_judge
+    WHERE r.is_judge AND p.hackathon_id = ${hackathonId}
     ORDER BY p.name
   `;
   return rows.map((r) => ({ id: r.id, name: r.name }));
 }
 
-export async function getGatesTotal(): Promise<number> {
+export async function getGatesTotal(hackathonId: number): Promise<number> {
   const sql = getSql();
-  const [row] = await sql`SELECT count(*)::int AS total FROM hq_submission_gates`;
+  const [row] = await sql`
+    SELECT count(*)::int AS total FROM hq_submission_gates WHERE hackathon_id = ${hackathonId}
+  `;
   return Number(row?.total ?? 0);
 }
 
@@ -418,9 +485,11 @@ export async function getRoles(): Promise<Role[]> {
  * whose normalized name matches, so the list carries one entry per distinct
  * name — offering the same name twice would pick out the same event anyway.
  */
-export async function getEventOptions(): Promise<EventOption[]> {
+export async function getEventOptions(hackathonId: number): Promise<EventOption[]> {
   const sql = getSql();
-  const rows = await sql`SELECT id, name FROM hq_events ORDER BY date, created_at`;
+  const rows = await sql`
+    SELECT id, name FROM hq_events WHERE hackathon_id = ${hackathonId} ORDER BY date, created_at
+  `;
   const seen = new Set<string>();
   const options: EventOption[] = [];
   for (const r of rows) {
@@ -433,7 +502,7 @@ export async function getEventOptions(): Promise<EventOption[]> {
 }
 
 /** Shared links with their note logs, newest link first. */
-export async function getLinks(): Promise<HqLink[]> {
+export async function getLinks(hackathonId: number): Promise<HqLink[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT l.id, l.title, l.url, l.highlighted,
@@ -450,6 +519,7 @@ export async function getLinks(): Promise<HqLink[]> {
         '[]'
       ) AS notes
     FROM hq_links l
+    WHERE l.hackathon_id = ${hackathonId}
     ORDER BY l.created_at DESC
   `;
   return rows.map((r) => ({
@@ -462,19 +532,22 @@ export async function getLinks(): Promise<HqLink[]> {
 }
 
 /** Id/name pairs for partner dropdowns — no captain contact or metadata. */
-export async function getPartnerOptions(): Promise<PartnerOption[]> {
+export async function getPartnerOptions(hackathonId: number): Promise<PartnerOption[]> {
   const sql = getSql();
-  const rows = await sql`SELECT id, name FROM hq_partners ORDER BY created_at`;
+  const rows = await sql`
+    SELECT id, name FROM hq_partners WHERE hackathon_id = ${hackathonId} ORDER BY created_at
+  `;
   return rows.map((r) => ({ id: r.id, name: r.name }));
 }
 
-export async function getActivity(limit = 40): Promise<ActivityItem[]> {
+export async function getActivity(hackathonId: number, limit = 40): Promise<ActivityItem[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT a.id::text AS id, COALESCE(u.display_name, '') AS user_name, a.message,
       to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
     FROM hq_activity a
     LEFT JOIN hq_users u ON u.id = a.user_id
+    WHERE a.hackathon_id = ${hackathonId}
     ORDER BY a.created_at DESC, a.id DESC
     LIMIT ${limit}
   `;
@@ -486,15 +559,17 @@ export async function getActivity(limit = 40): Promise<ActivityItem[]> {
   }));
 }
 
-export async function getMilestones(): Promise<Milestone[]> {
+export async function getMilestones(hackathonId: number): Promise<Milestone[]> {
   const sql = getSql();
   const rows = await sql`
-    SELECT id, date::text AS date, label FROM hq_milestones ORDER BY date
+    SELECT id, date::text AS date, label FROM hq_milestones
+    WHERE hackathon_id = ${hackathonId}
+    ORDER BY date
   `;
   return rows.map((r) => ({ id: r.id, date: r.date, label: r.label }));
 }
 
-export async function searchAll(query: string): Promise<SearchResult[]> {
+export async function searchAll(query: string, hackathonId: number): Promise<SearchResult[]> {
   const q = query.trim();
   if (!q) return [];
   const sql = getSql();
@@ -504,24 +579,25 @@ export async function searchAll(query: string): Promise<SearchResult[]> {
   const [projects, partners, people, events] = await Promise.all([
     sql`
       SELECT id, name, lead_name FROM hq_projects
-      WHERE name ILIKE ${like} OR lead_name ILIKE ${like}
+      WHERE hackathon_id = ${hackathonId} AND (name ILIKE ${like} OR lead_name ILIKE ${like})
       ORDER BY created_at DESC LIMIT 12
     `,
     sql`
       SELECT pa.id, pa.name, c.label AS channel FROM hq_partners pa
       JOIN hq_partner_channels c ON c.id = pa.channel_id
-      WHERE pa.name ILIKE ${like} OR pa.captain_name ILIKE ${like}
+      WHERE pa.hackathon_id = ${hackathonId}
+        AND (pa.name ILIKE ${like} OR pa.captain_name ILIKE ${like})
       ORDER BY pa.created_at DESC LIMIT 12
     `,
     sql`
       SELECT p.id, p.name, r.label AS role, p.org FROM hq_people p
       JOIN hq_people_roles r ON r.id = p.role_id
-      WHERE p.name ILIKE ${like} OR p.org ILIKE ${like}
+      WHERE p.hackathon_id = ${hackathonId} AND (p.name ILIKE ${like} OR p.org ILIKE ${like})
       ORDER BY p.created_at DESC LIMIT 12
     `,
     sql`
       SELECT id, name, date::text AS date FROM hq_events
-      WHERE name ILIKE ${like}
+      WHERE hackathon_id = ${hackathonId} AND name ILIKE ${like}
       ORDER BY date LIMIT 12
     `,
   ]);
@@ -554,8 +630,8 @@ export async function searchAll(query: string): Promise<SearchResult[]> {
   return results.slice(0, 12);
 }
 
-/** Today in the campaign timezone — the stamp used by check-ins and touch(). */
-export async function getToday(): Promise<string> {
-  const settings = await getSettings();
+/** Today in the hackathon's timezone — the stamp used by check-ins and touch(). */
+export async function getToday(hackathonId: number): Promise<string> {
+  const settings = await getSettings(hackathonId);
   return todayInTz(settings.timezone);
 }

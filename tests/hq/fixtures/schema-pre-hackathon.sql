@@ -6,15 +6,6 @@
 -- IF NOT EXISTS means an edit to a table below does NOT reach a database
 -- that already has that table: changes to existing columns and constraints
 -- belong in scripts/hq/upgrades.ts, which runs right after this file.
---
--- HQ is hackathon-agnostic: every operational table carries a hackathon_id,
--- and each hackathon is a separate CRM. Logins, sessions and the generic
--- classifiers (roles, stages, statuses, ...) are shared; submission gates,
--- settings, milestones and awards belong to one hackathon each.
---
--- The hackathon_id indexes are created by scripts/hq/upgrades.ts, not here:
--- this file runs first, and on a database from before hackathon scoping the
--- column does not exist yet when it does.
 
 CREATE TABLE IF NOT EXISTS hq_users (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -68,27 +59,6 @@ CREATE TABLE IF NOT EXISTS hq_sessions (
 CREATE INDEX IF NOT EXISTS hq_sessions_user_idx
   ON hq_sessions (user_id);
 
--- One row per hackathon edition. The id is Colosseum's hackathon id, so HQ
--- and Colosseum name an edition the same way (World's Fair is 6); it is typed
--- in by the operator, and a hackathon outside Colosseum takes any unused
--- number. slug is the stable key artwork and seed data hang off
--- (lib/hq/hackathon-art.ts); name and dates are operator-editable.
--- archived_at is only ever set by hand: an edition stays open past its end
--- date (demo day can fall after the hackathon closes) until an operator
--- archives it. Deleting a hackathon takes its whole CRM with it (every
--- scoped table cascades), which is why the action refuses to delete the
--- last one.
-CREATE TABLE IF NOT EXISTS hq_hackathons (
-  id int PRIMARY KEY,
-  slug text NOT NULL UNIQUE,
-  name text NOT NULL,
-  start_date date NOT NULL,
-  end_date date NOT NULL,
-  archived_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  CHECK (end_date >= start_date)
-);
-
 CREATE TABLE IF NOT EXISTS hq_partner_channels (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   label text NOT NULL UNIQUE,
@@ -139,15 +109,10 @@ CREATE TABLE IF NOT EXISTS hq_project_forecasts (
   sort int NOT NULL DEFAULT 0
 );
 
--- The checklist a team works through before it counts as a verified
--- submission. Per hackathon: each edition names its own gates (Admin edits
--- them), so nothing hackathon-specific is baked into the app.
 CREATE TABLE IF NOT EXISTS hq_submission_gates (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
-  label text NOT NULL,
-  sort int NOT NULL DEFAULT 0,
-  UNIQUE (hackathon_id, label)
+  label text NOT NULL UNIQUE,
+  sort int NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS hq_exchange_items (
@@ -159,7 +124,6 @@ CREATE TABLE IF NOT EXISTS hq_exchange_items (
 
 CREATE TABLE IF NOT EXISTS hq_partners (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   name text NOT NULL,
   channel_id uuid NOT NULL REFERENCES hq_partner_channels (id),
   captain_name text NOT NULL DEFAULT '',
@@ -175,7 +139,6 @@ CREATE TABLE IF NOT EXISTS hq_partners (
 -- the design: a project can name a source event that is not tracked yet.
 CREATE TABLE IF NOT EXISTS hq_projects (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   name text NOT NULL,
   lead_name text NOT NULL DEFAULT '',
   lead_contact text NOT NULL DEFAULT '',
@@ -195,7 +158,7 @@ CREATE INDEX IF NOT EXISTS hq_projects_partner_idx
 
 CREATE TABLE IF NOT EXISTS hq_project_gates (
   project_id uuid NOT NULL REFERENCES hq_projects (id) ON DELETE CASCADE,
-  gate_id uuid NOT NULL REFERENCES hq_submission_gates (id) ON DELETE CASCADE,
+  gate_id uuid NOT NULL REFERENCES hq_submission_gates (id),
   PRIMARY KEY (project_id, gate_id)
 );
 
@@ -247,7 +210,6 @@ CREATE INDEX IF NOT EXISTS hq_partner_contacts_partner_idx
 
 CREATE TABLE IF NOT EXISTS hq_people (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   name text NOT NULL,
   role_id uuid NOT NULL REFERENCES hq_people_roles (id),
   org text NOT NULL DEFAULT '',
@@ -259,10 +221,6 @@ CREATE TABLE IF NOT EXISTS hq_people (
 
 CREATE TABLE IF NOT EXISTS hq_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  -- A Luma-mirrored event lands in the hackathon whose dates contain it, or
-  -- failing that the nearest one (lib/hq/luma-sync-sql.ts); HQ-owned after
-  -- insert, like type_id.
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   name text NOT NULL,
   date date NOT NULL,
   end_date date,
@@ -289,8 +247,7 @@ CREATE TABLE IF NOT EXISTS hq_events (
 );
 
 -- Single row. Holds the last successful Luma sync, and doubles as the lock
--- concurrent syncs serialise on (SELECT ... FOR UPDATE). Shared by every
--- hackathon: the calendar is the organisation's, not one edition's.
+-- concurrent syncs serialise on (SELECT ... FOR UPDATE).
 CREATE TABLE IF NOT EXISTS hq_luma_sync (
   id boolean PRIMARY KEY DEFAULT true CHECK (id),
   last_success_at timestamptz NOT NULL DEFAULT 'epoch'
@@ -301,19 +258,14 @@ INSERT INTO hq_luma_sync (id) VALUES (true) ON CONFLICT DO NOTHING;
 -- Databases created before the demo-day integrity constraints below are
 -- upgraded in code by scripts/hq/migrate.ts (constraint rewrites and the
 -- judge_name → judge_id migration cannot be expressed as IF NOT EXISTS).
--- hackathon_id mirrors the project's, so positions can be unique per
--- hackathon; the insert in lib/hq/actions/demo.ts copies it from the project.
 CREATE TABLE IF NOT EXISTS hq_finalists (
   project_id uuid PRIMARY KEY REFERENCES hq_projects (id) ON DELETE CASCADE,
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   -- unique so concurrent max+1 inserts cannot assign the same slot
-  position int NOT NULL,
-  UNIQUE (hackathon_id, position)
+  position int NOT NULL UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS hq_awards (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   name text NOT NULL,
   sponsor text NOT NULL DEFAULT '',
   amount int NOT NULL DEFAULT 0,
@@ -336,7 +288,6 @@ CREATE TABLE IF NOT EXISTS hq_scores (
 
 CREATE TABLE IF NOT EXISTS hq_activity (
   id bigserial PRIMARY KEY,
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   user_id uuid REFERENCES hq_users (id) ON DELETE SET NULL,
   message text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -347,23 +298,19 @@ CREATE INDEX IF NOT EXISTS hq_activity_created_idx
 
 CREATE TABLE IF NOT EXISTS hq_milestones (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   date date NOT NULL,
   label text NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS hq_settings (
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
-  key text NOT NULL,
-  value jsonb NOT NULL,
-  PRIMARY KEY (hackathon_id, key)
+  key text PRIMARY KEY,
+  value jsonb NOT NULL
 );
 
 -- The campaign's shared URLs (Links tab), each carrying a running note log.
 -- touched_* mirrors the auditing on projects and partners.
 CREATE TABLE IF NOT EXISTS hq_links (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  hackathon_id int NOT NULL REFERENCES hq_hackathons (id) ON DELETE CASCADE,
   title text NOT NULL,
   url text NOT NULL,
   highlighted boolean NOT NULL DEFAULT false,

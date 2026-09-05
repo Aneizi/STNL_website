@@ -18,8 +18,9 @@ export type Tagged = (strings: TemplateStringsArray, ...values: unknown[]) => un
  * the upsert's CASE expressions. The single place those two vocabularies meet
  * — nothing else may hand-write a pin key.
  *
- * Fields absent here (typeId, attendance, spend, leads) are HQ-owned once the
- * row exists and are never written by a re-sync, so they need no pin.
+ * Fields absent here (typeId, attendance, spend, leads, hackathonId) are
+ * HQ-owned once the row exists and are never written by a re-sync, so they
+ * need no pin.
  */
 export const PINNABLE = {
   name: "name",
@@ -98,10 +99,18 @@ export function buildSyncStatements(
     )
     INSERT INTO hq_events (
       luma_id, luma_url, name, date, end_date, venue, cohost,
-      attendance, type_id, spend, leads
+      attendance, type_id, spend, leads, hackathon_id
     )
     SELECT s.luma_id, s.luma_url, s.name, s.date, s.end_date, s.venue, s.cohost,
-           s.guest_count, s.type_id, 0, 0
+           s.guest_count, s.type_id, 0, 0,
+           -- The hackathon whose dates contain the event, else the one whose
+           -- window is nearest (the later edition on a tie). HQ-owned after
+           -- insert, like type_id: a re-sync never moves an event.
+           (SELECT h.id FROM hq_hackathons h
+            ORDER BY (s.date < h.start_date OR s.date > h.end_date),
+                     LEAST(abs(s.date - h.start_date), abs(s.date - h.end_date)),
+                     h.start_date DESC
+            LIMIT 1)
     FROM src s
     WHERE (SELECT last_success_at FROM hq_luma_sync) <= ${startedAt}::timestamptz
     ON CONFLICT (luma_id) DO UPDATE SET
@@ -123,8 +132,9 @@ export function buildSyncStatements(
       archived_reason = CASE WHEN hq_events.archived_reason = 'missing'
                              THEN NULL ELSE hq_events.archived_reason END
   `;
-  // attendance, type_id, spend and leads appear only in the INSERT column list
-  // above — never in DO UPDATE. They are HQ-owned once the row exists.
+  // attendance, type_id, spend, leads and hackathon_id appear only in the
+  // INSERT column list above — never in DO UPDATE. They are HQ-owned once the
+  // row exists.
 
   const archive = sql`
     UPDATE hq_events SET archived_at = now(), archived_reason = 'missing'

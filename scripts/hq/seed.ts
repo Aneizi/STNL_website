@@ -1,13 +1,15 @@
-// Seeds classifiers, campaign config, and the operator accounts.
-// Generic app taxonomy (event types, roles, stages, statuses, forecasts,
-// exchange items) lives here; campaign-specific data (operator accounts,
-// partner channels, submission gates, awards, milestones, targets) is read
-// from scripts/hq/seed-data.json, which is gitignored so none of it enters
-// the public repository — copy seed-data.example.json to get started.
-// Idempotent: classifiers upsert by label/slug, settings/milestones/awards
-// only fill empty state, and existing users are never touched unless
-// --reset-passwords is passed. Temp passwords are generated here and
-// printed ONCE — they are never stored in plaintext or committed.
+// Seeds classifiers, the first hackathon and its campaign config, and the
+// operator accounts. Generic app taxonomy (event types, roles, stages,
+// statuses, forecasts, exchange items) lives here; campaign-specific data
+// (operator accounts, partner channels, the hackathon, its submission gates,
+// awards, milestones, targets) is read from scripts/hq/seed-data.json, which
+// is gitignored so none of it enters the public repository — copy
+// seed-data.example.json to get started.
+// Idempotent: classifiers upsert by label/slug, the hackathon upserts by
+// slug, settings/milestones/awards only fill empty state for that hackathon,
+// and existing users are never touched unless --reset-passwords is passed.
+// Temp passwords are generated here and printed ONCE — they are never stored
+// in plaintext or committed.
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,6 +26,16 @@ const seedDataSchema = z.object({
     }),
   ),
   partnerChannels: z.array(z.string().min(1)),
+  // The edition everything below is filed under. Further editions are added
+  // in Admin. The id is Colosseum's hackathon id (World's Fair is 6); the
+  // slug keys banner artwork in lib/hq/hackathon-art.ts.
+  hackathon: z.object({
+    id: z.number().int().min(1),
+    slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+    name: z.string().min(1).max(120),
+    startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }),
   submissionGates: z.array(z.string().min(1)),
   awards: z.array(
     z.object({
@@ -158,33 +170,51 @@ async function main() {
       VALUES (${slug}, ${label}, ${color}, ${i})
       ON CONFLICT (slug) DO UPDATE SET label = ${label}, color = ${color}, sort = ${i}`;
   }
-  for (const [i, label] of data.submissionGates.entries()) {
-    await sql`INSERT INTO hq_submission_gates (label, sort) VALUES (${label}, ${i})
-      ON CONFLICT (label) DO UPDATE SET sort = ${i}`;
-  }
   for (const [i, [slug, label]] of EXCHANGE_ITEMS.entries()) {
     await sql`INSERT INTO hq_exchange_items (slug, label, sort) VALUES (${slug}, ${label}, ${i})
       ON CONFLICT (slug) DO UPDATE SET label = ${label}, sort = ${i}`;
   }
 
-  // Settings only fill missing keys so admin edits survive reseeding.
-  for (const [key, value] of Object.entries(data.settings)) {
-    await sql`INSERT INTO hq_settings (key, value) VALUES (${key}, ${JSON.stringify(value)}::jsonb)
-      ON CONFLICT (key) DO NOTHING`;
+  // The hackathon upserts by its Colosseum id, so a reseed can correct its
+  // name, slug or dates without touching anything filed under it.
+  const { hackathon } = data;
+  const [{ id: hackathonId }] = await sql`
+    INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
+    VALUES (${hackathon.id}, ${hackathon.slug}, ${hackathon.name},
+            ${hackathon.startDate}, ${hackathon.endDate})
+    ON CONFLICT (id) DO UPDATE
+    SET slug = EXCLUDED.slug, name = EXCLUDED.name,
+        start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date
+    RETURNING id`;
+
+  for (const [i, label] of data.submissionGates.entries()) {
+    await sql`INSERT INTO hq_submission_gates (hackathon_id, label, sort)
+      VALUES (${hackathonId}, ${label}, ${i})
+      ON CONFLICT (hackathon_id, label) DO UPDATE SET sort = ${i}`;
   }
 
-  const [{ count: milestoneCount }] = await sql`SELECT count(*)::int AS count FROM hq_milestones`;
+  // Settings only fill missing keys so admin edits survive reseeding.
+  for (const [key, value] of Object.entries(data.settings)) {
+    await sql`INSERT INTO hq_settings (hackathon_id, key, value)
+      VALUES (${hackathonId}, ${key}, ${JSON.stringify(value)}::jsonb)
+      ON CONFLICT (hackathon_id, key) DO NOTHING`;
+  }
+
+  const [{ count: milestoneCount }] = await sql`
+    SELECT count(*)::int AS count FROM hq_milestones WHERE hackathon_id = ${hackathonId}`;
   if (milestoneCount === 0) {
     for (const { date, label } of data.milestones) {
-      await sql`INSERT INTO hq_milestones (date, label) VALUES (${date}, ${label})`;
+      await sql`INSERT INTO hq_milestones (hackathon_id, date, label)
+        VALUES (${hackathonId}, ${date}, ${label})`;
     }
   }
 
-  const [{ count: awardCount }] = await sql`SELECT count(*)::int AS count FROM hq_awards`;
+  const [{ count: awardCount }] = await sql`
+    SELECT count(*)::int AS count FROM hq_awards WHERE hackathon_id = ${hackathonId}`;
   if (awardCount === 0) {
     for (const [i, { name, sponsor, amount }] of data.awards.entries()) {
-      await sql`INSERT INTO hq_awards (name, sponsor, amount, sort)
-        VALUES (${name}, ${sponsor}, ${amount}, ${i})`;
+      await sql`INSERT INTO hq_awards (hackathon_id, name, sponsor, amount, sort)
+        VALUES (${hackathonId}, ${name}, ${sponsor}, ${amount}, ${i})`;
     }
   }
 

@@ -23,6 +23,23 @@ export type Forecast = { id: string; slug: string; label: string; color: string 
 export type Gate = { id: string; label: string };
 export type ExchangeItem = { id: string; slug: string; label: string };
 
+/**
+ * One hackathon edition. Every operational record belongs to exactly one, and
+ * the app only ever shows one at a time (chosen on /hq/select, remembered in
+ * a cookie). The id is Colosseum's hackathon id (World's Fair is 6), typed in
+ * when the edition is added. slug is stable and keys the banner artwork in
+ * lib/hq/hackathon-art.ts; name and dates are operator-editable. archived is
+ * only ever set by hand — an edition's end date passing changes nothing.
+ */
+export type Hackathon = {
+  id: number;
+  slug: string;
+  name: string;
+  startDate: string; // "YYYY-MM-DD"
+  endDate: string;
+  archived: boolean;
+};
+
 export type Classifiers = {
   channels: Channel[];
   eventTypes: EventType[];

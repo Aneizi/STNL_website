@@ -5,7 +5,9 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { logout } from "@/lib/hq/actions/auth";
+import type { Hackathon } from "@/lib/hq/types";
 import { ActivityDrawer } from "./activity-drawer";
+import { HackathonSwitcher } from "./hackathon-switcher";
 import { SearchModal } from "./search-modal";
 
 // Admin is not a tab — it lives in the account menu, above Sign out.
@@ -20,7 +22,15 @@ const TABS: Array<{ href: string; label: string }> = [
   { href: "/hq/links", label: "Links" },
 ];
 
-export function HqChrome({ displayName }: { displayName: string }) {
+export function HqChrome({
+  displayName,
+  hackathons,
+  selectedId,
+}: {
+  displayName: string;
+  hackathons: Hackathon[];
+  selectedId: number | null;
+}) {
   const pathname = usePathname();
   const router = useRouter();
   const [searchOpen, setSearchOpen] = useState(false);
@@ -83,6 +93,7 @@ export function HqChrome({ displayName }: { displayName: string }) {
               alignItems: "center",
               gap: 9,
               whiteSpace: "nowrap",
+              minWidth: 0,
             }}
           >
             <Image
@@ -93,19 +104,9 @@ export function HqChrome({ displayName }: { displayName: string }) {
               sizes="26px"
               style={{ width: 26, height: "auto", display: "block" }}
             />
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "0.14em",
-                color: "var(--label-3)",
-                position: "relative",
-                top: 1,
-              }}
-            >
-              Campaign HQ
-            </span>
+            {/* The hackathon being shown stands where the product name used
+                to: it is the one fact every page under this chrome depends on. */}
+            <HackathonSwitcher hackathons={hackathons} selectedId={selectedId} />
           </div>
           <nav className="hq-chrome-nav">
             {/* Separator and link render as one flex item so a wrapped nav

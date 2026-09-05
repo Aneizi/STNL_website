@@ -1,17 +1,37 @@
 import type { Metadata } from "next";
 import { Admin } from "@/components/hq/admin";
 import { requireUser } from "@/lib/hq/auth";
-import { getMilestones, getSettings } from "@/lib/hq/queries";
+import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
+import {
+  getClassifiers,
+  getHackathon,
+  getHackathons,
+  getMilestones,
+  getSettings,
+} from "@/lib/hq/queries";
 
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = { title: "Admin" };
 
 export default async function AdminPage() {
-  const [, settings, milestones] = await Promise.all([
+  const hackathonId = await requireHackathonId();
+  const [, hackathon, hackathons, settings, milestones, classifiers] = await Promise.all([
     requireUser(),
-    getSettings(),
-    getMilestones(),
+    getHackathon(hackathonId),
+    getHackathons(),
+    getSettings(hackathonId),
+    getMilestones(hackathonId),
+    getClassifiers(hackathonId),
   ]);
-  return <Admin settings={settings} milestones={milestones} />;
+  const current = ensureHackathon(hackathon);
+  return (
+    <Admin
+      current={current}
+      hackathons={hackathons}
+      settings={settings}
+      milestones={milestones}
+      gates={classifiers.gates}
+    />
+  );
 }

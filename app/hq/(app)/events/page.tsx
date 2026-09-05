@@ -2,9 +2,11 @@ import type { Metadata } from "next";
 import { Events } from "@/components/hq/events";
 import { requireUser } from "@/lib/hq/auth";
 import { nowMs, todayInTz } from "@/lib/hq/format";
+import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
 import {
   getClassifiers,
   getEventsWithOutputs,
+  getHackathon,
   getLumaSyncedAt,
   getSettings,
 } from "@/lib/hq/queries";
@@ -17,14 +19,17 @@ export default async function EventsPage(props: {
   searchParams: Promise<{ view?: string | string[] }>;
 }) {
   const { view } = await props.searchParams;
+  const hackathonId = await requireHackathonId();
 
-  const [, events, classifiers, settings, syncedAt] = await Promise.all([
+  const [, hackathon, events, classifiers, settings, syncedAt] = await Promise.all([
     requireUser(),
-    getEventsWithOutputs(),
-    getClassifiers(),
-    getSettings(),
+    getHackathon(hackathonId),
+    getEventsWithOutputs(hackathonId),
+    getClassifiers(hackathonId),
+    getSettings(hackathonId),
     getLumaSyncedAt(),
   ]);
+  ensureHackathon(hackathon);
   return (
     <Events
       events={events}

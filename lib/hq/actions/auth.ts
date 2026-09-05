@@ -127,7 +127,9 @@ export async function login(
   `;
 
   await createSession(user.id, user.password_version);
-  redirect(user.must_change_password ? "/hq/change-password" : "/hq");
+  // Every sign-in lands on the hackathon picker: the operator chooses which
+  // edition to work in before seeing any of its data.
+  redirect(user.must_change_password ? "/hq/change-password" : "/hq/select");
 }
 
 export async function changePassword(

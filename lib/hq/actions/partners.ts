@@ -3,16 +3,19 @@
 import { z } from "zod";
 import { requireUser } from "../auth";
 import { getSql } from "../db";
+import { requireHackathon } from "../hackathon";
 import type { ActionResult } from "../types";
 import { activityStmt, hqToday, refreshHq } from "./util";
 
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
 
-async function getPartnerName(partnerId: string): Promise<string | null> {
+type PartnerRef = { name: string; hackathonId: number };
+
+async function getPartner(partnerId: string): Promise<PartnerRef | null> {
   const sql = getSql();
-  const rows = await sql`SELECT name FROM hq_partners WHERE id = ${partnerId}`;
-  return rows[0]?.name ?? null;
+  const rows = await sql`SELECT name, hackathon_id FROM hq_partners WHERE id = ${partnerId}`;
+  return rows[0] ? { name: rows[0].name, hackathonId: Number(rows[0].hackathon_id) } : null;
 }
 
 const createSchema = z.object({
@@ -25,6 +28,7 @@ const createSchema = z.object({
 
 export async function createPartner(input: z.infer<typeof createSchema>): Promise<ActionResult> {
   const user = await requireUser();
+  const hackathon = await requireHackathon();
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Partner name is required." };
   const { channelId, captainName, captainContact, target } = parsed.data;
@@ -32,20 +36,20 @@ export async function createPartner(input: z.infer<typeof createSchema>): Promis
   if (!name) return { ok: false, error: "Partner name is required." };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(hackathon.id);
   // Pre-generated id keeps the insert + exchange item + activity atomic.
   const partnerId = crypto.randomUUID();
   const statements = [
     sql`
       INSERT INTO hq_partners
-        (id, name, channel_id, captain_name, captain_contact, stage_id, target,
+        (id, hackathon_id, name, channel_id, captain_name, captain_contact, stage_id, target,
          touched_by_user_id, touched_at)
       VALUES
-        (${partnerId}, ${name}, ${channelId}, ${captainName}, ${captainContact},
+        (${partnerId}, ${hackathon.id}, ${name}, ${channelId}, ${captainName}, ${captainContact},
          (SELECT id FROM hq_partner_stages WHERE slug = 'draft'), ${target},
          ${user.id}, ${today})
     `,
-    activityStmt(user.id, `Added partner ${name}`),
+    activityStmt(user.id, hackathon.id, `Added partner ${name}`),
   ];
   await sql.transaction(statements);
   refreshHq();
@@ -59,21 +63,21 @@ export async function setPartnerStage(
 ): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(partnerId).success) return { ok: false };
-  const name = await getPartnerName(partnerId);
-  if (name === null) return { ok: false };
+  const partner = await getPartner(partnerId);
+  if (!partner) return { ok: false };
 
   const sql = getSql();
   const stageRows = await sql`SELECT id FROM hq_partner_stages WHERE slug = ${stageSlug}`;
   if (!stageRows[0]) return { ok: false };
 
-  const today = await hqToday();
+  const today = await hqToday(partner.hackathonId);
   await sql.transaction([
     sql`
       UPDATE hq_partners
       SET stage_id = ${stageRows[0].id}, touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${partnerId}
     `,
-    activityStmt(user.id, `${name} moved to ${stageSlug}`),
+    activityStmt(user.id, partner.hackathonId, `${partner.name} moved to ${stageSlug}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -96,8 +100,9 @@ export async function updatePartnerDetail(
   const parsed = detailField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
-  const name = await getPartnerName(partnerId);
-  if (name === null) return { ok: false, error: "Partner not found." };
+  const partner = await getPartner(partnerId);
+  if (!partner) return { ok: false, error: "Partner not found." };
+  const { name, hackathonId } = partner;
 
   const sql = getSql();
   const data = parsed.data;
@@ -134,14 +139,14 @@ export async function updatePartnerDetail(
       break;
   }
 
-  const today = await hqToday();
+  const today = await hqToday(hackathonId);
   await sql.transaction([
     update,
     sql`
       UPDATE hq_partners SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${partnerId}
     `,
-    activityStmt(user.id, message),
+    activityStmt(user.id, hackathonId, message),
   ]);
   refreshHq();
   return { ok: true };
@@ -154,11 +159,11 @@ export async function togglePartnerExchange(
 ): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(partnerId).success || !id.safeParse(itemId).success) return { ok: false };
-  const name = await getPartnerName(partnerId);
-  if (name === null) return { ok: false };
+  const partner = await getPartner(partnerId);
+  if (!partner) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(partner.hackathonId);
   const write = done
     ? sql`
         INSERT INTO hq_partner_exchange (partner_id, item_id) VALUES (${partnerId}, ${itemId})
@@ -173,7 +178,7 @@ export async function togglePartnerExchange(
       UPDATE hq_partners SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${partnerId}
     `,
-    activityStmt(user.id, `Exchange item updated on ${name}`),
+    activityStmt(user.id, partner.hackathonId, `Exchange item updated on ${partner.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -187,13 +192,13 @@ export async function togglePartnerExchange(
 export async function deletePartner(partnerId: string): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(partnerId).success) return { ok: false };
-  const name = await getPartnerName(partnerId);
-  if (name === null) return { ok: false, error: "Partner not found." };
+  const partner = await getPartner(partnerId);
+  if (!partner) return { ok: false, error: "Partner not found." };
 
   const sql = getSql();
   await sql.transaction([
     sql`DELETE FROM hq_partners WHERE id = ${partnerId}`,
-    activityStmt(user.id, `Deleted partner ${name}`),
+    activityStmt(user.id, partner.hackathonId, `Deleted partner ${partner.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -204,11 +209,11 @@ export async function addPartnerContact(partnerId: string, body: string): Promis
   if (!id.safeParse(partnerId).success) return { ok: false };
   const parsed = z.string().min(1).max(2000).safeParse(body);
   if (!parsed.success) return { ok: false };
-  const name = await getPartnerName(partnerId);
-  if (name === null) return { ok: false };
+  const partner = await getPartner(partnerId);
+  if (!partner) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(partner.hackathonId);
   await sql.transaction([
     sql`
       INSERT INTO hq_partner_contacts (partner_id, author_user_id, body)
@@ -218,7 +223,7 @@ export async function addPartnerContact(partnerId: string, body: string): Promis
       UPDATE hq_partners SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${partnerId}
     `,
-    activityStmt(user.id, `Contact logged with ${name}`),
+    activityStmt(user.id, partner.hackathonId, `Contact logged with ${partner.name}`),
   ]);
   refreshHq();
   return { ok: true };

@@ -41,8 +41,13 @@ async function migrate(db: Db) {
   await applyUpgrades({ query: (text) => db.query(text) });
 }
 
-/** Minimum rows every screen depends on: roles, classifiers, people, projects. */
+/** Minimum rows every screen depends on: a hackathon, roles, classifiers, people, projects. */
 async function seed(db: Db) {
+  const [hackathon] = await db.query(
+    `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
+     VALUES (6,'wf','World''s Fair','2026-09-14','2026-10-12') RETURNING id`,
+  );
+  const h = hackathon.id;
   await db.query(
     `INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
      VALUES ('Judge','Judges','indigo','fill-3',true,0),
@@ -55,20 +60,24 @@ async function seed(db: Db) {
   await db.query(
     `INSERT INTO hq_project_forecasts (slug,label,color,sort) VALUES ('committed','Committed','green',0)`,
   );
-  await db.query(`INSERT INTO hq_submission_gates (label, sort) VALUES ('G1',0), ('G2',1)`);
+  await db.query(
+    `INSERT INTO hq_submission_gates (hackathon_id, label, sort) VALUES ($1,'G1',0), ($1,'G2',1)`,
+    [h],
+  );
   const [judgeRole] = await db.query(`SELECT id FROM hq_people_roles WHERE is_judge`);
   const [captainRole] = await db.query(`SELECT id FROM hq_people_roles WHERE NOT is_judge`);
   await db.query(
-    `INSERT INTO hq_people (name, role_id) VALUES ('Judge One',$1),('Judge Two',$1),('Cappy',$2)`,
-    [judgeRole.id, captainRole.id],
+    `INSERT INTO hq_people (hackathon_id, name, role_id)
+     VALUES ($3,'Judge One',$1),($3,'Judge Two',$1),($3,'Cappy',$2)`,
+    [judgeRole.id, captainRole.id, h],
   );
   const [status] = await db.query(`SELECT id FROM hq_project_statuses`);
   const [forecast] = await db.query(`SELECT id FROM hq_project_forecasts`);
   await db.query(
-    `INSERT INTO hq_projects (name, status_id, forecast_id, last_check_in)
-     VALUES ('P1',$1,$2,current_date), ('P2',$1,$2,current_date),
-            ('P3',$1,$2,current_date), ('P4',$1,$2,current_date)`,
-    [status.id, forecast.id],
+    `INSERT INTO hq_projects (hackathon_id, name, status_id, forecast_id, last_check_in)
+     VALUES ($3,'P1',$1,$2,current_date), ($3,'P2',$1,$2,current_date),
+            ($3,'P3',$1,$2,current_date), ($3,'P4',$1,$2,current_date)`,
+    [status.id, forecast.id, h],
   );
   await db.query(
     `INSERT INTO hq_users (username, display_name, password_hash) VALUES ('alex','Alex','x')`,
@@ -91,14 +100,19 @@ const BUMP_LIMIT = `
   RETURNING count`;
 
 const ADD_FINALIST = `
-  INSERT INTO hq_finalists (project_id, position)
-  SELECT $1::uuid, COALESCE((SELECT max(position) FROM hq_finalists), 0) + 1
-  WHERE (SELECT count(*) FROM hq_finalists) < $2::int
+  INSERT INTO hq_finalists (project_id, hackathon_id, position)
+  SELECT p.id, p.hackathon_id,
+    COALESCE((SELECT max(f.position) FROM hq_finalists f
+              WHERE f.hackathon_id = p.hackathon_id), 0) + 1
+  FROM hq_projects p
+  WHERE p.id = $1::uuid
+    AND (SELECT count(*) FROM hq_finalists f WHERE f.hackathon_id = p.hackathon_id) < $2::int
     AND ($3::boolean OR NOT EXISTS (
       SELECT 1 FROM hq_submission_gates g
-      WHERE NOT EXISTS (
-        SELECT 1 FROM hq_project_gates pg
-        WHERE pg.project_id = $4::uuid AND pg.gate_id = g.id)))
+      WHERE g.hackathon_id = p.hackathon_id
+        AND NOT EXISTS (
+          SELECT 1 FROM hq_project_gates pg
+          WHERE pg.project_id = p.id AND pg.gate_id = g.id)))
   ON CONFLICT (project_id) DO NOTHING
   RETURNING position`;
 
@@ -125,7 +139,9 @@ describe("schema migration", () => {
     const db = connect();
     await migrate(db);
     await expect(migrate(db)).resolves.not.toThrow();
-    const [{ idx }] = await db.query(`SELECT to_regclass('hq_finalists_position_key') AS idx`);
+    const [{ idx }] = await db.query(
+      `SELECT to_regclass('hq_finalists_hackathon_id_position_key') AS idx`,
+    );
     expect(idx).toBeTruthy();
     const [otherRole] = await db.query(
       `SELECT filter_label, is_judge, sort FROM hq_people_roles WHERE label = 'Other'`,
@@ -249,38 +265,43 @@ describe("demo-day invariants", () => {
   });
 
   it("accepts a fully gated project when verified-only is on", async () => {
-    const rows = await db.query(ADD_FINALIST, [projects.P1, 30, false, projects.P1]);
+    const rows = await db.query(ADD_FINALIST, [projects.P1, 30, false]);
     expect(rows).toHaveLength(1);
   });
 
   it("rejects a partially gated project when verified-only is on", async () => {
-    const rows = await db.query(ADD_FINALIST, [projects.P2, 30, false, projects.P2]);
+    const rows = await db.query(ADD_FINALIST, [projects.P2, 30, false]);
     expect(rows).toHaveLength(0);
   });
 
   it("ignores a duplicate finalist", async () => {
-    const rows = await db.query(ADD_FINALIST, [projects.P1, 30, true, projects.P1]);
+    const rows = await db.query(ADD_FINALIST, [projects.P1, 30, true]);
     expect(rows).toHaveLength(0);
   });
 
   it("enforces the finalist cap in SQL", async () => {
-    const rows = await db.query(ADD_FINALIST, [projects.P2, 1, true, projects.P2]);
+    const rows = await db.query(ADD_FINALIST, [projects.P2, 1, true]);
     expect(rows).toHaveLength(0);
   });
 
   it("assigns unique sequential positions", async () => {
-    await db.query(ADD_FINALIST, [projects.P2, 30, true, projects.P2]);
+    await db.query(ADD_FINALIST, [projects.P2, 30, true]);
     const rows = await db.query(`SELECT position FROM hq_finalists ORDER BY position`);
     expect(rows.map((r) => r.position)).toEqual([1, 2]);
     await expect(
-      db.query(`INSERT INTO hq_finalists (project_id, position) VALUES ($1, 1)`, [projects.P3]),
+      db.query(
+        `INSERT INTO hq_finalists (project_id, hackathon_id, position)
+         SELECT id, hackathon_id, 1 FROM hq_projects WHERE id = $1`,
+        [projects.P3],
+      ),
     ).rejects.toThrow(/unique|duplicate/i);
   });
 
   it("only lets a current finalist win an award", async () => {
     const [award] = await db.query(
-      `INSERT INTO hq_awards (name, sponsor, amount, sort)
-       SELECT $1::text, '', $2::int, COALESCE(max(sort), 0) + 1 FROM hq_awards RETURNING id`,
+      `INSERT INTO hq_awards (hackathon_id, name, sponsor, amount, sort)
+       SELECT h.id, $1::text, '', $2::int, COALESCE((SELECT max(sort) FROM hq_awards), 0) + 1
+       FROM hq_hackathons h RETURNING id`,
       ["Grand", 5000],
     );
     expect(await db.query(SET_WINNER, [projects.P1, award.id, false, projects.P1])).toHaveLength(1);

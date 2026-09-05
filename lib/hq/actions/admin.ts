@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { requireUser } from "../auth";
 import { getSql } from "../db";
+import { requireHackathon } from "../hackathon";
 import type { ActionResult } from "../types";
 import { activityStmt, refreshHq } from "./util";
 
@@ -32,8 +33,10 @@ const SETTINGS_SCHEMA = z.object({
 
 export type SettingsPatch = z.infer<typeof SETTINGS_SCHEMA>;
 
+/** Settings belong to the hackathon being shown; the cookie says which. */
 export async function updateSettings(patch: SettingsPatch): Promise<ActionResult> {
   const user = await requireUser();
+  const hackathon = await requireHackathon();
   const parsed = SETTINGS_SCHEMA.safeParse(patch);
   if (!parsed.success) return { ok: false, error: "Invalid settings values." };
 
@@ -44,12 +47,12 @@ export async function updateSettings(patch: SettingsPatch): Promise<ActionResult
   await sql.transaction([
     ...entries.map(
       ([key, value]) => sql`
-        INSERT INTO hq_settings (key, value)
-        VALUES (${key}, ${JSON.stringify(value)}::jsonb)
-        ON CONFLICT (key) DO UPDATE SET value = ${JSON.stringify(value)}::jsonb
+        INSERT INTO hq_settings (hackathon_id, key, value)
+        VALUES (${hackathon.id}, ${key}, ${JSON.stringify(value)}::jsonb)
+        ON CONFLICT (hackathon_id, key) DO UPDATE SET value = ${JSON.stringify(value)}::jsonb
       `,
     ),
-    activityStmt(user.id, "Updated campaign settings"),
+    activityStmt(user.id, hackathon.id, "Updated campaign settings"),
   ]);
   refreshHq();
   return { ok: true };
@@ -64,16 +67,26 @@ export async function addMilestone(
   input: z.infer<typeof milestoneSchema>,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const hackathon = await requireHackathon();
   const parsed = milestoneSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Date and label are required." };
 
   const sql = getSql();
   await sql.transaction([
-    sql`INSERT INTO hq_milestones (date, label) VALUES (${parsed.data.date}, ${parsed.data.label})`,
-    activityStmt(user.id, "Updated campaign settings"),
+    sql`
+      INSERT INTO hq_milestones (hackathon_id, date, label)
+      VALUES (${hackathon.id}, ${parsed.data.date}, ${parsed.data.label})
+    `,
+    activityStmt(user.id, hackathon.id, "Updated campaign settings"),
   ]);
   refreshHq();
   return { ok: true };
+}
+
+async function milestoneHackathon(milestoneId: string): Promise<number | null> {
+  const sql = getSql();
+  const rows = await sql`SELECT hackathon_id FROM hq_milestones WHERE id = ${milestoneId}`;
+  return rows[0] ? Number(rows[0].hackathon_id) : null;
 }
 
 export async function updateMilestone(
@@ -84,6 +97,8 @@ export async function updateMilestone(
   if (!id.safeParse(milestoneId).success) return { ok: false };
   const parsed = milestoneSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Date and label are required." };
+  const hackathonId = await milestoneHackathon(milestoneId);
+  if (!hackathonId) return { ok: false };
 
   const sql = getSql();
   await sql.transaction([
@@ -91,7 +106,7 @@ export async function updateMilestone(
       UPDATE hq_milestones SET date = ${parsed.data.date}, label = ${parsed.data.label}
       WHERE id = ${milestoneId}
     `,
-    activityStmt(user.id, "Updated campaign settings"),
+    activityStmt(user.id, hackathonId, "Updated campaign settings"),
   ]);
   refreshHq();
   return { ok: true };
@@ -100,11 +115,13 @@ export async function updateMilestone(
 export async function deleteMilestone(milestoneId: string): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(milestoneId).success) return { ok: false };
+  const hackathonId = await milestoneHackathon(milestoneId);
+  if (!hackathonId) return { ok: false };
 
   const sql = getSql();
   await sql.transaction([
     sql`DELETE FROM hq_milestones WHERE id = ${milestoneId}`,
-    activityStmt(user.id, "Updated campaign settings"),
+    activityStmt(user.id, hackathonId, "Updated campaign settings"),
   ]);
   refreshHq();
   return { ok: true };

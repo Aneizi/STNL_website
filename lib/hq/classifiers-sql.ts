@@ -6,10 +6,13 @@ import type { Classifiers } from "./types";
  * aggregating them server-side turns eight round trips into one. `sort` orders
  * each aggregate and is then dropped from the payload.
  *
+ * Seven lists are shared by every hackathon; the submission gates belong to
+ * one, so the statement takes the hackathon id as its single parameter.
+ *
  * Kept out of queries.ts (which is "server-only") so tests can run the real
  * statement against a real Postgres instead of a copy that can drift.
  */
-const CLASSIFIER_LISTS: Array<{ key: string; columns: string; table: string }> = [
+const CLASSIFIER_LISTS: Array<{ key: string; columns: string; table: string; where?: string }> = [
   { key: "channels", columns: "id, label", table: "hq_partner_channels" },
   { key: "event_types", columns: "id, label, supports_end_date", table: "hq_event_types" },
   {
@@ -24,14 +27,20 @@ const CLASSIFIER_LISTS: Array<{ key: string; columns: string; table: string }> =
     table: "hq_project_statuses",
   },
   { key: "forecasts", columns: "id, slug, label, color", table: "hq_project_forecasts" },
-  { key: "gates", columns: "id, label", table: "hq_submission_gates" },
+  {
+    key: "gates",
+    columns: "id, label",
+    table: "hq_submission_gates",
+    where: "hackathon_id = $1::int",
+  },
   { key: "exchange_items", columns: "id, slug, label", table: "hq_exchange_items" },
 ];
 
+/** Parameters: $1 = hackathon id (scopes the submission gates). */
 export const CLASSIFIERS_SELECT = `SELECT ${CLASSIFIER_LISTS.map(
-  ({ key, columns, table }) =>
+  ({ key, columns, table, where }) =>
     `(SELECT COALESCE(jsonb_agg(to_jsonb(t) - 'sort' ORDER BY t.sort), '[]'::jsonb)
-      FROM (SELECT ${columns}, sort FROM ${table}) t) AS ${key}`,
+      FROM (SELECT ${columns}, sort FROM ${table}${where ? ` WHERE ${where}` : ""}) t) AS ${key}`,
 ).join(",\n  ")}`;
 
 type JsonRow = Record<string, unknown>;

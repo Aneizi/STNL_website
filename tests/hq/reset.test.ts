@@ -47,6 +47,10 @@ async function seedEverything() {
   await run(`INSERT INTO hq_login_attempts (username, ip, success) VALUES ('cap','1.2.3.4',true)`);
   await run(`INSERT INTO hq_login_limits (key, count, window_start) VALUES ('cap',1,now())`);
 
+  const hackathon = await id(
+    `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
+     VALUES (6,'wf','World''s Fair','2026-09-14','2026-10-12') RETURNING id`,
+  );
   await run(`INSERT INTO hq_partner_channels (label, sort) VALUES ('Direct',0)`);
   await run(`INSERT INTO hq_event_types (label, supports_end_date, sort) VALUES ('Other',false,0)`);
   await run(`INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
@@ -56,10 +60,12 @@ async function seedEverything() {
              VALUES ('green','Green','green',true,0)`);
   await run(`INSERT INTO hq_project_forecasts (slug,label,color,sort)
              VALUES ('committed','Committed','green',0)`);
-  await run(`INSERT INTO hq_submission_gates (label, sort) VALUES ('G1',0)`);
+  await run(`INSERT INTO hq_submission_gates (hackathon_id, label, sort) VALUES ('${hackathon}','G1',0)`);
   await run(`INSERT INTO hq_exchange_items (slug,label,sort) VALUES ('swag','Swag',0)`);
-  await run(`INSERT INTO hq_settings (key,value) VALUES ('timezone','"Europe/Amsterdam"')`);
-  await run(`INSERT INTO hq_milestones (date,label) VALUES (current_date,'Kickoff')`);
+  await run(`INSERT INTO hq_settings (hackathon_id,key,value)
+             VALUES ('${hackathon}','timezone','"Europe/Amsterdam"')`);
+  await run(`INSERT INTO hq_milestones (hackathon_id,date,label)
+             VALUES ('${hackathon}',current_date,'Kickoff')`);
 
   const channel = await id(`SELECT id FROM hq_partner_channels LIMIT 1`);
   const stage = await id(`SELECT id FROM hq_partner_stages LIMIT 1`);
@@ -71,30 +77,35 @@ async function seedEverything() {
   const item = await id(`SELECT id FROM hq_exchange_items LIMIT 1`);
 
   const partner = await id(
-    `INSERT INTO hq_partners (name, channel_id, stage_id)
-     VALUES ('P','${channel}','${stage}') RETURNING id`,
+    `INSERT INTO hq_partners (hackathon_id, name, channel_id, stage_id)
+     VALUES ('${hackathon}','P','${channel}','${stage}') RETURNING id`,
   );
   const project = await id(
-    `INSERT INTO hq_projects (name, status_id, forecast_id, last_check_in, partner_id)
-     VALUES ('Proj','${status}','${forecast}',current_date,'${partner}') RETURNING id`,
+    `INSERT INTO hq_projects (hackathon_id, name, status_id, forecast_id, last_check_in, partner_id)
+     VALUES ('${hackathon}','Proj','${status}','${forecast}',current_date,'${partner}') RETURNING id`,
   );
   const person = await id(
-    `INSERT INTO hq_people (name, role_id) VALUES ('Judge One','${role}') RETURNING id`,
+    `INSERT INTO hq_people (hackathon_id, name, role_id)
+     VALUES ('${hackathon}','Judge One','${role}') RETURNING id`,
   );
-  await run(`INSERT INTO hq_events (name,date,type_id) VALUES ('Ev',current_date,'${type}')`);
+  await run(`INSERT INTO hq_events (hackathon_id,name,date,type_id)
+             VALUES ('${hackathon}','Ev',current_date,'${type}')`);
   await run(`INSERT INTO hq_project_gates (project_id, gate_id) VALUES ('${project}','${gate}')`);
   await run(`INSERT INTO hq_project_notes (project_id, body) VALUES ('${project}','note')`);
   await run(`INSERT INTO hq_partner_exchange (partner_id, item_id) VALUES ('${partner}','${item}')`);
   await run(`INSERT INTO hq_partner_contacts (partner_id, body) VALUES ('${partner}','hi')`);
-  await run(`INSERT INTO hq_finalists (project_id, position) VALUES ('${project}',1)`);
+  await run(`INSERT INTO hq_finalists (project_id, hackathon_id, position)
+             VALUES ('${project}','${hackathon}',1)`);
   await run(`INSERT INTO hq_scores (judge_id, project_id, score) VALUES ('${person}','${project}',8)`);
-  await run(`INSERT INTO hq_awards (name, sponsor, amount, winner_project_id, sort)
-             VALUES ('Best','S',100,'${project}',0)`);
-  await run(`INSERT INTO hq_activity (user_id, message) VALUES ('${user}','did a thing')`);
+  await run(`INSERT INTO hq_awards (hackathon_id, name, sponsor, amount, winner_project_id, sort)
+             VALUES ('${hackathon}','Best','S',100,'${project}',0)`);
+  await run(`INSERT INTO hq_activity (hackathon_id, user_id, message)
+             VALUES ('${hackathon}','${user}','did a thing')`);
   await run(`INSERT INTO hq_project_members (project_id, name, contact, sort)
              VALUES ('${project}','Teammate','tm@example.com',1)`);
   const link = await id(
-    `INSERT INTO hq_links (title, url) VALUES ('Form','https://x.y') RETURNING id`,
+    `INSERT INTO hq_links (hackathon_id, title, url)
+     VALUES ('${hackathon}','Form','https://x.y') RETURNING id`,
   );
   await run(`INSERT INTO hq_link_notes (link_id, author_user_id, body)
              VALUES ('${link}','${user}','note')`);
@@ -129,7 +140,7 @@ describe("hq:reset", () => {
     }
   });
 
-  it("leaves logins, classifiers, settings and campaign setup intact", async () => {
+  it("leaves logins, hackathons, classifiers, settings and campaign setup intact", async () => {
     await reset();
     for (const table of KEEP_TABLES) {
       expect(await count(table), `${table} should survive`).toBeGreaterThan(0);

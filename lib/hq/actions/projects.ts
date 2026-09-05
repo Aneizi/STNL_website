@@ -3,16 +3,20 @@
 import { z } from "zod";
 import { requireUser } from "../auth";
 import { getSql } from "../db";
+import { requireHackathon } from "../hackathon";
 import type { ActionResult } from "../types";
 import { activityStmt, hqToday, refreshHq } from "./util";
 
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
 
-async function getProjectName(projectId: string): Promise<string | null> {
+type ProjectRef = { name: string; hackathonId: number };
+
+/** The project's name and hackathon (for touch + activity), or null for a stale id. */
+async function getProject(projectId: string): Promise<ProjectRef | null> {
   const sql = getSql();
-  const rows = await sql`SELECT name FROM hq_projects WHERE id = ${projectId}`;
-  return rows[0]?.name ?? null;
+  const rows = await sql`SELECT name, hackathon_id FROM hq_projects WHERE id = ${projectId}`;
+  return rows[0] ? { name: rows[0].name, hackathonId: Number(rows[0].hackathon_id) } : null;
 }
 
 const createSchema = z.object({
@@ -25,6 +29,7 @@ const createSchema = z.object({
 
 export async function createProject(input: z.infer<typeof createSchema>): Promise<ActionResult> {
   const user = await requireUser();
+  const hackathon = await requireHackathon();
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Project name is required." };
   const { leadName, leadContact, partnerId, eventSrc } = parsed.data;
@@ -32,21 +37,25 @@ export async function createProject(input: z.infer<typeof createSchema>): Promis
   if (!name) return { ok: false, error: "Project name is required." };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(hackathon.id);
   // Mirrors the design: new projects start green/likely. The lead is always
-  // on the team, so there is no separate member row to create.
+  // on the team, so there is no separate member row to create. A partner from
+  // another hackathon cannot be attached: the subselect yields NULL for it.
   await sql.transaction([
     sql`
       INSERT INTO hq_projects
-        (name, lead_name, lead_contact, partner_id, event_src,
+        (hackathon_id, name, lead_name, lead_contact, partner_id, event_src,
          status_id, forecast_id, last_check_in, touched_by_user_id, touched_at)
       VALUES
-        (${name}, ${leadName}, ${leadContact}, ${partnerId}, ${eventSrc},
+        (${hackathon.id}, ${name}, ${leadName}, ${leadContact},
+         (SELECT id FROM hq_partners
+          WHERE id = ${partnerId}::uuid AND hackathon_id = ${hackathon.id}),
+         ${eventSrc},
          (SELECT id FROM hq_project_statuses WHERE slug = 'green'),
          (SELECT id FROM hq_project_forecasts WHERE slug = 'likely'),
          ${today}, ${user.id}, ${today})
     `,
-    activityStmt(user.id, `Added project ${name}`),
+    activityStmt(user.id, hackathon.id, `Added project ${name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -69,11 +78,12 @@ export async function updateProjectDetail(
   const parsed = detailField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false, error: "Project not found." };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false, error: "Project not found." };
+  const { name, hackathonId } = project;
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(hackathonId);
   const touch = sql`
     UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
     WHERE id = ${projectId}
@@ -103,12 +113,19 @@ export async function updateProjectDetail(
       message = `Updated ${name}`;
       break;
     case "partnerId":
-      update = sql`UPDATE hq_projects SET partner_id = ${data.value} WHERE id = ${projectId}`;
+      // Only a partner of the same hackathon can be attached; any other id
+      // clears the attribution rather than crossing editions.
+      update = sql`
+        UPDATE hq_projects
+        SET partner_id = (SELECT id FROM hq_partners
+                          WHERE id = ${data.value}::uuid AND hackathon_id = ${hackathonId})
+        WHERE id = ${projectId}
+      `;
       message = `Updated ${name}`;
       break;
   }
 
-  await sql.transaction([update, touch, activityStmt(user.id, message)]);
+  await sql.transaction([update, touch, activityStmt(user.id, hackathonId, message)]);
   refreshHq();
   return { ok: true };
 }
@@ -116,14 +133,16 @@ export async function updateProjectDetail(
 /** The member's project (for touch + activity), or null for a stale id. */
 async function getMemberProject(
   memberId: string,
-): Promise<{ projectId: string; projectName: string } | null> {
+): Promise<{ projectId: string; projectName: string; hackathonId: number } | null> {
   const sql = getSql();
   const rows = await sql`
-    SELECT m.project_id, p.name FROM hq_project_members m
+    SELECT m.project_id, p.name, p.hackathon_id FROM hq_project_members m
     JOIN hq_projects p ON p.id = m.project_id
     WHERE m.id = ${memberId}
   `;
-  return rows[0] ? { projectId: rows[0].project_id, projectName: rows[0].name } : null;
+  return rows[0]
+    ? { projectId: rows[0].project_id, projectName: rows[0].name, hackathonId: Number(rows[0].hackathon_id) }
+    : null;
 }
 
 export async function addProjectMember(
@@ -138,11 +157,11 @@ export async function addProjectMember(
   if (!parsedName.success || !parsedContact.success) return { ok: false };
   const trimmedName = parsedName.data.trim();
   if (!trimmedName) return { ok: false };
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(project.hackathonId);
   // max+1 keeps new teammates at the end; parameters carry explicit casts
   // because a bare SELECT list gives Postgres nothing to infer types from.
   await sql.transaction([
@@ -156,7 +175,7 @@ export async function addProjectMember(
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${projectId}
     `,
-    activityStmt(user.id, `Updated team on ${name}`),
+    activityStmt(user.id, project.hackathonId, `Updated team on ${project.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -179,7 +198,7 @@ export async function updateProjectMember(
   if (!member) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(member.hackathonId);
   const data = parsed.data;
   const trimmedName = data.field === "name" ? data.value.trim() : "";
   if (data.field === "name" && !trimmedName) return { ok: false };
@@ -193,7 +212,7 @@ export async function updateProjectMember(
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${member.projectId}
     `,
-    activityStmt(user.id, `Updated team on ${member.projectName}`),
+    activityStmt(user.id, member.hackathonId, `Updated team on ${member.projectName}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -206,14 +225,14 @@ export async function removeProjectMember(memberId: string): Promise<ActionResul
   if (!member) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(member.hackathonId);
   await sql.transaction([
     sql`DELETE FROM hq_project_members WHERE id = ${memberId}`,
     sql`
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${member.projectId}
     `,
-    activityStmt(user.id, `Updated team on ${member.projectName}`),
+    activityStmt(user.id, member.hackathonId, `Updated team on ${member.projectName}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -230,11 +249,11 @@ export async function setProjectStatus(
 ): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(project.hackathonId);
   const statusRows = await sql`SELECT id FROM hq_project_statuses WHERE slug = ${statusSlug}`;
   if (!statusRows[0]) return { ok: false };
 
@@ -245,7 +264,11 @@ export async function setProjectStatus(
       WHERE id = ${projectId}
     `,
   ];
-  if (!opts?.review) statements.push(activityStmt(user.id, `Set ${name} to ${statusSlug}`));
+  if (!opts?.review) {
+    statements.push(
+      activityStmt(user.id, project.hackathonId, `Set ${project.name} to ${statusSlug}`),
+    );
+  }
   await sql.transaction(statements);
   refreshHq();
   return { ok: true };
@@ -257,11 +280,11 @@ export async function setProjectForecast(
 ): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(project.hackathonId);
   const forecastRows = await sql`SELECT id FROM hq_project_forecasts WHERE slug = ${forecastSlug}`;
   if (!forecastRows[0]) return { ok: false };
 
@@ -271,7 +294,11 @@ export async function setProjectForecast(
       SET forecast_id = ${forecastRows[0].id}, touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${projectId}
     `,
-    activityStmt(user.id, `Moved ${name} to ${forecastSlug.replace("_", " ")}`),
+    activityStmt(
+      user.id,
+      project.hackathonId,
+      `Moved ${project.name} to ${forecastSlug.replace("_", " ")}`,
+    ),
   ]);
   refreshHq();
   return { ok: true };
@@ -284,14 +311,18 @@ export async function toggleProjectGate(
 ): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(projectId).success || !id.safeParse(gateId).success) return { ok: false };
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(project.hackathonId);
+  // A gate can only be ticked on a project of its own hackathon; the guard
+  // lives in SQL so a stale form cannot cross editions.
   const write = done
     ? sql`
-        INSERT INTO hq_project_gates (project_id, gate_id) VALUES (${projectId}, ${gateId})
+        INSERT INTO hq_project_gates (project_id, gate_id)
+        SELECT ${projectId}::uuid, g.id FROM hq_submission_gates g
+        WHERE g.id = ${gateId}::uuid AND g.hackathon_id = ${project.hackathonId}
         ON CONFLICT DO NOTHING
       `
     : sql`
@@ -303,7 +334,11 @@ export async function toggleProjectGate(
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${projectId}
     `,
-    activityStmt(user.id, `${done ? "Checked" : "Unchecked"} gate on ${name}`),
+    activityStmt(
+      user.id,
+      project.hackathonId,
+      `${done ? "Checked" : "Unchecked"} gate on ${project.name}`,
+    ),
   ]);
   refreshHq();
   return { ok: true };
@@ -317,18 +352,18 @@ export async function saveProjectBlocker(
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsed = text(500).safeParse(blocker);
   if (!parsed.success) return { ok: false };
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(project.hackathonId);
   await sql.transaction([
     sql`
       UPDATE hq_projects
       SET blocker = ${parsed.data}, touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${projectId}
     `,
-    activityStmt(user.id, `Updated blocker on ${name}`),
+    activityStmt(user.id, project.hackathonId, `Updated blocker on ${project.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -339,11 +374,11 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsed = z.string().min(1).max(2000).safeParse(body);
   if (!parsed.success) return { ok: false };
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false };
 
   const sql = getSql();
-  const today = await hqToday();
+  const today = await hqToday(project.hackathonId);
   await sql.transaction([
     sql`
       INSERT INTO hq_project_notes (project_id, author_user_id, body)
@@ -353,7 +388,7 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${projectId}
     `,
-    activityStmt(user.id, `Note on ${name}`),
+    activityStmt(user.id, project.hackathonId, `Note on ${project.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -368,13 +403,13 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
 export async function deleteProject(projectId: string): Promise<ActionResult> {
   const user = await requireUser();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const name = await getProjectName(projectId);
-  if (name === null) return { ok: false, error: "Project not found." };
+  const project = await getProject(projectId);
+  if (!project) return { ok: false, error: "Project not found." };
 
   const sql = getSql();
   await sql.transaction([
     sql`DELETE FROM hq_projects WHERE id = ${projectId}`,
-    activityStmt(user.id, `Deleted project ${name}`),
+    activityStmt(user.id, project.hackathonId, `Deleted project ${project.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -394,7 +429,7 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
 
   const sql = getSql();
   const rows = await sql`
-    SELECT p.id AS project_id, p.name
+    SELECT p.id AS project_id, p.name, p.hackathon_id
     FROM hq_project_notes n
     JOIN hq_projects p ON p.id = n.project_id
     WHERE n.id = ${noteId}
@@ -402,7 +437,7 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
   const note = rows[0];
   if (!note) return { ok: false };
 
-  const today = await hqToday();
+  const today = await hqToday(note.hackathon_id);
   await sql.transaction([
     sql`
       UPDATE hq_project_notes SET body = ${parsed.data}, edited_at = now()
@@ -412,7 +447,7 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
       WHERE id = ${note.project_id}
     `,
-    activityStmt(user.id, `Edited note on ${note.name}`),
+    activityStmt(user.id, note.hackathon_id, `Edited note on ${note.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -432,7 +467,7 @@ export async function logMondayReview(
 
   const sql = getSql();
   const rows = await sql`
-    SELECT p.name, p.blocker, s.slug AS status_slug
+    SELECT p.name, p.blocker, p.hackathon_id, s.slug AS status_slug
     FROM hq_projects p
     JOIN hq_project_statuses s ON s.id = p.status_id
     WHERE p.id = ${projectId}
@@ -445,7 +480,7 @@ export async function logMondayReview(
     finalBlocker ? `, blocker: ${finalBlocker}` : ", no blocker"
   }`;
 
-  const today = await hqToday();
+  const today = await hqToday(project.hackathon_id);
   // Only rewrite the blocker column when the reviewer actually typed one —
   // the read-back value could race a save from another operator.
   const updateStmt =
@@ -468,7 +503,7 @@ export async function logMondayReview(
       INSERT INTO hq_project_notes (project_id, author_user_id, body)
       VALUES (${projectId}, ${user.id}, ${noteBody})
     `,
-    activityStmt(user.id, `Monday review logged for ${project.name}`),
+    activityStmt(user.id, project.hackathon_id, `Monday review logged for ${project.name}`),
   ]);
   refreshHq();
   return { ok: true };

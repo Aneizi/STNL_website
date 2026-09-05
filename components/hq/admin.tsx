@@ -19,7 +19,9 @@ import {
   updateSettings,
   type SettingsPatch,
 } from "@/lib/hq/actions/admin";
-import type { Milestone, Settings } from "@/lib/hq/types";
+import type { Gate, Hackathon, Milestone, Settings } from "@/lib/hq/types";
+import { fmtDateRange } from "@/lib/hq/hackathon-format";
+import { GatesCard, HackathonsCard } from "./admin-hackathons";
 
 const field: CSSProperties = { ...input, boxSizing: "border-box" };
 const dateField: CSSProperties = { ...input, padding: "7px 10px", boxSizing: "border-box" };
@@ -313,18 +315,39 @@ function MilestonesCard({ milestones }: { milestones: Milestone[] }) {
 }
 
 export function Admin({
+  current,
+  hackathons,
   settings,
   milestones,
+  gates,
 }: {
+  /** The hackathon whose settings, gates and milestones are shown. */
+  current: Hackathon;
+  hackathons: Hackathon[];
   settings: Settings;
   milestones: Milestone[];
+  gates: Gate[];
 }) {
   return (
     <div>
-      <h1 style={pageTitle}>Admin</h1>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 8,
+        }}
+      >
+        <h1 style={pageTitle}>Admin</h1>
+        <span style={{ fontSize: 13, color: "var(--label-3)" }}>
+          {current.name}, {fmtDateRange(current.startDate, current.endDate)}
+        </span>
+      </div>
+      <HackathonsCard hackathons={hackathons} currentId={current.id} />
       <SettingsCard
         title="Campaign numbers"
-        mt={16}
+        mt={12}
         buildPatch={(fd) => buildNumbersPatch(fd, settings)}
       >
         <div
@@ -444,6 +467,7 @@ export function Admin({
           </FormField>
         </div>
       </SettingsCard>
+      <GatesCard gates={gates} />
       <MilestonesCard milestones={milestones} />
     </div>
   );

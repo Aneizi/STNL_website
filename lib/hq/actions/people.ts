@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { requireUser } from "../auth";
 import { getSql } from "../db";
+import { requireHackathon } from "../hackathon";
 import type { ActionResult } from "../types";
 import { activityStmt, refreshHq } from "./util";
 
@@ -20,6 +21,7 @@ const createSchema = z.object({
 
 export async function createPerson(input: z.infer<typeof createSchema>): Promise<ActionResult> {
   const user = await requireUser();
+  const hackathon = await requireHackathon();
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Name is required." };
   const { roleId, org, contact, partnerId, notes } = parsed.data;
@@ -27,12 +29,17 @@ export async function createPerson(input: z.infer<typeof createSchema>): Promise
   if (!name) return { ok: false, error: "Name is required." };
 
   const sql = getSql();
+  // A partner from another hackathon cannot be attached; the subselect yields
+  // NULL for it, so the person is still created, just unattributed.
   await sql.transaction([
     sql`
-      INSERT INTO hq_people (name, role_id, org, contact, partner_id, notes)
-      VALUES (${name}, ${roleId}, ${org}, ${contact}, ${partnerId}, ${notes})
+      INSERT INTO hq_people (hackathon_id, name, role_id, org, contact, partner_id, notes)
+      VALUES (${hackathon.id}, ${name}, ${roleId}, ${org}, ${contact},
+        (SELECT id FROM hq_partners
+         WHERE id = ${partnerId}::uuid AND hackathon_id = ${hackathon.id}),
+        ${notes})
     `,
-    activityStmt(user.id, `Added ${name} to people`),
+    activityStmt(user.id, hackathon.id, `Added ${name} to people`),
   ]);
   refreshHq();
   return { ok: true };
@@ -57,9 +64,10 @@ export async function updatePerson(
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
   const sql = getSql();
-  const rows = await sql`SELECT name FROM hq_people WHERE id = ${personId}`;
+  const rows = await sql`SELECT name, hackathon_id FROM hq_people WHERE id = ${personId}`;
   if (!rows[0]) return { ok: false, error: "Person not found." };
   const name = rows[0].name as string;
+  const hackathonId = Number(rows[0].hackathon_id);
 
   const data = parsed.data;
   let update;
@@ -80,14 +88,20 @@ export async function updatePerson(
       update = sql`UPDATE hq_people SET contact = ${data.value} WHERE id = ${personId}`;
       break;
     case "partnerId":
-      update = sql`UPDATE hq_people SET partner_id = ${data.value} WHERE id = ${personId}`;
+      // Only a partner of the same hackathon can be attached.
+      update = sql`
+        UPDATE hq_people
+        SET partner_id = (SELECT id FROM hq_partners
+                          WHERE id = ${data.value}::uuid AND hackathon_id = ${hackathonId})
+        WHERE id = ${personId}
+      `;
       break;
     case "notes":
       update = sql`UPDATE hq_people SET notes = ${data.value} WHERE id = ${personId}`;
       break;
   }
 
-  await sql.transaction([update, activityStmt(user.id, `Updated ${name}`)]);
+  await sql.transaction([update, activityStmt(user.id, hackathonId, `Updated ${name}`)]);
   refreshHq();
   return { ok: true };
 }

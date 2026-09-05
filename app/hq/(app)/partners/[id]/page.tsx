@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { PartnerDetail } from "@/components/hq/partner-detail";
 import { requireUser } from "@/lib/hq/auth";
-import { getClassifiers, getPartnerDetail, getSettings } from "@/lib/hq/queries";
+import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
+import { getClassifiers, getHackathon, getPartnerDetail, getSettings } from "@/lib/hq/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -19,12 +20,16 @@ export default async function PartnerDetailPage({
 }) {
   const { id } = await params;
   if (!UUID.test(id)) notFound();
-  const [user, partner, classifiers, settings] = await Promise.all([
+  const hackathonId = await requireHackathonId();
+  const [user, hackathon, partner, classifiers, settings] = await Promise.all([
     requireUser(),
-    getPartnerDetail(id),
-    getClassifiers(),
-    getSettings(),
+    getHackathon(hackathonId),
+    // A partner of another hackathon is not found here, not shown out of place.
+    getPartnerDetail(id, hackathonId),
+    getClassifiers(hackathonId),
+    getSettings(hackathonId),
   ]);
+  ensureHackathon(hackathon);
   if (!partner) notFound();
   return (
     <PartnerDetail

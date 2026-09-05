@@ -5,7 +5,9 @@
 // The split is "who typed it": configuration comes from scripts/hq/seed.ts and
 // survives, operational data was entered through the dashboard and does not.
 // Logins survive too, so a reset never locks anyone out or forces a round of
-// new passwords.
+// new passwords. The hackathons themselves survive as well, with their
+// settings, gates, milestones and awards: the reset empties every edition's
+// CRM, it does not remove the editions.
 
 /** Emptied — everything entered through the dashboard. */
 export const CLEAR_TABLES = [
@@ -27,8 +29,9 @@ export const CLEAR_TABLES = [
   "hq_activity",
 ] as const;
 
-/** Untouched — logins, sessions, classifiers, settings and seeded campaign setup. */
+/** Untouched — logins, sessions, hackathons, classifiers, settings and seeded campaign setup. */
 export const KEEP_TABLES = [
+  "hq_hackathons",
   "hq_users",
   "hq_sessions",
   "hq_login_attempts",

@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { requireUser } from "../auth";
 import { getSql } from "../db";
+import { requireHackathon } from "../hackathon";
 import { syncLumaEvents } from "../luma-sync";
 import { pinnedColumn, type PinnableField } from "../luma-sync-sql";
 import type { ActionResult } from "../types";
@@ -11,6 +12,16 @@ import { activityStmt, refreshHq } from "./util";
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+type EventRef = { name: string; hackathonId: number; lumaId: string | null };
+
+async function getEvent(eventId: string): Promise<EventRef | null> {
+  const sql = getSql();
+  const rows = await sql`SELECT name, hackathon_id, luma_id FROM hq_events WHERE id = ${eventId}`;
+  return rows[0]
+    ? { name: rows[0].name, hackathonId: Number(rows[0].hackathon_id), lumaId: rows[0].luma_id }
+    : null;
+}
 
 const createSchema = z.object({
   name: z.string().min(1).max(200),
@@ -24,6 +35,7 @@ const createSchema = z.object({
 
 export async function createEvent(input: z.infer<typeof createSchema>): Promise<ActionResult> {
   const user = await requireUser();
+  const hackathon = await requireHackathon();
   const parsed = createSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Event name and date are required." };
   const { date, endDate, typeId, venue, cohost, spend } = parsed.data;
@@ -33,10 +45,10 @@ export async function createEvent(input: z.infer<typeof createSchema>): Promise<
   const sql = getSql();
   await sql.transaction([
     sql`
-      INSERT INTO hq_events (name, date, end_date, type_id, venue, cohost, spend)
-      VALUES (${name}, ${date}, ${endDate}, ${typeId}, ${venue}, ${cohost}, ${spend})
+      INSERT INTO hq_events (hackathon_id, name, date, end_date, type_id, venue, cohost, spend)
+      VALUES (${hackathon.id}, ${name}, ${date}, ${endDate}, ${typeId}, ${venue}, ${cohost}, ${spend})
     `,
-    activityStmt(user.id, `Added event ${name}`),
+    activityStmt(user.id, hackathon.id, `Added event ${name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -67,9 +79,8 @@ export async function updateEvent(
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
   const sql = getSql();
-  const rows = await sql`SELECT name FROM hq_events WHERE id = ${eventId}`;
-  if (!rows[0]) return { ok: false, error: "Event not found." };
-  const name = rows[0].name as string;
+  const event = await getEvent(eventId);
+  if (!event) return { ok: false, error: "Event not found." };
 
   const data = parsed.data;
   let update;
@@ -110,7 +121,10 @@ export async function updateEvent(
   // The statement guards itself on luma_id, so external events are unaffected
   // and no branch is needed here.
   const column = pinnedColumn(data.field);
-  const statements = [update, activityStmt(user.id, `Updated event ${name}`)];
+  const statements = [
+    update,
+    activityStmt(user.id, event.hackathonId, `Updated event ${event.name}`),
+  ];
   if (column) {
     statements.unshift(sql`
       UPDATE hq_events SET pinned_fields = array_append(pinned_fields, ${column})
@@ -138,15 +152,15 @@ export async function unpinEventField(
   if (!column) return { ok: false, error: "That field is not synced from Luma." };
 
   const sql = getSql();
-  const rows = await sql`SELECT name FROM hq_events WHERE id = ${eventId}`;
-  if (!rows[0]) return { ok: false, error: "Event not found." };
+  const event = await getEvent(eventId);
+  if (!event) return { ok: false, error: "Event not found." };
 
   await sql.transaction([
     sql`
       UPDATE hq_events SET pinned_fields = array_remove(pinned_fields, ${column})
       WHERE id = ${eventId}
     `,
-    activityStmt(user.id, `Reset ${field} to Luma for ${rows[0].name as string}`),
+    activityStmt(user.id, event.hackathonId, `Reset ${field} to Luma for ${event.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -176,9 +190,8 @@ async function setArchived(
   if (!id.safeParse(eventId).success) return { ok: false };
 
   const sql = getSql();
-  const rows = await sql`SELECT name FROM hq_events WHERE id = ${eventId}`;
-  if (!rows[0]) return { ok: false, error: "Event not found." };
-  const name = rows[0].name as string;
+  const event = await getEvent(eventId);
+  if (!event) return { ok: false, error: "Event not found." };
 
   await sql.transaction([
     archived
@@ -190,7 +203,11 @@ async function setArchived(
           UPDATE hq_events SET archived_at = NULL, archived_reason = NULL
           WHERE id = ${eventId}
         `,
-    activityStmt(userId, `${archived ? "Archived" : "Unarchived"} event ${name}`),
+    activityStmt(
+      userId,
+      event.hackathonId,
+      `${archived ? "Archived" : "Unarchived"} event ${event.name}`,
+    ),
   ]);
   refreshHq();
   return { ok: true };
@@ -205,18 +222,17 @@ export async function deleteEvent(eventId: string): Promise<ActionResult> {
   if (!id.safeParse(eventId).success) return { ok: false };
 
   const sql = getSql();
-  const rows = await sql`SELECT name, luma_id FROM hq_events WHERE id = ${eventId}`;
-  if (!rows[0]) return { ok: false, error: "Event not found." };
-  if (rows[0].luma_id) {
+  const event = await getEvent(eventId);
+  if (!event) return { ok: false, error: "Event not found." };
+  if (event.lumaId) {
     return { ok: false, error: "Luma events can be archived, not deleted." };
   }
-  const name = rows[0].name as string;
 
   await sql.transaction([
     // The luma_id guard is repeated in SQL so the rule holds even if the row
     // became Luma-backed between the check above and this delete.
     sql`DELETE FROM hq_events WHERE id = ${eventId} AND luma_id IS NULL`,
-    activityStmt(user.id, `Deleted event ${name}`),
+    activityStmt(user.id, event.hackathonId, `Deleted event ${event.name}`),
   ]);
   refreshHq();
   return { ok: true };
