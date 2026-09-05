@@ -37,6 +37,7 @@
 }
 @media (prefers-reduced-motion: reduce) { .artwork { opacity: 1; } }
 @media (max-width: 599px) {
+  .scrollCue { display: none; }
   .homeLink { top: 12px; left: 12px; }
   .homeLink span { display: none; }
   .artwork::after { inset-block-start: 80%; }
