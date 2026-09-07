@@ -7,7 +7,7 @@ import { BuildNotes, LocalSupport } from "../build-notes";
 import styles from "./beginner.module.css";
 
 export const metadata: Metadata = {
-  title: "Your first Colosseum hackathon",
+  title: "The Beginner route",
   description: "Get started with Colosseum: register, find teammates, choose an idea, and build on Solana with Superteam NL.",
   alternates: { canonical: "/colosseum/start/beginner" },
 };
@@ -15,7 +15,7 @@ export const metadata: Metadata = {
 export default function BeginnerPage() {
   return (
     <GuideShell>
-      <h1>Your first<br /><em>hackathon.</em></h1>
+      <h1>The Beginner route</h1>
       <p className={styles.introduction}>Four weeks to turn an idea into a working product, with other Dutch builders alongside you. Colosseum is online, from September 14 to October 12, 2026.</p>
       <p className={styles.introduction}>You can start without an idea or a team. Developers, designers, and people who understand a problem are all welcome.</p>
       <ol role="list" className={styles.steps}>

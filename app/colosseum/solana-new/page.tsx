@@ -46,7 +46,7 @@ export default async function SolanaNewPage({
           <p>Idea to Launch</p>
           <p>A quick guide to building your first crypto app with solana.new.</p>
           <h2>One CLI, 100+ Solana superpowers</h2>
-          <p>Installs Solana skills, MCPs, and CLIs into your AI assistant so it already knows how to build on Solana.</p>
+          <p>Installs Solana skills, MCPs, and CLIs into your AI assistant. So it already knows how to build on Solana.</p>
           <h3>Install commands</h3>
           <pre><code>{SOLANA_NEW_INSTALL_COMMAND}</code></pre>
           <h2>Install in one command</h2>

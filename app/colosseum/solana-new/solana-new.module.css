@@ -1,9 +1,13 @@
 .page {
   min-height: 100svh;
-  padding-bottom: clamp(64px, 10vw, 180px);
+  padding-bottom: clamp(160px, 20vw, 360px);
   background: #000;
   color: #fff;
   color-scheme: dark;
+}
+
+:global(body):has(.page) {
+  background: #000;
 }
 
 .artwork {
