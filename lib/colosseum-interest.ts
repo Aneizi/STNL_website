@@ -15,7 +15,6 @@ export type InterestResult = {
   ok: boolean;
   error?: string;
   fieldErrors?: Partial<Record<"name" | "contact", string>>;
-  redirectTo?: string;
 };
 
 export type InterestInput = {

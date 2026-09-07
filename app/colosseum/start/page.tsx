@@ -37,7 +37,7 @@ export default function ColosseumStartPage() {
         </div>
 
         <Link
-          href="/colosseum/start/interest?path=beginner"
+          href="/colosseum/start/beginner"
           className={`${styles.choice} ${styles.beginner}`}
           aria-labelledby="beginner-title"
           aria-describedby="beginner-description"
@@ -57,7 +57,7 @@ export default function ColosseumStartPage() {
         </Link>
 
         <Link
-          href="/colosseum/start/interest?path=experienced"
+          href="/colosseum/start/experienced"
           className={`${styles.choice} ${styles.experienced}`}
           aria-labelledby="experienced-title"
           aria-describedby="experienced-description"
@@ -65,7 +65,7 @@ export default function ColosseumStartPage() {
           <div className={styles.content}>
             <h2 id="experienced-title">Experienced</h2>
             <p id="experienced-description">
-              You know the drill. Join the Dutch builders, then sign up.
+              You know the drill. Get registered and ready to submit.
             </p>
             <span className={styles.action}>
               Enter the arena

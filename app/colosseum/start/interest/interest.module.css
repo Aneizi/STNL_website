@@ -6,15 +6,14 @@
   line-height: 1.5;
 }
 
-.page a:focus-visible,
-.page button:focus-visible,
-.page input:focus-visible {
+.page :is(a, button, input):focus-visible {
   outline: 2px solid var(--orange-deep);
   outline-offset: 4px;
 }
 
 .header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 24px;
@@ -51,7 +50,15 @@
 
 .main h1 em { color: var(--orange); }
 .introduction { margin-top: 20px; color: var(--muted); }
+.note { margin-top: 12px; color: var(--muted); font-size: 16px; }
+.confirmation { margin-top: 32px; }
+.confirmation:focus { outline: none; }
+.saved h2 { font-family: var(--font-serif); font-size: 32px; font-weight: 400; }
+.saved p { margin-top: 16px; color: var(--muted); }
+.saved .submit { margin-top: 24px; text-align: center; }
+.textLink { display: inline-flex; align-items: center; min-height: 48px; margin-top: 16px; color: var(--muted); font-size: 16px; text-decoration: underline; text-underline-offset: 5px; text-decoration-color: var(--line); }
 .form { position: relative; display: grid; gap: 28px; margin-top: 40px; }
+.form .textLink { margin-top: 0; }
 .field { display: grid; gap: 10px; }
 
 .field > input {
@@ -80,7 +87,7 @@
 .checkbox { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 48px; cursor: pointer; }
 .checkbox input { width: 24px; height: 24px; flex-shrink: 0; accent-color: var(--ink); }
 .privacy { font-size: 16px; }
-.error { color: var(--orange-deep); }
+.field .error, .form > .error { color: var(--orange-deep); }
 .submit { display: flex; align-items: center; justify-content: center; gap: 16px; min-height: 56px; border: 0; border-radius: 4px; padding: 14px 24px; background: var(--ink); color: var(--cream); font: inherit; cursor: pointer; }
 .submit svg { flex-shrink: 0; }
 .submit:disabled { opacity: .7; cursor: wait; }

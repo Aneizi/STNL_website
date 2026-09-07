@@ -1,84 +1,66 @@
 import type { Metadata } from "next";
-import Image from "next/image";
 import Link from "next/link";
-import { IconArrowLeft, IconArrowRight, IconArrowUpRight } from "symbols-react";
-import { COLOSSEUM_SIGNUP_URL, COLOSSEUM_REGISTER_URL, COLOSSEUM_PROFILES_URL } from "@/lib/colosseum";
-import { LINKS } from "@/lib/links";
+import { IconArrowRight } from "symbols-react";
+import { COLOSSEUM_SIGNUP_URL, COLOSSEUM_REGISTER_URL, COLOSSEUM_PROFILES_URL, COLOSSEUM_COPILOT_URL } from "@/lib/colosseum";
+import { GuideShell, ExternalLink } from "../guide-shell";
+import { BuildNotes, LocalSupport } from "../build-notes";
 import styles from "./beginner.module.css";
 
 export const metadata: Metadata = {
-  title: "Register for the Colosseum hackathon",
-  description: "Your first Colosseum hackathon: register under Netherlands, set up your team on Colosseum, and join Superteam NL HQ.",
+  title: "Your first Colosseum hackathon",
+  description: "Get started with Colosseum: register, find teammates, choose an idea, and build on Solana with Superteam NL.",
   alternates: { canonical: "/colosseum/start/beginner" },
 };
 
-function ExternalLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <a href={href} target="_blank" rel="noopener noreferrer" className={styles.externalLink}>
-      {children}
-      <IconArrowUpRight width={16} height={16} fill="currentColor" aria-hidden="true" />
-      <span className="sr-only"> (opens in a new tab)</span>
-    </a>
-  );
-}
-
 export default function BeginnerPage() {
   return (
-    <div className={styles.page}>
-      <header className={styles.header}>
-        <Link href="/" className={styles.brand} aria-label="Superteam NL home">
-          <Image src="/landing/st-orange.png" width={2154} height={2116} sizes="30px" alt="" />
-          <span>superteam NL</span>
-        </Link>
-        <Link href="/colosseum/start" className={styles.backLink}>
-          <IconArrowLeft width={16} height={16} fill="currentColor" aria-hidden="true" />
-          Choose your path
-        </Link>
-      </header>
-      <main className={styles.guide}>
-        <h1>Join the<br /><em>hackathon.</em></h1>
-        <p className={styles.introduction}>Your first hackathon starts here.</p>
-        <ol role="list" className={styles.steps}>
-          <li>
-            <span className={styles.number} aria-hidden="true">1</span>
-            <div>
-              <h2>Create your account</h2>
-              <p>Sign up on Colosseum with email, Google or GitHub.</p>
+    <GuideShell>
+      <h1>Your first<br /><em>hackathon.</em></h1>
+      <p className={styles.introduction}>Four weeks to turn an idea into a working product, with other Dutch builders alongside you. Colosseum is online, from September 14 to October 12, 2026.</p>
+      <p className={styles.introduction}>You can start without an idea or a team. Developers, designers, and people who understand a problem are all welcome.</p>
+      <ol role="list" className={styles.steps}>
+        <li>
+          <span className={styles.number} aria-hidden="true">1</span>
+          <div>
+            <h2>Register on Colosseum</h2>
+            <p>Create an account, then join the hackathon in Arena. An account alone does not register you. Set your country to <strong>Netherlands</strong> and include <strong>Solana</strong> in your selected chains if you&apos;re building on it.</p>
+            <div className={styles.linkRow}>
               <ExternalLink href={COLOSSEUM_SIGNUP_URL}>Create an account</ExternalLink>
-            </div>
-          </li>
-          <li>
-            <span className={styles.number} aria-hidden="true">2</span>
-            <div>
-              <h2>Register under Netherlands</h2>
-              <p>Choose the hackathon in the Arena and set your country to <strong>Netherlands</strong>. This is how you represent the Dutch community. Select up to <strong>3 chains</strong>, including Solana.</p>
               <ExternalLink href={COLOSSEUM_REGISTER_URL}>Register for the hackathon</ExternalLink>
             </div>
-          </li>
-          <li>
-            <span className={styles.number} aria-hidden="true">3</span>
-            <div>
-              <h2>Create your team on Colosseum</h2>
-              <p>Your project and team live on Colosseum. You will import them into Superteam NL HQ when project access opens.</p>
-              <ExternalLink href={COLOSSEUM_PROFILES_URL}>Find teammates</ExternalLink>
-            </div>
-          </li>
-        </ol>
-        <section className={styles.nextStep} aria-labelledby="hq-title">
-          <h2 id="hq-title">Join Superteam NL HQ</h2>
-          <p>Create your HQ account now. You can initialize your team by importing its Colosseum project link when project access opens at the start of the hackathon.</p>
-          <p>No team yet? You can join one later or continue without building.</p>
-          <Link href="/hq/signup?next=%2Fhq%2Fwelcome" className={styles.primaryLink}>
-            Create your HQ account
-            <IconArrowRight width={20} height={20} fill="currentColor" aria-hidden="true" />
-          </Link>
-        </section>
-        <aside className={styles.support} aria-labelledby="support-title">
-          <h2 id="support-title">Need a hand?</h2>
-          <p>Get help registering or finding your next step.</p>
-          <ExternalLink href={LINKS.telegram}>Talk to Superteam NL</ExternalLink>
-        </aside>
-      </main>
-    </div>
+          </div>
+        </li>
+        <li>
+          <span className={styles.number} aria-hidden="true">2</span>
+          <div>
+            <h2>Find your people</h2>
+            <p>You can enter solo or team up. Look for complementary skills: someone to build, someone to talk to users, someone to make the product easy to use.</p>
+            <p>Keep your project and team members on Colosseum. You can import the project into Superteam NL HQ when project access opens.</p>
+            <ExternalLink href={COLOSSEUM_PROFILES_URL}>Find teammates</ExternalLink>
+          </div>
+        </li>
+        <li>
+          <span className={styles.number} aria-hidden="true">3</span>
+          <div>
+            <h2>Choose one problem</h2>
+            <p>Start with someone you can talk to and a problem they already have. Ask how they solve it today. Use Colosseum Copilot to explore similar projects, then decide what yours would do better.</p>
+            <ExternalLink href={COLOSSEUM_COPILOT_URL}>Explore ideas with Copilot</ExternalLink>
+          </div>
+        </li>
+        <li>
+          <span className={styles.number} aria-hidden="true">4</span>
+          <div>
+            <h2>Build something you can show</h2>
+            <p>Focus on one useful flow. Solana.new gives your AI coding assistant Solana tools and guidance to help you build it. Test the result with real people as you go.</p>
+            <Link href="/colosseum/solana-new?path=beginner" className={styles.externalLink}>
+              Get started with Solana.new
+              <IconArrowRight width={16} height={16} fill="currentColor" aria-hidden="true" />
+            </Link>
+          </div>
+        </li>
+      </ol>
+      <BuildNotes />
+      <LocalSupport path="beginner" />
+    </GuideShell>
   );
 }

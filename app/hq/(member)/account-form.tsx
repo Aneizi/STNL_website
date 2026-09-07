@@ -148,7 +148,7 @@ export function AccountForm({ mode, next, availability, authError = false }: Pro
                 </button>
                 <p className={styles.hint}>We&apos;ll email you a verification code. No password needed.</p>
               </form>
-              <p className={styles.switchMode}>{mode === "signup" ? "Already have an account?" : "New here?"} <Link href={`/hq/${mode === "signup" ? "signin" : "signup"}?next=${encodeURIComponent(destination)}`}>{mode === "signup" ? "Sign in" : "Create an account"}</Link></p>
+              {mode === "signup" && <p className={styles.switchMode}>Already have an account? <Link href={`/hq/signin?next=${encodeURIComponent(destination)}`}>Sign in</Link></p>}
             </>
           ) : (
             <form className={styles.form} onSubmit={verifyCode}>

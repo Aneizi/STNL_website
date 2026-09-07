@@ -1,17 +1,17 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { IconArrowRight } from "symbols-react";
 import type { ContactMethod, InterestPath, InterestResult } from "@/lib/colosseum-interest";
 import { submitInterest } from "./actions";
+import { InterestConfirmation } from "./interest-confirmation";
 import styles from "./interest.module.css";
 
 const initialState: InterestResult = { ok: false };
 
-export function InterestForm({ path }: { path: InterestPath }) {
-  const router = useRouter();
+export function InterestForm({ path, completed = false }: { path: InterestPath; completed?: boolean }) {
   const formRef = useRef<HTMLFormElement>(null);
+  const confirmationRef = useRef<HTMLDivElement>(null);
   const [name, setName] = useState("");
   const [method, setMethod] = useState<ContactMethod>("telegram");
   const [submittedMethod, setSubmittedMethod] = useState<ContactMethod>("telegram");
@@ -26,23 +26,28 @@ export function InterestForm({ path }: { path: InterestPath }) {
       } catch {
         return { ok: false, error: "We couldn’t save your details. Please try again." };
       }
-      if (result.ok && result.redirectTo) {
-        if (result.redirectTo.startsWith("/")) router.replace(result.redirectTo);
-        else window.location.replace(result.redirectTo);
-      }
       return result;
     },
     initialState,
   );
 
   useEffect(() => {
-    if (state.fieldErrors?.name) formRef.current?.querySelector<HTMLInputElement>("#interest-name")?.focus();
+    if (state.ok) confirmationRef.current?.focus();
+    else if (state.fieldErrors?.name) formRef.current?.querySelector<HTMLInputElement>("#interest-name")?.focus();
     else if (state.fieldErrors?.contact) formRef.current?.querySelector<HTMLInputElement>("#interest-contact")?.focus();
   }, [state]);
 
   const submitting = pending || state.ok;
   const contactHint = method === "telegram" ? "Use your username." : "Include your country code, such as +31.";
   const contactError = submittedMethod === method ? state.fieldErrors?.contact : undefined;
+
+  if (completed || state.ok) {
+    return (
+      <div ref={confirmationRef} tabIndex={-1} className={styles.confirmation}>
+        <InterestConfirmation />
+      </div>
+    );
+  }
 
   return (
     <form ref={formRef} action={action} className={styles.form} aria-busy={submitting}>
@@ -53,7 +58,7 @@ export function InterestForm({ path }: { path: InterestPath }) {
       </div>
 
       <div className={styles.field}>
-        <label htmlFor="interest-name">Name</label>
+        <label htmlFor="interest-name">Name <span className={styles.hint}>(required)</span></label>
         <input
           id="interest-name"
           name="name"
@@ -90,7 +95,7 @@ export function InterestForm({ path }: { path: InterestPath }) {
       </fieldset>
 
       <div className={styles.field}>
-        <label htmlFor="interest-contact">{method === "telegram" ? "Telegram username" : "WhatsApp number"}</label>
+        <label htmlFor="interest-contact">{method === "telegram" ? "Telegram username" : "WhatsApp number"} <span className={styles.hint}>(required)</span></label>
         <input
           id="interest-contact"
           name="contact"

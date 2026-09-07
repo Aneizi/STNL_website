@@ -1,13 +1,11 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 import { IconArrowLeft } from "symbols-react";
 import {
-  COLOSSEUM_INTEREST_COOKIE, COLOSSEUM_INTEREST_COOKIE_VALUE, getInterestDestination,
+  getInterestDestination,
 } from "@/lib/colosseum-interest";
-import { InterestForm } from "./interest-form";
+import { SavedInterestForm } from "./saved-interest-form";
 import styles from "./interest.module.css";
 
 export const metadata: Metadata = {
@@ -24,10 +22,6 @@ export default async function InterestPage({
 }) {
   const params = await searchParams;
   const path = params.path === "experienced" ? "experienced" : "beginner";
-  const cookieStore = await cookies();
-  if (cookieStore.get(COLOSSEUM_INTEREST_COOKIE)?.value === COLOSSEUM_INTEREST_COOKIE_VALUE) {
-    redirect(getInterestDestination(path));
-  }
 
   return (
     <div className={styles.page}>
@@ -36,15 +30,16 @@ export default async function InterestPage({
           <Image src="/landing/st-orange.png" width={2154} height={2116} sizes="30px" alt="" />
           <span>superteam NL</span>
         </Link>
-        <Link href="/colosseum/start" className={styles.back}>
+        <Link href={getInterestDestination(path)} className={styles.back}>
           <IconArrowLeft width={18} height={18} fill="currentColor" aria-hidden="true" />
-          Back
+          Back to guide
         </Link>
       </header>
       <main className={styles.main}>
         <h1>Express <em>your interest.</em></h1>
-        <p className={styles.introduction}>Join the Dutch builders taking on Colosseum.</p>
-        <InterestForm key={path} path={path} />
+        <p className={styles.introduction}>Leave your details so we can get in touch about the hackathon. You can express interest before you have an idea or a team.</p>
+        <p className={styles.note}>This is for Superteam NL updates. Register for the hackathon separately on Colosseum.</p>
+        <SavedInterestForm path={path} />
       </main>
     </div>
   );

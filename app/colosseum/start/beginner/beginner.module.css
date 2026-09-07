@@ -1,5 +1,5 @@
 .page { min-height: 100dvh; background: var(--cream); color: var(--ink); font-size: 18px; line-height: 1.6; }
-.page a:focus-visible { outline: 2px solid var(--orange); outline-offset: 5px; }
+.page :is(a, summary):focus-visible { outline: 2px solid var(--orange-deep); outline-offset: 5px; }
 .header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; min-height: 80px; padding: 16px 32px; border-bottom: 1px solid var(--line); }
 .brand, .backLink { display: inline-flex; align-items: center; gap: 12px; min-height: 48px; }
 .brand { font-weight: 700; letter-spacing: -.02em; }
@@ -23,6 +23,19 @@
 .nextStep { margin-top: 20px; padding-block: 32px; border-top: 1px solid var(--line); }
 .primaryLink { display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 52px; max-width: 100%; margin-top: 24px; padding: 12px 20px; border-radius: 4px; background: var(--ink); color: var(--cream); line-height: 1.4; text-align: center; }
 .primaryLink svg { flex-shrink: 0; }
+.linkRow { display: flex; flex-wrap: wrap; gap: 0 24px; }
+.notes { margin-top: 24px; padding-top: 32px; border-top: 1px solid var(--line); }
+.notes h2 { margin-bottom: 24px; }
+.notes details { border-bottom: 1px solid var(--line); }
+.notes summary { padding-block: 16px; cursor: pointer; font-weight: 500; }
+.notes details[open] { padding-bottom: 24px; }
+.notes details p + p { margin-top: 12px; }
+.notes details .externalLink { font-size: 16px; }
+.weekPlan, .checklist { padding-left: 22px; color: var(--muted); }
+.weekPlan { list-style: none; padding-left: 0; }
+.weekPlan li + li, .checklist li + li { margin-top: 12px; }
+.weekPlan strong { display: block; color: var(--ink); font-weight: 500; }
+.checklist { list-style: disc; margin-bottom: 16px; }
 @media (hover: hover) { .externalLink:hover, .backLink:hover { color: var(--orange-deep); text-decoration-color: currentColor; } }
 @media (hover: hover) { .primaryLink:hover { color: var(--orange); } }
 @media (prefers-reduced-motion: no-preference) { .page a { transition: color 150ms ease-out, text-decoration-color 150ms ease-out; } }

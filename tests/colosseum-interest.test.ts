@@ -93,11 +93,8 @@ describe("public interest action", () => {
     mocks.save.mockResolvedValue({ ok: true });
   });
 
-  it.each([
-    ["beginner", "/colosseum/start/beginner"],
-    ["experienced", "/colosseum/start/experienced"],
-  ])("routes %s only after a confirmed save", async (path, redirectTo) => {
-    expect(await submitInterest({ ok: false }, form({ path }))).toEqual({ ok: true, redirectTo });
+  it.each(["beginner", "experienced"])("confirms %s in place only after a confirmed save", async (path) => {
+    expect(await submitInterest({ ok: false }, form({ path }))).toEqual({ ok: true });
     expect(mocks.save).toHaveBeenCalledWith(
       expect.any(Object), expect.objectContaining({ path, contact: "@zoebuilds" }), "127.0.0.1",
     );
@@ -133,10 +130,10 @@ describe("public interest action", () => {
     vi.clearAllMocks();
 
     expect(await submitInterest({ ok: false }, form())).toEqual({
-      ok: true, redirectTo: "/colosseum/start/beginner",
+      ok: true,
     });
     expect(await submitInterest({ ok: false }, form({ path: "experienced" }))).toEqual({
-      ok: true, redirectTo: "/colosseum/start/experienced",
+      ok: true,
     });
     expect(mocks.getSql).not.toHaveBeenCalled();
     expect(mocks.headers).not.toHaveBeenCalled();
