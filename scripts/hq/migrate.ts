@@ -23,6 +23,11 @@ async function main() {
     await sql.query(statement);
   }
   await applyUpgrades({ query: (text) => sql.query(text) });
+  for (const file of ["member-auth-schema.sql", "builder-schema.sql"]) {
+    const extra = readFileSync(join(process.cwd(), "scripts/hq", file), "utf8")
+      .split(/;\s*(?:\n|$)/).map(s => s.trim()).filter(Boolean);
+    for (const statement of extra) await sql.query(statement);
+  }
   console.log(`Applied ${statements.length} statements.`);
 }
 

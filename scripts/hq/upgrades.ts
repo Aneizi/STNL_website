@@ -17,7 +17,8 @@ export type SqlRunner = {
  * The edition every pre-hackathon database is carrying without saying so.
  * The backfill below files all of its existing data under this hackathon;
  * afterwards the row is ordinary data, editable in Admin like any other.
- * The id is Colosseum's hackathon id for the World's Fair.
+ * The id is a legacy internal HQ key. External Colosseum IDs are configured
+ * independently in hq_hackathon_onboarding after they have been confirmed.
  */
 export const FIRST_HACKATHON = {
   id: 6,

@@ -68,10 +68,10 @@ CREATE TABLE IF NOT EXISTS hq_sessions (
 CREATE INDEX IF NOT EXISTS hq_sessions_user_idx
   ON hq_sessions (user_id);
 
--- One row per hackathon edition. The id is Colosseum's hackathon id, so HQ
--- and Colosseum name an edition the same way (World's Fair is 6); it is typed
--- in by the operator, and a hackathon outside Colosseum takes any unused
--- number. slug is the stable key artwork and seed data hang off
+-- One row per hackathon edition. The id is an internal HQ key chosen by the
+-- operator. Colosseum's external ID and slug are configured independently in
+-- hq_hackathon_onboarding; internal ID 6 does not establish an external ID.
+-- slug is the stable key artwork and seed data hang off
 -- (lib/hq/hackathon-art.ts); name and dates are operator-editable.
 -- archived_at is only ever set by hand: an edition stays open past its end
 -- date (demo day can fall after the hackathon closes) until an operator
