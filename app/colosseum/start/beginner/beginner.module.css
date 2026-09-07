@@ -15,12 +15,16 @@
 .steps { list-style: none; margin-top: 48px; padding: 0; }
 .steps li { display: grid; grid-template-columns: 36px 1fr; gap: 24px; padding-block: 28px; border-top: 1px solid var(--line); }
 .number { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid var(--line); border-radius: 50%; font-variant-numeric: tabular-nums; }
-.steps p, .support p { margin-top: 12px; }
+.steps p, .support p, .nextStep p { margin-top: 12px; }
 .steps strong { color: var(--ink); font-weight: 600; }
 .externalLink { display: inline-flex; align-items: center; gap: 12px; min-height: 48px; margin-top: 12px; color: var(--ink); text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 6px; }
 .externalLink svg, .backLink svg { flex-shrink: 0; }
 .support { margin-top: 20px; padding-top: 32px; border-top: 1px solid var(--line); }
+.nextStep { margin-top: 20px; padding-block: 32px; border-top: 1px solid var(--line); }
+.primaryLink { display: inline-flex; align-items: center; justify-content: center; gap: 12px; min-height: 52px; max-width: 100%; margin-top: 24px; padding: 12px 20px; border-radius: 4px; background: var(--ink); color: var(--cream); line-height: 1.4; text-align: center; }
+.primaryLink svg { flex-shrink: 0; }
 @media (hover: hover) { .externalLink:hover, .backLink:hover { color: var(--orange-deep); text-decoration-color: currentColor; } }
+@media (hover: hover) { .primaryLink:hover { color: var(--orange); } }
 @media (prefers-reduced-motion: no-preference) { .page a { transition: color 150ms ease-out, text-decoration-color 150ms ease-out; } }
 @media (max-width: 599px) {
   .header { padding: 12px 24px; }

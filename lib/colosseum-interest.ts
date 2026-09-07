@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { COLOSSEUM_SIGNUP_URL } from "@/lib/colosseum";
 
 export type InterestPath = "beginner" | "experienced";
 export type ContactMethod = "telegram" | "phone";
@@ -9,7 +8,7 @@ export const COLOSSEUM_INTEREST_COOKIE = "stnl-colosseum-interest-6";
 export const COLOSSEUM_INTEREST_COOKIE_VALUE = "1";
 
 export function getInterestDestination(path: InterestPath): string {
-  return path === "beginner" ? "/colosseum/start/beginner" : COLOSSEUM_SIGNUP_URL;
+  return path === "beginner" ? "/colosseum/start/beginner" : "/colosseum/start/experienced";
 }
 
 export type InterestResult = {

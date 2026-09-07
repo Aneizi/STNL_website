@@ -95,7 +95,7 @@ describe("public interest action", () => {
 
   it.each([
     ["beginner", "/colosseum/start/beginner"],
-    ["experienced", "https://colosseum.com/signup"],
+    ["experienced", "/colosseum/start/experienced"],
   ])("routes %s only after a confirmed save", async (path, redirectTo) => {
     expect(await submitInterest({ ok: false }, form({ path }))).toEqual({ ok: true, redirectTo });
     expect(mocks.save).toHaveBeenCalledWith(
@@ -136,7 +136,7 @@ describe("public interest action", () => {
       ok: true, redirectTo: "/colosseum/start/beginner",
     });
     expect(await submitInterest({ ok: false }, form({ path: "experienced" }))).toEqual({
-      ok: true, redirectTo: "https://colosseum.com/signup",
+      ok: true, redirectTo: "/colosseum/start/experienced",
     });
     expect(mocks.getSql).not.toHaveBeenCalled();
     expect(mocks.headers).not.toHaveBeenCalled();
