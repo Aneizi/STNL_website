@@ -5,7 +5,9 @@ import { NextResponse, type NextRequest } from "next/server";
 // page, server action, and route handler (proxies can be bypassed).
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (pathname === "/hq/login") return NextResponse.next();
+  const publicHq = ["/hq/login", "/hq/signup", "/hq/signin", "/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join"];
+  // Member pages use their own database-backed session and never hq_session.
+  if (publicHq.includes(pathname) || /^\/hq\/team\/[^/]+$/.test(pathname)) return NextResponse.next();
   if (!request.cookies.get("hq_session")?.value) {
     return NextResponse.redirect(new URL("/hq/login", request.nextUrl));
   }

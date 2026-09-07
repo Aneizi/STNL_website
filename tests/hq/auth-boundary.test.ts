@@ -27,7 +27,8 @@ describe("every /hq page and route handler checks the session", () => {
   for (const file of files) {
     it(relative(ROOT, file), () => {
       const source = readFileSync(file, "utf8");
-      expect(source).toMatch(/\b(requireUser|currentUser)\(/);
+      const isMember = relative(ROOT, file).startsWith("app/hq/(member)/");
+      expect(source).toMatch(isMember ? /\b(requireMember|currentMember)\(/ : /\b(requireUser|currentUser)\(/);
     });
   }
 });
@@ -59,7 +60,7 @@ describe("every server action authenticates", () => {
       it(name, () => {
         // requireUser redirects; the currentUser variant is the null-guard
         // pattern used by actions that respond instead of redirecting.
-        expect(body).toMatch(/\b(requireUser|currentUser)\(/);
+        expect(body).toMatch(basename(file) === "builders.ts" ? /\brequireMember\(/ : /\b(requireUser|currentUser)\(/);
       });
     }
   }
