@@ -15,9 +15,9 @@ export const metadata: Metadata = {
     description: "Colosseum hackathon. September 14 to October 12, 2026.",
     url: "/colosseum",
     images: [{
-      url: "/ColosseumWorldsFairNL.jpg",
-      width: 1254,
-      height: 1254,
+      url: "/colosseum/worlds-fair-nl-v1-1.png",
+      width: 1672,
+      height: 941,
       alt: "Colosseum hackathon with Superteam Netherlands",
     }],
   },
@@ -25,7 +25,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "Small Country. Serious Builders. | Superteam NL",
     description: "Colosseum hackathon. September 14 to October 12, 2026.",
-    images: ["/ColosseumWorldsFairNL.jpg"],
+    images: ["/colosseum/worlds-fair-nl-v1-1.png"],
   },
 };
 
@@ -48,10 +48,10 @@ export default function ColosseumPage() {
           <span>superteam NL</span>
         </Link>
         <Image
-          src="/ColosseumWorldsFairNL.jpg"
+          src="/colosseum/worlds-fair-nl-v1-1.png"
           alt="Colosseum hackathon, with Dutch canals, tulips and orange Superteam NL flags."
-          width={1254}
-          height={1254}
+          width={1672}
+          height={941}
           sizes="100vw"
           quality={90}
           preload

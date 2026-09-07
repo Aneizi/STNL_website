@@ -2,6 +2,7 @@
 .page a:focus-visible { outline: 2px solid var(--orange); outline-offset: 5px; }
 .artwork { position: relative; width: 100%; opacity: var(--artwork-opacity, 1); }
 .artwork::after { content: ""; position: absolute; inset: 75% -1px -1px; background: linear-gradient(to bottom, transparent, var(--cream)); pointer-events: none; }
+/* Fill the page width while preserving the artwork's proportions. */
 .poster { display: block; width: 100%; height: auto; }
 .homeLink { position: absolute; z-index: 2; top: 12px; left: 12px; display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--cream) 80%, transparent); color: var(--ink); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: 12px; font-weight: 700; letter-spacing: -.01em; }
 /* Preserve a generous hit area around the smaller visible logo. */
