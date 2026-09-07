@@ -46,3 +46,7 @@ next-env.d.ts
 
 # campaign-specific seed data (never committed; see scripts/hq/seed-data.example.json)
 /scripts/hq/seed-data.json
+
+# Local HQ activation guide and provider setup files
+/docs/hq-auth-setup.md
+/setup/hq/

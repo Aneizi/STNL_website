@@ -1,0 +1,10 @@
+# Private setup material must also stay out of local CLI deployments.
+/docs/hq-auth-setup.md
+/setup/hq/
+.env*
+/scripts/hq/seed-data.json
+
+# Local development and review artifacts
+/app/perftest-tmp/
+/output/
+/tmp/
