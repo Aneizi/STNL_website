@@ -16,8 +16,7 @@ import type { ActionResult } from "../types";
 import { activityStmt, refreshHq } from "./util";
 
 const id = z.string().uuid();
-// Colosseum's hackathon ids are small positive integers; so is anything an
-// operator picks for an edition outside Colosseum.
+// An internal HQ edition ID. External Colosseum IDs are configured separately.
 const hackathonId = z.number().int().min(1).max(999_999_999);
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -87,9 +86,8 @@ async function freeSlug(name: string): Promise<string> {
 }
 
 /**
- * A new edition is filed under the id Colosseum gave it, so HQ and Colosseum
- * agree on which edition is which; a hackathon outside Colosseum takes any
- * unused number. It starts from the one being shown: the same submission
+ * A new edition uses an unused internal HQ ID, independent of its external
+ * Colosseum mapping. It starts from the one being shown: the same submission
  * gates and the same targets, thresholds and timezone. Counters that measure
  * this edition's progress start at zero, the calendar window follows the new
  * dates, and the dashboard captions are cleared because they describe a
@@ -162,7 +160,7 @@ export async function createHackathon(
   return { ok: true };
 }
 
-/** Name and dates only: the id is Colosseum's and the slug keys artwork. */
+/** Name and dates only: the internal HQ ID is stable and the slug keys artwork. */
 export async function updateHackathon(
   target: number,
   input: HackathonDetails,

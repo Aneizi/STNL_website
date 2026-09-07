@@ -10,13 +10,15 @@ import { activityStmt, hqToday, refreshHq } from "./util";
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
 
-type ProjectRef = { name: string; hackathonId: number };
+type ProjectRef = { name: string; hackathonId: number; imported: boolean };
 
 /** The project's name and hackathon (for touch + activity), or null for a stale id. */
 async function getProject(projectId: string): Promise<ProjectRef | null> {
   const sql = getSql();
-  const rows = await sql`SELECT name, hackathon_id FROM hq_projects WHERE id = ${projectId}`;
-  return rows[0] ? { name: rows[0].name, hackathonId: Number(rows[0].hackathon_id) } : null;
+  const rows = await sql`SELECT p.name, p.hackathon_id,
+    EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE o.project_id = p.id) AS imported
+    FROM hq_projects p WHERE p.id = ${projectId}`;
+  return rows[0] ? { name: rows[0].name, hackathonId: Number(rows[0].hackathon_id), imported: Boolean(rows[0].imported) } : null;
 }
 
 const createSchema = z.object({
@@ -74,12 +76,16 @@ export async function updateProjectDetail(
   input: z.infer<typeof detailField>,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsed = detailField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
   const project = await getProject(projectId);
-  if (!project) return { ok: false, error: "Project not found." };
+  if (!project || project.hackathonId !== selected.id) return { ok: false, error: "Project not found in this hackathon." };
+  if (project.imported && parsed.data.field === "leadName") {
+    return { ok: false, error: "Choose the lead from the Colosseum roster in Imported teams." };
+  }
   const { name, hackathonId } = project;
 
   const sql = getSql();
@@ -133,15 +139,17 @@ export async function updateProjectDetail(
 /** The member's project (for touch + activity), or null for a stale id. */
 async function getMemberProject(
   memberId: string,
-): Promise<{ projectId: string; projectName: string; hackathonId: number } | null> {
+): Promise<{ projectId: string; projectName: string; hackathonId: number; imported: boolean } | null> {
   const sql = getSql();
   const rows = await sql`
-    SELECT m.project_id, p.name, p.hackathon_id FROM hq_project_members m
+    SELECT m.project_id, p.name, p.hackathon_id,
+      EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE o.project_id = p.id) AS imported
+    FROM hq_project_members m
     JOIN hq_projects p ON p.id = m.project_id
     WHERE m.id = ${memberId}
   `;
   return rows[0]
-    ? { projectId: rows[0].project_id, projectName: rows[0].name, hackathonId: Number(rows[0].hackathon_id) }
+    ? { projectId: rows[0].project_id, projectName: rows[0].name, hackathonId: Number(rows[0].hackathon_id), imported: Boolean(rows[0].imported) }
     : null;
 }
 
@@ -151,6 +159,7 @@ export async function addProjectMember(
   memberContact: string,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsedName = text(200).safeParse(memberName);
   const parsedContact = text(200).safeParse(memberContact);
@@ -158,7 +167,8 @@ export async function addProjectMember(
   const trimmedName = parsedName.data.trim();
   if (!trimmedName) return { ok: false };
   const project = await getProject(projectId);
-  if (!project) return { ok: false };
+  if (!project || project.hackathonId !== selected.id) return { ok: false, error: "Project not found in this hackathon." };
+  if (project.imported) return { ok: false, error: "Imported teammates must be listed on the Colosseum project. The roster cannot be extended in HQ." };
 
   const sql = getSql();
   const today = await hqToday(project.hackathonId);
@@ -191,11 +201,13 @@ export async function updateProjectMember(
   input: z.infer<typeof memberField>,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(memberId).success) return { ok: false };
   const parsed = memberField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
   const member = await getMemberProject(memberId);
-  if (!member) return { ok: false };
+  if (!member || member.hackathonId !== selected.id) return { ok: false, error: "Teammate not found in this hackathon." };
+  if (member.imported && parsed.data.field === "name") return { ok: false, error: "This teammate's identity comes from Colosseum. Only their contact can be edited in HQ." };
 
   const sql = getSql();
   const today = await hqToday(member.hackathonId);
@@ -220,9 +232,11 @@ export async function updateProjectMember(
 
 export async function removeProjectMember(memberId: string): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(memberId).success) return { ok: false };
   const member = await getMemberProject(memberId);
-  if (!member) return { ok: false };
+  if (!member || member.hackathonId !== selected.id) return { ok: false, error: "Teammate not found in this hackathon." };
+  if (member.imported) return { ok: false, error: "This teammate belongs to the imported Colosseum roster and cannot be removed in HQ." };
 
   const sql = getSql();
   const today = await hqToday(member.hackathonId);

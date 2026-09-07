@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Projects } from "@/components/hq/projects";
+import { BuilderProjectReviews } from "@/components/hq/builder-admin";
+import { getBuilderProjectReviews } from "@/lib/hq/builder-admin-queries";
 import { requireUser } from "@/lib/hq/auth";
 import { nowMs, todayInTz } from "@/lib/hq/format";
 import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
@@ -21,7 +23,7 @@ export default async function ProjectsPage(props: {
 }) {
   const { expand } = await props.searchParams;
   const hackathonId = await requireHackathonId();
-  const [, hackathon, projects, partners, eventOptions, classifiers, settings] =
+  const [, hackathon, projects, partners, eventOptions, classifiers, settings, onboarding] =
     await Promise.all([
       requireUser(),
       getHackathon(hackathonId),
@@ -30,11 +32,13 @@ export default async function ProjectsPage(props: {
       getEventOptions(hackathonId),
       getClassifiers(hackathonId),
       getSettings(hackathonId),
+      getBuilderProjectReviews(),
     ]);
   ensureHackathon(hackathon);
   const now = nowMs();
   return (
-    <Projects
+    <>
+      <Projects
       projects={projects}
       partnerOptions={partners.map((p) => ({ id: p.id, name: p.name }))}
       eventOptions={eventOptions}
@@ -43,6 +47,8 @@ export default async function ProjectsPage(props: {
       now={now}
       today={todayInTz(settings.timezone)}
       expandId={typeof expand === "string" ? expand : null}
-    />
+      />
+      <BuilderProjectReviews {...onboarding} />
+    </>
   );
 }

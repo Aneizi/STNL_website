@@ -142,7 +142,7 @@ function HackathonRow({
       }}
     >
       <span
-        title="Colosseum hackathon id"
+        title="Internal HQ hackathon ID"
         style={{
           flex: "none",
           width: 44,
@@ -316,7 +316,7 @@ export function HackathonsCard({
       >
         <FormField
           label="ID"
-          hint="Colosseum's hackathon id, so HQ and Colosseum agree on which edition is which. For a hackathon outside Colosseum, pick any unused number."
+          hint="An unused internal HQ ID. Configure the Colosseum ID separately in builder onboarding settings."
           width={90}
         >
           <input
