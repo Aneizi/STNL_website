@@ -1,3 +1,19 @@
+@font-face {
+  font-family: "Solana Redaction";
+  src: url("/colosseum/solana-new/fonts/Redaction-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Solana Redaction 50";
+  src: url("/colosseum/solana-new/fonts/Redaction_50-Regular.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 .page {
   min-height: 100svh;
   padding-bottom: clamp(160px, 20vw, 360px);
@@ -6,33 +22,17 @@
   color-scheme: dark;
 }
 
-:global(body):has(.page) {
-  background: #000;
-}
-
-.artwork {
-  position: relative;
-  width: min(100%, 1795px);
-  margin-inline: auto;
-}
-
-.design {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.page :is(a, button, input):focus-visible {
-  outline: 2px solid #c4694d;
-  outline-offset: 4px;
-}
+:global(body):has(.page) { background: #000; }
+.page :is(a, button, input):focus-visible { outline: 2px solid #c4694d; outline-offset: 4px; }
+.page :is(h1, h2, h3, p) { margin: 0; }
+.page p { font-family: "Solana Redaction", Georgia, serif; font-weight: 400; }
+.page img { display: block; max-width: 100%; height: auto; }
 
 .navigation {
-  width: min(100%, 1795px);
+  width: min(100%, 1920px);
   margin-inline: auto;
-  padding: 24px clamp(16px, 1.8vw, 32px) 0;
+  padding: 24px clamp(24px, 8.177vw, 157px) 0;
 }
-
 .backLink {
   display: inline-flex;
   align-items: center;
@@ -48,34 +48,51 @@
   line-height: 1.5;
   text-decoration: none;
 }
+.backLink svg { flex-shrink: 0; color: #c4694d; }
 
-.backLink svg {
-  flex-shrink: 0;
-  color: #c4694d;
+/* One unit is one pixel of the supplied 1920px Figma frame. */
+.content {
+  container-type: inline-size;
+  --u: calc(100cqw / 1920);
+  position: relative;
+  width: min(100%, 1920px);
+  aspect-ratio: 1920 / 4683;
+  margin-inline: auto;
 }
+.hero, .ship, .tools, .install, .journey, .further { position: absolute; left: 0; width: 100%; }
+.hero { top: 0; }
+.heroCopy { position: absolute; z-index: 1; left: calc(157 * var(--u)); top: calc(280 * var(--u)); }
+.heroTitle { width: calc(850 * var(--u)); }
+.heroCopy p { width: calc(837 * var(--u)); margin-top: calc(36 * var(--u)); font-size: calc(40 * var(--u)); line-height: 1.04; }
+.heroArt { position: absolute; left: calc(855 * var(--u)); top: calc(90 * var(--u)); width: calc(1065 * var(--u)); }
+.ship { top: calc(1083 * var(--u)); }
+.decoratedHeading { display: flex; align-items: center; justify-content: center; gap: calc(62 * var(--u)); }
+.emblem { width: calc(80 * var(--u)); flex: 0 0 auto; }
+.shipTitle { width: calc(794 * var(--u)); }
+.tools { top: calc(1534 * var(--u)); }
+.toolsCopy { position: absolute; z-index: 1; left: calc(157 * var(--u)); top: calc(201 * var(--u)); }
+.toolsTitle { width: calc(1002 * var(--u)); }
+.toolsCopy p { width: calc(837 * var(--u)); margin-top: calc(33 * var(--u)); font-size: calc(40 * var(--u)); line-height: 1.04; }
+.toolsArt { position: absolute; left: calc(1093 * var(--u)); top: 0; width: calc(686 * var(--u)); }
 
-@media (hover: hover) {
-  .backLink:hover {
-    border-color: #c4694d;
-    color: #fff;
-  }
-}
-
-/* Hotspots follow the original 1795 by 3285 Figma coordinates. */
-.siteLink {
-  position: absolute;
-  left: 19.75%;
-  top: 15.5%;
-  width: 10.6%;
-  height: 1.3%;
-}
-
+.install { top: calc(2583 * var(--u)); text-align: center; }
+.installTitle { display: flex; align-items: center; justify-content: center; gap: calc(12 * var(--u)); }
+.cliTitle { width: calc(516 * var(--u)); }
+.superpowersTitle { width: calc(900 * var(--u)); }
+.install > p { width: calc(1007.55 * var(--u)); margin: calc(39 * var(--u)) auto 0; font-size: calc(42.3243 * var(--u)); line-height: 1.04; }
+.command { width: calc(1124 * var(--u)); margin: calc(52 * var(--u)) auto 0; text-align: left; }
+.commandSurface { position: relative; }
+.commandArtwork { width: 100%; }
+.commandLive { display: none; }
+.accessibleCommand { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .copyButton {
   position: absolute;
-  left: calc(1348.5 / 1795 * 100%);
-  top: calc(1279.5 / 3285 * 100%);
-  width: max(44px, calc(63 / 1795 * 100%));
-  height: max(44px, calc(63 / 3285 * 100%));
+  left: calc(1075 / 1124 * 100%);
+  top: calc(31.5 / 148 * 100%);
+  display: grid;
+  place-items: center;
+  width: max(44px, calc(63 * var(--u)));
+  height: max(44px, calc(63 * var(--u)));
   transform: translate(-50%, -50%);
   border: 0;
   border-radius: 4px;
@@ -83,35 +100,86 @@
   background: transparent;
   cursor: pointer;
 }
+.copyButton img { width: max(18px, calc(23 * var(--u))); }
+.copyStatus { margin-top: 12px; padding: 12px 16px; border: 1px solid #555; border-radius: 8px; background: #262626; color: #fff; font-size: 14px; line-height: 1.5; }
+.copyStatus:empty { display: none; }
+.copyStatus p { font: inherit; }
+.copyStatus input { display: block; width: 100%; margin-top: 8px; padding: 8px; border: 1px solid #777; border-radius: 4px; background: #000; color: #fff; font-family: monospace; font-size: 16px; }
 
-.copyStatus {
-  position: absolute;
-  z-index: 1;
-  top: calc(1415 / 3285 * 100%);
-  left: calc(274 / 1795 * 100%);
-  width: calc(1123 / 1795 * 100%);
-  padding: 12px 16px;
-  border: 1px solid #555;
-  border-radius: 8px;
-  background: #262626;
-  color: #fff;
-  font-size: 14px;
-  line-height: 1.5;
+.journey { top: calc(3379 * var(--u)); }
+.journeyTitle { display: flex; justify-content: center; align-items: center; gap: calc(6 * var(--u)); }
+.stepsStart { width: calc(832 * var(--u)); }
+.stepsEnd { width: calc(524 * var(--u)); }
+.cardFrame { position: relative; width: calc(1671 * var(--u)); height: calc(454 * var(--u)); margin: calc(52 * var(--u)) auto 0; background: url("/colosseum/solana-new/card-frame.svg") center / 100% 100% no-repeat; }
+.cards { position: absolute; top: calc(64 * var(--u)); left: calc(61 * var(--u)); right: calc(62 * var(--u)); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(36.7 * var(--u)); margin: 0; padding: 0; list-style: none; }
+.card { position: relative; height: calc(333.789 * var(--u)); padding: calc(28.24 * var(--u)) calc(41.72 * var(--u)) 0; background: #262626; }
+.card h3 img { width: auto; height: calc(49 * var(--u)); }
+.card p { margin-top: calc(8.77 * var(--u)); font-size: calc(23.1085 * var(--u)); line-height: 1.04; letter-spacing: -0.01em; }
+.cardArt { position: absolute; left: 50%; bottom: calc(-72 * var(--u)); transform: translateX(-50%); mix-blend-mode: screen; }
+.page .cardArt { max-width: none; }
+.idea .cardArt { width: calc(224.141 * var(--u)); }
+.build .cardArt { width: calc(242.899 * var(--u)); }
+.launch .cardArt { width: calc(298.958 * var(--u)); }
+.raise .cardArt { width: calc(250 * var(--u)); }
+
+.further { top: calc(4349 * var(--u)); text-align: center; }
+.further .decoratedHeading { gap: calc(80 * var(--u)); }
+.furtherTitle { width: calc(540 * var(--u)); }
+.further > p { margin: calc(55 * var(--u)) auto 0; font-size: calc(42.3243 * var(--u)); line-height: 1.04; }
+.goLink { display: inline-flex; align-items: center; justify-content: center; gap: calc(24 * var(--u)); min-width: max(200px, calc(281 * var(--u))); min-height: max(44px, calc(54 * var(--u))); margin-top: calc(55.77 * var(--u)); padding: 10px 20px; border: 1.5px solid #bba5c3; background: #65496e; color: #fff; font-family: "Solana Redaction 50", Georgia, serif; font-size: max(16px, calc(20.5551 * var(--u))); line-height: 1.2; text-decoration: none; }
+.goLink img { width: max(12px, calc(16 * var(--u))); }
+.goLink { letter-spacing: 0.05em; text-transform: uppercase; }
+
+@media (hover: hover) {
+  .backLink:hover { border-color: #c4694d; color: #fff; }
+  .goLink:hover { background: #765481; }
+  .copyButton:hover { background: #ffffff0a; }
 }
 
-.copyStatus:empty {
-  display: none;
+@media (max-width: 1099px) {
+  .navigation { max-width: 760px; padding: 24px 24px 0; }
+  .content { display: flex; flex-direction: column; gap: 88px; max-width: 760px; aspect-ratio: auto; padding: 48px 24px 0; }
+  .hero, .ship, .tools, .install, .journey, .further { position: static; width: 100%; }
+  .heroCopy, .toolsCopy { position: static; }
+  .heroTitle, .toolsTitle { width: 100%; }
+  .heroCopy p, .toolsCopy p, .install > p, .further > p { width: auto; margin-top: 24px; font-size: clamp(18px, 2.7vw, 24px); line-height: 1.35; }
+  .desktopBreak { display: none; }
+  .heroArt, .toolsArt { position: static; width: 100%; max-width: 500px; margin: 32px auto 0; }
+  .toolsArt { max-width: 440px; }
+  .decoratedHeading, .further .decoratedHeading { gap: clamp(12px, 3vw, 32px); }
+  .emblem { width: clamp(24px, 6vw, 48px); }
+  .shipTitle { width: min(100%, 530px); }
+  .furtherTitle { width: min(100%, 350px); }
+  .installTitle { flex-direction: column; gap: 12px; }
+  .cliTitle { width: 57.33%; max-width: 344px; }
+  .superpowersTitle { width: 100%; max-width: 600px; }
+  .install > p { max-width: 590px; }
+  .command { width: 100%; margin-top: 28px; }
+  .commandSurface { border: 1px solid #555; border-radius: 8px; overflow: hidden; }
+  .page .commandArtwork, .accessibleCommand { display: none; }
+  .commandLive { display: block; }
+  .commandHeader { display: grid; grid-template-columns: 36px 1fr 36px; align-items: center; gap: 8px; min-height: 56px; padding: 8px 12px; background: #262626; color: #bba5c3; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.4; text-align: center; text-transform: uppercase; }
+  .commandDots { display: flex; gap: 5px; }
+  .commandDots i { width: 7px; height: 7px; border: 1px solid #777; border-radius: 50%; }
+  .commandLive pre { margin: 0; padding: 20px 16px; color: #e3dce6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; user-select: all; }
+  .copyButton { left: auto; right: 2px; top: 6px; width: 44px; height: 44px; transform: none; }
+  .copyButton img { width: 20px; }
+  .journeyTitle { flex-direction: column; gap: 8px; }
+  .stepsStart { width: 100%; max-width: 600px; }
+  .stepsEnd { width: 62.98%; max-width: 378px; }
+  .cardFrame { width: 100%; height: auto; margin-top: 32px; padding: 12px; border: 16px solid transparent; border-image: url("/colosseum/solana-new/card-frame.svg") 66 round; background: none; }
+  .cards { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 64px 20px; }
+  .card { display: flex; flex-direction: column; min-height: 340px; height: auto; padding: 24px 20px 0; }
+  .card h3 img { max-width: 100%; height: 34px; }
+  .card p { margin-top: 12px; font-size: 18px; line-height: 1.3; }
+  .page .cardArt { position: static; width: 100%; max-width: 230px; height: 180px; margin: auto auto -40px; padding-top: 24px; object-fit: contain; box-sizing: content-box; transform: none; }
+  .further > p { max-width: 620px; }
+  .goLink { gap: 24px; margin-top: 28px; font-size: 20px; }
+  .goLink img { width: 16px; }
 }
 
-.copyStatus input {
-  display: block;
-  width: 100%;
-  margin-top: 8px;
-  padding: 8px;
-  border: 1px solid #777;
-  border-radius: 4px;
-  background: #000;
-  color: #fff;
-  font-family: monospace;
-  font-size: 16px;
+@media (max-width: 599px) {
+  .content { gap: 72px; }
+  .cards { grid-template-columns: minmax(0, 1fr); gap: 64px; }
+  .card { min-height: 330px; }
 }
