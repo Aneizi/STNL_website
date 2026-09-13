@@ -82,7 +82,12 @@ same file asserts a 503 rather than a silent success.
 **Status: Not configured.**
 
 **Variables:** `TELEGRAM_LOGIN_CLIENT_ID`, `TELEGRAM_LOGIN_CLIENT_SECRET`,
-`TELEGRAM_BOT_USERNAME`.
+`TELEGRAM_BOT_USERNAME` (copy only; it does not gate availability).
+
+**Redirect URL to register:** `<BETTER_AUTH_URL>/api/auth/callback/telegram`,
+with `BETTER_AUTH_URL` exactly as set in Vercel (scheme and host, no path). The
+provider derives it from that variable at request time; nothing else in the
+code names it.
 
 **Code-level checks:** `tests/hq/member-auth-telegram.test.ts` drives the
 whole flow through the route handler with a synthetic RS256 key, JWKS and
@@ -90,28 +95,43 @@ token endpoint. It asserts the PKCE authorization request, the token exchange
 shape, the placeholder account with `emailVerified` false, the identity row,
 `currentMember()` admitting the account with `email: null`, replay and forged
 tokens refused, the conflict with another account refused before anything is
-committed, and that a Telegram outage does not affect email sign-in. Any
-request to the discovery document fails the suite, so start-up cannot be taken
-down by Telegram being slow. `tests/hq/member-auth-config.test.ts` covers the
-`telegram` availability flag. The sign-in button itself does not exist yet
-(task T2.2).
+committed, and that a Telegram outage does not affect email sign-in. Since
+task T2.2 it also covers Connect Telegram from an email account (confirmation
+step, `/link-social`, callback, audit event), the conflict redirect when the
+Telegram account belongs to someone else, the 15 minute session rule on
+`/link-social`, `/unlink-account` and the two change-email endpoints, the
+refusal to disconnect the last login method, and the account page markup.
+Any request to the discovery document fails the suite, so start-up cannot be
+taken down by Telegram being slow. `tests/hq/member-auth-config.test.ts`
+covers the `telegram` availability flag; `tests/hq/account-form.test.ts`
+covers the honest unavailable state on the sign-in page. Until the two
+variables are set, the sign-in page shows "Telegram sign-in is not available
+yet" and the account page shows the same in place of Connect Telegram.
 
 **Live checks (you):**
 
 1. Create the bot.
 2. In BotFather, open the mini app for your bot and use **Login Widget**, not the
    older `/setdomain` widget.
-3. Add the allowed URLs `https://<your origin>` and
-   `https://<your origin>/api/auth/callback/telegram`. Add the staging origin the
-   same way if you use one.
-4. Copy the client id and client secret into Vercel.
+3. Under **Allowed URLs** add the site origin `https://<your origin>` and the
+   redirect URL `https://<your origin>/api/auth/callback/telegram`. Add the
+   staging origin and its redirect URL the same way if you use one. The
+   origin must be the same value as `BETTER_AUTH_URL`.
+4. Copy the client id and client secret into Vercel as
+   `TELEGRAM_LOGIN_CLIENT_ID` and `TELEGRAM_LOGIN_CLIENT_SECRET`. Set
+   `TELEGRAM_BOT_USERNAME` if you want the bot named in copy later.
 5. Keep the signing algorithm at RS256 (the provider accepts nothing else),
    and do not request the `phone` scope (the provider never asks for it).
 6. Confirm one real sign-in completes end to end. This is also the only check
    of the token exchange against Telegram's real endpoint: the code sends
    `client_secret_basic` plus `client_id` in the body, as Telegram's docs
    show, but no automated test can prove Telegram accepts it.
-7. Once a year, or after any Telegram announcement, re-check that Telegram's
+7. Then confirm Connect Telegram from an email account on `/hq/account`: the
+   confirmation step, the Telegram approval, and the "Telegram connected."
+   notice. Try it again from a second HQ account with the same Telegram
+   account and check it is refused with the "already connected to another HQ
+   account" message and nothing moves.
+8. Once a year, or after any Telegram announcement, re-check that Telegram's
    discovery document still lists the endpoints hard coded in
    `lib/hq/telegram-provider.ts` (`/auth`, `/token`,
    `/.well-known/jwks.json` under `https://oauth.telegram.org`). The code

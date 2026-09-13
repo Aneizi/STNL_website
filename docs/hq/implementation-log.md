@@ -1008,3 +1008,170 @@ pre-existing warnings in `public/deck/deck-stage.js`.
 None added. Four names are now removable rather than required:
 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`,
 `GITHUB_CLIENT_SECRET`.
+
+### What changed, task T2.2
+
+Telegram sign-in, Connect Telegram with a confirmation step, and the identity
+plugin's phase 2 rules. No migration: the confirmation intent is a single-use
+row in the existing `hq_auth_verification` table.
+
+`lib/hq/telegram-identity-plugin.ts` gained a third before hook over the four
+endpoints that add or remove a login method (`/link-social`,
+`/unlink-account`, `/email-otp/request-email-change`,
+`/email-otp/change-email`). It requires a session and refuses one created
+`RECENT_SESSION_MS` (15 minutes) or more ago with 403 `SESSION_NOT_FRESH`.
+Better Auth keeps no re-authentication time, so the rule compares
+`session.createdAt`, the moment of sign-in (a refresh under `updateAge`
+touches only `updatedAt`, and the core's own `freshSessionMiddleware`
+compares `createdAt` too); the only way to become recent again is to sign
+in. On `/link-social` for Telegram the hook also refuses an account that
+already has an identity row (409 `TELEGRAM_ALREADY_CONNECTED`) and consumes
+the recorded confirmation intent, refusing with 403 `CONFIRMATION_REQUIRED`
+when there is none, it expired, it was for the other action or it was
+already used. On `/unlink-account` for a Telegram account row it refuses when
+no verified real email remains (400 `LAST_LOGIN_METHOD`; the core's own rule
+counts account rows, which an email-OTP user does not have, so
+`allowUnlinkingAll: true` hands the decision to the plugin) and then consumes
+the unlink intent. `account.create.before` additionally refuses a second
+Telegram account row for a user who already has an identity row
+(`telegram_already_connected`), the in-transaction backstop for the endpoint
+check. `account.create.after` writes the identity row and an
+`identity.linked` audit event in one builder-pool transaction;
+`account.delete.after` deletes the row and writes `identity.unlinked` when a
+row was actually removed. Metadata is `{ provider: "telegram" }` and nothing
+else. A repeat sign-in refreshes the row and records nothing. The provider's
+rejection diagnostics now go through Better Auth's logger (`ctx.logger.warn`
+in the plugin's `init`) unless a sink is injected. Exported for the rest of
+the code: `isRecentSession`, `telegramIsLastLoginMethod`,
+`recordTelegramIntent`, `TELEGRAM_INTENT_MS`, and the three guard lists.
+
+`lib/hq/actions/telegram.ts` (`"use server"`, member gated):
+`confirmLinkTelegram()` and `confirmUnlinkTelegram()`. Each starts with
+`requireMemberActor()`, re-checks the same rules the plugin enforces so the
+page can explain a refusal (`SESSION_NOT_FRESH`, `TELEGRAM_UNAVAILABLE`,
+`TELEGRAM_ALREADY_CONNECTED`, `TELEGRAM_NOT_CONNECTED`, `LAST_LOGIN_METHOD`),
+records the intent, and returns; the unlink confirmation also returns the
+Better Auth account row id the client passes to `unlinkAccount()`. Neither
+action links or unlinks anything itself.
+
+`lib/hq/member-auth.ts`: `currentMemberSession()` (the raw session, cached
+per request, read by the actions for `createdAt` and the stored login fields;
+`currentMember()` now builds on it) and `redirectToMemberSignIn(next)`. The
+latter handles the state the T0.1 review flagged: a session that exists but
+fails the verified-account rule (a Telegram-only account whose post-commit
+identity row never landed) is ended by deleting its session row, and the
+person is sent to `/hq/signin?error=identity_missing`, where the form says
+"Your Telegram sign-in did not complete. Please sign in again." The next
+Telegram sign-in repairs the row. `requireMember()`, the profile page and
+`completeMemberProfile` all go through it.
+
+`app/hq/(member)/account-form.tsx`: "Continue with Telegram" above the email
+form, calling `signIn.social({ provider: "telegram", callbackURL,
+errorCallbackURL: "/hq/signin?error=telegram&next=...",
+newUserCallbackURL: "/hq/profile?next=..." })`, so a first-time Telegram
+account lands on the existing name step, which asks for no email. The
+unavailable state is per method and per mode: "Telegram sign-in is not
+available yet. Use email below.", "Email sign-up is not available yet. Use
+Telegram above.", or a single "Sign-in is not available yet" line when
+neither is configured. The form takes an `error` code (the signin page reads
+the last `error` value, because Better Auth appends its own code after ours)
+and `app/hq/(member)/telegram-copy.ts` maps the codes to copy:
+`account_already_linked_to_different_user` and `telegram_identity_conflict`
+("This Telegram account is already connected to another HQ account. Sign in
+to that account instead."), `state_mismatch`, `SESSION_NOT_FRESH` ("Please
+sign in again to continue."), `identity_missing`, and a generic line for the
+other callback codes. The helper is a plain module because the server-rendered
+account page uses the same copy.
+
+New pages: `/hq/account` (login methods from `getLoginMethods()`: the
+verified address or "None. This account signs in with Telegram only.";
+"Connected as @username" or "Not connected"; Connect Telegram, or Disconnect
+Telegram disabled with the reason when it is the last login method),
+`/hq/account/connect-telegram` and `/hq/account/disconnect-telegram` (the
+confirmation steps; a shared client form runs the server action and only then
+calls `linkSocial()` or `unlinkAccount()`; a stale session gets a "Sign in
+again" button that signs out and returns to the same step), plus
+`account/loading.tsx`. All three pages call `requireMemberActor()`. The page
+renders only server data; nothing reads the auth client's session object, and
+a test asserts the Telegram-only markup contains neither the placeholder
+address nor the subject. `proxy.ts` and `safeMemberNext` both list the three
+routes (T2.4 unifies the lists).
+
+### Checks passed, task T2.2
+
+- Synthesis §2.6 steps 10 to 13 and 15 to 16, in
+  `tests/hq/member-auth-telegram.test.ts` (20 tests, 9 new): link from an
+  email account through the confirmation step, `/link-social` and the
+  callback, with the account id, profile, enrollment, capability grant and
+  team row unchanged and one `identity.linked` event; an unconfirmed,
+  expired, wrong-action, foreign or already-used confirmation refused with
+  no OAuth state minted; a link that fails at the token exchange leaves no
+  row and cannot be replayed; a second Telegram refused at the endpoint and
+  by `account.create.before`; a Telegram account held by another HQ account
+  refused with `account_already_linked_to_different_user` and nothing moved;
+  a 16 minute old session refused on all four endpoints and by both actions
+  while a 14 minute old one passes; no session, the operator cookie and a
+  cross-origin request refused on `/link-social`; a Telegram-only account
+  cannot disconnect (action, endpoint and page agree); a linked account
+  disconnects after confirmation, with `identity.unlinked` recorded and the
+  next Telegram sign-in starting a new account; the account page markup for
+  Telegram-only, email-only and error states; the missing identity row
+  ending the session at page and action level; a Telegram-first account
+  without a name completing the name step with no email prompt. Every
+  guarded and gated route template exists on the installed library.
+- `tests/hq/telegram-identity-plugin.test.ts` (new, 6): the three guard
+  lists, the hook matchers per route template, the recency boundary and the
+  last-login-method rule.
+- `tests/hq/account-form.test.ts` (new, 7): Telegram first and email
+  second, the unavailable state per method and per mode, the error copy, no
+  Google or GitHub remnant, no em dashes or middots.
+- `tests/hq/member-auth-config.test.ts`: the three account routes preserved
+  and near-misses rejected. `tests/hq/auth-boundary.test.ts` maps
+  `telegram.ts` to the member gate. `tests/hq/member-auth.test.ts` asserts
+  the ended session for the missing-row state.
+- Phase 2 gate items covered here: Telegram-only, email-only and linked
+  accounts sign in and land on the safe `next`; linking preserves the account
+  id, teams and grants; a failed or expired login or link grants nothing; an
+  unconfigured Telegram shows an honest unavailable state; admin login is
+  untouched (`tests/hq/operator-auth-actions.test.ts` unchanged).
+
+### Blocked or deferred, task T2.2
+
+- Recovery email for Telegram-first accounts and bot-messaging consent are
+  task T2.3. The account page shows "Add a verified email first" without a
+  link until then, and the two change-email endpoints sit behind the recency
+  hook already.
+- The member navigation and the single route allowlist are task T2.4; the
+  account page is reachable by URL and from the confirmation steps only.
+- The rate limit and cookie review is task T2.5. `/link-social` and
+  `/unlink-account` fall under the repo's 60 per minute default.
+- A `customSession` transform was not added: no client code reads
+  `session.user` (grep over `app`, `components` and the auth client), and the
+  placeholder guard is the markup test plus the server-only readers.
+- The `account.create.before` backstop for a second Telegram fires inside the
+  link callback outside any redirect wrapper, so a race that reaches it
+  answers 409 JSON instead of an error redirect. The endpoint hook stops the
+  same case with a redirectable refusal first.
+
+### Changed interfaces, task T2.2
+
+`lib/hq/telegram-identity-plugin.ts` exports `isRecentSession(session, now?)`,
+`telegramIsLastLoginMethod(user)`, `recordTelegramIntent(store, userId,
+intent)`, `TELEGRAM_INTENT_MS`, `PLACEHOLDER_GUARDED_ENDPOINTS`,
+`ID_TOKEN_ENDPOINTS`, `RECENT_SESSION_ENDPOINTS` and the types
+`TelegramIntent`, `TelegramIntentStore`. `lib/hq/identity.ts`:
+`upsertTelegramIdentity(input, db?)` and `deleteTelegramIdentity(userId, db?)`
+take an optional query handle, and the delete returns whether a row went.
+`lib/hq/member-auth.ts` exports `currentMemberSession()` and
+`redirectToMemberSignIn(next)`. `lib/hq/actions/telegram.ts` exports
+`confirmLinkTelegram()`, `confirmUnlinkTelegram()` and their result types.
+`AccountForm` takes an optional `error` prop. `app/hq/(member)/telegram-copy.ts`
+exports `lastParam(value)` and `telegramErrorMessage(code, action?)`.
+`account.accountLinking.allowUnlinkingAll` is now true.
+
+### External configuration still required, task T2.2
+
+`TELEGRAM_LOGIN_CLIENT_ID`, `TELEGRAM_LOGIN_CLIENT_SECRET` (both needed for
+the button to be live), `TELEGRAM_BOT_USERNAME` (copy only). The redirect URL
+to register is `<BETTER_AUTH_URL>/api/auth/callback/telegram`; see
+`docs/hq/manual-setup.md`.
