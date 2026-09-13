@@ -10,8 +10,9 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyMigrations } from "./helpers/db";
+import { getTelegramIdentity } from "@/lib/hq/identity";
 import { hqTelegramIdentity } from "@/lib/hq/telegram-identity-plugin";
-import { TELEGRAM_ISSUER, telegramProvider } from "@/lib/hq/telegram-provider";
+import { TELEGRAM_ISSUER, TELEGRAM_REJECTION_LOG_PREFIX, telegramProvider } from "@/lib/hq/telegram-provider";
 
 const state = vi.hoisted(() => ({
   pg: null as PGlite | null,
@@ -24,6 +25,7 @@ const state = vi.hoisted(() => ({
   tokenOverride: {} as Record<string, unknown>,
   tokenFailure: false,
   nonce: "",
+  minted: [] as string[],
 }));
 
 vi.mock("server-only", () => ({}));
@@ -101,9 +103,10 @@ async function mintIdToken(o: TokenOverride = {}) {
     .sign(o.key ?? keys.privateKey);
 }
 
-function request(path: string, body?: object, cookie?: string) {
+function request(path: string, body?: object, cookie?: string, fixedIp?: string) {
   requestNumber += 1;
-  const ip = `10.${Math.floor(requestNumber / 256) % 256}.${requestNumber % 256}.7`;
+  // A fresh address per request keeps the library's per-IP limits out of the way unless a test pins one.
+  const ip = fixedIp ?? `10.${Math.floor(requestNumber / 256) % 256}.${requestNumber % 256}.7`;
   return route[body ? "POST" : "GET"](new Request(`${ORIGIN}/api/auth${path}`, {
     method: body ? "POST" : "GET",
     headers: { Origin: ORIGIN, "Content-Type": "application/json", "x-real-ip": ip, ...(cookie ? { Cookie: cookie } : {}) },
@@ -166,7 +169,9 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
       if (url === `${ISSUER}/token`) {
         if (state.tokenFailure) throw new TypeError("fetch failed: oauth.telegram.org unreachable");
         state.tokenRequests.push({ authorization: new Headers(init?.headers).get("authorization"), params: new URLSearchParams(String(init?.body)) });
-        return Response.json({ access_token: "fictional-access-token", token_type: "Bearer", expires_in: 3600, id_token: await mintIdToken(state.tokenOverride) });
+        const idToken = await mintIdToken(state.tokenOverride);
+        state.minted.push(idToken);
+        return Response.json({ access_token: "fictional-access-token", token_type: "Bearer", expires_in: 3600, id_token: idToken });
       }
       // The discovery document, or anything else, must never be requested.
       state.unexpected.push(url);
@@ -188,6 +193,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     state.tokenRequests.length = 0;
     state.tokenOverride = {};
     state.tokenFailure = false;
+    state.minted.length = 0;
     await state.pg!.exec("TRUNCATE hq_auth_user, hq_auth_verification, hq_auth_rate_limit, hq_builder_profiles, hq_hackathons CASCADE");
     await state.pg!.exec(`INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES(41,'test-builders','Test builders','2098-09-01','2098-10-01')`);
   });
@@ -278,22 +284,33 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(errorCode(withoutCookie)).toBe("state_mismatch");
 
     const now = Math.floor(Date.now() / 1000);
-    const forged: Array<[string, TokenOverride]> = [
-      ["wrong nonce", { nonce: "not-the-nonce-that-was-sent-0000" }],
-      ["missing nonce", { nonce: null }],
-      ["wrong audience", { aud: "987654321" }],
-      ["wrong issuer", { iss: "https://oauth.example.invalid" }],
-      ["expired", { iat: now - 120, exp: now - 60 }],
-      ["too old", { iat: now - 3600, exp: "1h" }],
-      ["another key", { key: otherKeys.privateKey }],
-      ["unknown key id", { kid: "unknown-1" }],
+    const forged: Array<[string, TokenOverride, RegExp]> = [
+      ["wrong nonce", { nonce: "not-the-nonce-that-was-sent-0000" }, /nonce does not match/],
+      ["missing nonce", { nonce: null }, /nonce does not match/],
+      ["wrong audience", { aud: "987654321" }, /"aud"/],
+      ["wrong issuer", { iss: "https://oauth.example.invalid" }, /"iss"/],
+      ["expired", { iat: now - 120, exp: now - 60 }, /"exp"/],
+      ["too old", { iat: now - 3600, exp: "1h" }, /too far in the past|"iat"/],
+      ["another key", { key: otherKeys.privateKey }, /signature/i],
+      ["unknown key id", { kid: "unknown-1" }, /no applicable key|JWKS/i],
     ];
-    for (const [label, override] of forged) {
+    // Every rejection emits exactly one diagnostic line naming the reason, never the token or its claims.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    for (const [label, override, reason] of forged) {
+      warn.mockClear();
       const { response, session } = await signInWithTelegram(override);
       expect(response.status, label).toBe(302);
       expect(errorCode(response), label).toBe("unable_to_get_user_info");
       expect(session, label).toBeNull();
+      expect(warn, label).toHaveBeenCalledTimes(1);
+      const line = String(warn.mock.calls[0][0]);
+      expect(line, label).toContain(TELEGRAM_REJECTION_LOG_PREFIX);
+      expect(line, label).toMatch(reason);
+      expect(line, label).not.toContain(state.minted.at(-1)!);
+      expect(line, label).not.toContain(SUB);
+      expect(line, label).not.toContain(NAME);
     }
+    warn.mockRestore();
     expect(await count("hq_auth_user")).toBe(1);
     expect(await count("hq_auth_session")).toBe(1);
 
@@ -320,6 +337,26 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(await count("hq_auth_session")).toBe(2);
     const identity = (await state.pg!.query<{ user_id: string; fresh: boolean }>(`SELECT user_id, last_login_at > now() - interval '1 hour' AS fresh FROM hq_auth_telegram_identity`)).rows[0];
     expect(identity).toEqual({ user_id: userId, fresh: true });
+
+    const read = await getTelegramIdentity(userId);
+    expect(read).toEqual({
+      userId, telegramUserId: String(TELEGRAM_ID), providerSubject: SUB, username: USERNAME, photoUrl: PICTURE,
+      linkedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+      lastLoginAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
+    });
+    expect(Date.parse(read!.lastLoginAt)).toBeGreaterThan(Date.parse(read!.linkedAt));
+    expect(await getTelegramIdentity("nobody")).toBeNull();
+  });
+
+  it("rate-limits the Telegram callback per IP without touching Telegram", async () => {
+    const ip = "203.0.113.9";
+    for (let attempt = 1; attempt <= 10; attempt += 1) {
+      const response = await request("/callback/telegram?code=fictional-code&state=not-a-real-state", undefined, undefined, ip);
+      expect(response.status, `attempt ${attempt}`).toBe(302);
+      expect(errorCode(response), `attempt ${attempt}`).toBe("state_mismatch");
+    }
+    expect((await request("/callback/telegram?code=fictional-code&state=not-a-real-state", undefined, undefined, ip)).status).toBe(429);
+    expect(state.fetches).toEqual([]);
   });
 
   it("removes the identity row when the Telegram account row is deleted", async () => {
@@ -379,7 +416,11 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
       expect(await outcome(() => auth.api.linkSocialAccount({ body: { provider: "telegram", idToken: { token } }, headers, asResponse: true }))).toEqual({ status, code });
     }
     // Control: with neither fence the request passes both checks and is stopped only by getUserInfo refusing to run without a server nonce.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(await outcome(() => neither.api.signInSocial({ body: { provider: "telegram", idToken: { token } }, headers, asResponse: true }))).toEqual({ status: 401, code: "FAILED_TO_GET_USER_INFO" });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toMatch(/no server nonce/);
+    warn.mockRestore();
     expect(await count("hq_auth_user")).toBe(1);
     expect(await count("hq_auth_account")).toBe(1);
     expect(await count("hq_auth_session")).toBe(1);

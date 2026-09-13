@@ -44,7 +44,22 @@ export type TelegramIdTokenClaims = {
   picture?: string;
 };
 
-export type TelegramProviderEnv = { clientId: string; clientSecret: string; redirectURI?: string };
+export type TelegramProviderEnv = {
+  clientId: string;
+  clientSecret: string;
+  redirectURI?: string;
+  /** Receives one diagnostic line per rejected id_token (never the token or its claims). Defaults to console.warn. */
+  warn?: (message: string) => void;
+};
+
+/** Stable prefix for the rejection diagnostics, so they can be found in production logs. */
+export const TELEGRAM_REJECTION_LOG_PREFIX = "hq-telegram: id_token rejected:";
+
+function describeError(error: unknown): string {
+  if (!(error instanceof Error)) return "unknown error";
+  const code = "code" in error && typeof error.code === "string" ? ` (${error.code})` : "";
+  return `${error.name}${code}: ${error.message}`;
+}
 
 /**
  * True for the internal non-deliverable identifier that stands in for an
@@ -143,6 +158,13 @@ export function telegramProvider(env: TelegramProviderEnv): OAuthProvider<Telegr
     // the library level; the identity plugin closes them a second time.
     disableIdTokenSignIn: true,
   };
+  const warn = env.warn ?? ((message: string) => console.warn(message));
+  // The core callback collapses every null into `unable_to_get_user_info`;
+  // this line is what makes a live rejection diagnosable. Reasons only.
+  const rejected = (reason: string): null => {
+    warn(`${TELEGRAM_REJECTION_LOG_PREFIX} ${reason}`);
+    return null;
+  };
   return {
     id: TELEGRAM_PROVIDER_ID,
     name: "Telegram",
@@ -176,7 +198,8 @@ export function telegramProvider(env: TelegramProviderEnv): OAuthProvider<Telegr
       }),
     async getUserInfo({ idToken, expectedIdTokenNonce }) {
       // Both are mandatory: no nonce means no redirect flow of ours started this login.
-      if (!idToken || !expectedIdTokenNonce) return null;
+      if (!idToken) return rejected("the token response carried no id_token");
+      if (!expectedIdTokenNonce) return rejected("no server nonce in the OAuth state");
       let payload: JWTPayload;
       try {
         ({ payload } = await jwtVerify(idToken, telegramJwks(), {
@@ -185,12 +208,12 @@ export function telegramProvider(env: TelegramProviderEnv): OAuthProvider<Telegr
           algorithms: TELEGRAM_ALGORITHMS,
           maxTokenAge: ID_TOKEN_MAX_AGE,
         }));
-      } catch {
-        return null;
+      } catch (error) {
+        return rejected(`verification failed: ${describeError(error)}`);
       }
-      if (!nonceMatches(payload.nonce, expectedIdTokenNonce)) return null;
+      if (!nonceMatches(payload.nonce, expectedIdTokenNonce)) return rejected("nonce does not match the OAuth state");
       const claims = parseTelegramClaims(payload);
-      if (!claims) return null;
+      if (!claims) return rejected("claims lack iss, aud, sub, iat or exp in the expected types");
       return {
         user: {
           name: claims.name,

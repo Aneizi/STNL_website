@@ -44,6 +44,8 @@ const isTelegram = (account: AccountRow | null | undefined): account is AccountR
  * was verified by getUserInfo moments earlier (it is the only writer of
  * telegram accounts); the subject is cross-checked against the account key.
  * Null when the token is missing, undecodable, or lacks the numeric id.
+ * Assumes the id_token is stored as-is: under encryptOAuthTokens the core's
+ * setTokenUtil encrypts only access and refresh tokens (link-account.mjs).
  */
 function identityFromAccount(account: AccountRow & { userId: string }): TelegramIdentityInput | null {
   const claims = account.idToken ? readTelegramClaims(account.idToken) : null;

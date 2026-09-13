@@ -12,11 +12,9 @@ import {
   RESET_STATEMENTS,
 } from "@/scripts/hq/reset-statements";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
+import { applySqlFile } from "./helpers/db";
 
 const SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8");
-// The public account tables are classified too, so they have to exist here.
-// builder-schema.sql is still out of scope for this manifest (task T1.1).
-const MEMBER_AUTH_SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/member-auth-schema.sql"), "utf8");
 
 type Row = Record<string, unknown>;
 
@@ -131,9 +129,9 @@ beforeEach(async () => {
     await run(statement);
   }
   await applyUpgrades({ query: (text) => run(text) as Promise<Record<string, unknown>[]> });
-  for (const statement of MEMBER_AUTH_SCHEMA.split(/;\s*(?:\n|$)/).map((s) => s.trim()).filter(Boolean)) {
-    await run(statement);
-  }
+  // The public account tables are classified too, so they have to exist here.
+  // builder-schema.sql is still out of scope for this manifest (task T1.1).
+  await applySqlFile(pg, "member-auth-schema.sql");
   await seedEverything();
 });
 

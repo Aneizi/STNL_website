@@ -21,6 +21,9 @@ export type TelegramIdentity = {
 // so nothing here can observe an uncommitted Better Auth transaction.
 const COLUMNS = `user_id, provider_subject, telegram_user_id::text AS telegram_user_id, username, photo_url, linked_at, last_login_at`;
 
+/** pg hands timestamptz back as a Date; keep its full precision instead of re-parsing text. */
+const toIso = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
+
 function toIdentity(row: Record<string, unknown>): TelegramIdentity {
   return {
     userId: String(row.user_id),
@@ -28,8 +31,8 @@ function toIdentity(row: Record<string, unknown>): TelegramIdentity {
     providerSubject: String(row.provider_subject),
     username: row.username == null ? null : String(row.username),
     photoUrl: row.photo_url == null ? null : String(row.photo_url),
-    linkedAt: new Date(String(row.linked_at)).toISOString(),
-    lastLoginAt: new Date(String(row.last_login_at)).toISOString(),
+    linkedAt: toIso(row.linked_at),
+    lastLoginAt: toIso(row.last_login_at),
   };
 }
 

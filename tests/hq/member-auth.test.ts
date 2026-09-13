@@ -209,6 +209,19 @@ describe("public HQ sign-in through Better Auth", () => {
     expect((await state.pg!.query("SELECT * FROM hq_people")).rows).toHaveLength(0);
   });
 
+  it("returns no contact for an unverified real email admitted through a Telegram identity", async () => {
+    // A still-registered OAuth provider can store a real address with emailVerified false.
+    const id = "telegram-with-unverified-email";
+    state.cookie = await seedSession({ id, email: "unverified-real@example.com", emailVerified: false, name: "Linked Builder" });
+    await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id) VALUES ($1, '2222222222222222222', 4200000000042)`, [id]);
+    const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
+    expect(await currentMember()).toEqual({ id, email: null, name: "Linked Builder" });
+    expect((await requireMember("/hq/dashboard")).email).toBeNull();
+    expect(state.synced).not.toHaveBeenCalled();
+    expect((await state.pg!.query("SELECT contact FROM hq_people")).rows).toEqual([]);
+    expect((await state.pg!.query("SELECT * FROM hq_builder_profiles")).rows).toHaveLength(0);
+  });
+
   it("rejects incorrect and expired codes without populating People", async () => {
     const email = "unverified@example.com";
     await request("/email-otp/send-verification-otp", { email, type: "sign-in" });
