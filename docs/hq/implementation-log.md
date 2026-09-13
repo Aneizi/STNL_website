@@ -760,6 +760,190 @@ No existing export changed.
 
 None added. The list from task T0.1 stands.
 
+### What changed, task T1.4
+
+The identity predicate and the central authorization helpers wired into the
+existing member and operator surfaces. Nothing new is exposed; what already
+existed is now gated in one place, and every member-facing denial is the
+same not-found answer.
+
+- `lib/hq/identity.ts`: `verifiedLoginEmail(user)` and
+  `isVerifiedAccount(user)` are the one definition of "verified account" (a
+  verified real email, or a Telegram identity row; a placeholder user whose
+  identity row is missing fails closed). `lib/hq/member-auth.ts` imports both
+  for `currentMember()` and the `user.create.after` hook and no longer holds
+  a copy; `app/hq/(member)/profile/actions.ts` reads the session through
+  `currentMember()` and so shares it. A test asserts the rule is defined
+  once and that neither reader re-derives it.
+- `lib/hq/view-models.ts`: `MemberTeamView` gains the fields the team page
+  already rendered (`projectUrl`, `stage`, `lead.username`,
+  `roster[{ id, name, username, joined }]`), so the page and the client
+  controls take the view and nothing from `BuilderTeam`: `ownerId`,
+  `description` and `hackathonName` never leave the server.
+- `lib/hq/builder-store.ts`: `teamById(projectId)`, a read with no
+  relationship filter for a caller that has already authorized;
+  `ownClaim(userId, projectId)`, the account's own still-unverified claim,
+  read by account like the dashboard's import requests; `realEmail`
+  exported. `teams()` is unchanged in behaviour over a shared select.
+- New `lib/hq/member-teams.ts` (server-only): `authorizedTeam(actor,
+  { projectId, hackathonId?, action })` and `memberTeamView(actor,
+  projectId)`, the store call the team page and the team actions share:
+  `loadProjectEdition`, then `authorizeProjectAction` with that edition
+  injected, then the row only once the decision allows. Every denial is
+  null and, in an action, `TEAM_NOT_AVAILABLE`. It sits beside the store
+  because `builder-store.ts` is imported by `member-auth.ts`, which
+  `actor.ts` and `authz.ts` depend on, so the store cannot import `./authz`
+  without a cycle. The `hq_hackathon` cookie is never read on this path.
+- `lib/hq/actions/builders.ts`: `saveBuilderTeam({ projectId, hackathonId,
+  stage, leadUsername })` and `createBuilderInvite({ projectId, hackathonId,
+  memberId })` gate with `requireMemberActor()` and then call
+  `authorizedTeam(..., "membership.change")`, the team lead's action in the
+  permission contract, before any read or write. The edition the member
+  asked under travels in the body and is checked against the project. A
+  foreign, other-edition, pending, unknown or malformed id and a crafted
+  body edition all answer `TEAM_NOT_AVAILABLE`, identical to a missing team,
+  and nothing is fetched or written. The store's own owner and verification
+  predicates still run inside the write transaction as the last line of
+  defence, not as the decision. `components/hq/builder-onboarding.tsx`
+  sends `hackathonId: team.edition.id` and takes a `MemberTeamView`.
+- `app/hq/(member)/team/[id]/page.tsx`: `requireMemberActor()` then
+  `memberTeamView()`; `notFound()` for every denial; renders only
+  `MemberTeamView` fields.
+- `lib/hq/actions/util.ts`: `inHackathon(record, hackathonId)` wraps
+  `assertHackathonMatches` and returns null on its `BuilderError`, so a
+  missing record and one from another edition are the same answer.
+  `lib/hq/actions/projects.ts`: the eight R3 section 5 actions that took
+  the record's own edition (`setProjectStatus`, `setProjectForecast`,
+  `toggleProjectGate`, `saveProjectBlocker`, `addProjectNote`,
+  `deleteProject`, `editProjectNote`, `logMondayReview`) now call
+  `requireHackathon()` and resolve their record through `inHackathon`; the
+  four that already compared editions inline (`updateProjectDetail`,
+  `addProjectMember`, `updateProjectMember`, `removeProjectMember`) use the
+  same helper instead. `lib/hq/actions/people.ts`: `updatePerson` likewise.
+  Each keeps its existing not-found result and returns it for both cases.
+- `lib/hq/builder-admin-queries.ts` (ruling Q2): every account-bearing row
+  carries `AccountLogin = { email, telegram: { username } | null }` (a
+  `LEFT JOIN` on `hq_auth_telegram_identity`; `email` through `realEmail`,
+  so the placeholder can never reach a page even from a row that holds it),
+  `BuilderAccount.contactEmail`, and `BuilderProjectReview.owner` replaces
+  `ownerEmail`. `components/hq/builder-admin.tsx`: `loginLabel()` renders
+  the email, else "Telegram: @username", else "Telegram account"; the
+  account row shows "Contact email: ..." only when one is set.
+- New `tests/hq/member-actions-authz.test.ts`; additions to
+  `tests/hq/builders-admin.test.ts` (applies `member-auth-schema.sql`,
+  keeps `inHackathon` real), `tests/hq/member-auth.test.ts` and
+  `tests/hq/view-models.test.ts`.
+
+Behaviour change to record: the owner of an import still awaiting or
+refused review sees their claim and its status on the team page, but can no
+longer change the stage or lead until the team is verified; the save form
+and the invite buttons are shown only to the verified team lead, and the
+pending copy says so. The T1.3 loader recognises verified relationships
+only, per the plan ("Imported roster membership and a verified HQ account
+relationship are different things"; "Preserve pending status until
+review"), and the write path must not carry a second rule for claimants.
+
+Migrations: none. No SQL file and nothing in `scripts/hq/` changed.
+
+### Checks passed, task T1.4
+
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 543 tests pass
+  (527 before, 16 new).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: the same 18 pre-existing warnings, nothing new.
+- Mutation checks: removing the `authorizedTeam` call from `saveBuilderTeam`
+  fails 6 of the 11 new member tests; making `inHackathon` ignore the
+  edition fails 2 admin tests. Both restored.
+- Ruling Q2: `tests/hq/builders-admin.test.ts` "carries the Telegram
+  identity and the contact email apart from the login email, never the
+  placeholder" and "renders a Telegram-only account as its handle, the
+  contact email labelled apart, and an email account as before" (the rows
+  rendered through `react-dom/server`).
+- Ruling Q3: auto-enrolment on read is unchanged; `tests/hq/member-auth.test.ts`
+  "completes a Telegram-only profile through the one verified-account rule
+  and never writes the placeholder" and "defines the verified-account rule
+  once, in lib/hq/identity.ts, and every session reader imports it".
+
+Phase 1 acceptance checklist, with the test that proves each item:
+
+1. Additive migrations apply twice, on a fresh and on a populated database,
+   through the statement splitter: passed, `tests/hq/migration-order.test.ts`
+   (tasks T1.1 and T1.2).
+2. A member cannot read operator data through a URL, a body field, a project
+   id or the hackathon cookie: passed, `tests/hq/member-actions-authz.test.ts`.
+   URL: "answers a foreign, other-edition, unknown or malformed id with the
+   same not-found page, whatever the URL says". Body field and project id:
+   "answers a foreign team, another edition's team, a pending claim, an
+   unknown id and a crafted body edition identically, and changes nothing".
+   Cookie: "never reads the hackathon cookie: a tampered value changes no
+   answer". The view carries no operator field: "renders the member's own
+   view of a verified team and nothing wider". Operator side, a swapped
+   cookie or id reaches no other edition's record:
+   `tests/hq/builders-admin.test.ts` "answers a record from another edition
+   exactly like a missing one in every project state action and the People
+   editor". The decision matrix itself: `tests/hq/authz.test.ts` (T1.3).
+3. A `captain` grant on its own opens no project: passed,
+   `tests/hq/member-actions-authz.test.ts` "gives a captain grant no team
+   action on its own, and no lead-only action through a roster seat" and the
+   `cap` cases of the URL test; `tests/hq/authz.test.ts` "gives a captain
+   grant nothing without an assignment, and the shared surface with one".
+4. Editing a People role or tag cannot grant `captain`: passed,
+   `tests/hq/builders-admin.test.ts` "never turns a People role edit, a new
+   person or a tier change into a Captain grant" (T1.2).
+5. A revocation is visible on the next request: passed,
+   `tests/hq/member-actions-authz.test.ts` "sees a lost relationship on the
+   very next call" and "loses the page on the next request after leaving the
+   roster, without a session change"; `tests/hq/authz.test.ts` "sees a
+   revocation on the very next call, with the same actor object and no
+   caching in between"; the Admin and People reads in T1.2. "Including bot
+   requests" is deferred to phase 7: no bot exists yet, and the new test
+   file's header records the deferral.
+6. Existing `hq_users` ids, credentials and People links survive the
+   migration: passed, `tests/hq/migration-order.test.ts` (T1.1).
+7. Grant plus audit, and link plus identity, are written atomically: passed,
+   `tests/hq/capabilities.test.ts` "rolls the grant back when the audit event
+   cannot be written" and `tests/hq/builder-onboarding.test.ts` "links a
+   roster person to an account and stamps the account's cards, both or
+   neither" and "refuses an unknown person or account, and rolls everything
+   back when the audit write fails" (T1.1, T1.2).
+
+### Blocked or deferred, task T1.4
+
+- Bot requests, and revocation as seen by the bot: phase 7.
+- A claimant editing their pending import's stage or lead: not possible
+  until the team is verified (see the behaviour change above). Reversing
+  that would need a second, claimant-only rule on the write path; it is a
+  product ruling, not a one-line change.
+- Section 2, "Email users see Connect Telegram in the menu and dashboard":
+  the data is available (`getLoginMethods` from T1.1, `MemberActor.telegram`
+  from T1.3); the menu and the dashboard prompt are task T2.4.
+- The team page for an assigned Captain, and `MemberTeamView.captain`, are
+  phase 4.
+- `BuilderStore.team(userId, id)` (the account-scoped lookup that throws) has
+  no caller in the app any more; it stays for the store tests until a later
+  clean-up.
+
+### Changed interfaces, task T1.4
+
+`verifiedLoginEmail(user)`, `isVerifiedAccount(user)`, `StoredAccount` in
+`lib/hq/identity.ts`; `MemberTeamView.projectUrl`, `.stage`, `.lead`,
+`.roster` in `lib/hq/view-models.ts`; `BuilderStore.teamById(projectId)`,
+`BuilderStore.ownClaim(userId, projectId)`, `realEmail` in
+`lib/hq/builder-store.ts`; `authorizedTeam`, `memberTeamView`,
+`TEAM_NOT_AVAILABLE` in `lib/hq/member-teams.ts`; `inHackathon` in
+`lib/hq/actions/util.ts`; `saveBuilderTeam` and `createBuilderInvite` take
+`hackathonId`; `BuilderTeamControls` takes `{ team: MemberTeamView }`;
+`AccountLogin`, `TelegramLogin`, `BuilderAccount.telegram`,
+`BuilderAccount.contactEmail`, `BuilderHostRequest.telegram`,
+`BuilderImportRequest.telegram`, `BuilderProjectReview.owner` (replacing
+`ownerEmail`) in `lib/hq/builder-admin-queries.ts`; `loginLabel` in
+`components/hq/builder-admin.tsx`. `MemberSessionUser`, `Actor`,
+`authorizeProjectAction` and `assertHackathonMatches` are unchanged.
+
+### External configuration still required, task T1.4
+
+None added. The list from task T0.1 stands.
+
 ## Phase 2, sign-in, linking and the member shell
 
 Not started.
