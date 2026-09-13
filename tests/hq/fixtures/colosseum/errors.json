@@ -1,0 +1,68 @@
+{
+  "listingArrayEncoding": {
+    "status": 400,
+    "body": {
+      "message": "Expected array, received string",
+      "code": "BAD_REQUEST",
+      "data": {
+        "issues": [
+          {
+            "code": "invalid_type",
+            "path": ["hackathonIds"],
+            "message": "Expected array, received string"
+          }
+        ]
+      },
+      "known": true
+    }
+  },
+  "listingMissingHackathonIds": {
+    "status": 400,
+    "body": {
+      "message": "Required",
+      "code": "BAD_REQUEST",
+      "data": {
+        "issues": [
+          {
+            "code": "invalid_type",
+            "path": ["hackathonIds"],
+            "message": "Required"
+          }
+        ]
+      },
+      "known": true
+    }
+  },
+  "listingDirectoryDisabled": {
+    "status": 400,
+    "body": {
+      "message": "Project directory is not enabled for hackathons: 7",
+      "code": "BAD_REQUEST",
+      "known": true
+    }
+  },
+  "listingDirectoryDisabledOnly": {
+    "status": 400,
+    "body": {
+      "message": "None of the selected hackathons have project directories enabled",
+      "code": "BAD_REQUEST",
+      "known": true
+    }
+  },
+  "listingUnknownHackathon": {
+    "status": 404,
+    "body": {
+      "message": "No hackathons found with the provided IDs",
+      "code": "NOT_FOUND",
+      "known": true
+    }
+  },
+  "detailProjectNotFound": {
+    "status": 404,
+    "body": {
+      "message": "Project not found.",
+      "code": "NOT_FOUND",
+      "known": true
+    }
+  }
+}
