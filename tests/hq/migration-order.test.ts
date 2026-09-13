@@ -73,6 +73,17 @@ async function expectIdentitySchema(pg: PGlite) {
   for (const index of ["hq_people_person_idx", "hq_crm_persons_username_idx", "hq_crm_persons_builder_user_id_key"]) {
     expect(await exists(pg, index), index).toBe(true);
   }
+  // Task T1.2: capability grants and the append-only audit trail.
+  expect(await exists(pg, "hq_account_capabilities")).toBe(true);
+  expect(await exists(pg, "hq_audit_events")).toBe(true);
+  expect(await column(pg, "hq_account_capabilities", "granted_by_user_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
+  expect(await column(pg, "hq_account_capabilities", "revoked_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  expect(await column(pg, "hq_audit_events", "id")).toEqual({ data_type: "bigint", is_nullable: "NO" });
+  expect(await column(pg, "hq_audit_events", "project_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
+  expect(await column(pg, "hq_audit_events", "metadata")).toEqual({ data_type: "jsonb", is_nullable: "NO" });
+  for (const index of ["hq_account_capabilities_active_idx", "hq_account_capabilities_capability_idx", "hq_audit_events_subject_idx", "hq_audit_events_kind_idx"]) {
+    expect(await exists(pg, index), index).toBe(true);
+  }
 }
 
 describe("the migration files", () => {
@@ -111,6 +122,8 @@ describe("a fresh database", () => {
   it("has every hq_ table classified in the reset manifest, and nothing classified that does not exist", async () => {
     const pg = await createMigratedDatabase();
     try {
+      // hq_luma_sync is in neither list: RESET_STATEMENTS rewinds its single
+      // row with a dedicated UPDATE instead of clearing or keeping it.
       const listed = new Set<string>([...CLEAR_TABLES, ...KEEP_TABLES, "hq_luma_sync"]);
       const tables = await hqTables(pg);
       expect(tables.filter((t) => !listed.has(t))).toEqual([]);
@@ -133,8 +146,29 @@ describe("a populated database from before hackathon scoping", () => {
       `INSERT INTO hq_users (username, display_name, password_hash, password_version, must_change_password)
        VALUES ('cap', 'Cap', '$2b$10$fictionalhash.one', 3, false), ('lead', 'Lead', '$2b$10$fictionalhash.two', 1, true)`,
     );
-    await run(pg, `INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort) VALUES ('Judge','Judges','indigo','fill-3',true,0)`);
-    await run(pg, `INSERT INTO hq_people (name, role_id) SELECT 'Judge One', id FROM hq_people_roles`);
+    // The seeded partner-liaison role as scripts/hq/seed.ts wrote it before
+    // task T1.2 renamed it, with a card on it.
+    await run(
+      pg,
+      `INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
+       VALUES ('Captain','Captains','accent','accent-fill',false,0), ('Judge','Judges','indigo','fill-3',true,1)`,
+    );
+    await run(pg, `INSERT INTO hq_people (name, role_id) SELECT 'Judge One', id FROM hq_people_roles WHERE label = 'Judge'`);
+    await run(pg, `INSERT INTO hq_people (name, role_id) SELECT 'Liaison One', id FROM hq_people_roles WHERE label = 'Captain'`);
+  }
+
+  /** hq_builder_profiles exactly as builder-schema.sql created it before task T1.1: email required, no contact_email. */
+  async function createOldBuilderProfiles(pg: PGlite) {
+    await run(
+      pg,
+      `CREATE TABLE hq_builder_profiles (
+         id text PRIMARY KEY,
+         email text NOT NULL,
+         name text NOT NULL,
+         tier text NOT NULL DEFAULT 'regular' CHECK (tier IN ('regular', 'member')),
+         created_at timestamptz NOT NULL DEFAULT now()
+       )`,
+    );
   }
 
   /** Public accounts and their People cards as the store wrote them before this phase. */
@@ -159,21 +193,35 @@ describe("a populated database from before hackathon scoping", () => {
     try {
       await apply(pg, PRE_HACKATHON_SCHEMA);
       await seedOperators(pg);
-      // First pass: exactly what a live database went through up to now.
+      await createOldBuilderProfiles(pg);
+      const roles = await run(pg, `SELECT id, label FROM hq_people_roles ORDER BY label`);
+      const liaisonRole = String(roles.find((r) => r.label === "Captain")!.id);
+      // First pass: exactly what a live database went through up to now,
+      // including the two ALTER TABLE statements over the old-shape table.
       await applyMigrations(pg);
+      expect(await column(pg, "hq_builder_profiles", "email")).toEqual({ data_type: "text", is_nullable: "YES" });
+      expect(await column(pg, "hq_builder_profiles", "contact_email")).toEqual({ data_type: "text", is_nullable: "YES" });
       await seedAccounts(pg);
 
       const users = await run(pg, `SELECT id, username, password_hash, password_version, must_change_password FROM hq_users ORDER BY username`);
-      const people = await run(pg, `SELECT id, name, builder_user_id, contact FROM hq_people ORDER BY name`);
+      const people = await run(pg, `SELECT id, name, builder_user_id, contact, role_id FROM hq_people ORDER BY name`);
       expect(users).toHaveLength(2);
-      expect(people).toHaveLength(3);
+      expect(people).toHaveLength(4);
       expect(await run(pg, `SELECT count(*)::int AS n FROM hq_people WHERE person_id IS NOT NULL`)).toEqual([{ n: 0 }]);
+
+      // The partner-liaison role was renamed in place: same id, same cards,
+      // and the capability's name is free for the locked Captain tag.
+      expect(await run(pg, `SELECT id, label, filter_label FROM hq_people_roles WHERE id = $1`, [liaisonRole])).toEqual([
+        { id: liaisonRole, label: "Partner captain", filter_label: "Partner captains" },
+      ]);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_people_roles WHERE label = 'Captain'`)).toEqual([{ n: 0 }]);
+      expect(await run(pg, `SELECT role_id FROM hq_people WHERE name = 'Liaison One'`)).toEqual([{ role_id: liaisonRole }]);
 
       // Second pass, over populated tables.
       await applyMigrations(pg);
       await expectIdentitySchema(pg);
       expect(await run(pg, `SELECT id, username, password_hash, password_version, must_change_password FROM hq_users ORDER BY username`)).toEqual(users);
-      expect(await run(pg, `SELECT id, name, builder_user_id, contact FROM hq_people ORDER BY name`)).toEqual(people);
+      expect(await run(pg, `SELECT id, name, builder_user_id, contact, role_id FROM hq_people ORDER BY name`)).toEqual(people);
 
       // One person per account, carrying the account's name, linked both ways.
       expect(
@@ -191,13 +239,31 @@ describe("a populated database from before hackathon scoping", () => {
       ).toEqual([
         { name: "Email Builder", linked: true, same_account: true },
         { name: "Judge One", linked: false, same_account: null },
+        { name: "Liaison One", linked: false, same_account: null },
         { name: "Second Builder", linked: true, same_account: true },
       ]);
 
       // Third pass: the backfill matches nothing and creates nothing.
       await applyMigrations(pg);
       expect(await run(pg, `SELECT count(*)::int AS n FROM hq_crm_persons`)).toEqual([{ n: 2 }]);
-      expect(await run(pg, `SELECT id, name, builder_user_id, contact FROM hq_people ORDER BY name`)).toEqual(people);
+      expect(await run(pg, `SELECT id, name, builder_user_id, contact, role_id FROM hq_people ORDER BY name`)).toEqual(people);
+
+      // Fourth pass, over a card the backfill would have stamped but must
+      // not: another card in the same edition already carries the person, so
+      // the one card per person per edition index would refuse the stamp.
+      // The guarded backfill skips it and the run succeeds.
+      const [emailPerson] = await run(pg, `SELECT id FROM hq_crm_persons WHERE builder_user_id = 'acct-email'`);
+      await run(pg, `UPDATE hq_people SET person_id = NULL WHERE builder_user_id = 'acct-email'`);
+      await run(
+        pg,
+        `INSERT INTO hq_people (hackathon_id, name, role_id, person_id)
+         SELECT p.hackathon_id, 'Email Builder (roster card)', p.role_id, $1 FROM hq_people p WHERE p.builder_user_id = 'acct-email'`,
+        [emailPerson.id],
+      );
+      await applyMigrations(pg);
+      expect(await run(pg, `SELECT person_id FROM hq_people WHERE builder_user_id = 'acct-email'`)).toEqual([{ person_id: null }]);
+      expect(await run(pg, `SELECT person_id FROM hq_people WHERE builder_user_id = 'acct-second'`)).not.toEqual([{ person_id: null }]);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_people WHERE person_id = $1`, [emailPerson.id])).toEqual([{ n: 1 }]);
     } finally {
       await pg.close();
     }

@@ -140,6 +140,11 @@ async function seedEverything() {
              VALUES ('builder-1', '${hackathon}', 'https://colosseum.com/arena/projects/explore/unlisted')`);
   await run(`INSERT INTO hq_event_host_requests (user_id, hackathon_id, title, details)
              VALUES ('builder-1', '${hackathon}', 'Meetup', 'A fictional workshop')`);
+  // A Captain grant and the audit event behind it (task T1.2).
+  await run(`INSERT INTO hq_account_capabilities (user_id, capability, granted_by_user_id, reason)
+             VALUES ('builder-1', 'captain', '${user}', 'seeded for the reset test')`);
+  await run(`INSERT INTO hq_audit_events (kind, actor_kind, actor_id, subject_user_id, metadata)
+             VALUES ('capability.granted', 'operator', '${user}', 'builder-1', '{"capability":"captain"}')`);
 }
 
 beforeEach(async () => {

@@ -115,8 +115,8 @@ CREATE TABLE IF NOT EXISTS hq_event_host_requests (
 -- editions and independent of any login. A person may be linked to at most
 -- one public account and an account to at most one person. For someone who
 -- only appears on an imported Colosseum roster, the normalized username
--- (lower case, no leading @) is a PROVISIONAL match key; the display name is
--- never a key. Edition-specific People cards and roster rows point at the
+-- (lower case, no leading @) is a PROVISIONAL match key, and the display name
+-- is never a key. Edition-specific People cards and roster rows point at the
 -- person, so a correction moves one link instead of re-keying every edition.
 CREATE TABLE IF NOT EXISTS hq_crm_persons (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -132,6 +132,44 @@ CREATE UNIQUE INDEX IF NOT EXISTS hq_people_person_idx ON hq_people (hackathon_i
 ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS person_id uuid REFERENCES hq_crm_persons(id) ON DELETE SET NULL;
 -- Backfill for a populated database: every existing account gets its person,
 -- and every People card already tied to an account gets stamped with it.
--- Both match nothing on a fresh database and on every later run.
+-- Both match nothing on a fresh database and on every later run. A card is
+-- skipped when another card in the same edition already carries the person,
+-- so a re-run can never trip the one card per person per edition index.
 INSERT INTO hq_crm_persons (display_name, builder_user_id) SELECT p.name, p.id FROM hq_builder_profiles p WHERE NOT EXISTS (SELECT 1 FROM hq_crm_persons c WHERE c.builder_user_id = p.id);
-UPDATE hq_people SET person_id = c.id FROM hq_crm_persons c WHERE hq_people.person_id IS NULL AND hq_people.builder_user_id IS NOT NULL AND c.builder_user_id = hq_people.builder_user_id;
+UPDATE hq_people SET person_id = c.id FROM hq_crm_persons c WHERE hq_people.person_id IS NULL AND hq_people.builder_user_id IS NOT NULL AND c.builder_user_id = hq_people.builder_user_id AND NOT EXISTS (SELECT 1 FROM hq_people q WHERE q.hackathon_id = hq_people.hackathon_id AND q.person_id = c.id);
+
+-- Admin-controlled account capabilities. A capability is written only by
+-- lib/hq/capabilities.ts and is never derived from a People role, a tag or
+-- the membership tier. One active grant per account and capability; a revoked
+-- grant stays as history. granted_by_user_id and revoked_by_user_id name the
+-- operator who acted, which never makes the public account an operator.
+CREATE TABLE IF NOT EXISTS hq_account_capabilities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
+  capability text NOT NULL CHECK (capability IN ('captain')),
+  granted_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  granted_at timestamptz NOT NULL DEFAULT now(),
+  revoked_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  revoked_at timestamptz,
+  reason text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS hq_account_capabilities_active_idx ON hq_account_capabilities (user_id, capability) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS hq_account_capabilities_capability_idx ON hq_account_capabilities (capability) WHERE revoked_at IS NULL;
+
+-- Append-only audit of grants, revocations, identity links and assignment
+-- changes. metadata holds small structural facts (ids, a reason, counts) and
+-- never a note body. Rows are inserted by lib/hq/audit.ts and nothing updates
+-- or deletes them.
+CREATE TABLE IF NOT EXISTS hq_audit_events (
+  id bigserial PRIMARY KEY,
+  kind text NOT NULL,
+  actor_kind text NOT NULL CHECK (actor_kind IN ('operator','member','system')),
+  actor_id text,
+  subject_user_id text,
+  hackathon_id integer REFERENCES hq_hackathons(id) ON DELETE SET NULL,
+  project_id uuid,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hq_audit_events_subject_idx ON hq_audit_events (subject_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS hq_audit_events_kind_idx ON hq_audit_events (kind, created_at DESC);

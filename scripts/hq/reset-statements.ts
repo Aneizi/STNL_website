@@ -54,6 +54,12 @@ export const KEEP_TABLES = [
   // cards the way an operator login outlives the campaign.
   "hq_builder_profiles",
   "hq_crm_persons",
+  // Admin-granted account capabilities (Captain) and the append-only audit
+  // trail behind them, identity links and assignment changes. Both are
+  // account-level history, not an edition's CRM, so a reset keeps them the
+  // way it keeps logins and persons (ruling Q10, task T1.2).
+  "hq_account_capabilities",
+  "hq_audit_events",
   // Per-edition Colosseum mapping and toggles, typed into Admin: settings,
   // like hq_settings.
   "hq_hackathon_onboarding",

@@ -89,10 +89,14 @@ const EVENT_TYPES: Array<[label: string, supportsEndDate: boolean]> = [
   ["Other", false],
 ];
 
+// "Partner captain" is the partner organisation's named liaison, an ordinary
+// editable People role. It is not the Captain capability (an admin-granted
+// account capability, lib/hq/capabilities.ts) that People shows as a locked
+// Captain tag; the two are kept apart by name on purpose.
 const PEOPLE_ROLES: Array<
   [label: string, filterLabel: string, color: string, bg: string, isJudge: boolean]
 > = [
-  ["Captain", "Captains", "accent", "accent-fill", false],
+  ["Partner captain", "Partner captains", "accent", "accent-fill", false],
   ["Judge", "Judges", "indigo", "fill-3", true],
   ["Mentor", "Mentors", "green", "green-fill", false],
   ["Sponsor", "Sponsors", "orange", "orange-fill", false],
