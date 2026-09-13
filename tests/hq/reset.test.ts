@@ -14,6 +14,9 @@ import {
 import { applyUpgrades } from "@/scripts/hq/upgrades";
 
 const SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8");
+// The public account tables are classified too, so they have to exist here.
+// builder-schema.sql is still out of scope for this manifest (task T1.1).
+const MEMBER_AUTH_SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/member-auth-schema.sql"), "utf8");
 
 type Row = Record<string, unknown>;
 
@@ -46,6 +49,17 @@ async function seedEverything() {
   );
   await run(`INSERT INTO hq_login_attempts (username, ip, success) VALUES ('cap','1.2.3.4',true)`);
   await run(`INSERT INTO hq_login_limits (key, count, window_start) VALUES ('cap',1,now())`);
+
+  await run(`INSERT INTO hq_auth_user (id, name, email) VALUES ('member-1','Member','member@example.com')`);
+  await run(`INSERT INTO hq_auth_session (id, "expiresAt", token, "userId")
+             VALUES ('session-1', now() + interval '1 day', 'token-1', 'member-1')`);
+  await run(`INSERT INTO hq_auth_account (id, issuer, "accountId", "providerId", "userId")
+             VALUES ('account-1', 'https://oauth.telegram.org', '1234123412341234123', 'telegram', 'member-1')`);
+  await run(`INSERT INTO hq_auth_telegram_identity (user_id, provider_subject, telegram_user_id)
+             VALUES ('member-1', '1234123412341234123', 7000000000123)`);
+  await run(`INSERT INTO hq_auth_verification (id, identifier, value, "expiresAt")
+             VALUES ('verification-1', 'sign-in-otp:member@example.com', 'hash:0', now() + interval '5 minutes')`);
+  await run(`INSERT INTO hq_auth_rate_limit (id, key, count, "lastRequest") VALUES ('limit-1', '1.2.3.4/sign-in', 1, 0)`);
 
   const hackathon = await id(
     `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
@@ -117,6 +131,9 @@ beforeEach(async () => {
     await run(statement);
   }
   await applyUpgrades({ query: (text) => run(text) as Promise<Record<string, unknown>[]> });
+  for (const statement of MEMBER_AUTH_SCHEMA.split(/;\s*(?:\n|$)/).map((s) => s.trim()).filter(Boolean)) {
+    await run(statement);
+  }
   await seedEverything();
 });
 

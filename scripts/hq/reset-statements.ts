@@ -36,6 +36,14 @@ export const KEEP_TABLES = [
   "hq_sessions",
   "hq_login_attempts",
   "hq_login_limits",
+  // Public account logins (Better Auth) survive for the same reason operator
+  // logins do: a reset empties the campaign, it never signs anyone out.
+  "hq_auth_user",
+  "hq_auth_session",
+  "hq_auth_account",
+  "hq_auth_verification",
+  "hq_auth_rate_limit",
+  "hq_auth_telegram_identity",
   "hq_partner_channels",
   "hq_event_types",
   "hq_people_roles",
