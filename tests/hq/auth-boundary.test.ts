@@ -63,6 +63,7 @@ describe("every server action authenticates", () => {
     "partners.ts": "operator",
     "people.ts": "operator",
     "projects.ts": "operator",
+    "telegram.ts": "member",
   };
 
   // login is the rate-limited public entry point; logout only destroys the

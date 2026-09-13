@@ -199,8 +199,12 @@ describe("public HQ sign-in through Better Auth", () => {
 
     // Without the identity row a session is not a member: fail closed, and nothing is synced.
     expect(await currentMember()).toBeNull();
-    await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/signin?next=%2Fhq%2Fdashboard");
+    // The gate ends the unusable session and tells the sign-in page why.
+    await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Fdashboard");
     expect(state.synced).not.toHaveBeenCalled();
+    expect(await (await request("/get-session", undefined, state.cookie)).json()).toBeNull();
+    await state.pg!.query(`INSERT INTO hq_auth_session(id, "expiresAt", token, "userId") VALUES ('session-2', now() + interval '1 day', 'token-2', $1)`, [id]);
+    state.cookie = await signedSessionCookie("token-2");
 
     await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id) VALUES ($1, '1234123412341234123', 7000000000123)`, [id]);
     expect(await currentMember()).toEqual({ id, email: null, name: "Telegram Builder" });

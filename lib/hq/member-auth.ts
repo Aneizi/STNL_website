@@ -70,6 +70,10 @@ function createMemberAuth() {
         trustedProviders: ["telegram"],
         allowDifferentEmails: true,
         disableImplicitLinking: true,
+        // The core's last-account rule counts account rows, and an email-OTP
+        // user has none, so it would refuse every unlink. The identity plugin
+        // enforces the real rule: Telegram goes only if a verified email remains.
+        allowUnlinkingAll: true,
       },
     },
     verification: { modelName: "hq_auth_verification" },
@@ -151,9 +155,19 @@ export function getAuth() {
   return instance;
 }
 
-export const currentMember = cache(async (): Promise<MemberSessionUser | null> => {
+/**
+ * The raw Better Auth session behind the member cookie, before the
+ * verified-account rule. Only the identity actions read it, for the session's
+ * creation time and the stored login fields; every access decision goes
+ * through `currentMember()`. Null when public sign-in is not configured.
+ */
+export const currentMemberSession = cache(async () => {
   if (!getMemberAuthAvailability().configured) return null;
-  const session = await getAuth().api.getSession({ headers: await headers() });
+  return getAuth().api.getSession({ headers: await headers() });
+});
+
+export const currentMember = cache(async (): Promise<MemberSessionUser | null> => {
+  const session = await currentMemberSession();
   if (!session || !(await isVerifiedAccount(session.user))) return null;
   const user = { id: session.user.id, email: verifiedLoginEmail(session.user), name: session.user.name };
   // Also repairs an interrupted CRM sync without duplicating People entries.
@@ -162,10 +176,29 @@ export const currentMember = cache(async (): Promise<MemberSessionUser | null> =
   return user;
 });
 
+/**
+ * Sends a visitor without a usable member session to sign in. Call only
+ * after `currentMember()` returned null. A session that still exists at that
+ * point failed the verified-account rule: a Telegram-only account whose
+ * identity row never landed (the plugin writes it after commit). Such a
+ * session is ended here, so the cookie cannot keep bouncing, and the sign-in
+ * page is told why. The cookie itself cannot be cleared from a render; a
+ * cookie without a session row is simply not a session.
+ */
+export async function redirectToMemberSignIn(next: string): Promise<never> {
+  const destination = safeMemberNext(next);
+  const session = await currentMemberSession();
+  if (session) {
+    await (await getAuth().$context).internalAdapter.deleteSession(session.session.token);
+    redirect(`/hq/signin?error=identity_missing&next=${encodeURIComponent(destination)}`);
+  }
+  redirect(`/hq/signin?next=${encodeURIComponent(destination)}`);
+}
+
 export async function requireMember(next = "/hq/welcome"): Promise<MemberSessionUser> {
   const destination = safeMemberNext(next);
   const user = await currentMember();
-  if (!user) redirect(`/hq/signin?next=${encodeURIComponent(destination)}`);
+  if (!user) return redirectToMemberSignIn(destination);
   if (!user.name.trim()) redirect(`/hq/profile?next=${encodeURIComponent(destination)}`);
   return user;
 }

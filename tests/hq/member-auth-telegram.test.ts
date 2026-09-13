@@ -269,9 +269,12 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_people WHERE contact ILIKE '%placeholder.invalid%'")).rows).toEqual([{ n: 0 }]);
 
     // Fail closed: the session alone is not enough once the identity row is gone.
+    // The gate then ends that session and sends the person to sign in again, saying why.
     await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
     expect(await currentMember()).toBeNull();
-    await expect(requireMember("/hq/welcome")).rejects.toThrow("REDIRECT:/hq/signin?next=%2Fhq%2Fwelcome");
+    await expect(requireMember("/hq/welcome")).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Fwelcome");
+    expect(await count("hq_auth_session")).toBe(0);
+    expect(await (await request("/get-session", undefined, cookie)).json()).toBeNull();
   });
 
   it("refuses replayed, unbound, forged and stale callbacks", async () => {

@@ -1,12 +1,32 @@
 import "server-only";
 import type { GenericEndpointContext } from "@better-auth/core";
 import type { BetterAuthOptions, BetterAuthPlugin } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
-import { deleteTelegramIdentity, findTelegramIdentityConflict, upsertTelegramIdentity, type TelegramIdentityInput } from "./identity";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
+import { recordAuditEvent } from "./audit";
+import { builderDatabase } from "./builder-db";
+import {
+  deleteTelegramIdentity,
+  findTelegramIdentityConflict,
+  hasTelegramIdentity,
+  upsertTelegramIdentity,
+  verifiedLoginEmail,
+  type StoredAccount,
+  type TelegramIdentityInput,
+} from "./identity";
 import { isPlaceholderEmail, readTelegramClaims, TELEGRAM_PROVIDER_ID, telegramProvider, type TelegramProviderEnv } from "./telegram-provider";
 
-/** How recently a session must have been created for link, unlink and change-email (enforced in phase 2). */
+/**
+ * How recently a session must have been created for link, unlink and
+ * change-email. Better Auth keeps no re-authentication time: a session row
+ * carries `createdAt` (set once, at sign-in) and `updatedAt` (touched by the
+ * `updateAge` refresh), and its own freshSessionMiddleware compares
+ * `createdAt` too (api/routes/session.mjs). So "recent" means signed in
+ * within this window, and the only way to become recent again is to sign in.
+ */
 export const RECENT_SESSION_MS = 15 * 60 * 1000;
+
+/** How long a confirmed link or unlink stays usable before the member has to confirm again. */
+export const TELEGRAM_INTENT_MS = 10 * 60 * 1000;
 
 /**
  * Endpoints that take an address from the body and would mail it, look it
@@ -14,7 +34,7 @@ export const RECENT_SESSION_MS = 15 * 60 * 1000;
  * (see telegram-provider.ts) must be refused before any of that happens.
  * Hook contexts carry the route template, so these are exact paths.
  */
-const EMAIL_ENDPOINTS = new Set([
+export const PLACEHOLDER_GUARDED_ENDPOINTS: ReadonlySet<string> = new Set([
   "/email-otp/send-verification-otp",
   "/email-otp/check-verification-otp",
   "/email-otp/verify-email",
@@ -30,14 +50,66 @@ const EMAIL_ENDPOINTS = new Set([
 ]);
 
 /** Endpoints with a client id_token branch. Only the redirect flow with a server nonce exists here. */
-const ID_TOKEN_ENDPOINTS = new Set(["/sign-in/social", "/link-social"]);
+export const ID_TOKEN_ENDPOINTS: ReadonlySet<string> = new Set(["/sign-in/social", "/link-social"]);
+
+/**
+ * Endpoints that add or remove a way to sign in. Adding one is as sensitive
+ * as removing one (a recovery email later satisfies the unlink rule), so all
+ * four sit behind the same recency window.
+ */
+export const RECENT_SESSION_ENDPOINTS: ReadonlySet<string> = new Set([
+  "/link-social",
+  "/unlink-account",
+  "/email-otp/request-email-change",
+  "/email-otp/change-email",
+]);
 
 type DatabaseHooks = NonNullable<BetterAuthOptions["databaseHooks"]>;
 type AccountRow = { providerId?: string | null; userId?: string | null; accountId?: string | null; idToken?: string | null };
 type Logger = { error: (message: string, ...args: unknown[]) => void; warn: (message: string, ...args: unknown[]) => void };
+type InternalAdapter = GenericEndpointContext["context"]["internalAdapter"];
+/** The slice of Better Auth's internal adapter the confirmation intent needs. */
+export type TelegramIntentStore = Pick<InternalAdapter, "createVerificationValue" | "deleteVerificationByIdentifier" | "consumeVerificationValue">;
+export type TelegramIntent = "link" | "unlink";
 
 const isTelegram = (account: AccountRow | null | undefined): account is AccountRow & { userId: string } =>
   Boolean(account && account.providerId === TELEGRAM_PROVIDER_ID && typeof account.userId === "string");
+
+/** The one recency rule: the session was created less than RECENT_SESSION_MS ago. */
+export function isRecentSession(session: { createdAt: Date | string }, now = Date.now()): boolean {
+  return now - new Date(session.createdAt).getTime() < RECENT_SESSION_MS;
+}
+
+/**
+ * The one last-login-method rule. The core's own check counts account rows,
+ * which is useless here: an email-OTP user has no account row at all, so it
+ * would either refuse every unlink or, with `allowUnlinkingAll`, allow one
+ * that leaves the person with no way in. What keeps an account reachable
+ * after Telegram goes is a verified real email, and nothing else.
+ */
+export function telegramIsLastLoginMethod(user: Pick<StoredAccount, "email" | "emailVerified">): boolean {
+  return verifiedLoginEmail(user) === null;
+}
+
+const intentIdentifier = (userId: string) => `hq-telegram-intent:${userId}`;
+
+/**
+ * Records that the member confirmed a link or unlink on the account page.
+ * Stored as a single-use `hq_auth_verification` row keyed by user id, so a
+ * `/link-social` or `/unlink-account` request that did not come through the
+ * confirmation step finds nothing and is refused. One intent per user: a
+ * new confirmation replaces the previous one.
+ */
+export async function recordTelegramIntent(store: TelegramIntentStore, userId: string, intent: TelegramIntent): Promise<void> {
+  await store.deleteVerificationByIdentifier(intentIdentifier(userId));
+  await store.createVerificationValue({ identifier: intentIdentifier(userId), value: intent, expiresAt: new Date(Date.now() + TELEGRAM_INTENT_MS) });
+}
+
+/** Consumes the recorded confirmation. False when there is none, it expired, or it was for the other action; the row is gone either way. */
+async function consumeTelegramIntent(store: TelegramIntentStore, userId: string, intent: TelegramIntent): Promise<boolean> {
+  const row = await store.consumeVerificationValue(intentIdentifier(userId));
+  return row?.value === intent;
+}
 
 /**
  * The identity carried by a telegram account row. The raw id_token on the row
@@ -46,6 +118,7 @@ const isTelegram = (account: AccountRow | null | undefined): account is AccountR
  * Null when the token is missing, undecodable, or lacks the numeric id.
  * Assumes the id_token is stored as-is: under encryptOAuthTokens the core's
  * setTokenUtil encrypts only access and refresh tokens (link-account.mjs).
+ * This is the only place the stored id_token is read.
  */
 function identityFromAccount(account: AccountRow & { userId: string }): TelegramIdentityInput | null {
   const claims = account.idToken ? readTelegramClaims(account.idToken) : null;
@@ -61,6 +134,11 @@ function identityFromAccount(account: AccountRow & { userId: string }): Telegram
 
 const placeholderRefused = () =>
   new APIError("BAD_REQUEST", { code: "placeholder_email_not_allowed", message: "This address cannot receive email. Use your own email address." });
+const sessionNotFresh = () => new APIError("FORBIDDEN", { code: "SESSION_NOT_FRESH", message: "Please sign in again to continue." });
+const notConfirmed = () => new APIError("FORBIDDEN", { code: "CONFIRMATION_REQUIRED", message: "Confirm this change on your account page first." });
+
+/** Audit metadata for an identity event: the provider and nothing else, never a token, a subject or a Telegram id. */
+const identityAuditMetadata = { provider: TELEGRAM_PROVIDER_ID } as const;
 
 function databaseHooks(): DatabaseHooks {
   const log = (context: { context: { logger: Logger } } | null | undefined): Logger => context?.context.logger ?? console;
@@ -68,9 +146,12 @@ function databaseHooks(): DatabaseHooks {
   /**
    * Post-commit and idempotent: the account (and on first login the user)
    * already exist, so an error here is logged, never thrown. A missing row
-   * leaves currentMember() failing closed until the next login repairs it.
+   * leaves currentMember() failing closed until the next login repairs it;
+   * redirectToMemberSignIn() ends such a session and says why.
+   * The identity row and, on a new account, the `identity.linked` audit
+   * event are one transaction on the builder pool.
    */
-  const persist = async (account: AccountRow | null, context: GenericEndpointContext | null) => {
+  const persist = async (account: AccountRow | null, context: GenericEndpointContext | null, created: boolean) => {
     if (!isTelegram(account)) return;
     const identity = identityFromAccount(account);
     if (!identity) {
@@ -78,7 +159,12 @@ function databaseHooks(): DatabaseHooks {
       return;
     }
     try {
-      await upsertTelegramIdentity(identity);
+      await builderDatabase().transaction(async (db) => {
+        await upsertTelegramIdentity(identity, db);
+        if (created) {
+          await recordAuditEvent(db, { kind: "identity.linked", actor: { kind: "member", id: identity.userId }, subjectUserId: identity.userId, metadata: identityAuditMetadata });
+        }
+      });
     } catch (error) {
       log(context).error("hq-telegram-identity: identity upsert failed", error);
     }
@@ -106,18 +192,33 @@ function databaseHooks(): DatabaseHooks {
           if (holder) {
             throw new APIError("CONFLICT", { code: "telegram_identity_conflict", message: "This Telegram account is already connected to another HQ account. Sign in to that account instead." });
           }
+          // One Telegram per HQ account: the identity row is keyed on user_id,
+          // so a second telegram account row would silently move it. The
+          // /link-social hook refuses this first; this is the in-transaction backstop.
+          if (await hasTelegramIdentity(identity.userId)) {
+            throw new APIError("CONFLICT", { code: "telegram_already_connected", message: "This HQ account already has a Telegram connection." });
+          }
         },
-        after: persist,
+        after: (account, context) => persist(account, context, true),
       },
       update: {
         // A repeat login refreshes the stored id_token, so this fires on every Telegram sign-in.
-        after: persist,
+        after: (account, context) => persist(account, context, false),
       },
       delete: {
+        /**
+         * deleteWithHooks hands the fetched row (providerId, userId) to this
+         * hook, and internalAdapter.deleteAccount is what /unlink-account
+         * calls (db/with-hooks.mjs, db/internal-adapter.mjs). The audit event
+         * is written only when a row was actually removed.
+         */
         after: async (account, context) => {
           if (!isTelegram(account)) return;
           try {
-            await deleteTelegramIdentity(account.userId);
+            await builderDatabase().transaction(async (db) => {
+              if (!(await deleteTelegramIdentity(account.userId, db))) return;
+              await recordAuditEvent(db, { kind: "identity.unlinked", actor: { kind: "member", id: account.userId }, subjectUserId: account.userId, metadata: identityAuditMetadata });
+            });
           } catch (error) {
             log(context).error("hq-telegram-identity: identity delete failed", error);
           }
@@ -149,19 +250,24 @@ export type HqTelegramIdentityOptions = {
 /**
  * Registers the static Telegram provider (no I/O at init) and owns everything
  * the placeholder-email model needs: the identity table hooks, the
- * placeholder guards and the second fence over the client id_token branches.
+ * placeholder guards, the second fence over the client id_token branches,
+ * and the rules for adding or removing a login method (recent session,
+ * confirmed intent, one Telegram per account, never the last method).
  */
 export function hqTelegramIdentity(opts: HqTelegramIdentityOptions = { provider: null }): BetterAuthPlugin {
   return {
     id: "hq-telegram-identity",
     init(ctx) {
-      const socialProviders = opts.provider ? [telegramProvider(opts.provider), ...ctx.socialProviders] : ctx.socialProviders;
+      // Rejection diagnostics go through Better Auth's logger unless the
+      // caller injected a sink; the default logger publishes `warn` and up.
+      const provider = opts.provider ? telegramProvider({ ...opts.provider, warn: opts.provider.warn ?? ((message) => ctx.logger.warn(message)) }) : null;
+      const socialProviders = provider ? [provider, ...ctx.socialProviders] : ctx.socialProviders;
       return { context: { socialProviders }, options: { databaseHooks: databaseHooks() } };
     },
     hooks: {
       before: [
         {
-          matcher: (context) => EMAIL_ENDPOINTS.has(context.path ?? ""),
+          matcher: (context) => PLACEHOLDER_GUARDED_ENDPOINTS.has(context.path ?? ""),
           handler: createAuthMiddleware(async (context) => {
             const email: unknown = context.body?.email ?? context.body?.newEmail;
             if (isPlaceholderEmail(typeof email === "string" ? email : undefined)) throw placeholderRefused();
@@ -172,6 +278,32 @@ export function hqTelegramIdentity(opts: HqTelegramIdentityOptions = { provider:
           handler: createAuthMiddleware(async (context) => {
             if (context.body?.idToken !== undefined) {
               throw new APIError("BAD_REQUEST", { code: "id_token_not_accepted", message: "Sign in with Telegram through the redirect flow." });
+            }
+          }),
+        },
+        {
+          matcher: (context) => RECENT_SESSION_ENDPOINTS.has(context.path ?? ""),
+          handler: createAuthMiddleware(async (context) => {
+            // Fail closed: the endpoints' own session middlewares run after
+            // this hook, so it does not lean on them.
+            const session = await getSessionFromCtx(context);
+            if (!session) throw new APIError("UNAUTHORIZED", { code: "UNAUTHORIZED", message: "Sign in to continue." });
+            if (!isRecentSession(session.session)) throw sessionNotFresh();
+            const store = context.context.internalAdapter;
+            if (context.path === "/link-social" && context.body?.provider === TELEGRAM_PROVIDER_ID) {
+              if (await hasTelegramIdentity(session.user.id)) {
+                throw new APIError("CONFLICT", { code: "TELEGRAM_ALREADY_CONNECTED", message: "This account already has a Telegram connection." });
+              }
+              if (!(await consumeTelegramIntent(store, session.user.id, "link"))) throw notConfirmed();
+            }
+            if (context.path === "/unlink-account") {
+              const accounts = await store.findAccounts(session.user.id);
+              const target = accounts.find((account) => account.id === context.body?.accountId);
+              if (target?.providerId !== TELEGRAM_PROVIDER_ID) return;
+              if (telegramIsLastLoginMethod(session.user)) {
+                throw new APIError("BAD_REQUEST", { code: "LAST_LOGIN_METHOD", message: "Telegram is the only way to sign in to this account. Add a verified email before disconnecting it." });
+              }
+              if (!(await consumeTelegramIntent(store, session.user.id, "unlink"))) throw notConfirmed();
             }
           }),
         },

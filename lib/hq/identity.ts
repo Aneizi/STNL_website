@@ -1,4 +1,5 @@
 import "server-only";
+import type { BuilderQuery } from "./builder-db";
 import { builderDatabase, builderStore } from "./builder-store";
 import { isPlaceholderEmail } from "./telegram-provider";
 
@@ -114,9 +115,9 @@ export async function findTelegramIdentityConflict(input: Pick<TelegramIdentityI
   return rows.length ? String(rows[0].user_id) : null;
 }
 
-/** Idempotent: a repeat login refreshes the snapshot and last_login_at only. */
-export async function upsertTelegramIdentity(input: TelegramIdentityInput): Promise<void> {
-  await builderDatabase().query(
+/** Idempotent: a repeat login refreshes the snapshot and last_login_at only. Writes through `db` so a caller's transaction can carry the audit event too. */
+export async function upsertTelegramIdentity(input: TelegramIdentityInput, db: BuilderQuery = builderDatabase()): Promise<void> {
+  await db.query(
     `INSERT INTO hq_auth_telegram_identity (user_id, provider_subject, telegram_user_id, username, photo_url)
      VALUES ($1, $2, $3::bigint, $4, $5)
      ON CONFLICT (user_id) DO UPDATE SET
@@ -129,6 +130,8 @@ export async function upsertTelegramIdentity(input: TelegramIdentityInput): Prom
   );
 }
 
-export async function deleteTelegramIdentity(userId: string): Promise<void> {
-  await builderDatabase().query(`DELETE FROM hq_auth_telegram_identity WHERE user_id = $1`, [userId]);
+/** True when a row was removed; false when the account had no identity row to begin with. */
+export async function deleteTelegramIdentity(userId: string, db: BuilderQuery = builderDatabase()): Promise<boolean> {
+  const { rows } = await db.query(`DELETE FROM hq_auth_telegram_identity WHERE user_id = $1 RETURNING user_id`, [userId]);
+  return rows.length > 0;
 }

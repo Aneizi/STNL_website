@@ -2,7 +2,7 @@
 
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { currentMember, getAuth } from "@/lib/hq/member-auth";
+import { currentMember, getAuth, redirectToMemberSignIn } from "@/lib/hq/member-auth";
 import { safeMemberNext } from "@/lib/hq/member-auth-config";
 import { syncBuilderAccount } from "@/lib/hq/builder-store";
 
@@ -11,7 +11,7 @@ export type ProfileResult = { error: string } | null;
 export async function completeMemberProfile(_previous: ProfileResult, formData: FormData): Promise<ProfileResult> {
   const user = await currentMember();
   const destination = safeMemberNext(formData.get("next"));
-  if (!user) redirect(`/hq/signin?next=${encodeURIComponent(destination)}`);
+  if (!user) return redirectToMemberSignIn(destination);
   const rawName = formData.get("name");
   const name = typeof rawName === "string" ? rawName.trim() : "";
   if (!name || name.length > 120) return { error: "Enter your name, using 120 characters or fewer." };
