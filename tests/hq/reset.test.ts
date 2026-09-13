@@ -121,6 +121,25 @@ async function seedEverything() {
   );
   await run(`INSERT INTO hq_link_notes (link_id, author_user_id, body)
              VALUES ('${link}','${user}','note')`);
+
+  // Public account side: one account, its CRM person, and a row in every
+  // builder table so nothing there is kept or cleared vacuously.
+  await run(`INSERT INTO hq_builder_profiles (id, email, name) VALUES ('builder-1', 'builder@example.com', 'Builder')`);
+  await run(`INSERT INTO hq_crm_persons (display_name, builder_user_id) VALUES ('Builder', 'builder-1')`);
+  await run(`INSERT INTO hq_hackathon_onboarding (hackathon_id, external_hackathon_id, external_hackathon_slug)
+             VALUES ('${hackathon}', 6, 'fictional-edition')`);
+  await run(`INSERT INTO hq_builder_enrollments (user_id, hackathon_id) VALUES ('builder-1', '${hackathon}')`);
+  await run(`INSERT INTO hq_project_onboarding (project_id, hackathon_id, external_id, project_url, slug, raw, owner_user_id, lead_username)
+             VALUES ('${project}', '${hackathon}', 90001, 'https://colosseum.com/arena/projects/explore/tulip-ledger', 'tulip-ledger', '{}', 'builder-1', 'fictional_builder_1')`);
+  const member = await id(`SELECT id FROM hq_project_members LIMIT 1`);
+  await run(`INSERT INTO hq_team_invites (project_id, member_id, created_by, token_hash)
+             VALUES ('${project}', '${member}', 'builder-1', 'fictional-token-hash')`);
+  await run(`INSERT INTO hq_project_challenges (user_id, hackathon_id, project_url, external_id, claimed_username, code)
+             VALUES ('builder-1', '${hackathon}', 'https://colosseum.com/arena/projects/explore/tulip-ledger', 90001, 'fictional_builder_1', '12345678')`);
+  await run(`INSERT INTO hq_project_import_requests (user_id, hackathon_id, project_url)
+             VALUES ('builder-1', '${hackathon}', 'https://colosseum.com/arena/projects/explore/unlisted')`);
+  await run(`INSERT INTO hq_event_host_requests (user_id, hackathon_id, title, details)
+             VALUES ('builder-1', '${hackathon}', 'Meetup', 'A fictional workshop')`);
 }
 
 beforeEach(async () => {
@@ -129,9 +148,9 @@ beforeEach(async () => {
     await run(statement);
   }
   await applyUpgrades({ query: (text) => run(text) as Promise<Record<string, unknown>[]> });
-  // The public account tables are classified too, so they have to exist here.
-  // builder-schema.sql is still out of scope for this manifest (task T1.1).
+  // The public account and builder tables are classified too, so they have to exist here.
   await applySqlFile(pg, "member-auth-schema.sql");
+  await applySqlFile(pg, "builder-schema.sql");
   await seedEverything();
 });
 

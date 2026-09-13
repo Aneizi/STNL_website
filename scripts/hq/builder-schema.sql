@@ -1,12 +1,20 @@
 -- Additive public HQ onboarding tables. Apply after schema.sql and upgrades.ts.
 -- Public identities never reference hq_users, the operator authentication table.
+--
+-- email is the verified login address, or NULL for an account that signed in
+-- without one (Telegram). The internal placeholder address is never stored
+-- here. contact_email is optional and self-declared: it is never copied from
+-- the login address, never a placeholder, and never a way to sign in.
 CREATE TABLE IF NOT EXISTS hq_builder_profiles (
   id text PRIMARY KEY,
-  email text NOT NULL,
+  email text,
+  contact_email text,
   name text NOT NULL,
   tier text NOT NULL DEFAULT 'regular' CHECK (tier IN ('regular', 'member')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE hq_builder_profiles ALTER COLUMN email DROP NOT NULL;
+ALTER TABLE hq_builder_profiles ADD COLUMN IF NOT EXISTS contact_email text;
 
 CREATE TABLE IF NOT EXISTS hq_hackathon_onboarding (
   hackathon_id int PRIMARY KEY REFERENCES hq_hackathons(id) ON DELETE CASCADE,
@@ -102,3 +110,28 @@ CREATE TABLE IF NOT EXISTS hq_event_host_requests (
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','declined')),
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- CRM person identity. One row per human the CRM knows about, stable across
+-- editions and independent of any login. A person may be linked to at most
+-- one public account and an account to at most one person. For someone who
+-- only appears on an imported Colosseum roster, the normalized username
+-- (lower case, no leading @) is a PROVISIONAL match key; the display name is
+-- never a key. Edition-specific People cards and roster rows point at the
+-- person, so a correction moves one link instead of re-keying every edition.
+CREATE TABLE IF NOT EXISTS hq_crm_persons (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  display_name text NOT NULL,
+  normalized_colosseum_username text,
+  builder_user_id text UNIQUE REFERENCES hq_builder_profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS hq_crm_persons_username_idx ON hq_crm_persons (normalized_colosseum_username) WHERE normalized_colosseum_username IS NOT NULL;
+ALTER TABLE hq_people ADD COLUMN IF NOT EXISTS person_id uuid REFERENCES hq_crm_persons(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS hq_people_person_idx ON hq_people (hackathon_id, person_id) WHERE person_id IS NOT NULL;
+ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS person_id uuid REFERENCES hq_crm_persons(id) ON DELETE SET NULL;
+-- Backfill for a populated database: every existing account gets its person,
+-- and every People card already tied to an account gets stamped with it.
+-- Both match nothing on a fresh database and on every later run.
+INSERT INTO hq_crm_persons (display_name, builder_user_id) SELECT p.name, p.id FROM hq_builder_profiles p WHERE NOT EXISTS (SELECT 1 FROM hq_crm_persons c WHERE c.builder_user_id = p.id);
+UPDATE hq_people SET person_id = c.id FROM hq_crm_persons c WHERE hq_people.person_id IS NULL AND hq_people.builder_user_id IS NOT NULL AND c.builder_user_id = hq_people.builder_user_id;

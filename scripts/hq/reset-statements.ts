@@ -17,6 +17,11 @@ export const CLEAR_TABLES = [
   "hq_finalists",
   "hq_project_gates",
   "hq_project_notes",
+  // Imported Colosseum teams and their invite codes belong to the project
+  // rows below; the cascade from hq_projects already emptied them before they
+  // were named here.
+  "hq_team_invites",
+  "hq_project_onboarding",
   "hq_project_members",
   "hq_partner_exchange",
   "hq_partner_contacts",
@@ -44,6 +49,22 @@ export const KEEP_TABLES = [
   "hq_auth_verification",
   "hq_auth_rate_limit",
   "hq_auth_telegram_identity",
+  // The public account itself and its stable CRM person: the person is the
+  // identity that People cards in every edition point at, so it outlives the
+  // cards the way an operator login outlives the campaign.
+  "hq_builder_profiles",
+  "hq_crm_persons",
+  // Per-edition Colosseum mapping and toggles, typed into Admin: settings,
+  // like hq_settings.
+  "hq_hackathon_onboarding",
+  // Builder-side records the reset never touched before they were classified
+  // (task T1.1). Kept so that classifying them changes nothing a live reset
+  // does; whether enrollments, challenges and requests should be emptied with
+  // the edition's CRM is an open product ruling.
+  "hq_builder_enrollments",
+  "hq_project_challenges",
+  "hq_project_import_requests",
+  "hq_event_host_requests",
   "hq_partner_channels",
   "hq_event_types",
   "hq_people_roles",
