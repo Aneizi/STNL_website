@@ -14,15 +14,25 @@ Two kinds of check appear under every item:
 - **Live checks** need your accounts and your setup. An implementer cannot do
   them and must not report them as done.
 
+A check is listed as present only if it exists in this checkout today. Where a
+check is still missing, the entry says "none yet" and names the task that has to
+add it. Nothing here may describe an unbuilt test as if it already ran, because
+that is exactly the false sense of readiness this list exists to prevent.
+
 Missing credentials must never block implementation and must never open a way in.
-An unconfigured provider renders an honest "not available yet" state, and
-`/api/auth/*` answers 503. A configured but unreachable Telegram breaks Telegram
-sign-in only, never email sign-in.
+An unconfigured provider renders an honest "not available yet" state
+(`app/hq/(member)/account-form.tsx:133,144`) and `/api/auth/*` answers 503
+(`app/api/auth/[...all]/route.ts:13`). The same rule applies to Telegram once it
+exists: a configured but unreachable Telegram must break Telegram sign-in only,
+never email sign-in. There is no Telegram provider in the code yet, so that is a
+requirement on task T0.1, not a property you can rely on today.
 
 Provider specific notes for your own machine keep living in the gitignored
-`setup/hq/` directory, alongside `docs/hq-auth-setup.md`. Those files are not in
-git, so they go stale silently. When anything here changes, update your local
-copies in `setup/hq/` to match this file.
+`setup/hq/` directory, which holds `ACTIVATION.md` and `auth.env.template` in
+this checkout. The `.gitignore` also reserves `docs/hq-auth-setup.md`, which does
+not exist here. None of those files are in git, so they go stale silently. When
+anything here changes, update your local copies in `setup/hq/` to match this
+file.
 
 ## Better Auth core
 
@@ -36,7 +46,13 @@ independent of `HQ_SESSION_SECRET`. `BETTER_AUTH_URL` is the production origin
 and must use `https:`.
 
 **Code-level checks:** `tests/hq/member-auth-config.test.ts` covers the origin
-rules and the availability flags. The 503 `AUTH_UNAVAILABLE` path is covered.
+rules, the availability flags and the fact that `HQ_SESSION_SECRET` is not a
+fallback for a missing `BETTER_AUTH_SECRET`.
+
+The 503 `AUTH_UNAVAILABLE` response exists in code
+(`app/api/auth/[...all]/route.ts:13`, surfaced by
+`app/hq/(member)/account-form.tsx:17`), but **no test covers it today**. Whoever
+next changes an auth surface should add one.
 
 **Live checks (you):** set both on the Vercel project `stnl-website`, Production
 scope, and only when you are ready to open public sign-in.
@@ -49,8 +65,9 @@ scope, and only when you are ready to open public sign-in.
 
 `EMAIL_FROM` takes the form `Superteam NL <address@your-verified-domain>`.
 
-**Code-level checks:** Resend is mocked in `tests/hq/member-auth.test.ts`. There
-is a delivery failure test that asserts a 503 rather than a silent success.
+**Code-level checks:** Resend is mocked in `tests/hq/member-auth.test.ts:39-49`,
+and "does not pretend email delivery succeeded when the sender fails" in the
+same file asserts a 503 rather than a silent success.
 
 **Live checks (you):**
 
@@ -66,10 +83,12 @@ is a delivery failure test that asserts a 503 rather than a silent success.
 **Variables:** `TELEGRAM_LOGIN_CLIENT_ID`, `TELEGRAM_LOGIN_CLIENT_SECRET`,
 `TELEGRAM_BOT_USERNAME`.
 
-**Code-level checks:** synthetic id token, JWKS and token responses in
-`tests/hq/member-auth-telegram.test.ts`. No discovery document is fetched
-anywhere in the code, so start-up cannot be taken down by Telegram being slow. A
-Telegram outage is asserted not to affect email sign-in.
+**Code-level checks:** none yet. There is no Telegram code in this checkout.
+Task T0.1 adds `tests/hq/member-auth-telegram.test.ts` with synthetic id token,
+JWKS and token responses, and it must assert that no discovery document is
+fetched anywhere (so start-up cannot be taken down by Telegram being slow) and
+that a Telegram outage does not affect email sign-in. Until T0.1 passes, treat
+Telegram sign-in as designed but unproven.
 
 **Live checks (you):**
 
@@ -83,8 +102,9 @@ Telegram outage is asserted not to affect email sign-in.
 5. Keep the signing algorithm at RS256, and do not request the `phone` scope.
 6. Confirm one real sign-in completes end to end.
 7. Once a year, or after any Telegram announcement, re-check that Telegram's
-   discovery document still lists the endpoints hard coded in
-   `lib/hq/telegram-provider.ts`.
+   discovery document still lists the endpoints that will be hard coded in
+   `lib/hq/telegram-provider.ts`. That module does not exist yet; task T0.1
+   creates it.
 
 ## Telegram bot messaging
 
@@ -116,9 +136,18 @@ What is known as of 2026-09-13:
 - The `6` that appears inside HQ is an internal key for the HQ hackathon record,
   not Colosseum's id. Do not copy it into the external mapping.
 
-**Code-level checks:** imports are refused while the external id or slug is
-unset, and an imported project whose edition does not match both the id and the
-slug is rejected.
+**Code-level checks:** `tests/hq/builders-admin.test.ts` asserts that Admin
+refuses to open imports while the external id is null or the slug is empty
+("requires a confirmed external mapping before imports ...") and that a mapping
+cannot be remapped once a team has been imported ("keeps external IDs separate
+and prevents remapping imported teams"). `tests/hq/builder-onboarding.test.ts`
+asserts that an import whose edition id or slug does not match is rolled back
+whole, and `tests/colosseum-api.test.ts` asserts that `assertProjectHackathon`
+requires both the id and the slug.
+
+Not covered: the public action guards at `lib/hq/actions/builders.ts:38,54,69`,
+which refuse a preview, a challenge or an import while the mapping is unset, have
+no test of their own.
 
 **Live checks (you):** confirm the World's Fair external id and slug once
 Colosseum enables that edition, then set both in Admin before you enable
@@ -136,8 +165,9 @@ untracked in this checkout. A copy is kept at
 `.superpowers/sdd/2026-09-13-hq-captains-and-colosseum/hq-project-fallback.png`.
 Phase 3 copies it to `public/images/hq/project-fallback.png`.
 
-**Code-level checks:** T0.2 recorded the path in `docs/hq/contracts.md` so phase
-3 does not have to guess it.
+**Code-level checks:** none. Task T0.2 recorded the source and target paths in
+`docs/hq/contracts.md` so that phase 3 does not have to guess them, but nothing
+verifies that either file is present until phase 3 adds the target.
 
 **Live checks (you):** none.
 
@@ -151,8 +181,14 @@ Phase 3 copies it to `public/images/hq/project-fallback.png`.
 There are no public accounts yet, so nothing has to be migrated. Removal is a
 matter of deleting provider config, UI and tests.
 
-**Code-level checks:** availability tests assert that Google and GitHub are
-absent.
+**Code-level checks:** today's tests assert the opposite, because the providers
+are still wired up. `tests/hq/member-auth-config.test.ts` ("does not advertise
+providers without both credentials or a sender") asserts that Google becomes
+available once both of its variables are set, and
+`tests/hq/member-auth.test.ts:190` starts Google and GitHub sign-in with a
+configured callback and CSRF state. Task T2.1 has to invert both: availability
+must report the providers gone, and the sign-in start test must be removed rather
+than left asserting a removed route.
 
 **Live checks (you):** look at the Vercel environment variables for the project
 and delete the four names above if any are set.
