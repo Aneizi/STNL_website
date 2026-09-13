@@ -233,6 +233,23 @@ in `lib/hq/identity.ts`; `MemberAuthAvailability.telegram`;
 availability; `TELEGRAM_BOT_USERNAME` is UI copy for T2.2. The redirect URL
 to register in BotFather is `<BETTER_AUTH_URL>/api/auth/callback/telegram`.
 
+### What changed, task T0.3
+
+New `tests/hq/operator-auth-actions.test.ts`, 14 regression checks that call the
+real `login`, `changePassword` and `logout` Server Actions in
+`lib/hq/actions/auth.ts` against PGlite through `lib/hq/db.ts`'s own local
+adapter: cookie name and flags plus the `hq_sessions` row on success, the
+`/hq/select` and `/hq/change-password` redirects, username normalisation,
+generic failure and the `hq_login_attempts` audit row, malformed input stopping
+before the limiter, both `hq_login_limits` caps with the window reopening and
+the success credit, `password_version` and row deletion each invalidating an
+already issued token, logout revoking the row and clearing the cookie, and a
+public `stnl_builder.*` member cookie refused by `currentUser()`. Tests only: no
+migration, and nothing under `lib/`, `app/`, `components/` or `scripts/` was
+touched. `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 449 tests pass
+(435 before), `npx tsc --noEmit` clean, `npm run lint` unchanged at the same 18
+pre-existing warnings.
+
 ## Phase 1, identity, authorization and the Captain capability
 
 Not started.
