@@ -2,7 +2,11 @@ import 'server-only';
 import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import type { ImportedProject, ProjectProof } from '@/lib/colosseum-api';
-import type { BuilderHackathon, BuilderTeam, BuilderUser, ProjectStage } from './builder-types';
+import { BuilderError, type BuilderHackathon, type BuilderIdentity, type BuilderTeam, type BuilderUser, type ProjectStage } from './builder-types';
+import { ensurePersonForAccount } from './crm-identity';
+import { isPlaceholderEmail } from './telegram-provider';
+
+export { BuilderError };
 
 type Row = Record<string, unknown>;
 export interface BuilderQuery { query(text: string, values?: unknown[]): Promise<{ rows: Row[] }> }
@@ -30,11 +34,12 @@ export function builderDatabase(): BuilderDatabase {
   };
   return database;
 }
-export class BuilderError extends Error {}
 const hashCode = (code: string) => createHash('sha256').update(code.toUpperCase().replace(/[\s-]/g, '')).digest('hex');
 const asDate = (value: unknown) => value ? new Date(String(value)).toISOString() : null;
+/** An address the CRM may hold: a real email, or nothing. The internal placeholder never reaches a row. */
+const realEmail = (value: unknown): string | null => typeof value === 'string' && value !== '' && !isPlaceholderEmail(value) ? value : null;
 
-async function enroll(db: BuilderQuery, user: BuilderUser, hackathonId: number, participation: 'builder' | 'supporter' = 'builder') {
+async function enroll(db: BuilderQuery, user: BuilderIdentity, hackathonId: number, participation: 'builder' | 'supporter' = 'builder') {
   const { rows: editions } = await db.query('SELECT id FROM hq_hackathons WHERE id=$1 AND archived_at IS NULL', [hackathonId]);
   if (!editions.length) throw new BuilderError('Choose an available hackathon.');
   await db.query(`INSERT INTO hq_builder_enrollments(user_id,hackathon_id,participation) VALUES($1,$2,$3)
@@ -43,19 +48,27 @@ async function enroll(db: BuilderQuery, user: BuilderUser, hackathonId: number, 
   const { rows: roles } = await db.query(`INSERT INTO hq_people_roles(label,filter_label,color,bg,is_judge,sort)
     VALUES($1,$2,'accent','accent-fill',false,100)
     ON CONFLICT(label) DO UPDATE SET label=EXCLUDED.label RETURNING id`, [label, participation === 'builder' ? 'Builders' : 'Community']);
-  await db.query(`INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id,contact)
-    VALUES($1,$2,$3,$4,$5) ON CONFLICT(hackathon_id,builder_user_id)
-    DO UPDATE SET role_id=EXCLUDED.role_id`, [hackathonId, user.id, user.name, roles[0].id, user.email]);
+  // The card's contact is the login email when there is one; a card without
+  // a contact is the normal state for a Telegram-only account. On conflict
+  // only the role follows the enrollment and a card that has no person yet
+  // gets one; an operator's edits and a corrected person link both survive.
+  const personId = await ensurePersonForAccount(db, { userId: user.id, displayName: user.name });
+  await db.query(`INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id,contact,person_id)
+    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(hackathon_id,builder_user_id)
+    DO UPDATE SET role_id=EXCLUDED.role_id,person_id=COALESCE(hq_people.person_id,EXCLUDED.person_id)`,
+    [hackathonId, user.id, user.name, roles[0].id, realEmail(user.email) ?? '', personId]);
 }
 
 /** All mutations are atomic and use authenticated IDs supplied by server actions. */
 export class BuilderStore {
   constructor(private readonly db: BuilderDatabase) {}
 
-  async syncAccount(user: BuilderUser): Promise<void> {
+  /** Mirrors the login identity onto the profile and guarantees its CRM person. contact_email is self-declared and never touched here. */
+  async syncAccount(user: BuilderIdentity): Promise<void> {
     await this.db.transaction(async db => {
       await db.query(`INSERT INTO hq_builder_profiles(id,email,name) VALUES($1,$2,$3)
-        ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,name=EXCLUDED.name`, [user.id, user.email, user.name]);
+        ON CONFLICT(id) DO UPDATE SET email=EXCLUDED.email,name=EXCLUDED.name`, [user.id, realEmail(user.email), user.name]);
+      await ensurePersonForAccount(db, { userId: user.id, displayName: user.name });
       const { rows: existing } = await db.query('SELECT 1 FROM hq_builder_enrollments WHERE user_id=$1 LIMIT 1', [user.id]);
       if (existing.length) return;
       const { rows } = await db.query(`SELECT id FROM hq_hackathons WHERE archived_at IS NULL
@@ -64,7 +77,14 @@ export class BuilderStore {
     });
   }
 
-  async enroll(user: BuilderUser, hackathonId: number, participation: 'builder' | 'supporter') {
+  /** The stored account, or null before its first sync. */
+  async profile(userId: string): Promise<BuilderUser | null> {
+    const { rows } = await this.db.query('SELECT id,email,contact_email,name FROM hq_builder_profiles WHERE id=$1', [userId]);
+    if (!rows.length) return null;
+    return { id: String(rows[0].id), email: realEmail(rows[0].email), contactEmail: realEmail(rows[0].contact_email), name: String(rows[0].name) };
+  }
+
+  async enroll(user: BuilderIdentity, hackathonId: number, participation: 'builder' | 'supporter') {
     await this.db.transaction(db => enroll(db, user, hackathonId, participation));
   }
 
@@ -95,7 +115,7 @@ export class BuilderStore {
     if (Number(rows[0].count) > maximum) throw new BuilderError('Please wait a few minutes before trying again.');
   }
 
-  async issueChallenge(user: BuilderUser, hackathonId: number, project: ImportedProject, username: string) {
+  async issueChallenge(user: BuilderIdentity, hackathonId: number, project: ImportedProject, username: string) {
     const member = project.members.find(m => m.username.toLowerCase() === username.toLowerCase());
     if (!member) throw new BuilderError('Choose your profile from the Colosseum team.');
     const { rows: existing } = await this.db.query(`SELECT project_id FROM hq_project_onboarding WHERE hackathon_id=$1 AND external_id=$2 AND verification='verified'`, [hackathonId, project.externalId]);
@@ -115,7 +135,7 @@ export class BuilderStore {
       username: String(r.claimed_username), code: String(r.code), issuedAt: asDate(r.issued_at)! };
   }
 
-  async importTeam(user: BuilderUser, challengeId: string, project: ImportedProject, leadUsername: string, stage: ProjectStage, proof: ProjectProof | null) {
+  async importTeam(user: BuilderIdentity, challengeId: string, project: ImportedProject, leadUsername: string, stage: ProjectStage, proof: ProjectProof | null) {
     return this.db.transaction(async db => {
       const { rows: challenges } = await db.query(`UPDATE hq_project_challenges SET consumed_at=now()
         WHERE id=$1 AND user_id=$2 AND consumed_at IS NULL AND expires_at>now() AND external_id=$3 RETURNING *`, [challengeId,user.id,project.externalId]);
@@ -166,7 +186,7 @@ export class BuilderStore {
     });
   }
 
-  async requestReview(user: BuilderUser, hackathonId: number, projectUrl: string, note: string) {
+  async requestReview(user: BuilderIdentity, hackathonId: number, projectUrl: string, note: string) {
     await this.db.transaction(async db => {
       await enroll(db,user,hackathonId);
       await db.query(`INSERT INTO hq_project_import_requests(user_id,hackathon_id,project_url,note) VALUES($1,$2,$3,$4)
@@ -218,7 +238,7 @@ export class BuilderStore {
     return { id: String(r.id),memberId:String(r.member_id),projectId:String(r.project_id),name:String(r.name),username:String(r.colosseum_username),projectName:String(r.project_name),projectUrl:String(r.project_url),hackathonId:Number(r.hackathon_id) };
   }
 
-  async redeemInvite(user: BuilderUser, code: string) {
+  async redeemInvite(user: BuilderIdentity, code: string) {
     return this.db.transaction(async db => {
       const { rows } = await db.query(`SELECT i.id,i.member_id,i.project_id,o.hackathon_id FROM hq_team_invites i
         JOIN hq_project_onboarding o ON o.project_id=i.project_id JOIN hq_hackathons h ON h.id=o.hackathon_id
@@ -268,4 +288,4 @@ export class BuilderStore {
 }
 
 export function builderStore() { return new BuilderStore(builderDatabase()); }
-export async function syncBuilderAccount(user: BuilderUser) { await builderStore().syncAccount(user); }
+export async function syncBuilderAccount(user: BuilderIdentity) { await builderStore().syncAccount(user); }

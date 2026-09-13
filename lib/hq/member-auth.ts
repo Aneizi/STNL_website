@@ -26,11 +26,13 @@ export class MemberAuthUnavailableError extends Error {
 }
 
 /**
- * The contact address: only a verified real email. Null for the placeholder
- * (never shown or mailed) and for an unverified real address, which an OAuth
- * provider can supply for an account admitted through its Telegram identity.
+ * The login email as pages and the CRM see it: only a verified real address.
+ * Null for the placeholder (never shown or mailed) and for an unverified real
+ * address, which an OAuth provider can supply for an account admitted through
+ * its Telegram identity. Distinct from the self-declared contact email on the
+ * profile, which is never derived from this.
  */
-const contactEmail = (user: { email: string; emailVerified: boolean }) =>
+const verifiedLoginEmail = (user: { email: string; emailVerified: boolean }) =>
   user.emailVerified && !isPlaceholderEmail(user.email) ? user.email : null;
 
 /**
@@ -113,10 +115,8 @@ function createMemberAuth() {
       user: {
         create: {
           after: async (user) => {
-            // TODO(T1.1): resume sync once hq_builder_profiles.email is nullable
-            const email = contactEmail(user);
-            if (email === null || !user.name.trim() || !(await isVerifiedMember(user))) return;
-            await syncBuilderAccount({ id: user.id, email, name: user.name.trim() });
+            if (!user.name.trim() || !(await isVerifiedMember(user))) return;
+            await syncBuilderAccount({ id: user.id, email: verifiedLoginEmail(user), name: user.name.trim() });
           },
         },
       },
@@ -172,10 +172,10 @@ export const currentMember = cache(async (): Promise<MemberSessionUser | null> =
   if (!getMemberAuthAvailability().configured) return null;
   const session = await getAuth().api.getSession({ headers: await headers() });
   if (!session || !(await isVerifiedMember(session.user))) return null;
-  const user = { id: session.user.id, email: contactEmail(session.user), name: session.user.name };
+  const user = { id: session.user.id, email: verifiedLoginEmail(session.user), name: session.user.name };
   // Also repairs an interrupted CRM sync without duplicating People entries.
-  // TODO(T1.1): resume sync once hq_builder_profiles.email is nullable
-  if (user.email !== null && user.name.trim()) await syncBuilderAccount({ id: user.id, email: user.email, name: user.name.trim() });
+  // A Telegram-only account syncs like any other, with no email.
+  if (user.name.trim()) await syncBuilderAccount({ id: user.id, email: user.email, name: user.name.trim() });
   return user;
 });
 

@@ -16,7 +16,7 @@ vi.mock("next/headers", () => ({ headers: async () => new Headers({ Origin: "htt
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); } }));
 vi.mock("@/lib/hq/builder-store", async (importOriginal) => {
   const store = await importOriginal<typeof import("@/lib/hq/builder-store")>();
-  return { ...store, syncBuilderAccount: async (user: { id: string; email: string; name: string }) => {
+  return { ...store, syncBuilderAccount: async (user: { id: string; email: string | null; name: string }) => {
     state.synced(user);
     await store.syncBuilderAccount(user);
   } };
@@ -190,23 +190,32 @@ describe("public HQ sign-in through Better Auth", () => {
     expect(state.synced).toHaveBeenCalled();
   });
 
-  it("admits a placeholder account only through its Telegram identity row, and syncs nothing for it yet", async () => {
+  it("admits a placeholder account only through its Telegram identity row, and syncs it without an email", async () => {
     const id = "telegram-only-user";
     state.cookie = await seedSession({ id, email: "1234123412341234123@telegram.placeholder.invalid", emailVerified: false, name: "Telegram Builder" });
     const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
     expect((await (await request("/get-session", undefined, state.cookie)).json()).user.id).toBe(id);
 
-    // Without the identity row a session is not a member: fail closed.
+    // Without the identity row a session is not a member: fail closed, and nothing is synced.
     expect(await currentMember()).toBeNull();
     await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/signin?next=%2Fhq%2Fdashboard");
+    expect(state.synced).not.toHaveBeenCalled();
 
     await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id) VALUES ($1, '1234123412341234123', 7000000000123)`, [id]);
     expect(await currentMember()).toEqual({ id, email: null, name: "Telegram Builder" });
     expect((await requireMember("/hq/dashboard")).email).toBeNull();
-    // TODO(T1.1) makes the CRM sync null-safe; until then a Telegram-only account writes no profile and no Person.
-    expect(state.synced).not.toHaveBeenCalled();
-    expect((await state.pg!.query("SELECT * FROM hq_builder_profiles")).rows).toHaveLength(0);
-    expect((await state.pg!.query("SELECT * FROM hq_people")).rows).toHaveLength(0);
+    // The CRM sync is null-safe: a profile without an email, a People card without a contact, never the placeholder.
+    expect(state.synced).toHaveBeenCalledWith({ id, email: null, name: "Telegram Builder" });
+    expect((await state.pg!.query("SELECT id, email, contact_email, name FROM hq_builder_profiles")).rows).toEqual([{ id, email: null, contact_email: null, name: "Telegram Builder" }]);
+    expect((await state.pg!.query("SELECT name, contact, person_id IS NOT NULL AS has_person, hackathon_id FROM hq_people")).rows)
+      .toEqual([{ name: "Telegram Builder", contact: "", has_person: true, hackathon_id: 41 }]);
+
+    const { getLoginMethods } = await import("@/lib/hq/identity");
+    expect(await getLoginMethods(id)).toEqual({
+      email: null,
+      telegram: expect.objectContaining({ userId: id, telegramUserId: "7000000000123", providerSubject: "1234123412341234123" }),
+      contactEmail: null,
+    });
   });
 
   it("returns no contact for an unverified real email admitted through a Telegram identity", async () => {
@@ -217,9 +226,24 @@ describe("public HQ sign-in through Better Auth", () => {
     const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
     expect(await currentMember()).toEqual({ id, email: null, name: "Linked Builder" });
     expect((await requireMember("/hq/dashboard")).email).toBeNull();
-    expect(state.synced).not.toHaveBeenCalled();
-    expect((await state.pg!.query("SELECT contact FROM hq_people")).rows).toEqual([]);
-    expect((await state.pg!.query("SELECT * FROM hq_builder_profiles")).rows).toHaveLength(0);
+    expect(state.synced).toHaveBeenCalledWith({ id, email: null, name: "Linked Builder" });
+    expect((await state.pg!.query("SELECT contact FROM hq_people")).rows).toEqual([{ contact: "" }]);
+    expect((await state.pg!.query("SELECT email FROM hq_builder_profiles")).rows).toEqual([{ email: null }]);
+    // The unverified address is still reported as a login method, unverified; never as a contact.
+    const { getLoginMethods } = await import("@/lib/hq/identity");
+    expect(await getLoginMethods(id)).toMatchObject({ email: { address: "unverified-real@example.com", verified: false }, contactEmail: null });
+  });
+
+  it("reports login methods and the self-declared contact email separately", async () => {
+    const email = "methods@example.com";
+    await request("/email-otp/send-verification-otp", { email, type: "sign-in" });
+    const signedIn = await request("/sign-in/email-otp", { email, otp: latestCode(), name: "Methods Builder" });
+    const { id } = (await signedIn.json()).user;
+    const { getLoginMethods } = await import("@/lib/hq/identity");
+    expect(await getLoginMethods(id)).toEqual({ email: { address: email, verified: true }, telegram: null, contactEmail: null });
+    await state.pg!.query("UPDATE hq_builder_profiles SET contact_email = 'reach-me@example.com' WHERE id = $1", [id]);
+    expect((await getLoginMethods(id)).contactEmail).toBe("reach-me@example.com");
+    expect(await getLoginMethods("unknown-user")).toEqual({ email: null, telegram: null, contactEmail: null });
   });
 
   it("rejects incorrect and expired codes without populating People", async () => {

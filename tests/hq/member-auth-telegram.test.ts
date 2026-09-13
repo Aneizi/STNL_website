@@ -33,7 +33,7 @@ vi.mock("next/headers", () => ({ headers: async () => new Headers({ Origin: "htt
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); } }));
 vi.mock("@/lib/hq/builder-store", async (importOriginal) => {
   const store = await importOriginal<typeof import("@/lib/hq/builder-store")>();
-  return { ...store, syncBuilderAccount: async (user: { id: string; email: string; name: string }) => {
+  return { ...store, syncBuilderAccount: async (user: { id: string; email: string | null; name: string }) => {
     state.synced(user);
     await store.syncBuilderAccount(user);
   } };
@@ -262,10 +262,11 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
     expect(await currentMember()).toEqual({ id: userId, email: null, name: NAME });
     expect((await requireMember("/hq/welcome")).id).toBe(userId);
-    // TODO(T1.1) makes the CRM sync null-safe; until then nothing is written for a Telegram-only user.
-    expect(state.synced).not.toHaveBeenCalled();
-    expect(await count("hq_builder_profiles")).toBe(0);
-    expect(await count("hq_people")).toBe(0);
+    // The CRM sync is null-safe: the account gets a profile with no email and a person; the placeholder is stored nowhere.
+    expect(state.synced).toHaveBeenCalledWith({ id: userId, email: null, name: NAME });
+    expect((await state.pg!.query("SELECT email, contact_email FROM hq_builder_profiles")).rows).toEqual([{ email: null, contact_email: null }]);
+    expect(await count("hq_crm_persons")).toBe(1);
+    expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_people WHERE contact ILIKE '%placeholder.invalid%'")).rows).toEqual([{ n: 0 }]);
 
     // Fail closed: the session alone is not enough once the identity row is gone.
     await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");

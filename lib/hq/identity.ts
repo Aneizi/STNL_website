@@ -1,5 +1,6 @@
 import "server-only";
-import { builderDatabase } from "./builder-store";
+import { builderDatabase, builderStore } from "./builder-store";
+import { isPlaceholderEmail } from "./telegram-provider";
 
 /**
  * A verified Telegram identity attached to a public HQ account. The numeric
@@ -44,6 +45,29 @@ export async function getTelegramIdentity(userId: string): Promise<TelegramIdent
 export async function hasTelegramIdentity(userId: string): Promise<boolean> {
   const { rows } = await builderDatabase().query(`SELECT 1 FROM hq_auth_telegram_identity WHERE user_id = $1`, [userId]);
   return rows.length > 0;
+}
+
+export type LoginMethods = {
+  /** The stored login address; null when it is the internal placeholder, so it is never shown or mailed. */
+  email: { address: string; verified: boolean } | null;
+  telegram: TelegramIdentity | null;
+  /** The optional, self-declared contact address on the profile. Never a login identity. */
+  contactEmail: string | null;
+};
+
+/** Every way this account can sign in, plus its contact address. Adding or removing one never changes the account id. */
+export async function getLoginMethods(userId: string): Promise<LoginMethods> {
+  const [{ rows: users }, telegram, profile] = await Promise.all([
+    builderDatabase().query(`SELECT email, "emailVerified" AS verified FROM hq_auth_user WHERE id = $1`, [userId]),
+    getTelegramIdentity(userId),
+    builderStore().profile(userId),
+  ]);
+  const address = users.length && typeof users[0].email === "string" ? users[0].email : null;
+  return {
+    email: address && !isPlaceholderEmail(address) ? { address, verified: Boolean(users[0].verified) } : null,
+    telegram,
+    contactEmail: profile?.contactEmail ?? null,
+  };
 }
 
 export type TelegramIdentityInput = {

@@ -15,14 +15,15 @@ export type OnboardingConfig = {
 export type BuilderAccount = {
   id: string;
   name: string;
-  email: string;
+  /** The login email; null for an account without one (Telegram-only). */
+  email: string | null;
   tier: "regular" | "member";
 };
 
 export type BuilderHostRequest = {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
   title: string;
   details: string;
   status: "pending" | "approved" | "declined";
@@ -31,7 +32,7 @@ export type BuilderHostRequest = {
 export type BuilderImportRequest = {
   id: string;
   name: string;
-  email: string;
+  email: string | null;
   projectUrl: string;
   note: string;
   status: "pending" | "resolved";
@@ -45,7 +46,7 @@ export type BuilderProjectReview = {
   description: string;
   country: string;
   ownerName: string;
-  ownerEmail: string;
+  ownerEmail: string | null;
   verification: "pending" | "verified" | "rejected";
   stage: string;
   leadUsername: string;
@@ -54,6 +55,9 @@ export type BuilderProjectReview = {
   proofAuthorId: string | null;
   members: Array<{ name: string; username: string; joined: boolean; joinedAt: string | null }>;
 };
+
+/** A nullable text column as the type says: null stays null. */
+const optionalText = (value: unknown) => (value == null ? null : String(value));
 
 export async function getBuilderAdminData() {
   await requireUser();
@@ -84,11 +88,11 @@ export async function getBuilderAdminData() {
       hostingEnabled: Boolean(config?.hosting_enabled),
     } satisfies OnboardingConfig,
     accounts: accounts.map((row) => ({
-      id: String(row.id), name: String(row.name), email: String(row.email),
+      id: String(row.id), name: String(row.name), email: optionalText(row.email),
       tier: row.tier === "member" ? "member" : "regular",
     } satisfies BuilderAccount)),
     hostRequests: requests.map((row) => ({
-      id: String(row.id), name: String(row.name), email: String(row.email),
+      id: String(row.id), name: String(row.name), email: optionalText(row.email),
       title: String(row.title), details: String(row.details), status: row.status,
     } satisfies BuilderHostRequest)),
   };
@@ -120,13 +124,13 @@ export async function getBuilderProjectReviews() {
     projects: projects.map((row) => ({
       id: String(row.id), name: String(row.name), projectUrl: String(row.project_url),
       externalId: Number(row.external_id), description: String(row.description ?? ""),
-      country: String(row.country ?? ""), ownerName: String(row.owner_name), ownerEmail: String(row.owner_email),
+      country: String(row.country ?? ""), ownerName: String(row.owner_name), ownerEmail: optionalText(row.owner_email),
       verification: row.verification, stage: String(row.stage), leadUsername: String(row.lead_username ?? ""),
       highPotential: Boolean(row.high_potential), proofCommentId: row.proof_comment_id ?? null,
       proofAuthorId: row.proof_author_id ?? null, members: row.members,
     } satisfies BuilderProjectReview)),
     importRequests: requests.map((row) => ({
-      id: String(row.id), name: String(row.name), email: String(row.email),
+      id: String(row.id), name: String(row.name), email: optionalText(row.email),
       projectUrl: String(row.project_url), note: String(row.note), status: row.status,
     } satisfies BuilderImportRequest)),
   };

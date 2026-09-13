@@ -3,9 +3,9 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { assertProjectHackathon, ColosseumApiError, fetchColosseumProject, verifyProjectClaim, parseColosseumProjectUrl } from '@/lib/colosseum-api';
-import { requireMember, type MemberSessionUser } from '../member-auth';
+import { requireMember } from '../member-auth';
 import { BuilderError, builderStore, syncBuilderAccount } from '../builder-store';
-import { PROJECT_STAGES, type BuilderResult, type BuilderUser } from '../builder-types';
+import { PROJECT_STAGES, type BuilderResult } from '../builder-types';
 
 const uuid = z.string().uuid();
 const hackathonIdSchema = z.number().int().positive();
@@ -14,21 +14,14 @@ const inviteSchema = z.string().trim().min(20).max(40).regex(/^[a-fA-F0-9\s-]+$/
 const fail = (error: unknown): {ok:false;error:string} => ({ ok:false, error: error instanceof BuilderError || error instanceof ColosseumApiError
   ? error.message : error instanceof z.ZodError ? 'Check the details and try again.' : 'We could not save this. Please try again.' });
 function refresh() { revalidatePath('/hq', 'layout'); }
-// TODO(T1.1): remove once BuilderUser.email is nullable and the store is null-safe.
-// Until then the builder store cannot represent an account without an email.
-function builderIdentity(user: MemberSessionUser): BuilderUser {
-  if (user.email === null) throw new BuilderError('This step is not available for accounts without an email yet.');
-  return { id: user.id, email: user.email, name: user.name };
-}
 
 export async function chooseBuilderPath(input: { hackathonId: number; path: 'initialize'|'join'|'supporter' }): Promise<BuilderResult<{url:string}>> {
   const user = await requireMember();
   try {
     const parsed = z.object({hackathonId:hackathonIdSchema,path:z.enum(['initialize','join','supporter'])}).parse(input);
-    const builder = builderIdentity(user);
-    await syncBuilderAccount(builder);
+    await syncBuilderAccount(user);
     await builderStore().hackathon(parsed.hackathonId);
-    if (parsed.path==='supporter') await builderStore().enroll(builder,parsed.hackathonId,'supporter');
+    if (parsed.path==='supporter') await builderStore().enroll(user,parsed.hackathonId,'supporter');
     refresh();
     return {ok:true,data:{url:parsed.path==='supporter'?'/hq/dashboard':`/hq/${parsed.path}?hackathon=${parsed.hackathonId}`}};
   } catch (error) { return fail(error); }
@@ -56,13 +49,12 @@ export async function beginBuilderVerification(input: {hackathonId:number;url:st
     const parsed = z.object({hackathonId:hackathonIdSchema,url:z.string().max(400),username:z.string().min(1).max(120)}).parse(input);
     const store = builderStore();
     await store.rateLimit(user.id,'challenge',8);
-    const builder = builderIdentity(user);
-    await syncBuilderAccount(builder);
+    await syncBuilderAccount(user);
     const edition = await store.hackathon(parsed.hackathonId);
     if (!edition.projectsOpen || (edition.projectsAvailableAt && Date.parse(edition.projectsAvailableAt)>Date.now()) || !edition.externalId || !edition.externalSlug) throw new BuilderError('Project imports are not open yet. You can request help below.');
     const project = await fetchColosseumProject(parsed.url);
     assertProjectHackathon(project,{externalId:edition.externalId,slug:edition.externalSlug});
-    return {ok:true as const,data:await store.issueChallenge(builder,edition.id,project,parsed.username)};
+    return {ok:true as const,data:await store.issueChallenge(user,edition.id,project,parsed.username)};
   } catch (error) { return fail(error); }
 }
 
@@ -85,7 +77,7 @@ export async function completeBuilderImport(input:{challengeId:string;leadUserna
       if (project.country?.trim().toLowerCase()!=='netherlands') throw new BuilderError('Set your project country to Netherlands on Colosseum, then try again.');
       if (!proof) throw new BuilderError('We could not find the code from your selected Colosseum profile yet. Try again, or ask for a manual review.');
     }
-    const id = await store.importTeam(builderIdentity(user),challenge.id,project,parsed.leadUsername,parsed.stage,proof);
+    const id = await store.importTeam(user,challenge.id,project,parsed.leadUsername,parsed.stage,proof);
     refresh();
     return {ok:true,data:{url:`/hq/team/${id}`}};
   } catch (error) { return fail(error); }
@@ -98,9 +90,8 @@ export async function requestBuilderReview(input:{hackathonId:number;url:string;
     const slug = parseColosseumProjectUrl(parsed.url);
     const store = builderStore();
     await store.rateLimit(user.id,'review',5);
-    const builder = builderIdentity(user);
-    await syncBuilderAccount(builder);
-    await store.requestReview(builder,parsed.hackathonId,`https://colosseum.com/arena/projects/explore/${slug}`,parsed.note);
+    await syncBuilderAccount(user);
+    await store.requestReview(user,parsed.hackathonId,`https://colosseum.com/arena/projects/explore/${slug}`,parsed.note);
     refresh();
     return {ok:true,data:{url:'/hq/dashboard'}};
   } catch (error) { return fail(error); }
@@ -140,14 +131,13 @@ export async function acceptBuilderInvite(input:{code:string;confirmed:boolean})
     const {code} = z.object({code:inviteSchema,confirmed:z.literal(true)}).parse(input);
     const store = builderStore();
     await store.rateLimit(user.id,'redeem',12);
-    const builder = builderIdentity(user);
-    await syncBuilderAccount(builder);
+    await syncBuilderAccount(user);
     const invite = await store.invitation(code);
     const project = await fetchColosseumProject(invite.projectUrl);
     const edition = await store.hackathon(invite.hackathonId);
     assertProjectHackathon(project,{externalId:edition.externalId??0,slug:edition.externalSlug??''});
     if (!project.members.some(m=>m.username===invite.username)) throw new BuilderError('This profile is no longer listed on the Colosseum team. Ask the team owner for help.');
-    const id = await store.redeemInvite(builder,code);
+    const id = await store.redeemInvite(user,code);
     refresh();
     return {ok:true,data:{url:`/hq/team/${id}`}};
   } catch (error) { return fail(error); }

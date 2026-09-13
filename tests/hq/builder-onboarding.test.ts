@@ -5,7 +5,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { ImportedProject } from "@/lib/colosseum-api";
 import { BuilderStore, type BuilderDatabase, type BuilderQuery } from "@/lib/hq/builder-store";
 import * as builderModule from "@/lib/hq/builder-store";
-import type { BuilderUser } from "@/lib/hq/builder-types";
+import type { BuilderIdentity } from "@/lib/hq/builder-types";
+import { ensurePersonForRosterMember, linkPersonToAccount, normalizeColosseumUsername } from "@/lib/hq/crm-identity";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
 
 vi.mock("server-only", () => ({}));
@@ -14,9 +15,9 @@ vi.mock("@/lib/hq/member-auth", () => ({ requireMember: actionMocks.requireMembe
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 import { chooseBuilderPath, completeBuilderImport, requestBuilderReview } from "@/lib/hq/actions/builders";
 
-const OWNER: BuilderUser = { id: "auth-owner", email: "owner@example.test", name: "Owner" };
-const TEAMMATE: BuilderUser = { id: "auth-teammate", email: "teammate@example.test", name: "Teammate" };
-const OUTSIDER: BuilderUser = { id: "auth-outsider", email: "outsider@example.test", name: "Outsider" };
+const OWNER: BuilderIdentity = { id: "auth-owner", email: "owner@example.test", name: "Owner" };
+const TEAMMATE: BuilderIdentity = { id: "auth-teammate", email: "teammate@example.test", name: "Teammate" };
+const OUTSIDER: BuilderIdentity = { id: "auth-outsider", email: "outsider@example.test", name: "Outsider" };
 // Fictional project and roster, mirroring the structural fixture at
 // tests/hq/fixtures/colosseum/detail.json.
 const PROJECT: ImportedProject = {
@@ -147,6 +148,122 @@ describe("builder accounts and edition-scoped People", () => {
     await expect(store.enroll(OWNER, 999, "builder")).rejects.toThrow("available hackathon");
     expect(await rows("SELECT hackathon_id FROM hq_builder_enrollments WHERE user_id=$1", [OWNER.id])).toEqual([{ hackathon_id: 41 }]);
     expect((await store.hackathons()).map(item => item.id)).toEqual([41, 42]);
+  });
+});
+
+describe("accounts without an email, contact email and CRM person identity", () => {
+  const TELEGRAM_ONLY: BuilderIdentity = { id: "auth-telegram", email: null, name: "Telegram Builder" };
+  const PLACEHOLDER = "1234123412341234123@telegram.placeholder.invalid";
+
+  async function person(userId: string) {
+    const [row] = await rows("SELECT id,display_name,normalized_colosseum_username FROM hq_crm_persons WHERE builder_user_id=$1", [userId]);
+    return row as { id: string; display_name: string; normalized_colosseum_username: string | null } | undefined;
+  }
+
+  it("syncs a Telegram-only account with no email, a People card without a contact, and its person", async () => {
+    await store.syncAccount(TELEGRAM_ONLY);
+    await store.syncAccount(TELEGRAM_ONLY);
+    expect(await rows("SELECT email,contact_email,name FROM hq_builder_profiles WHERE id=$1", [TELEGRAM_ONLY.id]))
+      .toEqual([{ email: null, contact_email: null, name: "Telegram Builder" }]);
+    const linked = await person(TELEGRAM_ONLY.id);
+    expect(linked).toMatchObject({ display_name: "Telegram Builder", normalized_colosseum_username: null });
+    expect(await rows(`SELECT p.hackathon_id,p.name,p.contact,p.person_id,r.label FROM hq_people p
+      JOIN hq_people_roles r ON r.id=p.role_id WHERE p.builder_user_id=$1`, [TELEGRAM_ONLY.id]))
+      .toEqual([{ hackathon_id: 41, name: "Telegram Builder", contact: "", person_id: linked!.id, label: "Builder" }]);
+    expect(await store.profile(TELEGRAM_ONLY.id)).toEqual({ id: TELEGRAM_ONLY.id, email: null, contactEmail: null, name: "Telegram Builder" });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE builder_user_id=$1", [TELEGRAM_ONLY.id])).toEqual([{ n: 1 }]);
+  });
+
+  it("never writes the placeholder address to a profile, a contact or a People card", async () => {
+    await store.syncAccount({ ...TELEGRAM_ONLY, email: PLACEHOLDER });
+    await store.enroll({ ...TELEGRAM_ONLY, email: PLACEHOLDER }, 42, "supporter");
+    expect(await rows("SELECT email,contact_email FROM hq_builder_profiles WHERE id=$1", [TELEGRAM_ONLY.id])).toEqual([{ email: null, contact_email: null }]);
+    expect(await rows("SELECT contact FROM hq_people WHERE builder_user_id=$1 ORDER BY hackathon_id", [TELEGRAM_ONLY.id])).toEqual([{ contact: "" }, { contact: "" }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_builder_profiles WHERE email ILIKE '%placeholder.invalid' OR contact_email ILIKE '%placeholder.invalid'")).toEqual([{ n: 0 }]);
+    await db.query("UPDATE hq_builder_profiles SET contact_email=$1 WHERE id=$2", [PLACEHOLDER, TELEGRAM_ONLY.id]);
+    expect((await store.profile(TELEGRAM_ONLY.id))?.contactEmail).toBeNull();
+  });
+
+  it("keeps the self-declared contact email apart from the login email", async () => {
+    await db.query("UPDATE hq_builder_profiles SET contact_email='hello@example.test' WHERE id=$1", [OWNER.id]);
+    // The login address changes, and then goes away: the contact stays, and is never filled from the login.
+    await store.syncAccount({ ...OWNER, email: "owner-moved@example.test" });
+    expect(await store.profile(OWNER.id)).toEqual({ id: OWNER.id, email: "owner-moved@example.test", contactEmail: "hello@example.test", name: "Owner" });
+    await store.syncAccount({ ...OWNER, email: null });
+    expect(await store.profile(OWNER.id)).toEqual({ id: OWNER.id, email: null, contactEmail: "hello@example.test", name: "Owner" });
+    await store.syncAccount(TEAMMATE);
+    expect((await store.profile(TEAMMATE.id))?.contactEmail).toBeNull();
+    expect(await store.profile("never-synced")).toBeNull();
+  });
+
+  it("gives every synced account exactly one person and stamps it on each edition's card", async () => {
+    await Promise.all(Array.from({ length: 3 }, () => store.syncAccount(OWNER)));
+    await store.enroll(OWNER, 42, "builder");
+    const owner = await person(OWNER.id);
+    expect(await rows("SELECT hackathon_id,person_id FROM hq_people WHERE builder_user_id=$1 ORDER BY hackathon_id", [OWNER.id]))
+      .toEqual([{ hackathon_id: 41, person_id: owner!.id }, { hackathon_id: 42, person_id: owner!.id }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+  });
+
+  it("normalizes a Colosseum username and treats nothing else as one", () => {
+    expect(normalizeColosseumUsername("  @Fictional_Builder_2 ")).toBe("fictional_builder_2");
+    expect(normalizeColosseumUsername("@@Handle")).toBe("handle");
+    expect(normalizeColosseumUsername("@ ")).toBeNull();
+    expect(normalizeColosseumUsername("")).toBeNull();
+    expect(normalizeColosseumUsername(null)).toBeNull();
+    expect(normalizeColosseumUsername(undefined)).toBeNull();
+  });
+
+  it("reuses a roster person for the same normalized username, never for the same display name", async () => {
+    const first = await ensurePersonForRosterMember(db, { colosseumUsername: "@Fictional_Builder_2", displayName: "Fictional Builder Two" });
+    const again = await ensurePersonForRosterMember(db, { colosseumUsername: "fictional_builder_2 ", displayName: "Renamed On Colosseum" });
+    const namesake = await ensurePersonForRosterMember(db, { colosseumUsername: "another_handle", displayName: "Fictional Builder Two" });
+    expect(again).toBe(first);
+    expect(namesake).not.toBe(first);
+    expect(await rows("SELECT display_name,normalized_colosseum_username,builder_user_id FROM hq_crm_persons WHERE normalized_colosseum_username IS NOT NULL ORDER BY normalized_colosseum_username"))
+      .toEqual([
+        { display_name: "Fictional Builder Two", normalized_colosseum_username: "another_handle", builder_user_id: null },
+        { display_name: "Fictional Builder Two", normalized_colosseum_username: "fictional_builder_2", builder_user_id: null },
+      ]);
+    await expect(ensurePersonForRosterMember(db, { colosseumUsername: " @ ", displayName: "Fictional Builder Two" })).rejects.toThrow("username");
+    // Two accounts named alike stay two people as well.
+    await store.syncAccount({ id: "auth-namesake", email: null, name: OWNER.name });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE display_name=$1", [OWNER.name])).toEqual([{ n: 2 }]);
+  });
+
+  it("links a roster person to an account and stamps the account's cards, both or neither", async () => {
+    // An account whose card predates person identity: no person row, no stamp.
+    await db.query("INSERT INTO hq_builder_profiles(id,email,name) VALUES('auth-legacy',NULL,'Legacy Builder')");
+    await db.query(`INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id)
+      SELECT 41,'auth-legacy','Legacy Builder',id FROM hq_people_roles WHERE label='Builder'`);
+    const roster = await ensurePersonForRosterMember(db, { colosseumUsername: "legacy_handle", displayName: "Legacy Builder" });
+
+    await db.query("ALTER TABLE hq_crm_persons ADD CONSTRAINT test_link_failure CHECK (builder_user_id IS DISTINCT FROM 'auth-legacy')");
+    try {
+      await expect(linkPersonToAccount(db, { personId: roster, userId: "auth-legacy" })).rejects.toThrow();
+    } finally { await db.query("ALTER TABLE hq_crm_persons DROP CONSTRAINT test_link_failure"); }
+    expect(await rows("SELECT person_id FROM hq_people WHERE builder_user_id='auth-legacy'")).toEqual([{ person_id: null }]);
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [roster])).toEqual([{ builder_user_id: null }]);
+
+    await linkPersonToAccount(db, { personId: roster, userId: "auth-legacy" });
+    expect(await rows("SELECT person_id FROM hq_people WHERE builder_user_id='auth-legacy'")).toEqual([{ person_id: roster }]);
+    expect(await rows("SELECT builder_user_id,updated_at > created_at AS touched FROM hq_crm_persons WHERE id=$1", [roster])).toEqual([{ builder_user_id: "auth-legacy", touched: true }]);
+    // Linking the same pair again is a no-op, and so is a later sync: the link is not re-pointed to a fresh person.
+    await linkPersonToAccount(db, { personId: roster, userId: "auth-legacy" });
+    await store.syncAccount({ id: "auth-legacy", email: null, name: "Legacy Builder" });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE builder_user_id='auth-legacy'")).toEqual([{ n: 1 }]);
+    expect(await rows("SELECT person_id FROM hq_people WHERE builder_user_id='auth-legacy'")).toEqual([{ person_id: roster }]);
+  });
+
+  it("refuses to re-point a link in either direction", async () => {
+    const owner = (await person(OWNER.id))!;
+    const roster = await ensurePersonForRosterMember(db, { colosseumUsername: "fictional_builder_2", displayName: "Fictional Builder Two" });
+    await expect(linkPersonToAccount(db, { personId: owner.id, userId: TEAMMATE.id })).rejects.toThrow("another account");
+    await expect(linkPersonToAccount(db, { personId: roster, userId: OWNER.id })).rejects.toThrow("another person");
+    await expect(linkPersonToAccount(db, { personId: roster, userId: "no-such-account" })).rejects.toThrow("account");
+    await expect(linkPersonToAccount(db, { personId: "00000000-0000-4000-8000-000000000009", userId: OWNER.id })).rejects.toThrow("person");
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [roster])).toEqual([{ builder_user_id: null }]);
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [owner.id])).toEqual([{ builder_user_id: OWNER.id }]);
   });
 });
 
