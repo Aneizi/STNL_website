@@ -5,8 +5,9 @@ import {
   markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
   reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
+import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import type {
-  BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
+  ActiveCaptain, BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
 } from "@/lib/hq/builder-admin-queries";
 import type { ActionResult } from "@/lib/hq/types";
 import styles from "./builder-admin.module.css";
@@ -55,8 +56,8 @@ function projectHref(value: string): string | undefined {
   return undefined;
 }
 
-export function BuilderAdmin({ config, hackathonName, accounts, hostRequests }: {
-  config: OnboardingConfig; hackathonName: string; accounts: BuilderAccount[]; hostRequests: BuilderHostRequest[];
+export function BuilderAdmin({ config, hackathonName, accounts, captains, hostRequests }: {
+  config: OnboardingConfig; hackathonName: string; accounts: BuilderAccount[]; captains: ActiveCaptain[]; hostRequests: BuilderHostRequest[];
 }) {
   return (
     <>
@@ -82,7 +83,7 @@ export function BuilderAdmin({ config, hackathonName, accounts, hostRequests }: 
           <div className={styles.actions}><button className={styles.button} type="submit">Save onboarding settings</button></div>
         </ActionForm>
       </section>
-      <BuilderAccounts accounts={accounts} />
+      <BuilderAccounts accounts={accounts} captains={captains} />
       <section className={styles.section} aria-labelledby="hosting-requests-title">
         <h2 id="hosting-requests-title">Event hosting requests</h2>
         <p>{config.hostingEnabled ? "Members can apply to host an event." : "Applications are disabled. Enable them in onboarding settings when ready."}</p>
@@ -104,21 +105,48 @@ export function BuilderAdmin({ config, hackathonName, accounts, hostRequests }: 
   );
 }
 
-export function BuilderAccounts({ accounts }: { accounts: BuilderAccount[] }) {
+export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccount[]; captains: ActiveCaptain[] }) {
   return (
     <section className={styles.section} aria-labelledby="builder-accounts-title">
       <h2 id="builder-accounts-title">HQ accounts</h2>
       <p>Accounts in this hackathon&apos;s People list. Membership applies across all hackathons and never grants admin access.</p>
+      <p>Captain access is an account capability, separate from People roles and from membership. It shows as a locked Captain tag in People and opens no project until a Captain is assigned to it.</p>
+      <p>{captains.length === 0 ? "No account holds Captain access yet." : `Active Captains across all hackathons: ${captains.length}.`}</p>
+      {captains.length > 0 && <ul className={styles.roster} aria-label="Active Captains">
+        {captains.map((captain) => <li key={captain.userId}>
+          <span>{captain.name}{captain.reason ? ` (${captain.reason})` : ""}</span>
+          <span className={styles.badge}>Since {captain.grantedAt.slice(0, 10)}</span>
+        </li>)}
+      </ul>}
       {accounts.length === 0 && <p>No HQ accounts have joined this hackathon yet.</p>}
       {accounts.map((account) => (
-        <article className={styles.row} key={account.id}>
-          <h3>{account.name}</h3><p>{account.email}</p>
+        <article className={styles.row} key={`${account.id}-${account.captain}`}>
+          <div className={styles.rowHeader}>
+            <h3>{account.name}</h3>
+            {account.captain && <span className={`${styles.badge} ${styles.potential}`}>Captain</span>}
+          </div>
+          <p>{account.email}</p>
           <ActionForm action={(data) => updateBuilderTier(account.id, data.get("tier") === "member" ? "member" : "regular")}>
             <div className={styles.tier}>
               <label>Membership<select name="tier" defaultValue={account.tier}><option value="regular">Regular</option><option value="member">Member</option></select></label>
               <button className={styles.secondary} type="submit">Save membership</button>
             </div>
           </ActionForm>
+          <details className={styles.review}>
+            <summary>{account.captain ? "Revoke Captain access" : "Grant Captain access"}</summary>
+            <ActionForm action={(data) => (account.captain ? revokeCaptainCapability : grantCaptainCapability)(account.id, String(data.get("reason") ?? ""))}>
+              <label className={styles.field}>Reason<input name="reason" required minLength={3} maxLength={500} placeholder={account.captain ? "Why this account loses Captain access." : "Why this account gets Captain access."} /></label>
+              <label className={styles.checkbox}>
+                {account.captain
+                  ? "I confirm this account should lose Captain access. Its assignments stop opening on the next request."
+                  : "I confirm this account should have Captain access. It opens no project until an assignment exists."}
+                <input name="confirm" type="checkbox" required />
+              </label>
+              <div className={styles.actions}>
+                <button className={account.captain ? styles.secondary : styles.button} type="submit">{account.captain ? "Revoke Captain" : "Grant Captain"}</button>
+              </div>
+            </ActionForm>
+          </details>
         </article>
       ))}
     </section>

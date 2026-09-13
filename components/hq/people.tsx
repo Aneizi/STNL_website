@@ -3,18 +3,80 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import type { CSSProperties } from "react";
+import { IconLockFill } from "symbols-react";
+import { showToast } from "@/components/hq/toast";
 import { Badge, FormField, card, input, pageTitle, primaryBtn, smallSelect } from "@/components/hq/ui";
-import { createPerson, updatePerson } from "@/lib/hq/actions/people";
-import type { PartnerOption, Person, Role } from "@/lib/hq/types";
+import { correctPersonMatch, createPerson, updatePerson } from "@/lib/hq/actions/people";
+import type { PartnerOption, Person, PersonTag, Role } from "@/lib/hq/types";
 
 const grid: CSSProperties = {
   display: "grid",
   textAlign: "left",
   overflowWrap: "break-word",
   gridTemplateColumns:
-    "minmax(0,1.4fr) 100px minmax(0,1.3fr) minmax(0,1.4fr) minmax(0,1.1fr) minmax(0,1.6fr) 40px",
+    "minmax(0,1.4fr) 150px minmax(0,1.3fr) minmax(0,1.4fr) minmax(0,1.1fr) minmax(0,1.6fr) 40px",
   gap: 10,
 };
+
+const tagRow: CSSProperties = { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 };
+
+const smallTextBtn: CSSProperties = {
+  border: "none",
+  cursor: "pointer",
+  background: "none",
+  color: "var(--label-3)",
+  fontSize: 12,
+  padding: 2,
+  justifySelf: "start",
+};
+
+const CAPABILITY_HINT = "Granted in Admin";
+
+/**
+ * A capability tag: read-only, marked with a lock, never a role. It mirrors an
+ * admin-granted account capability and the People editor cannot change it.
+ */
+function CapabilityTag({ tag }: { tag: PersonTag }) {
+  return (
+    <span
+      title={CAPABILITY_HINT}
+      aria-label={`${tag.label}, ${CAPABILITY_HINT.toLowerCase()}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        fontSize: 11,
+        fontWeight: 600,
+        textTransform: "uppercase",
+        letterSpacing: "0.08em",
+        padding: "3px 8px",
+        borderRadius: 2,
+        color: "var(--label-2)",
+        background: "var(--fill-3)",
+        whiteSpace: "nowrap",
+        cursor: "help",
+      }}
+    >
+      <IconLockFill width={8} height={11.5} fill="currentColor" aria-hidden="true" style={{ display: "block" }} />
+      {tag.label}
+    </span>
+  );
+}
+
+/** The card's tags: its role first, in the role's colours, then every locked capability tag. */
+function Tags({ person, role }: { person: Person; role: Role | undefined }) {
+  return (
+    <span style={tagRow}>
+      {person.tags.map((tag, index) =>
+        tag.kind === "capability" ? (
+          <CapabilityTag key={`${tag.kind}-${tag.label}`} tag={tag} />
+        ) : role ? (
+          <Badge key={`${tag.kind}-${index}`} label={tag.label} color={role.color} bg={role.bg} />
+        ) : null,
+      )}
+    </span>
+  );
+}
 
 const editField: CSSProperties = {
   width: "100%",
@@ -94,6 +156,15 @@ export function People({
         if (edit.field === "partnerId") {
           return { ...p, partnerId: edit.value, partnerName: partnerNameOf(edit.value) };
         }
+        if (edit.field === "roleId") {
+          // Only the role tag follows a role edit; a capability tag is not editable here.
+          const label = roles.find((r) => r.id === edit.value)?.label;
+          return {
+            ...p,
+            roleId: edit.value,
+            tags: p.tags.map((tag) => (tag.kind === "role" && label ? { ...tag, label } : tag)),
+          };
+        }
         return { ...p, [edit.field]: edit.value };
       });
     },
@@ -121,6 +192,21 @@ export function People({
     });
   };
 
+  // Clears a wrong provisional match: the account is detached from this
+  // person and gets a person of its own. Roles, tags and grants are untouched.
+  const flagWrongMatch = (person: Person) => {
+    const personId = person.personId;
+    if (!personId) return;
+    const reason = window.prompt(
+      "Why is this account the wrong match for this person? The link is cleared and the account keeps a card of its own.",
+    );
+    if (reason === null) return;
+    startTransition(async () => {
+      const result = await correctPersonMatch({ personId, toUserId: null, reason });
+      showToast(result.ok ? "Match cleared" : (result.error ?? "Could not clear the match"));
+    });
+  };
+
   const create = () => {
     const d = drafts.current;
     if (!d.name) return;
@@ -136,6 +222,9 @@ export function People({
       partnerId,
       partnerName: partnerNameOf(partnerId),
       notes: "",
+      builderUserId: null,
+      personId: null,
+      tags: [{ kind: "role", label: roles.find((r) => r.id === roleId)?.label ?? "", protected: false }],
     };
     startTransition(async () => {
       applyOptimistic({ type: "add", person });
@@ -337,7 +426,7 @@ export function People({
             }}
           >
             <span>Name</span>
-            <span>Role</span>
+            <span>Tags</span>
             <span>Organization</span>
             <span>Contact</span>
             <span>Partner</span>
@@ -358,9 +447,7 @@ export function People({
                   }}
                 >
                   <span style={{ fontWeight: 600 }}>{p.name}</span>
-                  <span>
-                    {role ? <Badge label={role.label} color={role.color} bg={role.bg} /> : null}
-                  </span>
+                  <Tags person={p} role={role} />
                   <span style={{ color: "var(--label-2)", fontSize: 13 }}>{p.org}</span>
                   <span
                     style={{
@@ -405,27 +492,49 @@ export function People({
                   background: "var(--fill-4)",
                 }}
               >
-                <input
-                  defaultValue={p.name}
-                  onBlur={(e) => {
-                    const trimmed = e.target.value.trim();
-                    if (trimmed && trimmed !== p.name) {
-                      saveField(p, { field: "name", value: trimmed });
-                    }
-                  }}
-                  style={editField}
-                />
-                <select
-                  value={p.roleId}
-                  onChange={(e) => saveField(p, { field: "roleId", value: e.target.value })}
-                  style={editSelect}
-                >
-                  {roles.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.label}
-                    </option>
-                  ))}
-                </select>
+                <span style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+                  <input
+                    defaultValue={p.name}
+                    onBlur={(e) => {
+                      const trimmed = e.target.value.trim();
+                      if (trimmed && trimmed !== p.name) {
+                        saveField(p, { field: "name", value: trimmed });
+                      }
+                    }}
+                    style={editField}
+                  />
+                  {p.builderUserId && p.personId ? (
+                    <button
+                      className="hq-hover-accent"
+                      onClick={() => flagWrongMatch(p)}
+                      title="This card is linked to an account. Clear the link if it is the wrong person."
+                      style={smallTextBtn}
+                    >
+                      Wrong match?
+                    </button>
+                  ) : null}
+                </span>
+                <span style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+                  <select
+                    value={p.roleId}
+                    onChange={(e) => saveField(p, { field: "roleId", value: e.target.value })}
+                    style={editSelect}
+                  >
+                    {roles.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.label}
+                      </option>
+                    ))}
+                  </select>
+                  {p.tags.some((tag) => tag.kind === "capability") ? (
+                    <span style={{ ...tagRow, fontSize: 11, color: "var(--label-3)" }}>
+                      {p.tags.filter((tag) => tag.kind === "capability").map((tag) => (
+                        <CapabilityTag key={tag.label} tag={tag} />
+                      ))}
+                      {CAPABILITY_HINT}
+                    </span>
+                  ) : null}
+                </span>
                 <input
                   defaultValue={p.org}
                   onBlur={(e) => {

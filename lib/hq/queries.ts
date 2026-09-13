@@ -1,4 +1,6 @@
 import "server-only";
+import type { BuilderQuery } from "./builder-db";
+import { listActiveCapabilitiesForUsers, personTags } from "./capabilities";
 import { CLASSIFIERS_SELECT, toClassifiers } from "./classifiers-sql";
 import { getSql } from "./db";
 import { attributeOutputs, type AttributableProject } from "./event-attribution";
@@ -267,16 +269,30 @@ export async function getPartnerDetail(
   };
 }
 
+/**
+ * The operator driver, seen as the query handle the capability readers take,
+ * so a People or Admin read stays on the one connection it already uses.
+ */
+export function operatorQuery(): BuilderQuery {
+  const sql = getSql();
+  return { query: async (text, values = []) => ({ rows: (await sql.query(text, values)) as Record<string, unknown>[] }) };
+}
+
 export async function getPeople(hackathonId: number): Promise<Person[]> {
   const sql = getSql();
   const rows = await sql`
-    SELECT p.id, p.name, p.role_id, p.org, p.contact, p.partner_id,
-      COALESCE(pa.name, '') AS partner_name, p.notes
+    SELECT p.id, p.name, p.role_id, r.label AS role_label, p.org, p.contact, p.partner_id,
+      COALESCE(pa.name, '') AS partner_name, p.notes, p.builder_user_id, p.person_id
     FROM hq_people p
+    JOIN hq_people_roles r ON r.id = p.role_id
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
     WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
+  // One batched lookup for every linked account on the page; the Captain tag
+  // is read from active grants and never from a role or a tier.
+  const userIds = rows.map((r) => r.builder_user_id).filter((id): id is string => typeof id === "string");
+  const capabilities = await listActiveCapabilitiesForUsers(userIds, operatorQuery());
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
@@ -286,6 +302,9 @@ export async function getPeople(hackathonId: number): Promise<Person[]> {
     partnerId: r.partner_id,
     partnerName: r.partner_name,
     notes: r.notes,
+    builderUserId: r.builder_user_id ?? null,
+    personId: r.person_id ?? null,
+    tags: personTags(String(r.role_label), r.builder_user_id ? (capabilities.get(String(r.builder_user_id)) ?? []) : []),
   }));
 }
 

@@ -2,6 +2,9 @@
 
 import { z } from "zod";
 import { requireUser } from "../auth";
+import { builderDatabase } from "../builder-db";
+import { BuilderError } from "../builder-types";
+import { correctPersonMatch as correctPersonMatchRecord } from "../crm-identity";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
 import type { ActionResult } from "../types";
@@ -102,6 +105,36 @@ export async function updatePerson(
   }
 
   await sql.transaction([update, activityStmt(user.id, hackathonId, `Updated ${name}`)]);
+  refreshHq();
+  return { ok: true };
+}
+
+const correctionSchema = z.object({
+  personId: id,
+  toUserId: z.string().min(1).max(200).nullable(),
+  reason: z.string().trim().min(3).max(500),
+});
+
+/**
+ * The explicit correction of a provisional person match: this CRM person is
+ * really the account `toUserId`, or (`null`) is not the account it is linked
+ * to. Never inferred from a display name. Re-points or clears the person's
+ * account link and its People cards, merges into the account's own person
+ * when it already has one, and records `person.match_corrected`, all in one
+ * transaction (lib/hq/crm-identity.ts). No roles, tags, tiers or grants are
+ * touched.
+ */
+export async function correctPersonMatch(input: z.infer<typeof correctionSchema>): Promise<ActionResult> {
+  const user = await requireUser();
+  const parsed = correctionSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Give a reason of at least 3 characters." };
+  try {
+    const result = await correctPersonMatchRecord(builderDatabase(), { ...parsed.data, actor: { kind: "operator", id: user.id } });
+    if (!result.changed) return { ok: false, error: "This person already has that link. Nothing to correct." };
+  } catch (error) {
+    if (error instanceof BuilderError) return { ok: false, error: error.message };
+    throw error;
+  }
   refreshHq();
   return { ok: true };
 }

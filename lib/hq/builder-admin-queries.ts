@@ -1,7 +1,9 @@
 import "server-only";
 import { requireUser } from "./auth";
+import { listActiveCapabilitiesForUsers, listCapabilityGrants } from "./capabilities";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
+import { operatorQuery } from "./queries";
 
 export type OnboardingConfig = {
   externalHackathonId: number | null;
@@ -18,6 +20,16 @@ export type BuilderAccount = {
   /** The login email; null for an account without one (Telegram-only). */
   email: string | null;
   tier: "regular" | "member";
+  /** Holds an active Captain grant. Read from hq_account_capabilities, never from a role or the tier. */
+  captain: boolean;
+};
+
+/** An active Captain grant, for the Admin overview. Grants are account-global, not per hackathon. */
+export type ActiveCaptain = {
+  userId: string;
+  name: string;
+  grantedAt: string;
+  reason: string | null;
 };
 
 export type BuilderHostRequest = {
@@ -63,7 +75,7 @@ export async function getBuilderAdminData() {
   await requireUser();
   const hackathon = await requireHackathon();
   const sql = getSql();
-  const [configs, accounts, requests] = await Promise.all([
+  const [configs, accounts, requests, captains] = await Promise.all([
     sql`SELECT external_hackathon_id, external_hackathon_slug, projects_open,
         projects_available_at::text, signup_url, hosting_enabled
         FROM hq_hackathon_onboarding WHERE hackathon_id = ${hackathon.id}`,
@@ -75,7 +87,9 @@ export async function getBuilderAdminData() {
         FROM hq_event_host_requests r JOIN hq_builder_profiles b ON b.id = r.user_id
         WHERE r.hackathon_id = ${hackathon.id}
         ORDER BY (r.status = 'pending') DESC, r.created_at DESC`,
+    listCapabilityGrants({ capability: "captain", activeOnly: true }, operatorQuery()),
   ]);
+  const capabilities = await listActiveCapabilitiesForUsers(accounts.map((row) => String(row.id)), operatorQuery());
   const config = configs[0];
   return {
     hackathonName: hackathon.name,
@@ -90,7 +104,11 @@ export async function getBuilderAdminData() {
     accounts: accounts.map((row) => ({
       id: String(row.id), name: String(row.name), email: optionalText(row.email),
       tier: row.tier === "member" ? "member" : "regular",
+      captain: (capabilities.get(String(row.id)) ?? []).includes("captain"),
     } satisfies BuilderAccount)),
+    captains: captains.map((grant) => ({
+      userId: grant.userId, name: grant.userName, grantedAt: grant.grantedAt, reason: grant.reason,
+    } satisfies ActiveCaptain)),
     hostRequests: requests.map((row) => ({
       id: String(row.id), name: String(row.name), email: optionalText(row.email),
       title: String(row.title), details: String(row.details), status: row.status,

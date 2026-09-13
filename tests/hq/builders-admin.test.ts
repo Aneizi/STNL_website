@@ -3,18 +3,30 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ requireUser: vi.fn(), requireHackathon: vi.fn(), getSql: vi.fn(), refreshHq: vi.fn(), hqToday: vi.fn(), activityStmt: vi.fn() }));
+const mocks = vi.hoisted(() => ({ requireUser: vi.fn(), requireHackathon: vi.fn(), getSql: vi.fn(), refreshHq: vi.fn(), hqToday: vi.fn(), activityStmt: vi.fn(), builderDatabase: vi.fn() }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/hq/auth", () => ({ requireUser: mocks.requireUser }));
 vi.mock("@/lib/hq/hackathon", () => ({ requireHackathon: mocks.requireHackathon }));
 vi.mock("@/lib/hq/db", () => ({ getSql: mocks.getSql }));
 vi.mock("@/lib/hq/actions/util", () => ({ refreshHq: mocks.refreshHq, hqToday: mocks.hqToday, activityStmt: mocks.activityStmt }));
+// The builder-side pool that the capability and person-match actions write
+// through. Every test already runs inside BEGIN/ROLLBACK on the one PGlite
+// connection, so its transactions become savepoints.
+vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/hq/builder-db")>()),
+  builderDatabase: mocks.builderDatabase,
+}));
 
 import {
   markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
   reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
+import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
+import { correctPersonMatch, createPerson, updatePerson } from "@/lib/hq/actions/people";
 import { getBuilderAdminData, getBuilderProjectReviews } from "@/lib/hq/builder-admin-queries";
+import type { BuilderQuery } from "@/lib/hq/builder-db";
+import { grantCapability } from "@/lib/hq/capabilities";
+import { getPeople } from "@/lib/hq/queries";
 import { addProjectMember, removeProjectMember, updateProjectDetail, updateProjectMember } from "@/lib/hq/actions/projects";
 
 const OPERATOR = "00000000-0000-4000-8000-000000000001";
@@ -27,7 +39,22 @@ const OTHER_HOST_REQUEST = "00000000-0000-4000-8000-000000000007";
 const config = { externalHackathonId: 42, externalHackathonSlug: "competition-42", projectsOpen: false,
   projectsAvailableAt: "", signupUrl: "https://colosseum.com/signup", hostingEnabled: false };
 let pg: PGlite;
+let queryCalls = 0;
 async function rows(text: string, values: unknown[] = []) { return (await pg.query(text, values)).rows as Record<string, unknown>[]; }
+const builderDb = {
+  query: async (text: string, values?: unknown[]) => ({ rows: await rows(text, values ?? []) }),
+  async transaction<T>(work: (db: BuilderQuery) => Promise<T>): Promise<T> {
+    await pg.exec("SAVEPOINT action");
+    try {
+      const result = await work(builderDb);
+      await pg.exec("RELEASE SAVEPOINT action");
+      return result;
+    } catch (error) {
+      await pg.exec("ROLLBACK TO SAVEPOINT action");
+      throw error;
+    }
+  },
+};
 
 beforeAll(async () => {
   pg = new PGlite();
@@ -75,13 +102,16 @@ beforeEach(async () => {
     const text = parts.reduce((result, part, index) => result + part + (index < values.length ? `$${index + 1}` : ""), "");
     return { text, values, then: (done: (value: unknown) => unknown, fail: (reason: unknown) => unknown) => rows(text, values).then(done, fail) };
   };
+  queryCalls = 0;
   mocks.getSql.mockReturnValue(Object.assign(tagged, {
+    query: (text: string, values: unknown[] = []) => { queryCalls += 1; return rows(text, values); },
     transaction: async (queries: { text: string; values: unknown[] }[]) => {
       const results = [];
       for (const query of queries) results.push(await rows(query.text, query.values));
       return results;
     },
   }));
+  mocks.builderDatabase.mockReturnValue(builderDb);
   mocks.hqToday.mockResolvedValue("2026-09-14");
   mocks.activityStmt.mockImplementation((userId: string, hackathonId: number, message: string) => tagged`INSERT INTO hq_activity(user_id,hackathon_id,message) VALUES(${userId}::uuid,${hackathonId},${message})`);
 });
@@ -103,10 +133,14 @@ describe("builder administration authorization and scoping", () => {
     ["hosting", () => reviewBuilderHostRequest(HOST_REQUEST, "approved")],
     ["admin queries", () => getBuilderAdminData()],
     ["project queries", () => getBuilderProjectReviews()],
+    ["granting Captain", () => grantCaptainCapability("selected", "Leads the cohort")],
+    ["revoking Captain", () => revokeCaptainCapability("selected", "Stepped down")],
+    ["correcting a person match", () => correctPersonMatch({ personId: PROJECT, toUserId: null, reason: "Wrong person" })],
   ] as const)("requires an operator session for %s", async (_, action) => {
     mocks.requireUser.mockRejectedValue(new Error("Not an operator"));
     await expect(action()).rejects.toThrow("Not an operator");
     expect(mocks.getSql).not.toHaveBeenCalled();
+    expect(mocks.builderDatabase).not.toHaveBeenCalled();
     expect(mocks.refreshHq).not.toHaveBeenCalled();
   });
 
@@ -205,5 +239,119 @@ describe("builder administration authorization and scoping", () => {
     expect(await updateBuilderOnboardingConfig({ ...config, signupUrl: "https://colosseum.com.evil.test/signup" })).toMatchObject({ ok: false });
     expect(await updateBuilderOnboardingConfig({ ...config, signupUrl: "javascript:alert(1)" })).toMatchObject({ ok: false });
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
+  });
+});
+
+describe("People tags, Captain grants and person-match correction", () => {
+  const grants = () => rows("SELECT user_id,capability,granted_by_user_id::text AS granted_by,revoked_by_user_id::text AS revoked_by,revoked_at IS NULL AS active,reason FROM hq_account_capabilities ORDER BY granted_at,id");
+  const events = () => rows("SELECT kind,actor_kind,actor_id,subject_user_id,metadata FROM hq_audit_events ORDER BY id");
+  async function partnerCaptainRole() {
+    const [role] = await rows(`INSERT INTO hq_people_roles(label,filter_label,color,bg,is_judge,sort)
+      VALUES('Partner captain','Partner captains','accent','accent-fill',false,0) RETURNING id::text AS id`);
+    return String(role.id);
+  }
+  async function selectedCard() {
+    const [card] = await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='selected'");
+    return String(card.id);
+  }
+
+  it("shows a role tag on every card and a locked Captain tag only from an active grant, read in one batched query", async () => {
+    await rows("INSERT INTO hq_builder_profiles(id,email,name) VALUES('second','second@example.test','Second Builder')");
+    await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT 11,'second','Second Builder',id FROM hq_people_roles");
+    await rows("INSERT INTO hq_people(hackathon_id,name,role_id) SELECT 11,'Hand Entered',id FROM hq_people_roles");
+    await grantCapability(builderDb, { actorOperatorId: OPERATOR, userId: "selected", capability: "captain", reason: "Leads the cohort" });
+    queryCalls = 0;
+    const people = (await getPeople(11)).sort((a, b) => a.name.localeCompare(b.name));
+    expect(queryCalls).toBe(1);
+    expect(people.map((p) => [p.name, p.builderUserId, p.tags])).toEqual([
+      ["Hand Entered", null, [{ kind: "role", label: "Builder", protected: false }]],
+      ["Second Builder", "second", [{ kind: "role", label: "Builder", protected: false }]],
+      ["Selected Builder", "selected", [{ kind: "role", label: "Builder", protected: false }, { kind: "capability", label: "Captain", protected: true }]],
+    ]);
+    expect(people.find((p) => p.name === "Selected Builder")).toMatchObject({ personId: null, roleId: expect.any(String) });
+    // The Admin account list reads the same grant, and the other edition's account holds nothing.
+    const admin = await getBuilderAdminData();
+    expect(admin.accounts.map((a) => [a.id, a.captain])).toEqual(expect.arrayContaining([["selected", true], ["second", false]]));
+    expect(admin.captains).toEqual([expect.objectContaining({ userId: "selected", name: "Selected Builder", reason: "Leads the cohort" })]);
+    expect((await getPeople(12)).map((p) => p.tags)).toEqual([[{ kind: "role", label: "Builder", protected: false }]]);
+  });
+
+  it("grants and revokes Captain from Admin with the operator recorded, visible on the next read", async () => {
+    expect(await grantCaptainCapability("selected", "Leads the cohort")).toEqual({ ok: true });
+    expect(await grants()).toEqual([{ user_id: "selected", capability: "captain", granted_by: OPERATOR, revoked_by: null, active: true, reason: "Leads the cohort" }]);
+    expect((await getPeople(11))[0].tags).toContainEqual({ kind: "capability", label: "Captain", protected: true });
+    expect(await grantCaptainCapability("selected", "Leads the cohort again")).toEqual({ ok: true });
+    expect(await grants()).toHaveLength(1);
+    expect(await revokeCaptainCapability("selected", "Stepped down")).toEqual({ ok: true });
+    expect(await grants()).toEqual([expect.objectContaining({ active: false, revoked_by: OPERATOR })]);
+    expect((await getPeople(11))[0].tags).toEqual([{ kind: "role", label: "Builder", protected: false }]);
+    expect((await getBuilderAdminData()).accounts[0].captain).toBe(false);
+    expect(await events()).toEqual([
+      expect.objectContaining({ kind: "capability.granted", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "selected" }),
+      expect.objectContaining({ kind: "capability.revoked", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "selected", metadata: expect.objectContaining({ reason: "Stepped down" }) }),
+    ]);
+    expect(mocks.refreshHq).toHaveBeenCalledTimes(3);
+  });
+
+  it("refuses a missing reason, an unknown account and a revocation without a grant, writing nothing", async () => {
+    expect(await grantCaptainCapability("selected", "  ")).toMatchObject({ ok: false });
+    expect(await grantCaptainCapability("nobody", "Leads the cohort")).toMatchObject({ ok: false, error: expect.stringContaining("account") });
+    expect(await revokeCaptainCapability("selected", "Stepped down")).toMatchObject({ ok: false, error: expect.stringContaining("Captain") });
+    expect(await grants()).toEqual([]);
+    expect(await events()).toEqual([]);
+    expect(mocks.refreshHq).not.toHaveBeenCalled();
+  });
+
+  it("never turns a People role edit, a new person or a tier change into a Captain grant", async () => {
+    const roleId = await partnerCaptainRole();
+    const card = await selectedCard();
+    expect(await updatePerson(card, { field: "roleId", value: roleId })).toEqual({ ok: true });
+    expect(await createPerson({ name: "Liaison Two", roleId, org: "Partner org", contact: "", partnerId: null, notes: "" })).toEqual({ ok: true });
+    expect(await updateBuilderTier("selected", "member")).toEqual({ ok: true });
+    expect(await grants()).toEqual([]);
+    expect(await events()).toEqual([]);
+    const people = (await getPeople(11)).sort((a, b) => a.name.localeCompare(b.name));
+    expect(people.map((p) => [p.name, p.tags])).toEqual([
+      ["Liaison Two", [{ kind: "role", label: "Partner captain", protected: false }]],
+      ["Selected Builder", [{ kind: "role", label: "Partner captain", protected: false }]],
+    ]);
+    expect(people.every((p) => p.tags.every((tag) => !tag.protected))).toBe(true);
+    expect((await getBuilderAdminData()).accounts[0]).toMatchObject({ tier: "member", captain: false });
+  });
+
+  it("keeps the renamed Partner captain role an ordinary, editable role beside the Captain capability", async () => {
+    const roleId = await partnerCaptainRole();
+    const card = await selectedCard();
+    await grantCaptainCapability("selected", "Leads the cohort");
+    expect(await updatePerson(card, { field: "roleId", value: roleId })).toEqual({ ok: true });
+    expect((await getPeople(11))[0].tags).toEqual([
+      { kind: "role", label: "Partner captain", protected: false },
+      { kind: "capability", label: "Captain", protected: true },
+    ]);
+    const [builder] = await rows("SELECT id::text AS id FROM hq_people_roles WHERE label='Builder'");
+    expect(await updatePerson(card, { field: "roleId", value: String(builder.id) })).toEqual({ ok: true });
+    expect((await getPeople(11))[0].tags[0]).toEqual({ kind: "role", label: "Builder", protected: false });
+    expect(await grants()).toHaveLength(1);
+  });
+
+  it("clears a wrong person match on the operator's say-so, with the operator on the event", async () => {
+    const [person] = await rows("INSERT INTO hq_crm_persons(display_name,normalized_colosseum_username,builder_user_id) VALUES('Selected Builder','roster_handle','selected') RETURNING id::text AS id");
+    await rows("UPDATE hq_people SET person_id=$1 WHERE builder_user_id='selected'", [person.id]);
+    expect((await getPeople(11))[0]).toMatchObject({ builderUserId: "selected", personId: person.id });
+    expect(await correctPersonMatch({ personId: String(person.id), toUserId: null, reason: "x" })).toMatchObject({ ok: false });
+    expect(await correctPersonMatch({ personId: PROJECT, toUserId: null, reason: "Not this person" })).toMatchObject({ ok: false, error: expect.stringContaining("person") });
+    expect(await correctPersonMatch({ personId: String(person.id), toUserId: null, reason: "Not this person" })).toEqual({ ok: true });
+    expect(await rows("SELECT builder_user_id,normalized_colosseum_username FROM hq_crm_persons WHERE id=$1", [person.id])).toEqual([{ builder_user_id: null, normalized_colosseum_username: "roster_handle" }]);
+    const [after] = await getPeople(11);
+    expect(after.personId).not.toBeNull();
+    expect(after.personId).not.toBe(person.id);
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [after.personId])).toEqual([{ builder_user_id: "selected" }]);
+    expect(await correctPersonMatch({ personId: String(person.id), toUserId: null, reason: "Not this person" })).toMatchObject({ ok: false });
+    expect(await events()).toEqual([expect.objectContaining({
+      kind: "person.match_corrected", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "selected",
+      metadata: expect.objectContaining({ fromUserId: "selected", toUserId: null, reason: "Not this person" }),
+    })]);
+    expect(await grants()).toEqual([]);
+    expect(mocks.refreshHq).toHaveBeenCalledTimes(1);
   });
 });
