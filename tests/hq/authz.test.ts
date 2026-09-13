@@ -208,6 +208,22 @@ describe("authorizeProjectAction", () => {
     expect(await authorizeProjectAction(member("cap"), { projectId: PROJECT_A, hackathonId: EDITION_A, action: "read" }, assigned("cap2", PROJECT_A))).toEqual({ allowed: false, reason: "not_assigned" });
   });
 
+  it("lets an unassigned Captain learn nothing about projects outside the requested edition", async () => {
+    await grant("cap");
+    const cap = member("cap");
+    // Project C lives in edition B. Asked for under edition A it must look
+    // missing, exactly like an unknown id; under its own edition the answer
+    // is the brief's not_assigned; only a matching assignment earns wrong_edition.
+    for (const action of ACTIONS) {
+      expect(await authorizeProjectAction(cap, { projectId: PROJECT_C, hackathonId: EDITION_A, action }), action).toEqual({ allowed: false, reason: "not_found" });
+      expect(await authorizeProjectAction(cap, { projectId: UNKNOWN, hackathonId: EDITION_A, action }), action).toEqual({ allowed: false, reason: "not_found" });
+      expect(await authorizeProjectAction(cap, { projectId: PROJECT_C, hackathonId: EDITION_B, action }), action).toEqual({ allowed: false, reason: "not_assigned" });
+    }
+    expect(await authorizeProjectAction(cap, { projectId: PROJECT_C, hackathonId: EDITION_A, action: "read" }, assigned("cap", PROJECT_C))).toEqual({ allowed: false, reason: "wrong_edition" });
+    expect(await authorizeProjectAction(cap, { projectId: PROJECT_C, hackathonId: EDITION_A, action: "read" }, assigned("cap2", PROJECT_C))).toEqual({ allowed: false, reason: "not_found" });
+    expect(await authorizeProjectAction(cap, { projectId: PROJECT_C, hackathonId: EDITION_B, action: "read" }, assigned("cap", PROJECT_C))).toEqual({ allowed: true, via: "captain" });
+  });
+
   it("reads the grant from the database, never from the actor's own capability set", async () => {
     expect(await authorizeProjectAction(member("plain", ["captain"]), { projectId: PROJECT_A, hackathonId: EDITION_A, action: "read" }, assigned("plain", PROJECT_A))).toEqual({ allowed: false, reason: "not_found" });
     expect(await isAssignedCaptain(member("plain", ["captain"]), PROJECT_A, assigned("plain", PROJECT_A))).toBe(false);

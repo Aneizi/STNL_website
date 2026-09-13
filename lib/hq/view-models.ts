@@ -38,8 +38,25 @@ export type CaptainAssignmentView = {
 };
 
 /** A person as a public surface may show them: the name and the tag labels, never contact, org, notes or ids. */
-export type PublicPersonView = { name: string; tags: string[] };
+export type PublicPersonView = {
+  name: string;
+  /**
+   * Every tag label on the card, the role tag and the capability tags
+   * ("Captain") alike. A surface rendering to members who are not Captains
+   * must filter the source tags to `kind !== "capability"` before mapping,
+   * because the permission contract shows Captain names only to Captains and
+   * operators.
+   */
+  tags: string[];
+};
 
+/**
+ * Precondition: the viewer was already authorized on the team through
+ * `authorizeProjectAction` (or the team came from a query scoped to their
+ * account, such as `builderStore().teams(viewer.id)`). The mapper does not
+ * check membership; it derives `role: "member"` for any viewer who is not
+ * the owner.
+ */
 export function toMemberTeamView(team: BuilderTeam, viewer: { id: string }, captain: TeamCaptainView | null = null): MemberTeamView {
   return {
     id: team.id,

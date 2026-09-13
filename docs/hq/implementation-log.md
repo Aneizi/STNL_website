@@ -652,7 +652,14 @@ action yet; that is task T1.4.
   edition; `not_member` is a related actor lacking the team relationship the
   action needs (membership changes are the team lead's, and a Captain holds
   no Captain-only permission there); `not_assigned` is a `captain` holder
-  who is not the project's current Captain; `no_capability` is a job actor.
+  who is not the project's current Captain, and only for a project in the
+  edition they asked under, so the reason cannot confirm which ids are
+  projects in other editions; `no_capability` is a job actor. Member-facing
+  surfaces render every denial identically. An operator is allowed without
+  a lookup, so operator callers still pass the loaded record through
+  `assertHackathonMatches`. `currentActor()` is wrapped in React `cache()`
+  like `currentMember()`: one set of reads per request, never across
+  requests.
   Entry audience follows the plan: shared entries are read by the team and
   the assigned Captain and edited by their author while still authorized on
   the project; a sensitive note is its author's and the operators', the
@@ -678,8 +685,8 @@ Migrations: none. No SQL file and nothing in `scripts/hq/` changed.
 
 ### Checks passed, task T1.3
 
-- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 526 tests pass
-  (494 before, 32 new).
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 527 tests pass
+  (494 before, 33 new).
 - `npx tsc --noEmit`: clean.
 - `npm run lint`: the same 18 pre-existing warnings, nothing new.
 - Phase 1 gate, "a member cannot read operator data through a URL, a body

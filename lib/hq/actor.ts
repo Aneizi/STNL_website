@@ -1,4 +1,5 @@
 import "server-only";
+import { cache } from "react";
 import { currentUser, requireUser } from "./auth";
 import { listActiveCapabilities, type Capability } from "./capabilities";
 import { getTelegramIdentity } from "./identity";
@@ -56,13 +57,18 @@ async function memberActor(user: MemberSessionUser): Promise<MemberActor> {
  * handed an operator actor (`requireOperatorActor()` sends them to the
  * change-password page instead); such a request falls through to the member
  * session, which grants nothing operator-side.
+ *
+ * Wrapped in React `cache()` like `currentMember()`: a layout and a page in
+ * the same request share one set of capability and identity reads. The
+ * cache lives for that request only, never across requests, so a revocation
+ * is visible on the next one.
  */
-export async function currentActor(): Promise<Actor | null> {
+export const currentActor = cache(async (): Promise<Actor | null> => {
   const operator = await currentUser();
   if (operator && !operator.mustChangePassword) return { kind: "operator", id: operator.id, displayName: operator.displayName };
   const member = await currentMember();
   return member ? memberActor(member) : null;
-}
+});
 
 /** The member gate: redirects like `requireMember()`, then builds the member actor. */
 export async function requireMemberActor(next?: string): Promise<MemberActor> {

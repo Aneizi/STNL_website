@@ -30,11 +30,20 @@ export { loadCurrentAssignment, loadEntry } from "./authz-sql";
  * capability together with the current assignment. The capability on its own
  * opens nothing.
  *
- * To a member, a project they have no relationship with looks exactly like
- * one that does not exist (`not_found`), whether it is missing, in another
- * edition or simply someone else's. `wrong_edition` is only ever returned to
- * an actor who is related to the project and asked for it under a different
- * edition, for example through a stale cookie or a crafted body.
+ * To a member without the `captain` capability, a project they have no
+ * relationship with looks exactly like one that does not exist
+ * (`not_found`), whether it is missing, in another edition or simply
+ * someone else's. A `captain` holder can tell `not_assigned` from
+ * `not_found` within the edition they asked under, and no further: outside
+ * that edition an existing project answers `not_found` too. Member-facing
+ * surfaces must render every denial identically, so the reason never
+ * reaches a response body. `wrong_edition` is only ever returned to an actor
+ * who is related to the project and asked for it under a different edition,
+ * for example through a stale cookie or a crafted body.
+ *
+ * An operator is allowed without any lookup, so a nonexistent project is
+ * "allowed" for them by design. Operator callers therefore still load the
+ * record and pass it through `assertHackathonMatches` before acting on it.
  */
 
 export type ProjectAction = "read" | "update.create" | "update.edit" | "membership.change" | "assignment.read";
@@ -114,7 +123,12 @@ export async function authorizeProjectAction(actor: Actor, request: ProjectActio
   const capabilities = await load.loadCapabilities(actor.id);
   if (!capabilities.includes("captain")) return { allowed: false, reason: "not_found" };
   const assignment = await load.loadCurrentAssignment(request.projectId);
-  if (assignment?.captainUserId !== actor.id) return { allowed: false, reason: "not_assigned" };
+  if (assignment?.captainUserId !== actor.id) {
+    // Unassigned, the Captain is unrelated: a project outside the requested
+    // edition must look missing, or the reason would confirm which ids are
+    // HQ projects in other editions.
+    return { allowed: false, reason: edition.hackathonId !== request.hackathonId ? "not_found" : "not_assigned" };
+  }
   if (edition.hackathonId !== request.hackathonId) return { allowed: false, reason: "wrong_edition" };
   if (!CAPTAIN_ACTIONS.has(request.action)) return { allowed: false, reason: "not_member" };
   return { allowed: true, via: "captain" };
