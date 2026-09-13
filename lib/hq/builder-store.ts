@@ -29,9 +29,15 @@ async function enroll(db: BuilderQuery, user: BuilderIdentity, hackathonId: numb
   // a contact is the normal state for a Telegram-only account. On conflict
   // only the role follows the enrollment and a card that has no person yet
   // gets one; an operator's edits and a corrected person link both survive.
+  // The person is stamped only when no other card of that edition already
+  // carries it (hq_people_person_idx, one card per person per edition), on
+  // insert and on conflict alike: a roster card that kept the person after a
+  // match correction must never break the member's next login sync.
   const personId = await ensurePersonForAccount(db, { userId: user.id, displayName: user.name });
   await db.query(`INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id,contact,person_id)
-    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(hackathon_id,builder_user_id)
+    VALUES($1,$2,$3,$4,$5,
+      CASE WHEN EXISTS (SELECT 1 FROM hq_people q WHERE q.hackathon_id=$1 AND q.person_id=$6::uuid) THEN NULL ELSE $6::uuid END)
+    ON CONFLICT(hackathon_id,builder_user_id)
     DO UPDATE SET role_id=EXCLUDED.role_id,person_id=COALESCE(hq_people.person_id,EXCLUDED.person_id)`,
     [hackathonId, user.id, user.name, roles[0].id, realEmail(user.email) ?? '', personId]);
 }

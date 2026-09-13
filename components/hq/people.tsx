@@ -141,6 +141,10 @@ export function People({
   const [roleFilter, setRoleFilter] = useState("");
   const [partnerFilter, setPartnerFilter] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
+  // Cards whose account link was cleared in this session. The server then
+  // hands the card a fresh person of its own, so without this the button
+  // would come back and a second click would only churn that person.
+  const [clearedMatches, setClearedMatches] = useState<Set<string>>(() => new Set());
   const drafts = useRef<Drafts>({ ...emptyDrafts });
 
   const partnerNameOf = (id: string | null) =>
@@ -196,11 +200,12 @@ export function People({
   // person and gets a person of its own. Roles, tags and grants are untouched.
   const flagWrongMatch = (person: Person) => {
     const personId = person.personId;
-    if (!personId) return;
+    if (!personId || clearedMatches.has(person.id)) return;
     const reason = window.prompt(
       "Why is this account the wrong match for this person? The link is cleared and the account keeps a card of its own.",
     );
     if (reason === null) return;
+    setClearedMatches((prev) => new Set(prev).add(person.id));
     startTransition(async () => {
       const result = await correctPersonMatch({ personId, toUserId: null, reason });
       showToast(result.ok ? "Match cleared" : (result.error ?? "Could not clear the match"));
@@ -503,7 +508,7 @@ export function People({
                     }}
                     style={editField}
                   />
-                  {p.builderUserId && p.personId ? (
+                  {p.builderUserId && p.personId && !clearedMatches.has(p.id) ? (
                     <button
                       className="hq-hover-accent"
                       onClick={() => flagWrongMatch(p)}

@@ -114,6 +114,29 @@ describe("builder accounts and edition-scoped People", () => {
       .toEqual([{ label: "Builder" }]);
   });
 
+  it("enrolls without tripping the per-edition person index when another card already carries the account's person", async () => {
+    const [{ id: own }] = await rows("SELECT id FROM hq_crm_persons WHERE builder_user_id=$1", [OWNER.id]);
+    // Edition 41: the account's card is unstamped while a roster card carries
+    // its person, the state a person-match link can leave behind. Edition
+    // 42: no card for the account yet, a roster card already carries it.
+    await db.query("UPDATE hq_people SET person_id=NULL WHERE builder_user_id=$1 AND hackathon_id=41", [OWNER.id]);
+    for (const edition of [41, 42]) {
+      await db.query(`INSERT INTO hq_people(hackathon_id,name,role_id,person_id) SELECT $1,'Owner (roster card)',id,$2 FROM hq_people_roles WHERE label='Builder'`, [edition, own]);
+    }
+    await expect(store.enroll(OWNER, 41, "builder")).resolves.toBeUndefined();
+    await expect(store.enroll(OWNER, 42, "supporter")).resolves.toBeUndefined();
+    expect(await rows(`SELECT p.hackathon_id,p.person_id,r.label FROM hq_people p JOIN hq_people_roles r ON r.id=p.role_id
+      WHERE p.builder_user_id=$1 ORDER BY p.hackathon_id`, [OWNER.id])).toEqual([
+      { hackathon_id: 41, person_id: null, label: "Builder" },
+      { hackathon_id: 42, person_id: null, label: "Community" },
+    ]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE person_id=$1", [own])).toEqual([{ n: 2 }]);
+    // Once the other card is gone, the next enrolment stamps the account's card as before.
+    await db.query("DELETE FROM hq_people WHERE person_id=$1 AND builder_user_id IS NULL AND hackathon_id=41", [own]);
+    await store.enroll(OWNER, 41, "builder");
+    expect(await rows("SELECT person_id FROM hq_people WHERE builder_user_id=$1 AND hackathon_id=41", [OWNER.id])).toEqual([{ person_id: own }]);
+  });
+
   it("rejects unavailable editions without leaving a People card or enrollment", async () => {
     await expect(store.enroll(OWNER, 43, "builder")).rejects.toThrow("available hackathon");
     await expect(store.enroll(OWNER, 999, "builder")).rejects.toThrow("available hackathon");
@@ -253,21 +276,56 @@ describe("correcting a person match", () => {
     await db.query("UPDATE hq_crm_persons SET normalized_colosseum_username='not_the_owner' WHERE id=$1", [wrong]);
     expect((await card(OWNER.id, 41)).person_id).toBe(wrong);
     const result = await correctPersonMatch(db, { personId: wrong, toUserId: null, reason: "Different person on the roster", actor: OPERATOR_ACTOR });
-    expect(result).toMatchObject({ changed: true, fromUserId: OWNER.id, toUserId: null, survivingPersonId: wrong, mergedPersonId: null, movedCards: [], unlinkedCards: [], movedRosterRows: 0 });
-    expect(await rows("SELECT builder_user_id,normalized_colosseum_username FROM hq_crm_persons WHERE id=$1", [wrong]))
-      .toEqual([{ builder_user_id: null, normalized_colosseum_username: "not_the_owner" }]);
     const [fresh] = await personOf(OWNER.id);
     expect(fresh.id).not.toBe(wrong);
+    // The person keeps its provisional key, so it stays for a later explicit link.
+    expect(result).toMatchObject({ changed: true, fromUserId: OWNER.id, toUserId: null, survivingPersonId: wrong, mergedPersonId: null, replacementPersonId: fresh.id, deletedPersonId: null, movedCards: [], unlinkedCards: [], movedRosterRows: 0 });
+    expect(await rows("SELECT builder_user_id,normalized_colosseum_username FROM hq_crm_persons WHERE id=$1", [wrong]))
+      .toEqual([{ builder_user_id: null, normalized_colosseum_username: "not_the_owner" }]);
     expect((await card(OWNER.id, 41)).person_id).toBe(fresh.id);
     expect(await events()).toEqual([{
       kind: "person.match_corrected", actor_kind: "operator", actor_id: OPERATOR_ACTOR.id, subject_user_id: OWNER.id,
-      metadata: { fromUserId: OWNER.id, toUserId: null, reason: "Different person on the roster", fromPersonId: wrong, toPersonId: wrong, movedCards: [], unlinkedCards: [], movedRosterRows: 0 },
+      metadata: { fromUserId: OWNER.id, toUserId: null, reason: "Different person on the roster", fromPersonId: wrong, toPersonId: wrong, replacementPersonId: fresh.id, deletedPersonId: null, movedCards: [], unlinkedCards: [], movedRosterRows: 0 },
     }]);
     // A later sync keeps the fresh person; the roster person is never re-linked by name.
     await store.syncAccount(OWNER);
     expect(await personOf(OWNER.id)).toEqual([expect.objectContaining({ id: fresh.id })]);
     expect(await correctPersonMatch(db, { personId: wrong, toUserId: null, reason: "again", actor: OPERATOR_ACTOR })).toMatchObject({ changed: false });
     expect(await events()).toHaveLength(1);
+  });
+
+  it("removes a cleared person that nothing identifies any more, instead of orphaning it", async () => {
+    // The account's own auto-created person: no provisional key, no other card, no roster row.
+    const [{ id: own }] = await personOf(OWNER.id);
+    const result = await correctPersonMatch(db, { personId: own, toUserId: null, reason: "Clicked in error, nothing to detach", actor: OPERATOR_ACTOR });
+    const [fresh] = await personOf(OWNER.id);
+    expect(fresh.id).not.toBe(own);
+    expect(result).toMatchObject({ changed: true, fromUserId: OWNER.id, toUserId: null, replacementPersonId: fresh.id, deletedPersonId: own });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE id=$1", [own])).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+    expect((await card(OWNER.id, 41)).person_id).toBe(fresh.id);
+    expect((await events())[0]).toMatchObject({ subject_user_id: OWNER.id, metadata: expect.objectContaining({ fromPersonId: own, deletedPersonId: own, replacementPersonId: fresh.id }) });
+    // A second click on the same card can only name a person that is gone.
+    await expect(correctPersonMatch(db, { personId: own, toUserId: null, reason: "again", actor: OPERATOR_ACTOR })).rejects.toThrow("no longer in the CRM");
+    expect(await events()).toHaveLength(1);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+  });
+
+  it("keeps a cleared person that a roster row or another card still names", async () => {
+    const [{ id: own }] = await personOf(OWNER.id);
+    await importProject();
+    await db.query("UPDATE hq_project_members SET person_id=$1 WHERE colosseum_username='fictional_builder_1'", [own]);
+    const viaRoster = await correctPersonMatch(db, { personId: own, toUserId: null, reason: "Roster row names it", actor: OPERATOR_ACTOR });
+    expect(viaRoster).toMatchObject({ deletedPersonId: null });
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [own])).toEqual([{ builder_user_id: null }]);
+    // And a person that another edition's card names is kept as well.
+    const [{ id: teammatePerson }] = await personOf(TEAMMATE.id);
+    await rosterCard(42, teammatePerson);
+    const viaCard = await correctPersonMatch(db, { personId: teammatePerson, toUserId: null, reason: "A card in 42 names it", actor: OPERATOR_ACTOR });
+    expect(viaCard).toMatchObject({ deletedPersonId: null });
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [teammatePerson])).toEqual([{ builder_user_id: null }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE person_id=$1", [teammatePerson])).toEqual([{ n: 1 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 5 }]);
   });
 
   it("links a roster person to an account without a person, leaving a colliding card unstamped and reported", async () => {
@@ -285,6 +343,11 @@ describe("correcting a person match", () => {
     expect(await rows("SELECT person_id FROM hq_people WHERE id=$1", [colliding])).toEqual([{ person_id: roster }]);
     expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE builder_user_id='auth-legacy'")).toEqual([{ builder_user_id: "auth-legacy" }]);
     expect((await events())[0]).toMatchObject({ subject_user_id: "auth-legacy", metadata: expect.objectContaining({ fromPersonId: roster, toPersonId: roster, unlinkedCards: [legacy41.id] }) });
+    // The member's next login sync must survive the state this leaves behind:
+    // an unstamped card in 41 while the roster card there carries the person.
+    await expect(store.enroll({ id: "auth-legacy", email: null, name: "Legacy Builder" }, 41, "builder")).resolves.toBeUndefined();
+    expect((await card("auth-legacy", 41)).person_id).toBeNull();
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41 AND person_id=$1", [roster])).toEqual([{ n: 1 }]);
   });
 
   it("merges a roster person into the account's own person: cards and roster rows follow, a collision is reported, the username moves", async () => {

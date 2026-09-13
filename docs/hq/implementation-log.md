@@ -434,7 +434,11 @@ membership tier, and opening no project on its own (assignment is phase 4).
   (append-only, `bigserial` id, structural `metadata`, never a note body).
   The T1.1 person backfill skips a card whose edition already carries the
   person, so a re-run of `hq:migrate` can never trip
-  `hq_people_person_idx`. The one `;` inside a `--` comment is gone.
+  `hq_people_person_idx`. No `--` comment in `builder-schema.sql` contains a
+  `;` any more (the splitter would not split on one mid-line, but the file
+  now matches the rule it documents). The `capability` CHECK is named
+  `hq_account_capabilities_capability_check`, so a later capability is a
+  `DROP CONSTRAINT IF EXISTS` plus `ADD CONSTRAINT`.
 - `scripts/hq/seed.ts` and `scripts/hq/upgrades.ts` (ruling Q4): the seeded
   partner-liaison People role is "Partner captain" ("Partner captains" as
   the filter label). One guarded, idempotent upgrade step renames it in
@@ -495,7 +499,7 @@ Migrations, all in `scripts/hq/builder-schema.sql` plus one guarded step in
 CREATE TABLE IF NOT EXISTS hq_account_capabilities (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
-  capability text NOT NULL CHECK (capability IN ('captain')),
+  capability text NOT NULL CONSTRAINT hq_account_capabilities_capability_check CHECK (capability IN ('captain')),
   granted_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
   granted_at timestamptz NOT NULL DEFAULT now(),
   revoked_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,

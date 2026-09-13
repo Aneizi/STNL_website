@@ -84,6 +84,10 @@ async function expectIdentitySchema(pg: PGlite) {
   for (const index of ["hq_account_capabilities_active_idx", "hq_account_capabilities_capability_idx", "hq_audit_events_subject_idx", "hq_audit_events_kind_idx"]) {
     expect(await exists(pg, index), index).toBe(true);
   }
+  // Named, so a later capability is a DROP CONSTRAINT IF EXISTS plus ADD.
+  expect(
+    await run(pg, `SELECT conname FROM pg_constraint WHERE conrelid = 'hq_account_capabilities'::regclass AND contype = 'c' ORDER BY conname`),
+  ).toEqual([{ conname: "hq_account_capabilities_capability_check" }]);
 }
 
 describe("the migration files", () => {

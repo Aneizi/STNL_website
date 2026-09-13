@@ -140,13 +140,13 @@ UPDATE hq_people SET person_id = c.id FROM hq_crm_persons c WHERE hq_people.pers
 
 -- Admin-controlled account capabilities. A capability is written only by
 -- lib/hq/capabilities.ts and is never derived from a People role, a tag or
--- the membership tier. One active grant per account and capability; a revoked
+-- the membership tier. One active grant per account and capability. A revoked
 -- grant stays as history. granted_by_user_id and revoked_by_user_id name the
 -- operator who acted, which never makes the public account an operator.
 CREATE TABLE IF NOT EXISTS hq_account_capabilities (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
-  capability text NOT NULL CHECK (capability IN ('captain')),
+  capability text NOT NULL CONSTRAINT hq_account_capabilities_capability_check CHECK (capability IN ('captain')),
   granted_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
   granted_at timestamptz NOT NULL DEFAULT now(),
   revoked_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,

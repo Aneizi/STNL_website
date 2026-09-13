@@ -21,8 +21,28 @@ import { BuilderError } from "./builder-types";
  * an operator action with a reason and an audit event.
  */
 
-/** A People card is stamped with a person only where no other card of that edition carries it (one card per person per edition). */
-const NO_CARD_IN_EDITION = "NOT EXISTS (SELECT 1 FROM hq_people q WHERE q.hackathon_id = hq_people.hackathon_id AND q.person_id = $1)";
+/**
+ * The one card per person per edition rule (hq_people_person_idx) as a
+ * predicate over the card being updated: true when no other card of the same
+ * edition carries the person. `personParam` is the positional parameter that
+ * holds that person's id, so a caller says which uuid is being guarded
+ * against instead of relying on parameter order.
+ */
+const noCardInEdition = (personParam: number) =>
+  `NOT EXISTS (SELECT 1 FROM hq_people q WHERE q.hackathon_id = hq_people.hackathon_id AND q.person_id = $${personParam})`;
+
+/**
+ * Stamps the account's People cards that carry no person yet with `personId`,
+ * skipping an edition where another card already carries it. Returns the ids
+ * of the cards stamped.
+ */
+async function stampAccountCards(tx: BuilderQuery, input: { personId: string; userId: string }): Promise<string[]> {
+  const { rows } = await tx.query(
+    `UPDATE hq_people SET person_id=$1 WHERE builder_user_id=$2 AND person_id IS NULL AND ${noCardInEdition(1)} RETURNING id::text AS id`,
+    [input.personId, input.userId],
+  );
+  return rows.map((row) => String(row.id));
+}
 
 /** Lower case, without a leading `@` or surrounding whitespace; null when nothing is left. */
 export function normalizeColosseumUsername(raw: string | null | undefined): string | null {
@@ -83,7 +103,7 @@ export async function linkPersonToAccount(db: BuilderQuery | BuilderDatabase, in
     if (!accounts.length) throw new BuilderError("This account no longer exists.");
     const { rows: others } = await tx.query("SELECT 1 FROM hq_crm_persons WHERE builder_user_id=$1 AND id<>$2", [input.userId, input.personId]);
     if (others.length) throw new BuilderError("This account is already linked to another person.");
-    await tx.query(`UPDATE hq_people SET person_id=$1 WHERE builder_user_id=$2 AND person_id IS NULL AND ${NO_CARD_IN_EDITION}`, [input.personId, input.userId]);
+    await stampAccountCards(tx, { personId: input.personId, userId: input.userId });
     await tx.query("UPDATE hq_crm_persons SET builder_user_id=$1,updated_at=now() WHERE id=$2", [input.userId, input.personId]);
   });
 }
@@ -94,10 +114,14 @@ export type PersonMatchCorrection = {
   personId: string;
   fromUserId: string | null;
   toUserId: string | null;
-  /** The person the target account ends up with: `personId`, or the account's own person after a merge. */
+  /** The person the target account ends up with: `personId`, or the account's own person after a merge. For a clear, `personId` itself (see `deletedPersonId`). */
   survivingPersonId: string;
   /** `personId` when it was merged into the account's own person and deleted. */
   mergedPersonId: string | null;
+  /** The fresh person the previously linked account received when the person was detached from it. */
+  replacementPersonId: string | null;
+  /** `personId` when a clear left it with no provisional key, no card and no roster row, so it was removed instead of orphaned. */
+  deletedPersonId: string | null;
   /** People cards re-pointed to the surviving person. */
   movedCards: string[];
   /** People cards left without a person because their edition already had a card for the surviving person. */
@@ -112,7 +136,10 @@ export type PersonMatchCorrection = {
  * display name; the two ids are given.
  *
  * Detaching keeps the invariant that every account has one person of its
- * own: the old account's cards drop the person and get a fresh one. Attaching
+ * own: the old account's cards drop the person and get a fresh one. A cleared
+ * person that has nothing left to identify it (no provisional Colosseum
+ * username, no card, no roster row) is deleted rather than orphaned; one with
+ * any of those is kept for a later explicit link. Attaching
  * links the person when the target account has none, and otherwise MERGES the
  * person into the account's own person: every People card and roster row is
  * re-pointed, a card whose edition already holds a card for the survivor is
@@ -133,7 +160,8 @@ export async function correctPersonMatch(
     const fromUserId = persons[0].builder_user_id == null ? null : String(persons[0].builder_user_id);
     const result: PersonMatchCorrection = {
       changed: false, personId: input.personId, fromUserId, toUserId: input.toUserId,
-      survivingPersonId: input.personId, mergedPersonId: null, movedCards: [], unlinkedCards: [], movedRosterRows: 0,
+      survivingPersonId: input.personId, mergedPersonId: null, replacementPersonId: null, deletedPersonId: null,
+      movedCards: [], unlinkedCards: [], movedRosterRows: 0,
     };
     if (fromUserId === input.toUserId) return result;
 
@@ -145,7 +173,24 @@ export async function correctPersonMatch(
       const { rows: profile } = await tx.query("SELECT name FROM hq_builder_profiles WHERE id=$1", [fromUserId]);
       if (profile.length) {
         const fresh = await ensurePersonForAccount(tx, { userId: fromUserId, displayName: String(profile[0].name) });
-        await tx.query(`UPDATE hq_people SET person_id=$1 WHERE builder_user_id=$2 AND person_id IS NULL AND ${NO_CARD_IN_EDITION}`, [fresh, fromUserId]);
+        result.replacementPersonId = fresh;
+        await stampAccountCards(tx, { personId: fresh, userId: fromUserId });
+      }
+      if (input.toUserId === null) {
+        // A clear, not a re-point: a person with nothing left to identify it
+        // would only be an orphan, so it goes. Anything that still names it
+        // (a provisional key, another card, a roster row) keeps it.
+        const { rows: references } = await tx.query(
+          `SELECT normalized_colosseum_username IS NOT NULL AS keyed,
+             EXISTS (SELECT 1 FROM hq_people WHERE person_id=$1) AS has_cards,
+             EXISTS (SELECT 1 FROM hq_project_members WHERE person_id=$1) AS has_roster
+           FROM hq_crm_persons WHERE id=$1`,
+          [input.personId],
+        );
+        if (references.length && !references[0].keyed && !references[0].has_cards && !references[0].has_roster) {
+          await tx.query("DELETE FROM hq_crm_persons WHERE id=$1", [input.personId]);
+          result.deletedPersonId = input.personId;
+        }
       }
     }
 
@@ -161,8 +206,10 @@ export async function correctPersonMatch(
         const survivor = String(own[0].id);
         result.survivingPersonId = survivor;
         result.mergedPersonId = input.personId;
+        // $1 is the survivor: the guard is against a card of the same
+        // edition that already carries the survivor, not the merged person.
         const { rows: moved } = await tx.query(
-          `UPDATE hq_people SET person_id=$1 WHERE person_id=$2 AND ${NO_CARD_IN_EDITION} RETURNING id::text AS id`,
+          `UPDATE hq_people SET person_id=$1 WHERE person_id=$2 AND ${noCardInEdition(1)} RETURNING id::text AS id`,
           [survivor, input.personId],
         );
         result.movedCards = moved.map((row) => String(row.id));
@@ -177,7 +224,7 @@ export async function correctPersonMatch(
           "UPDATE hq_crm_persons SET normalized_colosseum_username=COALESCE(normalized_colosseum_username,$2),updated_at=now() WHERE id=$1",
           [survivor, persons[0].normalized_colosseum_username ?? null],
         );
-        await tx.query(`UPDATE hq_people SET person_id=$1 WHERE builder_user_id=$2 AND person_id IS NULL AND ${NO_CARD_IN_EDITION}`, [survivor, input.toUserId]);
+        await stampAccountCards(tx, { personId: survivor, userId: input.toUserId });
       }
     }
 
@@ -189,6 +236,7 @@ export async function correctPersonMatch(
       metadata: {
         fromUserId, toUserId: input.toUserId, reason: input.reason,
         fromPersonId: input.personId, toPersonId: result.survivingPersonId,
+        replacementPersonId: result.replacementPersonId, deletedPersonId: result.deletedPersonId,
         movedCards: result.movedCards, unlinkedCards: result.unlinkedCards, movedRosterRows: result.movedRosterRows,
         ...(result.mergedPersonId ? { mergedColosseumUsername: persons[0].normalized_colosseum_username ?? null } : {}),
       },
