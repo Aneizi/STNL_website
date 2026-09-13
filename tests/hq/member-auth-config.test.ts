@@ -5,10 +5,17 @@ describe("public HQ authentication configuration", () => {
   const env = { DATABASE_URL: "postgres://local/test", BETTER_AUTH_SECRET: "test-secret-that-is-at-least-thirty-two-characters", BETTER_AUTH_URL: "https://nl.superteam.fun", NODE_ENV: "production" };
 
   it("does not advertise providers without both credentials or a sender", () => {
-    expect(getMemberAuthAvailability(env)).toEqual({ configured: true, email: false, google: false, github: false });
+    expect(getMemberAuthAvailability(env)).toEqual({ configured: true, email: false, google: false, github: false, telegram: false });
     expect(getMemberAuthAvailability({ ...env, GOOGLE_CLIENT_ID: "id" }).google).toBe(false);
     expect(getMemberAuthAvailability({ ...env, GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret" }).google).toBe(true);
     expect(getMemberAuthAvailability({ ...env, RESEND_API_KEY: "key", EMAIL_FROM: "HQ <hq@example.com>" }).email).toBe(true);
+  });
+
+  it("advertises Telegram only with both login credentials, whatever the bot username", () => {
+    expect(getMemberAuthAvailability({ ...env, TELEGRAM_LOGIN_CLIENT_ID: "123456789" }).telegram).toBe(false);
+    expect(getMemberAuthAvailability({ ...env, TELEGRAM_LOGIN_CLIENT_SECRET: "secret", TELEGRAM_BOT_USERNAME: "fictional_bot" }).telegram).toBe(false);
+    expect(getMemberAuthAvailability({ ...env, TELEGRAM_LOGIN_CLIENT_ID: "123456789", TELEGRAM_LOGIN_CLIENT_SECRET: "secret" }).telegram).toBe(true);
+    expect(getMemberAuthAvailability({ ...env, DATABASE_URL: undefined, TELEGRAM_LOGIN_CLIENT_ID: "123456789", TELEGRAM_LOGIN_CLIENT_SECRET: "secret" }).telegram).toBe(false);
   });
 
   it("requires independent secrets and an explicit secure production origin", () => {

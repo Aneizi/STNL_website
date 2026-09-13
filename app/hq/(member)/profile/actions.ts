@@ -17,7 +17,8 @@ export async function completeMemberProfile(_previous: ProfileResult, formData: 
   if (!name || name.length > 120) return { error: "Enter your name, using 120 characters or fewer." };
   try {
     await getAuth().api.updateUser({ headers: await headers(), body: { name } });
-    await syncBuilderAccount({ ...user, name });
+    // TODO(T1.1): resume sync once hq_builder_profiles.email is nullable
+    if (user.email !== null) await syncBuilderAccount({ id: user.id, email: user.email, name });
   } catch {
     return { error: "We could not save your name. Please try again." };
   }

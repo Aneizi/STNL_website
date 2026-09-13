@@ -57,3 +57,19 @@ CREATE TABLE IF NOT EXISTS hq_auth_rate_limit (
   count integer NOT NULL,
   "lastRequest" bigint NOT NULL
 );
+
+-- Verified Telegram identity per public account. One row per account and one
+-- account per Telegram user. provider_subject is the id_token `sub` and equals
+-- hq_auth_account."accountId" for providerId 'telegram'. telegram_user_id is
+-- the numeric Telegram user id (at most 52 significant bits, hence bigint,
+-- exposed as a string at JSON boundaries). Written by the identity plugin's
+-- database hooks after the Better Auth transaction commits.
+CREATE TABLE IF NOT EXISTS hq_auth_telegram_identity (
+  user_id text PRIMARY KEY REFERENCES hq_auth_user(id) ON DELETE CASCADE,
+  provider_subject text NOT NULL UNIQUE,
+  telegram_user_id bigint NOT NULL UNIQUE,
+  username text,
+  photo_url text,
+  linked_at timestamptz NOT NULL DEFAULT now(),
+  last_login_at timestamptz NOT NULL DEFAULT now()
+);

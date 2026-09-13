@@ -10,15 +10,32 @@ import { Pool } from "pg";
 import { Resend } from "resend";
 import { getMemberAuthAvailability, memberAuthOrigin, safeMemberNext } from "./member-auth-config";
 import { syncBuilderAccount } from "./builder-store";
+import { hasTelegramIdentity } from "./identity";
 import { memberEmailDeliveryFailed } from "./member-auth-delivery";
+import { hqTelegramIdentity } from "./telegram-identity-plugin";
+import { isPlaceholderEmail } from "./telegram-provider";
 
-export type MemberSessionUser = { id: string; email: string; name: string };
+/** `email` is null for accounts whose stored address is the internal placeholder (Telegram-only). */
+export type MemberSessionUser = { id: string; email: string | null; name: string };
 
 export class MemberAuthUnavailableError extends Error {
   constructor() {
     super("Account sign-in is not available yet. Please try again later.");
     this.name = "MemberAuthUnavailableError";
   }
+}
+
+/** The contact address, or null when the stored address is a placeholder that must never be shown or mailed. */
+const contactEmail = (email: string) => (isPlaceholderEmail(email) ? null : email);
+
+/**
+ * What "verified account" means for HQ: a verified real email, or a Telegram
+ * identity row. A session alone is not enough, and a placeholder user whose
+ * identity row is missing fails closed.
+ */
+async function isVerifiedMember(user: { id: string; email: string; emailVerified: boolean }): Promise<boolean> {
+  if (user.emailVerified && !isPlaceholderEmail(user.email)) return true;
+  return hasTelegramIdentity(user.id);
 }
 
 function createMemberAuth() {
@@ -38,14 +55,31 @@ function createMemberAuth() {
       connectionTimeoutMillis: 10_000,
       allowExitOnIdle: true,
     }),
-    user: { modelName: "hq_auth_user" },
+    user: {
+      modelName: "hq_auth_user",
+      // A placeholder address may only ever come from an OAuth identity without an email.
+      validateUserInfo: ({ user, source }) =>
+        source.method !== "oauth" && isPlaceholderEmail(typeof user.email === "string" ? user.email : undefined)
+          ? { error: "placeholder_email_not_allowed", errorDescription: "This address cannot be used to sign in." }
+          : undefined,
+    },
     session: {
       modelName: "hq_auth_session",
       expiresIn: 60 * 60 * 24 * 30,
       updateAge: 60 * 60 * 24,
       cookieCache: { enabled: false },
     },
-    account: { modelName: "hq_auth_account", encryptOAuthTokens: true },
+    account: {
+      modelName: "hq_auth_account",
+      encryptOAuthTokens: true,
+      accountLinking: {
+        enabled: true,
+        // Telegram reports no verified email; linking is explicit and session-bound only.
+        trustedProviders: ["telegram"],
+        allowDifferentEmails: true,
+        disableImplicitLinking: true,
+      },
+    },
     verification: { modelName: "hq_auth_verification" },
     advanced: {
       cookiePrefix: "stnl_builder",
@@ -74,7 +108,10 @@ function createMemberAuth() {
       user: {
         create: {
           after: async (user) => {
-            if (user.emailVerified && user.name.trim()) await syncBuilderAccount({ id: user.id, email: user.email, name: user.name.trim() });
+            // TODO(T1.1): resume sync once hq_builder_profiles.email is nullable
+            const email = contactEmail(user.email);
+            if (email === null || !user.name.trim() || !(await isVerifiedMember(user))) return;
+            await syncBuilderAccount({ id: user.id, email, name: user.name.trim() });
           },
         },
       },
@@ -86,6 +123,13 @@ function createMemberAuth() {
         allowedAttempts: 3,
         storeOTP: "hashed",
         async sendVerificationOTP({ email, otp }) {
+          // Last line of defence: the identity plugin refuses placeholder
+          // addresses before an OTP row exists. Should one still get here,
+          // never hand it to the sender and report the send as failed.
+          if (isPlaceholderEmail(email)) {
+            memberEmailDeliveryFailed();
+            return;
+          }
           try {
             if (!available.email) throw new APIError("SERVICE_UNAVAILABLE", { message: "Email sign-in is not available yet." });
             const resend = new Resend(process.env.RESEND_API_KEY);
@@ -100,6 +144,11 @@ function createMemberAuth() {
             memberEmailDeliveryFailed();
           }
         },
+      }),
+      hqTelegramIdentity({
+        provider: available.telegram
+          ? { clientId: process.env.TELEGRAM_LOGIN_CLIENT_ID!, clientSecret: process.env.TELEGRAM_LOGIN_CLIENT_SECRET! }
+          : null,
       }),
       nextCookies(),
     ],
@@ -117,10 +166,11 @@ export function getAuth() {
 export const currentMember = cache(async (): Promise<MemberSessionUser | null> => {
   if (!getMemberAuthAvailability().configured) return null;
   const session = await getAuth().api.getSession({ headers: await headers() });
-  if (!session?.user.emailVerified) return null;
-  const user = { id: session.user.id, email: session.user.email, name: session.user.name };
+  if (!session || !(await isVerifiedMember(session.user))) return null;
+  const user = { id: session.user.id, email: contactEmail(session.user.email), name: session.user.name };
   // Also repairs an interrupted CRM sync without duplicating People entries.
-  if (user.name.trim()) await syncBuilderAccount({ ...user, name: user.name.trim() });
+  // TODO(T1.1): resume sync once hq_builder_profiles.email is nullable
+  if (user.email !== null && user.name.trim()) await syncBuilderAccount({ id: user.id, email: user.email, name: user.name.trim() });
   return user;
 });
 

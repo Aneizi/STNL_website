@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -64,11 +65,27 @@ function latestCode() {
   return state.sent.at(-1)!.text.match(/\b\d{6}\b/)![0];
 }
 
+const SECRET = "test-only-independent-auth-secret-0123456789";
+
+/** A session token signed the way Better Auth signs its session cookie, for rows inserted directly. */
+function signedSessionCookie(token: string) {
+  const signature = createHmac("sha256", SECRET).update(token).digest("base64");
+  return `__Secure-stnl_builder.session_token=${encodeURIComponent(`${token}.${signature}`)}`;
+}
+
+/** A user row plus a live session for it, bypassing every sign-in flow. */
+async function seedSession(user: { id: string; email: string; emailVerified: boolean; name: string }) {
+  await state.pg!.query(`INSERT INTO hq_auth_user(id, name, email, "emailVerified") VALUES ($1, $2, $3, $4)`, [user.id, user.name, user.email, user.emailVerified]);
+  const token = `token-${user.id}`;
+  await state.pg!.query(`INSERT INTO hq_auth_session(id, "expiresAt", token, "userId") VALUES ($1, now() + interval '1 day', $2, $3)`, [`session-${user.id}`, token, user.id]);
+  return signedSessionCookie(token);
+}
+
 describe("public HQ sign-in through Better Auth", () => {
   beforeAll(async () => {
     vi.stubEnv("DATABASE_URL", "postgres://test-only/member-auth");
     vi.stubEnv("BETTER_AUTH_URL", ORIGIN);
-    vi.stubEnv("BETTER_AUTH_SECRET", "test-only-independent-auth-secret-0123456789");
+    vi.stubEnv("BETTER_AUTH_SECRET", SECRET);
     vi.stubEnv("RESEND_API_KEY", "test-only-sender");
     vi.stubEnv("EMAIL_FROM", "Superteam NL <test@example.com>");
     vi.stubEnv("GOOGLE_CLIENT_ID", "test-google-client");
@@ -159,6 +176,37 @@ describe("public HQ sign-in through Better Auth", () => {
     await expect(completeMemberProfile(null, form)).rejects.toThrow("REDIRECT:/hq/join?code=abc");
     expect((await state.pg!.query("SELECT name FROM hq_people")).rows).toEqual([{ name: "Recovered Builder" }]);
     expect((await requireMember("/hq/join?code=abc")).name).toBe("Recovered Builder");
+  });
+
+  it("still treats a verified email account as a member", async () => {
+    const email = "verified@example.com";
+    await request("/email-otp/send-verification-otp", { email, type: "sign-in" });
+    const signedIn = await request("/sign-in/email-otp", { email, otp: latestCode(), name: "Verified Builder" });
+    state.cookie = signedIn.headers.get("set-cookie")!.split(";")[0];
+    const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
+    const user = (await signedIn.json()).user;
+    expect(await currentMember()).toEqual({ id: user.id, email, name: "Verified Builder" });
+    expect((await requireMember("/hq/dashboard")).email).toBe(email);
+    expect(state.synced).toHaveBeenCalled();
+  });
+
+  it("admits a placeholder account only through its Telegram identity row, and syncs nothing for it yet", async () => {
+    const id = "telegram-only-user";
+    state.cookie = await seedSession({ id, email: "1234123412341234123@telegram.placeholder.invalid", emailVerified: false, name: "Telegram Builder" });
+    const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
+    expect((await (await request("/get-session", undefined, state.cookie)).json()).user.id).toBe(id);
+
+    // Without the identity row a session is not a member: fail closed.
+    expect(await currentMember()).toBeNull();
+    await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/signin?next=%2Fhq%2Fdashboard");
+
+    await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id) VALUES ($1, '1234123412341234123', 7000000000123)`, [id]);
+    expect(await currentMember()).toEqual({ id, email: null, name: "Telegram Builder" });
+    expect((await requireMember("/hq/dashboard")).email).toBeNull();
+    // TODO(T1.1) makes the CRM sync null-safe; until then a Telegram-only account writes no profile and no Person.
+    expect(state.synced).not.toHaveBeenCalled();
+    expect((await state.pg!.query("SELECT * FROM hq_builder_profiles")).rows).toHaveLength(0);
+    expect((await state.pg!.query("SELECT * FROM hq_people")).rows).toHaveLength(0);
   });
 
   it("rejects incorrect and expired codes without populating People", async () => {

@@ -10,7 +10,8 @@ export interface BuilderDatabase extends BuilderQuery {
   transaction<T>(work: (db: BuilderQuery) => Promise<T>): Promise<T>;
 }
 let database: BuilderDatabase | undefined;
-function productionDatabase(): BuilderDatabase {
+/** The shared public-account pool; also serves lib/hq/identity.ts. Separate from Better Auth's pool. */
+export function builderDatabase(): BuilderDatabase {
   if (database) return database;
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set');
   const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 4, idleTimeoutMillis: 20_000, connectionTimeoutMillis: 10_000 });
@@ -266,5 +267,5 @@ export class BuilderStore {
   }
 }
 
-export function builderStore() { return new BuilderStore(productionDatabase()); }
+export function builderStore() { return new BuilderStore(builderDatabase()); }
 export async function syncBuilderAccount(user: BuilderUser) { await builderStore().syncAccount(user); }
