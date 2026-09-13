@@ -812,9 +812,11 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(html).not.toContain(SUB);
     expect(html).not.toContain(String(TELEGRAM_ID));
     expect(html).not.toMatch(/[—·]/);
-    // Better Auth appends its code after ours; the page shows the specific one.
+    // Better Auth appends its code after ours; the page shows the specific one, and a cancel at Telegram is still explained.
     html = await render({ error: ["telegram", "account_already_linked_to_different_user"] });
     expect(html).toContain("already connected to another HQ account");
+    expect(await render({ error: ["telegram", "access_denied"] })).toContain("We could not connect Telegram. Please try again.");
+    expect(await render({ error: "access_denied" })).not.toContain("role=\"alert\"");
     expect(await render({ connected: "telegram" })).toContain("Telegram connected.");
 
     const emailUser = await signInWithEmail("page@example.com", "Page Builder");
@@ -870,5 +872,54 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(state.synced).toHaveBeenCalledWith({ id: expect.any(String), email: null, name: "Named Builder" });
     expect(state.sent).toEqual([]);
     expect((await requireMember("/hq/welcome")).name).toBe("Named Builder");
+  });
+
+  it("stays stale through the library's own session refresh", async () => {
+    const emailUser = await signInWithEmail("refreshed@example.com");
+    const userId = emailUser.user.id;
+    await recordTelegramIntent(await intentStore(), userId, "link");
+    // Old enough to be stale, and close enough to expiry for /get-session to extend it (session.mjs shouldBeUpdated).
+    await state.pg!.query(`UPDATE hq_auth_session SET "createdAt" = now() - interval '16 minutes', "updatedAt" = now() - interval '16 minutes', "expiresAt" = now() + interval '28 days'`);
+    const before = (await state.pg!.query<{ createdAt: Date; updatedAt: Date; expiresAt: Date }>('SELECT "createdAt", "updatedAt", "expiresAt" FROM hq_auth_session')).rows[0];
+
+    const session = await request("/get-session", undefined, emailUser.cookie);
+    expect((await session.json()).user.id).toBe(userId);
+    const after = (await state.pg!.query<{ createdAt: Date; updatedAt: Date; expiresAt: Date }>('SELECT "createdAt", "updatedAt", "expiresAt" FROM hq_auth_session')).rows[0];
+    expect(after.updatedAt.getTime()).toBeGreaterThan(before.updatedAt.getTime());
+    expect(after.expiresAt.getTime()).toBeGreaterThan(before.expiresAt.getTime());
+    expect(after.createdAt.getTime()).toBe(before.createdAt.getTime());
+
+    const link = await request("/link-social", LINK_BODY, emailUser.cookie);
+    expect(link.status).toBe(403);
+    expect((await link.json()).code).toBe("SESSION_NOT_FRESH");
+    expect(cookieHeader(link)).not.toContain("stnl_builder.state=");
+  });
+
+  it("does not expose the stored provider tokens to the session holder", async () => {
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
+    for (const [path, body] of [["/get-access-token", { accountId }], ["/refresh-token", { accountId }], [`/account-info?accountId=${accountId}`, undefined]] as const) {
+      const response = await request(path, body, cookie);
+      expect(response.status, path).toBe(404);
+      expect(await response.text(), path).not.toContain(state.minted.at(-1)!);
+    }
+    // The endpoints the flow needs are still there.
+    expect((await request("/list-accounts", undefined, cookie)).status).toBe(200);
+  });
+
+  it("lets the database refuse a second Telegram account row even when the identity backstop cannot see it", async () => {
+    const { session } = await signInWithTelegram();
+    state.cookie = session!.split(";")[0];
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    // The race the unique index is for: the identity row is not there, so account.create.before finds nothing to refuse.
+    await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
+    const otherSub = "5555555555555555555";
+    const idToken = await mintIdToken({ sub: otherSub, id: 4_200_000_000_042, nonce: null });
+    const store = await intentStore();
+    await expect(store.createAccount({ userId, providerId: "telegram", issuer: ISSUER, accountId: otherSub, idToken })).rejects.toThrow(/hq_auth_account_telegram_user_idx|unique/i);
+    expect((await state.pg!.query('SELECT "accountId" FROM hq_auth_account')).rows).toEqual([{ accountId: SUB }]);
+    expect(await count("hq_auth_telegram_identity")).toBe(0);
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId)]);
   });
 });

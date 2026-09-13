@@ -7,14 +7,14 @@ import { IconArrowLeft, IconArrowRight, IconPaperplaneFill } from "symbols-react
 import { memberAuthClient } from "@/lib/hq/member-auth-client";
 import { safeMemberNext, type MemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import styles from "./account.module.css";
-import { telegramErrorMessage } from "./telegram-copy";
+import { telegramErrorMessage, telegramFailure } from "./telegram-copy";
 
 type Props = {
   mode: "signup" | "signin";
   next: string;
   availability: MemberAuthAvailability;
-  /** The `error` code the Telegram callback or a sign-in redirect put in the URL; shown once, as copy. */
-  error?: string;
+  /** The `error` value(s) the Telegram callback or a sign-in redirect put in the URL; shown once, as copy. */
+  error?: string | string[];
 };
 
 /**
@@ -84,7 +84,7 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
         newUserCallbackURL: `/hq/profile?next=${encodeURIComponent(destination)}`,
       });
       if (result.error) {
-        setError(telegramErrorMessage(result.error.code) ?? messageFor(result.error));
+        setError(telegramErrorMessage(result.error.code) ?? telegramFailure("signin"));
         setBusy(false);
       }
     } catch {

@@ -3,10 +3,15 @@
 // form (a client component) and the account pages (server components), so
 // it lives in a plain module rather than in either of them.
 
-/** Better Auth appends its own `error` to the callback URL after ours, so a page reads the last value. */
+/** Better Auth appends its own value after ours, so a page that wants one value reads the last. */
 export function lastParam(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[value.length - 1] : value;
 }
+
+export type TelegramAction = "signin" | "connect";
+
+/** Shown wherever Telegram is the only way in: the account page, the disconnect step and the action's refusal. */
+export const LAST_LOGIN_METHOD_COPY = "Telegram is the only way to sign in to this account, so it cannot be disconnected. Add a verified email first.";
 
 const ALREADY_CONNECTED_ELSEWHERE = "This Telegram account is already connected to another HQ account. Sign in to that account instead.";
 
@@ -19,22 +24,28 @@ const MESSAGES: Record<string, string> = {
   TELEGRAM_ALREADY_CONNECTED: "This account already has a Telegram connection.",
   telegram_already_connected: "This account already has a Telegram connection.",
   TELEGRAM_NOT_CONNECTED: "This account has no Telegram connection.",
-  LAST_LOGIN_METHOD: "Telegram is the only way to sign in to this account, so it cannot be disconnected yet.",
+  LAST_LOGIN_METHOD: LAST_LOGIN_METHOD_COPY,
   CONFIRMATION_REQUIRED: "Please confirm this change again.",
   TELEGRAM_UNAVAILABLE: "Telegram sign-in is not available yet.",
 };
 
+/** The line for a Telegram attempt that did not work for a reason the person cannot act on. */
+export function telegramFailure(action: TelegramAction): string {
+  return action === "connect" ? "We could not connect Telegram. Please try again." : "We could not sign you in with Telegram. Please try again.";
+}
+
 /**
- * The message for a Telegram outcome code, or null when the code is not a
- * Telegram outcome at all (an unrelated `?error=` is not shown as one).
- * Unknown Telegram callback codes (`telegram`, `unable_to_get_user_info`,
- * `invalid_code`, ...) all mean the same thing to the person: it did not work.
+ * The message for the `error` values a Telegram outcome left in the URL, or
+ * null when none of them is a Telegram outcome (an unrelated `?error=` is not
+ * shown as one). Our own `errorCallbackURL` carries `telegram`; the callback
+ * appends its code after it, so a value is looked up wherever it sits. A
+ * mapped code wins; any other code next to `telegram` (`access_denied` when
+ * the person cancels at Telegram, `unable_to_get_user_info`, `invalid_code`,
+ * ...) means the same thing to them: it did not work.
  */
-export function telegramErrorMessage(code: string | undefined, action: "signin" | "connect" = "signin"): string | null {
-  if (!code) return null;
-  if (MESSAGES[code]) return MESSAGES[code];
-  if (code === "telegram" || code === "telegram_identity_incomplete" || /^(unable_to_get_user_info|invalid_code|nonce_binding_missing|no_code|issuer_mismatch)$/.test(code)) {
-    return action === "connect" ? "We could not connect Telegram. Please try again." : "We could not sign you in with Telegram. Please try again or use email.";
-  }
-  return null;
+export function telegramErrorMessage(error: string | string[] | undefined, action: TelegramAction = "signin"): string | null {
+  const values = error === undefined ? [] : Array.isArray(error) ? error : [error];
+  const mapped = values.filter((value) => value in MESSAGES);
+  if (mapped.length) return MESSAGES[mapped[mapped.length - 1]];
+  return values.includes("telegram") ? telegramFailure(action) : null;
 }

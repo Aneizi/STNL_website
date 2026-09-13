@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { BuilderShell } from "@/components/hq/builder-shell";
 import styles from "@/components/hq/builder-shell.module.css";
 import { requireMemberActor } from "@/lib/hq/actor";
+import { LAST_LOGIN_METHOD_COPY } from "../../telegram-copy";
 import { TelegramConfirmForm } from "../telegram-confirm-form";
 
 export const metadata: Metadata = { title: "Disconnect Telegram" };
@@ -22,7 +23,7 @@ export default async function DisconnectTelegramPage() {
       <h1>Disconnect <em>Telegram.</em></h1>
       {lastLoginMethod ? (
         <>
-          <p>Telegram is the only way to sign in to this account, so it cannot be disconnected. Add a verified email first.</p>
+          <p>{LAST_LOGIN_METHOD_COPY}</p>
           <Link className={styles.secondary} href="/hq/account">Back to your account</Link>
         </>
       ) : (

@@ -15,7 +15,7 @@ vi.mock("symbols-react", () => {
 
 import { AccountForm } from "@/app/hq/(member)/account-form";
 import type { MemberAuthAvailability } from "@/lib/hq/member-auth-config";
-import { lastParam, telegramErrorMessage } from "@/app/hq/(member)/telegram-copy";
+import { LAST_LOGIN_METHOD_COPY, lastParam, telegramErrorMessage, telegramFailure } from "@/app/hq/(member)/telegram-copy";
 
 type Props = Partial<Parameters<typeof AccountForm>[0]>;
 
@@ -81,9 +81,18 @@ describe("AccountForm", () => {
     expect(alertText(render({ error: "SESSION_NOT_FRESH" }))).toBe("Please sign in again to continue.");
     expect(alertText(render({ error: "state_mismatch" }))).toContain("expired or was already used");
     expect(alertText(render({ error: "identity_missing" }))).toBe("Your Telegram sign-in did not complete. Please sign in again.");
-    expect(alertText(render({ error: "telegram" }))).toBe("We could not sign you in with Telegram. Please try again or use email.");
-    expect(alertText(render({ error: "unable_to_get_user_info" }))).toBe("We could not sign you in with Telegram. Please try again or use email.");
+    expect(alertText(render({ error: "telegram" }))).toBe("We could not sign you in with Telegram. Please try again.");
+    // The callback appends its code after our `telegram` marker; the specific one wins wherever it sits.
+    expect(alertText(render({ error: ["telegram", "state_mismatch"] }))).toContain("expired or was already used");
+    expect(alertText(render({ error: ["telegram", "account_already_linked_to_different_user"] }))).toContain("already connected to another HQ account");
+    // Cancelling at Telegram, or any other unmapped callback code, is still shown as a Telegram failure.
+    for (const code of ["access_denied", "unable_to_get_user_info", "unable_to_link_account", "oauth_provider_not_found", "no_callback_url", "email_not_verified", "issuer_missing", "invalid_callback_request"]) {
+      expect(alertText(render({ error: ["telegram", code] })), code).toBe("We could not sign you in with Telegram. Please try again.");
+    }
+    // An unrelated `?error=` is not a Telegram outcome.
     expect(alertText(render({ error: "oauth" }))).toBe("");
+    expect(alertText(render({ error: "access_denied" }))).toBe("");
+    expect(alertText(render({ error: [] }))).toBe("");
     expect(alertText(render())).toBe("");
   });
 });
@@ -97,9 +106,12 @@ describe("telegram copy helpers", () => {
 
   it("phrases a generic failure for the action it interrupted", () => {
     expect(telegramErrorMessage("telegram", "connect")).toBe("We could not connect Telegram. Please try again.");
-    expect(telegramErrorMessage("LAST_LOGIN_METHOD", "connect")).toContain("cannot be disconnected");
+    expect(telegramErrorMessage(["telegram", "access_denied"], "connect")).toBe(telegramFailure("connect"));
+    expect(telegramErrorMessage(["telegram", "access_denied"], "signin")).toBe(telegramFailure("signin"));
+    expect(telegramErrorMessage("LAST_LOGIN_METHOD", "connect")).toBe(LAST_LOGIN_METHOD_COPY);
     expect(telegramErrorMessage("CONFIRMATION_REQUIRED")).toBe("Please confirm this change again.");
     expect(telegramErrorMessage(undefined)).toBeNull();
     expect(telegramErrorMessage("something_else")).toBeNull();
+    expect(telegramErrorMessage(["something_else", "another"])).toBeNull();
   });
 });

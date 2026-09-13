@@ -1097,6 +1097,24 @@ a test asserts the Telegram-only markup contains neither the placeholder
 address nor the subject. `proxy.ts` and `safeMemberNext` both list the three
 routes (T2.4 unifies the lists).
 
+Fix round 1 of the task review added three things. `scripts/hq/member-auth-schema.sql`
+gained `hq_auth_account_telegram_user_idx`, a partial unique index on
+`hq_auth_account("userId") WHERE "providerId" = 'telegram'` (one idempotent
+statement), so two in-flight link callbacks cannot leave a user with two
+Telegram account rows even when the `account.create.before` backstop has no
+identity row to see; the race then fails with a unique violation and nothing
+is written. `lib/hq/member-auth.ts` sets
+`disabledPaths: ["/get-access-token", "/refresh-token", "/account-info"]`,
+the three library endpoints that would echo the stored provider tokens,
+including the Telegram id_token, to the session holder; they answer 404. This
+completes Ruling Q18: the stored id_token is read by the identity plugin's
+database hooks and by nothing else, and no endpoint returns it. And the copy
+helper now takes every `error` value the URL carries: a mapped code wins
+wherever it sits, any other code next to our `telegram` marker (a cancel at
+Telegram arrives as `access_denied`) is shown as a Telegram failure, and an
+unrelated `?error=` is still ignored; a failed `signIn.social` call falls back
+to the same Telegram line, not to the email-code copy.
+
 ### Checks passed, task T2.2
 
 - Synthesis §2.6 steps 10 to 13 and 15 to 16, in
@@ -1149,9 +1167,10 @@ routes (T2.4 unifies the lists).
   `session.user` (grep over `app`, `components` and the auth client), and the
   placeholder guard is the markup test plus the server-only readers.
 - The `account.create.before` backstop for a second Telegram fires inside the
-  link callback outside any redirect wrapper, so a race that reaches it
-  answers 409 JSON instead of an error redirect. The endpoint hook stops the
-  same case with a redirectable refusal first.
+  link callback outside any redirect wrapper, so a race that reaches it (or
+  the unique index behind it) answers a JSON error instead of an error
+  redirect. The endpoint hook stops the same case with a redirectable refusal
+  first.
 
 ### Changed interfaces, task T2.2
 
@@ -1165,9 +1184,13 @@ take an optional query handle, and the delete returns whether a row went.
 `lib/hq/member-auth.ts` exports `currentMemberSession()` and
 `redirectToMemberSignIn(next)`. `lib/hq/actions/telegram.ts` exports
 `confirmLinkTelegram()`, `confirmUnlinkTelegram()` and their result types.
-`AccountForm` takes an optional `error` prop. `app/hq/(member)/telegram-copy.ts`
-exports `lastParam(value)` and `telegramErrorMessage(code, action?)`.
-`account.accountLinking.allowUnlinkingAll` is now true.
+`AccountForm` takes an optional `error` prop (a string or the whole
+`string[]` the URL carried). `app/hq/(member)/telegram-copy.ts` exports
+`lastParam(value)`, `telegramErrorMessage(error, action?)`,
+`telegramFailure(action)` and `LAST_LOGIN_METHOD_COPY`.
+`account.accountLinking.allowUnlinkingAll` is now true and `disabledPaths`
+lists the three token endpoints. Migration: the additive
+`hq_auth_account_telegram_user_idx` in `member-auth-schema.sql`.
 
 ### External configuration still required, task T2.2
 

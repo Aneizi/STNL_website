@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS hq_auth_account (
   UNIQUE (issuer, "accountId")
 );
 CREATE INDEX IF NOT EXISTS hq_auth_account_user_idx ON hq_auth_account("userId");
+-- One Telegram account row per HQ user, whatever two in-flight link callbacks do.
+CREATE UNIQUE INDEX IF NOT EXISTS hq_auth_account_telegram_user_idx ON hq_auth_account("userId") WHERE "providerId" = 'telegram';
 
 CREATE TABLE IF NOT EXISTS hq_auth_verification (
   id text PRIMARY KEY,

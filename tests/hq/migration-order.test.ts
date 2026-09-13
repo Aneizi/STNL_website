@@ -65,6 +65,16 @@ async function shape(pg: PGlite): Promise<Row[]> {
 /** The identity columns and tables this phase adds, checked the way an operator would. */
 async function expectIdentitySchema(pg: PGlite) {
   expect(await exists(pg, "hq_crm_persons")).toBe(true);
+  // One Telegram account row per user, enforced below Better Auth's own checks.
+  expect(await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_auth_account_telegram_user_idx'`)).toEqual([
+    { indexdef: expect.stringMatching(/^CREATE UNIQUE INDEX hq_auth_account_telegram_user_idx ON public\.hq_auth_account USING btree \("userId"\) WHERE \("providerId" = 'telegram'::text\)$/) },
+  ]);
+  await run(pg, `INSERT INTO hq_auth_user (id, name, email) VALUES ('tg-user', 'Two Rows', 'two-rows@example.com')`);
+  await run(pg, `INSERT INTO hq_auth_account (id, issuer, "accountId", "providerId", "userId") VALUES ('a1', 'https://oauth.telegram.org', 'sub-1', 'telegram', 'tg-user')`);
+  await expect(run(pg, `INSERT INTO hq_auth_account (id, issuer, "accountId", "providerId", "userId") VALUES ('a2', 'https://oauth.telegram.org', 'sub-2', 'telegram', 'tg-user')`)).rejects.toThrow(/hq_auth_account_telegram_user_idx/);
+  // The index is partial: another provider's row for the same user is not what it guards.
+  await run(pg, `INSERT INTO hq_auth_account (id, issuer, "accountId", "providerId", "userId") VALUES ('a3', 'https://other.example', 'sub-3', 'other', 'tg-user')`);
+  await run(pg, `DELETE FROM hq_auth_user WHERE id = 'tg-user'`);
   expect(await column(pg, "hq_builder_profiles", "email")).toEqual({ data_type: "text", is_nullable: "YES" });
   expect(await column(pg, "hq_builder_profiles", "contact_email")).toEqual({ data_type: "text", is_nullable: "YES" });
   expect(await column(pg, "hq_people", "person_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });

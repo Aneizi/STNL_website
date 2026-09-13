@@ -5,7 +5,7 @@ import styles from "@/components/hq/builder-shell.module.css";
 import { requireMemberActor } from "@/lib/hq/actor";
 import { getLoginMethods } from "@/lib/hq/identity";
 import { getMemberAuthAvailability } from "@/lib/hq/member-auth-config";
-import { lastParam, telegramErrorMessage } from "../telegram-copy";
+import { LAST_LOGIN_METHOD_COPY, lastParam, telegramErrorMessage } from "../telegram-copy";
 
 export const metadata: Metadata = { title: "Your account" };
 export const dynamic = "force-dynamic";
@@ -20,7 +20,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Sear
   const actor = await requireMemberActor("/hq/account");
   const methods = await getLoginMethods(actor.id);
   const telegramAvailable = getMemberAuthAvailability().telegram;
-  const error = telegramErrorMessage(lastParam(params.error), "connect");
+  const error = telegramErrorMessage(params.error, "connect");
   const notice = lastParam(params.connected) === "telegram" ? "Telegram connected." : lastParam(params.disconnected) === "telegram" ? "Telegram disconnected." : null;
   // actor.email is the verified login email (null for Telegram-only accounts),
   // the same value the plugin's last-login-method rule is defined over.
@@ -47,7 +47,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Sear
             <span className={styles.status}>Connected{methods.telegram.username ? ` as @${methods.telegram.username}` : ""}</span>
             {lastLoginMethod ? (
               <>
-                <p id="disconnect-blocked">Telegram is the only way to sign in to this account, so it cannot be disconnected. Add a verified email first.</p>
+                <p id="disconnect-blocked">{LAST_LOGIN_METHOD_COPY}</p>
                 <button type="button" className={styles.secondary} disabled aria-describedby="disconnect-blocked">Disconnect Telegram</button>
               </>
             ) : (

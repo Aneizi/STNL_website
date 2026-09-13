@@ -77,6 +77,10 @@ function createMemberAuth() {
       },
     },
     verification: { modelName: "hq_auth_verification" },
+    // These would hand the session holder the stored provider tokens,
+    // including the Telegram id_token. Nothing in HQ needs them and the
+    // stored id_token is read only by the identity plugin's database hooks.
+    disabledPaths: ["/get-access-token", "/refresh-token", "/account-info"],
     advanced: {
       cookiePrefix: "stnl_builder",
       disableOriginCheck: false,
