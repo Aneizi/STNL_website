@@ -1,39 +1,16 @@
 import 'server-only';
 import { createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
-import { Pool } from 'pg';
 import type { ImportedProject, ProjectProof } from '@/lib/colosseum-api';
+import { builderDatabase, type BuilderDatabase, type BuilderQuery } from './builder-db';
 import { BuilderError, type BuilderHackathon, type BuilderIdentity, type BuilderTeam, type BuilderUser, type ProjectStage } from './builder-types';
 import { ensurePersonForAccount } from './crm-identity';
 import { isPlaceholderEmail } from './telegram-provider';
 
-export { BuilderError };
+// The pool and its handle types live in builder-db.ts; they are re-exported
+// here so every existing import path keeps working.
+export { BuilderError, builderDatabase };
+export type { BuilderDatabase, BuilderQuery };
 
-type Row = Record<string, unknown>;
-export interface BuilderQuery { query(text: string, values?: unknown[]): Promise<{ rows: Row[] }> }
-export interface BuilderDatabase extends BuilderQuery {
-  transaction<T>(work: (db: BuilderQuery) => Promise<T>): Promise<T>;
-}
-let database: BuilderDatabase | undefined;
-/** The shared public-account pool; also serves lib/hq/identity.ts. Separate from Better Auth's pool. */
-export function builderDatabase(): BuilderDatabase {
-  if (database) return database;
-  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set');
-  const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 4, idleTimeoutMillis: 20_000, connectionTimeoutMillis: 10_000 });
-  database = {
-    query: (text, values) => pool.query(text, values),
-    async transaction(work) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const result = await work(client);
-        await client.query('COMMIT');
-        return result;
-      } catch (error) { await client.query('ROLLBACK'); throw error; }
-      finally { client.release(); }
-    },
-  };
-  return database;
-}
 const hashCode = (code: string) => createHash('sha256').update(code.toUpperCase().replace(/[\s-]/g, '')).digest('hex');
 const asDate = (value: unknown) => value ? new Date(String(value)).toISOString() : null;
 /** An address the CRM may hold: a real email, or nothing. The internal placeholder never reaches a row. */

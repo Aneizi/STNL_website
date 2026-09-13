@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
+import type { BuilderDatabase, BuilderQuery } from "@/lib/hq/builder-db";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
 
 /** The exact splitter from scripts/hq/migrate.ts. Keep the regex identical. */
@@ -48,4 +49,36 @@ export async function createMigratedDatabase(): Promise<PGlite> {
   const pg = new PGlite();
   await applyMigrations(pg);
   return pg;
+}
+
+/**
+ * The builder-side database handle over PGlite. PGlite owns one connection,
+ * so complete transactions are serialized: concurrent application calls then
+ * exercise real commit and rollback boundaries without interleaving BEGIN
+ * statements on that single connection.
+ */
+export function pgliteBuilderDatabase(database: PGlite): BuilderDatabase {
+  let queue: Promise<unknown> = Promise.resolve();
+  const raw: BuilderQuery = {
+    query: async (text, values) => ({ rows: (await database.query(text, values)).rows as Record<string, unknown>[] }),
+  };
+  function serialized<T>(work: () => Promise<T>): Promise<T> {
+    const result = queue.then(work, work);
+    queue = result.catch(() => undefined);
+    return result;
+  }
+  return {
+    query: (text, values) => serialized(() => raw.query(text, values)),
+    transaction: (work) => serialized(async () => {
+      await raw.query("BEGIN");
+      try {
+        const result = await work(raw);
+        await raw.query("COMMIT");
+        return result;
+      } catch (error) {
+        await raw.query("ROLLBACK");
+        throw error;
+      }
+    }),
+  };
 }

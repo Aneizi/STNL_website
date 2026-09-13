@@ -138,6 +138,13 @@ export type HqLink = {
  */
 export const HIGHLIGHT_CAP = 5;
 
+/**
+ * A label on a People card. A role tag is the card's editable role. A
+ * capability tag mirrors an admin-granted account capability (Captain): it is
+ * read-only in People, marked protected, and never a way to grant anything.
+ */
+export type PersonTag = { kind: "role" | "capability"; label: string; protected: boolean };
+
 export type Person = {
   id: string;
   name: string;
@@ -147,6 +154,11 @@ export type Person = {
   partnerId: string | null;
   partnerName: string;
   notes: string;
+  /** The linked public account, or null for a hand-entered card. */
+  builderUserId: string | null;
+  /** The CRM person this card belongs to, or null before one is assigned. */
+  personId: string | null;
+  tags: PersonTag[];
 };
 
 export type HqEvent = {

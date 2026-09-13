@@ -3,11 +3,12 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ImportedProject } from "@/lib/colosseum-api";
-import { BuilderStore, type BuilderDatabase, type BuilderQuery } from "@/lib/hq/builder-store";
+import { BuilderStore, type BuilderDatabase } from "@/lib/hq/builder-store";
 import * as builderModule from "@/lib/hq/builder-store";
 import type { BuilderIdentity } from "@/lib/hq/builder-types";
-import { ensurePersonForRosterMember, linkPersonToAccount, normalizeColosseumUsername } from "@/lib/hq/crm-identity";
+import { correctPersonMatch, ensurePersonForRosterMember, linkPersonToAccount, normalizeColosseumUsername } from "@/lib/hq/crm-identity";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
+import { pgliteBuilderDatabase } from "./helpers/db";
 
 vi.mock("server-only", () => ({}));
 const actionMocks = vi.hoisted(() => ({ requireMember: vi.fn() }));
@@ -38,39 +39,9 @@ const PROJECT: ImportedProject = {
 };
 const PROOF = { commentId: 9001, authorId: 1234, username: "fictional_builder_1" };
 
-type Row = Record<string, unknown>;
 let pg: PGlite;
 let db: BuilderDatabase;
 let store: BuilderStore;
-
-// PGlite owns one connection. Serialize complete transactions so concurrent
-// application calls exercise commit/rollback boundaries without interleaving
-// BEGIN statements on that single connection.
-function databaseAdapter(database: PGlite): BuilderDatabase {
-  let queue: Promise<unknown> = Promise.resolve();
-  const raw: BuilderQuery = {
-    query: async (text, values) => ({ rows: (await database.query(text, values)).rows as Row[] }),
-  };
-  function serialized<T>(work: () => Promise<T>): Promise<T> {
-    const result = queue.then(work, work);
-    queue = result.catch(() => undefined);
-    return result;
-  }
-  return {
-    query: (text, values) => serialized(() => raw.query(text, values)),
-    transaction: work => serialized(async () => {
-      await raw.query("BEGIN");
-      try {
-        const result = await work(raw);
-        await raw.query("COMMIT");
-        return result;
-      } catch (error) {
-        await raw.query("ROLLBACK");
-        throw error;
-      }
-    }),
-  };
-}
 
 async function rows(text: string, values?: unknown[]) { return (await db.query(text, values)).rows; }
 
@@ -93,7 +64,7 @@ async function invite() {
 
 beforeAll(async () => {
   pg = new PGlite();
-  db = databaseAdapter(pg);
+  db = pgliteBuilderDatabase(pg);
   await pg.exec(readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8"));
   await applyUpgrades({ query: async text => rows(text) });
   await pg.exec(readFileSync(join(process.cwd(), "scripts/hq/builder-schema.sql"), "utf8"));
@@ -264,6 +235,119 @@ describe("accounts without an email, contact email and CRM person identity", () 
     await expect(linkPersonToAccount(db, { personId: "00000000-0000-4000-8000-000000000009", userId: OWNER.id })).rejects.toThrow("person");
     expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [roster])).toEqual([{ builder_user_id: null }]);
     expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [owner.id])).toEqual([{ builder_user_id: OWNER.id }]);
+  });
+});
+
+describe("correcting a person match", () => {
+  const OPERATOR_ACTOR = { kind: "operator" as const, id: "00000000-0000-4000-8000-000000000001" };
+  const personOf = async (userId: string) => rows("SELECT id,normalized_colosseum_username FROM hq_crm_persons WHERE builder_user_id=$1", [userId]) as Promise<{ id: string; normalized_colosseum_username: string | null }[]>;
+  const card = async (userId: string, hackathonId: number) =>
+    (await rows("SELECT id::text AS id,person_id FROM hq_people WHERE builder_user_id=$1 AND hackathon_id=$2", [userId, hackathonId]))[0] as { id: string; person_id: string | null };
+  const events = () => rows("SELECT kind,actor_kind,actor_id,subject_user_id,metadata FROM hq_audit_events ORDER BY id");
+  const rosterCard = async (hackathonId: number, personId: string) => String((await rows(
+    `INSERT INTO hq_people(hackathon_id,name,role_id,person_id) SELECT $1,'Fictional Builder One',id,$2 FROM hq_people_roles WHERE label='Builder' RETURNING id::text AS id`,
+    [hackathonId, personId]))[0].id);
+
+  it("clears a wrong link: the account gets a person of its own and the roster person keeps its identity", async () => {
+    const [{ id: wrong }] = await personOf(OWNER.id);
+    await db.query("UPDATE hq_crm_persons SET normalized_colosseum_username='not_the_owner' WHERE id=$1", [wrong]);
+    expect((await card(OWNER.id, 41)).person_id).toBe(wrong);
+    const result = await correctPersonMatch(db, { personId: wrong, toUserId: null, reason: "Different person on the roster", actor: OPERATOR_ACTOR });
+    expect(result).toMatchObject({ changed: true, fromUserId: OWNER.id, toUserId: null, survivingPersonId: wrong, mergedPersonId: null, movedCards: [], unlinkedCards: [], movedRosterRows: 0 });
+    expect(await rows("SELECT builder_user_id,normalized_colosseum_username FROM hq_crm_persons WHERE id=$1", [wrong]))
+      .toEqual([{ builder_user_id: null, normalized_colosseum_username: "not_the_owner" }]);
+    const [fresh] = await personOf(OWNER.id);
+    expect(fresh.id).not.toBe(wrong);
+    expect((await card(OWNER.id, 41)).person_id).toBe(fresh.id);
+    expect(await events()).toEqual([{
+      kind: "person.match_corrected", actor_kind: "operator", actor_id: OPERATOR_ACTOR.id, subject_user_id: OWNER.id,
+      metadata: { fromUserId: OWNER.id, toUserId: null, reason: "Different person on the roster", fromPersonId: wrong, toPersonId: wrong, movedCards: [], unlinkedCards: [], movedRosterRows: 0 },
+    }]);
+    // A later sync keeps the fresh person; the roster person is never re-linked by name.
+    await store.syncAccount(OWNER);
+    expect(await personOf(OWNER.id)).toEqual([expect.objectContaining({ id: fresh.id })]);
+    expect(await correctPersonMatch(db, { personId: wrong, toUserId: null, reason: "again", actor: OPERATOR_ACTOR })).toMatchObject({ changed: false });
+    expect(await events()).toHaveLength(1);
+  });
+
+  it("links a roster person to an account without a person, leaving a colliding card unstamped and reported", async () => {
+    await db.query("INSERT INTO hq_builder_profiles(id,email,name) VALUES('auth-legacy',NULL,'Legacy Builder')");
+    for (const edition of [41, 42]) {
+      await db.query(`INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT $1,'auth-legacy','Legacy Builder',id FROM hq_people_roles WHERE label='Builder'`, [edition]);
+    }
+    const roster = await ensurePersonForRosterMember(db, { colosseumUsername: "legacy_handle", displayName: "Legacy Builder" });
+    const colliding = await rosterCard(41, roster);
+    const result = await correctPersonMatch(db, { personId: roster, toUserId: "auth-legacy", reason: "Same person, confirmed by the team", actor: OPERATOR_ACTOR });
+    const legacy41 = await card("auth-legacy", 41);
+    expect(result).toMatchObject({ changed: true, fromUserId: null, toUserId: "auth-legacy", survivingPersonId: roster, mergedPersonId: null, movedCards: [], unlinkedCards: [legacy41.id] });
+    expect(legacy41.person_id).toBeNull();
+    expect((await card("auth-legacy", 42)).person_id).toBe(roster);
+    expect(await rows("SELECT person_id FROM hq_people WHERE id=$1", [colliding])).toEqual([{ person_id: roster }]);
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE builder_user_id='auth-legacy'")).toEqual([{ builder_user_id: "auth-legacy" }]);
+    expect((await events())[0]).toMatchObject({ subject_user_id: "auth-legacy", metadata: expect.objectContaining({ fromPersonId: roster, toPersonId: roster, unlinkedCards: [legacy41.id] }) });
+  });
+
+  it("merges a roster person into the account's own person: cards and roster rows follow, a collision is reported, the username moves", async () => {
+    const [{ id: own }] = await personOf(OWNER.id);
+    const roster = await ensurePersonForRosterMember(db, { colosseumUsername: "fictional_builder_1", displayName: "Fictional Builder One" });
+    const colliding = await rosterCard(41, roster);
+    const moving = await rosterCard(42, roster);
+    await importProject();
+    await db.query("UPDATE hq_project_members SET person_id=$1 WHERE colosseum_username='fictional_builder_1'", [roster]);
+    const result = await correctPersonMatch(db, { personId: roster, toUserId: OWNER.id, reason: "Owner imported the team under this handle", actor: OPERATOR_ACTOR });
+    expect(result).toMatchObject({ changed: true, fromUserId: null, toUserId: OWNER.id, survivingPersonId: own, mergedPersonId: roster, movedCards: [moving], unlinkedCards: [colliding], movedRosterRows: 1 });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE id=$1", [roster])).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT builder_user_id,normalized_colosseum_username,display_name FROM hq_crm_persons WHERE id=$1", [own]))
+      .toEqual([{ builder_user_id: OWNER.id, normalized_colosseum_username: "fictional_builder_1", display_name: "Owner" }]);
+    expect((await card(OWNER.id, 41)).person_id).toBe(own);
+    expect(await rows("SELECT person_id FROM hq_people WHERE id=$1", [colliding])).toEqual([{ person_id: null }]);
+    expect(await rows("SELECT person_id FROM hq_people WHERE id=$1", [moving])).toEqual([{ person_id: own }]);
+    expect(await rows("SELECT person_id FROM hq_project_members WHERE colosseum_username='fictional_builder_1'")).toEqual([{ person_id: own }]);
+    // The provisional key now resolves to the account's person, and the merge is audited.
+    expect(await ensurePersonForRosterMember(db, { colosseumUsername: "@Fictional_Builder_1", displayName: "Someone Else" })).toBe(own);
+    expect(await events()).toEqual([expect.objectContaining({
+      kind: "person.match_corrected", actor_id: OPERATOR_ACTOR.id, subject_user_id: OWNER.id,
+      metadata: expect.objectContaining({ fromPersonId: roster, toPersonId: own, movedCards: [moving], unlinkedCards: [colliding], movedRosterRows: 1, mergedColosseumUsername: "fictional_builder_1" }),
+    })]);
+    // A survivor that already has a username keeps it.
+    const other = await ensurePersonForRosterMember(db, { colosseumUsername: "second_handle", displayName: "Owner" });
+    await correctPersonMatch(db, { personId: other, toUserId: OWNER.id, reason: "Also the owner", actor: OPERATOR_ACTOR });
+    expect(await rows("SELECT normalized_colosseum_username FROM hq_crm_persons WHERE id=$1", [own])).toEqual([{ normalized_colosseum_username: "fictional_builder_1" }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE display_name='Owner'")).toEqual([{ n: 1 }]);
+  });
+
+  it("re-points a person between accounts by id only, never by display name", async () => {
+    const [{ id: teammatePerson }] = await personOf(TEAMMATE.id);
+    const namesake = await ensurePersonForRosterMember(db, { colosseumUsername: "namesake_handle", displayName: TEAMMATE.name });
+    await db.query("INSERT INTO hq_builder_profiles(id,email,name) VALUES('auth-new','new@example.test','New Builder')");
+    const [{ id: outsiderPerson }] = await personOf(OUTSIDER.id);
+    const result = await correctPersonMatch(db, { personId: outsiderPerson, toUserId: "auth-new", reason: "The outsider account belongs to the new builder", actor: OPERATOR_ACTOR });
+    expect(result).toMatchObject({ changed: true, fromUserId: OUTSIDER.id, toUserId: "auth-new", survivingPersonId: outsiderPerson, mergedPersonId: null });
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [outsiderPerson])).toEqual([{ builder_user_id: "auth-new" }]);
+    const [fresh] = await personOf(OUTSIDER.id);
+    expect(fresh.id).not.toBe(outsiderPerson);
+    expect((await card(OUTSIDER.id, 41)).person_id).toBe(fresh.id);
+    // The namesake pair is untouched: two people with one display name stay two.
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [namesake])).toEqual([{ builder_user_id: null }]);
+    expect(await personOf(TEAMMATE.id)).toEqual([expect.objectContaining({ id: teammatePerson })]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE display_name=$1", [TEAMMATE.name])).toEqual([{ n: 2 }]);
+  });
+
+  it("refuses an unknown person or account, and rolls everything back when the audit write fails", async () => {
+    const [{ id: own }] = await personOf(OWNER.id);
+    await expect(correctPersonMatch(db, { personId: "00000000-0000-4000-8000-000000000009", toUserId: null, reason: "x", actor: OPERATOR_ACTOR })).rejects.toThrow("person");
+    // The refusal comes after the detach step, so the detach must roll back with it.
+    await expect(correctPersonMatch(db, { personId: own, toUserId: "no-such-account", reason: "x", actor: OPERATOR_ACTOR })).rejects.toThrow("account");
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [own])).toEqual([{ builder_user_id: OWNER.id }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+    await db.query("ALTER TABLE hq_audit_events ADD CONSTRAINT test_correction_failure CHECK (kind <> 'person.match_corrected')");
+    try {
+      await expect(correctPersonMatch(db, { personId: own, toUserId: null, reason: "x", actor: OPERATOR_ACTOR })).rejects.toThrow(/test_correction_failure/);
+    } finally { await db.query("ALTER TABLE hq_audit_events DROP CONSTRAINT test_correction_failure"); }
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [own])).toEqual([{ builder_user_id: OWNER.id }]);
+    expect((await card(OWNER.id, 41)).person_id).toBe(own);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+    expect(await events()).toEqual([]);
   });
 });
 
