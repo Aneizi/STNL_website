@@ -22,10 +22,11 @@ that is exactly the false sense of readiness this list exists to prevent.
 Missing credentials must never block implementation and must never open a way in.
 An unconfigured provider renders an honest "not available yet" state
 (`app/hq/(member)/account-form.tsx:133,144`) and `/api/auth/*` answers 503
-(`app/api/auth/[...all]/route.ts:13`). The same rule applies to Telegram once it
-exists: a configured but unreachable Telegram must break Telegram sign-in only,
-never email sign-in. There is no Telegram provider in the code yet, so that is a
-requirement on task T0.1, not a property you can rely on today.
+(`app/api/auth/[...all]/route.ts:13`). The same rule applies to Telegram: a
+configured but unreachable Telegram breaks Telegram sign-in only, never email
+sign-in. The provider registers without any network call and
+`tests/hq/member-auth-telegram.test.ts` ("keeps email sign-in and existing
+sessions working while Telegram is unreachable") asserts it.
 
 Provider specific notes for your own machine keep living in the gitignored
 `setup/hq/` directory, which holds `ACTIVATION.md` and `auth.env.template` in
@@ -83,12 +84,17 @@ same file asserts a 503 rather than a silent success.
 **Variables:** `TELEGRAM_LOGIN_CLIENT_ID`, `TELEGRAM_LOGIN_CLIENT_SECRET`,
 `TELEGRAM_BOT_USERNAME`.
 
-**Code-level checks:** none yet. There is no Telegram code in this checkout.
-Task T0.1 adds `tests/hq/member-auth-telegram.test.ts` with synthetic id token,
-JWKS and token responses, and it must assert that no discovery document is
-fetched anywhere (so start-up cannot be taken down by Telegram being slow) and
-that a Telegram outage does not affect email sign-in. Until T0.1 passes, treat
-Telegram sign-in as designed but unproven.
+**Code-level checks:** `tests/hq/member-auth-telegram.test.ts` drives the
+whole flow through the route handler with a synthetic RS256 key, JWKS and
+token endpoint. It asserts the PKCE authorization request, the token exchange
+shape, the placeholder account with `emailVerified` false, the identity row,
+`currentMember()` admitting the account with `email: null`, replay and forged
+tokens refused, the conflict with another account refused before anything is
+committed, and that a Telegram outage does not affect email sign-in. Any
+request to the discovery document fails the suite, so start-up cannot be taken
+down by Telegram being slow. `tests/hq/member-auth-config.test.ts` covers the
+`telegram` availability flag. The sign-in button itself does not exist yet
+(task T2.2).
 
 **Live checks (you):**
 
@@ -99,12 +105,17 @@ Telegram sign-in as designed but unproven.
    `https://<your origin>/api/auth/callback/telegram`. Add the staging origin the
    same way if you use one.
 4. Copy the client id and client secret into Vercel.
-5. Keep the signing algorithm at RS256, and do not request the `phone` scope.
-6. Confirm one real sign-in completes end to end.
+5. Keep the signing algorithm at RS256 (the provider accepts nothing else),
+   and do not request the `phone` scope (the provider never asks for it).
+6. Confirm one real sign-in completes end to end. This is also the only check
+   of the token exchange against Telegram's real endpoint: the code sends
+   `client_secret_basic` plus `client_id` in the body, as Telegram's docs
+   show, but no automated test can prove Telegram accepts it.
 7. Once a year, or after any Telegram announcement, re-check that Telegram's
-   discovery document still lists the endpoints that will be hard coded in
-   `lib/hq/telegram-provider.ts`. That module does not exist yet; task T0.1
-   creates it.
+   discovery document still lists the endpoints hard coded in
+   `lib/hq/telegram-provider.ts` (`/auth`, `/token`,
+   `/.well-known/jwks.json` under `https://oauth.telegram.org`). The code
+   never reads the discovery document on its own.
 
 ## Telegram bot messaging
 

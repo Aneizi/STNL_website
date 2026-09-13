@@ -119,6 +119,120 @@ are typed into Admin, Builder onboarding, and stored in
 
 See `docs/hq/manual-setup.md` for who checks what.
 
+### What changed, task T0.1
+
+The Telegram OIDC spike: the phase 0 gate that proves a Telegram login yields
+a real HQ account without any email, against the installed Better Auth 1.7.2,
+with no fabricated verified email, no global change to email verification, no
+patch to `node_modules` and no second session system.
+
+- New `lib/hq/telegram-provider.ts`: a repo-owned static `OAuthProvider` with
+  id `telegram`. Issuer and endpoints are constants (the discovery document is
+  never fetched, so provider registration performs no I/O). Authorization Code
+  with PKCE S256, server-side state and nonce, scopes `openid profile` only
+  (never `phone`), `client_secret_basic` plus `client_id` in the token request,
+  and a server-side id_token check (RS256 against a lazily fetched JWKS,
+  issuer, audience, expiry, ten minute maximum age, constant-time nonce
+  equality). `options.disableIdTokenSignIn` closes the client id_token branch
+  at the library level. Because Telegram returns no email, the provider
+  returns Better Auth's own placeholder `<sub>@telegram.placeholder.invalid`
+  with `emailVerified: false`. That address is the internal non-deliverable
+  identifier the plan permits: it is never displayed, never mailed and never
+  synced as a contact, and `isPlaceholderEmail()` recognises it.
+- New `lib/hq/telegram-identity-plugin.ts`: registers the provider only when
+  configured; `databaseHooks.account.create.before` refuses, inside the
+  creation transaction, a Telegram identity another account already holds
+  (`telegram_identity_conflict`, nothing committed, no session);
+  `account.create.after` and `account.update.after` write the identity row
+  after commit, idempotently; `account.delete.after` removes it;
+  `user.update.before` refuses a placeholder outside the OAuth callback;
+  before hooks refuse placeholder addresses on every OTP, verification, reset
+  and change-email endpoint (`placeholder_email_not_allowed`) and refuse any
+  client `idToken` on `/sign-in/social` and `/link-social`
+  (`id_token_not_accepted`); rate limit 10 per minute on `/callback/telegram`.
+  `RECENT_SESSION_MS` is exported for phase 2.
+- New `lib/hq/identity.ts`: `TelegramIdentity`, `getTelegramIdentity`,
+  `hasTelegramIdentity` and the row writers, through the builder store's pg
+  pool. The Telegram user id is `bigint` in PostgreSQL and a string in code.
+- `lib/hq/member-auth.ts`: `currentMember()` now admits an account when it
+  has a verified real email or a Telegram identity row, and fails closed
+  otherwise. `MemberSessionUser.email` is `string | null`, null for the
+  placeholder. `account.accountLinking` trusts `telegram`, allows different
+  emails and disables implicit linking. `user.validateUserInfo` refuses
+  placeholder creation outside OAuth. `sendVerificationOTP` refuses to mail a
+  placeholder as its last line of defence. The CRM sync database hook uses the
+  same predicate and skips placeholder accounts.
+- `lib/hq/member-auth-config.ts`: `MemberAuthAvailability.telegram`.
+- `lib/hq/actions/builders.ts` and `app/hq/(member)/profile/actions.ts`:
+  compile-level adaptation to the nullable email. Builder actions that write
+  CRM rows refuse an account without an email with a clear message until
+  T1.1 makes the store null-safe.
+- `scripts/hq/reset-statements.ts`: the six `hq_auth_*` tables are KEEP.
+- New `tests/hq/helpers/db.ts` (`applyMigrations` through the migrate.ts
+  splitter) and `tests/hq/member-auth-telegram.test.ts`; additions to
+  `tests/hq/member-auth.test.ts`, `tests/hq/member-auth-config.test.ts` and
+  `tests/hq/reset.test.ts`.
+
+Migrations: one statement appended to `scripts/hq/member-auth-schema.sql`:
+`CREATE TABLE IF NOT EXISTS hq_auth_telegram_identity (user_id text PRIMARY
+KEY REFERENCES hq_auth_user(id) ON DELETE CASCADE, provider_subject text NOT
+NULL UNIQUE, telegram_user_id bigint NOT NULL UNIQUE, username text, photo_url
+text, linked_at timestamptz NOT NULL DEFAULT now(), last_login_at timestamptz
+NOT NULL DEFAULT now())`. Idempotent, applied by `hq:migrate` in the usual
+order. Nothing in `scripts/hq/upgrades.ts`.
+
+### Checks passed, task T0.1
+
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 433 tests pass
+  (421 at the baseline, 12 new).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: the same 18 pre-existing warnings, nothing new.
+- Gate: `tests/hq/member-auth-telegram.test.ts` applies all SQL through the
+  splitter twice, stubs only `fetch`, Resend and the Next.js request helpers,
+  and asserts spike steps 1 to 9: the authorization request, the token
+  exchange (`Authorization: Basic`, `grant_type`, `redirect_uri`,
+  `client_id`, `code_verifier` matching the captured `code_challenge`), the
+  placeholder user, the account row, the identity row with the bigint id
+  round-tripping as a string, `currentMember()` returning `email: null` and
+  `requireMember()` resolving, fail-closed when the identity row is missing,
+  replay and forged tokens refused, a returning login resolving to the same
+  account, both id_token fences each sufficient on their own, placeholder
+  guards, the conflict refused inside the transaction with nothing committed,
+  and email sign-in plus existing sessions unaffected while Telegram is
+  unreachable. Any request to the discovery document fails the suite.
+- Acceptance "The Telegram identity strategy supports a real account without
+  requiring an email afterward": met.
+
+### Blocked or deferred, task T0.1
+
+- CRM sync is skipped for an account whose email is null, and the builder
+  actions refuse such an account, until T1.1 makes `hq_builder_profiles.email`
+  nullable and the store null-safe. Marked `TODO(T1.1)` in code.
+- Recency rule on link, unlink and change-email, the last-login-method rule,
+  the link confirmation intent, `changeEmail` in the email OTP plugin and every
+  piece of UI: T2.2 and T2.3. Google and GitHub stay until T2.1.
+- Live only: the token exchange against the real endpoint, the signing
+  algorithm staying RS256, and the Allowed URLs in BotFather. See
+  `docs/hq/manual-setup.md`.
+
+### Changed interfaces, task T0.1
+
+`telegramProvider(env)`, `isPlaceholderEmail(email)`, `TelegramIdTokenClaims`,
+`readTelegramClaims(idToken)` and the endpoint constants in
+`lib/hq/telegram-provider.ts`; `hqTelegramIdentity({ provider })` and
+`RECENT_SESSION_MS` in `lib/hq/telegram-identity-plugin.ts`;
+`TelegramIdentity`, `getTelegramIdentity(userId)`, `hasTelegramIdentity(userId)`
+in `lib/hq/identity.ts`; `MemberAuthAvailability.telegram`;
+`MemberSessionUser.email: string | null`; `builderDatabase()` exported from
+`lib/hq/builder-store.ts`; `applyMigrations(pg)` and friends in
+`tests/hq/helpers/db.ts`.
+
+### External configuration still required, task T0.1
+
+`TELEGRAM_LOGIN_CLIENT_ID` and `TELEGRAM_LOGIN_CLIENT_SECRET` gate
+availability; `TELEGRAM_BOT_USERNAME` is UI copy for T2.2. The redirect URL
+to register in BotFather is `<BETTER_AUTH_URL>/api/auth/callback/telegram`.
+
 ## Phase 1, identity, authorization and the Captain capability
 
 Not started.
