@@ -37,7 +37,7 @@ const PERSON: Person = {
 };
 
 describe("toMemberTeamView", () => {
-  it("carries the team, the edition, the viewer's own membership and the Captain's approved contact only", () => {
+  it("carries the team page's fields, the viewer's own membership and the Captain's approved contact, and no other account's identity", () => {
     const view = toMemberTeamView(TEAM, { id: "lead-a" }, { displayName: "Captain", contact: "@cap_handle" });
     expect(view).toEqual({
       id: TEAM.id,
@@ -45,8 +45,17 @@ describe("toMemberTeamView", () => {
       edition: { id: 6, name: "Edition A" },
       membership: { role: "owner", verification: "verified" },
       captain: { displayName: "Captain", contact: "@cap_handle" },
+      projectUrl: TEAM.projectUrl,
+      stage: "mvp",
+      lead: { username: "fictional_builder_1" },
+      roster: [
+        { id: "m1", name: "Fictional Builder One", username: "fictional_builder_1", joined: true },
+        { id: "m2", name: "Fictional Builder Two", username: "fictional_builder_2", joined: false },
+      ],
     });
-    expect(Object.keys(view).sort()).toEqual(["captain", "edition", "id", "membership", "name"]);
+    expect(Object.keys(view).sort()).toEqual(["captain", "edition", "id", "lead", "membership", "name", "projectUrl", "roster", "stage"]);
+    for (const row of view.roster) expect(Object.keys(row).sort()).toEqual(["id", "joined", "name", "username"]);
+    expect(JSON.stringify(view)).not.toMatch(/lead-a|ownerId|description|hackathonName/);
     expect(toMemberTeamView(TEAM, { id: "member-a" }).membership).toEqual({ role: "member", verification: "verified" });
     expect(toMemberTeamView(TEAM, { id: "member-a" }).captain).toBeNull();
   });

@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import { IconArrowRight } from 'symbols-react';
 import { chooseBuilderPath, previewBuilderProject, beginBuilderVerification, completeBuilderImport, requestBuilderReview, previewBuilderInvite, acceptBuilderInvite, createBuilderInvite, saveBuilderTeam, requestBuilderEvent } from '@/lib/hq/actions/builders';
-import { PROJECT_STAGES, type BuilderHackathon, type BuilderTeam } from '@/lib/hq/builder-types';
+import { PROJECT_STAGES, type BuilderHackathon } from '@/lib/hq/builder-types';
 import { fmtDateRange } from '@/lib/hq/hackathon-format';
+import type { MemberTeamView } from '@/lib/hq/view-models';
 import styles from './builder-shell.module.css';
 
 function Arrow() { return <IconArrowRight width={20} height={20} fill='currentColor' aria-hidden='true'/>; }
@@ -77,13 +78,15 @@ export function BuilderJoin() {
   return <>{!invite?<form className={styles.form} onSubmit={lookup}><label className={styles.field}>Your invite code<input value={code} onChange={e=>setCode(e.target.value)} autoCapitalize='characters' autoComplete='off' required maxLength={40}/></label><button className={styles.button} disabled={pending}>{pending?'Checking…':'Find my team'}<Arrow/></button></form>:<form className={styles.form} onSubmit={join}><section className={styles.notice}><h2>{invite.team}</h2><p>This invitation is for <strong>{invite.name}</strong>, @{invite.username} on Colosseum.</p></section><label className={styles.check}>That’s me<input type='checkbox' required checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/></label><button className={styles.button} disabled={pending||!confirmed}>{pending?'Joining…':'Join team'}<Arrow/></button><button type='button' className={styles.textButton} onClick={()=>{setInvite(null);setConfirmed(false);setError('');}}>Use another code</button></form>}<ErrorText error={error}/></>;
 }
 
-export function BuilderTeamControls({team,isOwner}:{team:BuilderTeam;isOwner:boolean}) {
-  const router=useRouter();const[stage,setStage]=useState<string>(team.stage);const[lead,setLead]=useState(team.leadUsername);const[error,setError]=useState('');const[message,setMessage]=useState('');const[invite,setInvite]=useState<{name:string;code:string}|null>(null);const[pending,start]=useTransition();
-  const save=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');setMessage('');const result=await saveBuilderTeam({projectId:team.id,stage,leadUsername:lead});if(result.ok){setMessage('Saved.');router.refresh();}else setError(result.error);});};
-  const create=(memberId:string,name:string)=>start(async()=>{setError('');const result=await createBuilderInvite({projectId:team.id,memberId});if(result.ok)setInvite({name,code:result.data.code});else setError(result.error);});
-  return <><section className={styles.card}><h2>Your team</h2>{team.members.map(m=><div className={styles.row} key={m.id}><div>{m.name}{m.username===team.leadUsername?' (lead)':''}<small>@{m.username}</small></div>{m.joined?<span>Joined</span>:isOwner&&team.verification==='verified'?<button className={styles.secondary} disabled={pending} onClick={()=>create(m.id,m.name)}>Invite</button>:<span>Not joined</span>}</div>)}</section>
+export function BuilderTeamControls({team}:{team:MemberTeamView}) {
+  // Edits and invites are the verified team lead's; the server decides again on every call.
+  const editable=team.membership.role==='owner'&&team.membership.verification==='verified';
+  const router=useRouter();const[stage,setStage]=useState<string>(team.stage);const[lead,setLead]=useState(team.lead.username);const[error,setError]=useState('');const[message,setMessage]=useState('');const[invite,setInvite]=useState<{name:string;code:string}|null>(null);const[pending,start]=useTransition();
+  const save=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');setMessage('');const result=await saveBuilderTeam({projectId:team.id,hackathonId:team.edition.id,stage,leadUsername:lead});if(result.ok){setMessage('Saved.');router.refresh();}else setError(result.error);});};
+  const create=(memberId:string,name:string)=>start(async()=>{setError('');const result=await createBuilderInvite({projectId:team.id,hackathonId:team.edition.id,memberId});if(result.ok)setInvite({name,code:result.data.code});else setError(result.error);});
+  return <><section className={styles.card}><h2>Your team</h2>{team.roster.map(m=><div className={styles.row} key={m.id}><div>{m.name}{m.username===team.lead.username?' (lead)':''}<small>@{m.username}</small></div>{m.joined?<span>Joined</span>:editable?<button className={styles.secondary} disabled={pending} onClick={()=>create(m.id,m.name)}>Invite</button>:<span>Not joined</span>}</div>)}</section>
     {invite&&<section className={styles.notice} aria-live='polite'><h2>Invite {invite.name}</h2><p>Share this code privately with {invite.name}. It works once and expires in 48 hours.</p><output className={styles.code}>{invite.code}</output><p>They can enter it at <Link className={styles.inlineLink} href='/hq/join'>Join a team</Link>.</p></section>}
-    {isOwner&&team.verification!=='rejected'&&<form className={styles.form} onSubmit={save}><StageField value={stage} onChange={setStage}/><label className={styles.field}>Team lead<select value={lead} onChange={e=>setLead(e.target.value)}>{team.members.map(m=><option key={m.id} value={m.username}>{m.name}</option>)}</select></label><button className={styles.secondary} disabled={pending}>Save changes</button></form>}
+    {editable&&<form className={styles.form} onSubmit={save}><StageField value={stage} onChange={setStage}/><label className={styles.field}>Team lead<select value={lead} onChange={e=>setLead(e.target.value)}>{team.roster.map(m=><option key={m.id} value={m.username}>{m.name}</option>)}</select></label><button className={styles.secondary} disabled={pending}>Save changes</button></form>}
     <ErrorText error={error}/>{message&&<p role='status' className={styles.success}>{message}</p>}
   </>;
 }

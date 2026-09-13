@@ -3,9 +3,19 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { assertProjectHackathon, ColosseumApiError, fetchColosseumProject, verifyProjectClaim, parseColosseumProjectUrl } from '@/lib/colosseum-api';
+import { requireMemberActor } from '../actor';
 import { requireMember } from '../member-auth';
+import { authorizedTeam, TEAM_NOT_AVAILABLE } from '../member-teams';
 import { BuilderError, builderStore, syncBuilderAccount } from '../builder-store';
 import { PROJECT_STAGES, type BuilderResult } from '../builder-types';
+
+// Actions that take a team id from the client go through the central
+// authorization helper (lib/hq/member-teams.ts over lib/hq/authz.ts) before
+// any read or write: the edition the member asked under travels in the body
+// and is checked against the project, and every denial is the same
+// TEAM_NOT_AVAILABLE result, so a foreign, other-edition or unknown id
+// reveals nothing. The store's own ownership predicates still run inside the
+// write transaction as the last line of defence, not as the decision.
 
 const uuid = z.string().uuid();
 const hackathonIdSchema = z.number().int().positive();
@@ -97,20 +107,21 @@ export async function requestBuilderReview(input:{hackathonId:number;url:string;
   } catch (error) { return fail(error); }
 }
 
-export async function createBuilderInvite(input:{projectId:string;memberId:string}): Promise<BuilderResult<{code:string}>> {
-  const user = await requireMember();
+export async function createBuilderInvite(input:{projectId:string;hackathonId:number;memberId:string}): Promise<BuilderResult<{code:string}>> {
+  const actor = await requireMemberActor();
   try {
-    const {projectId,memberId} = z.object({projectId:uuid,memberId:uuid}).parse(input);
+    const {projectId,hackathonId,memberId} = z.object({projectId:uuid,hackathonId:hackathonIdSchema,memberId:uuid}).parse(input);
     const store = builderStore();
-    await store.rateLimit(user.id,'invite',20);
-    const team = await store.team(user.id,projectId);
-    if (team.ownerId !== user.id || team.verification !== 'verified') throw new BuilderError('Team approval is needed before sending invites.');
+    await store.rateLimit(actor.id,'invite',20);
+    // Inviting is a membership change: the verified team lead's alone.
+    const team = await authorizedTeam(actor,{projectId,hackathonId,action:'membership.change'});
+    if (!team) throw new BuilderError(TEAM_NOT_AVAILABLE);
     const member = team.members.find(m=>m.id===memberId);
     const project = await fetchColosseumProject(team.projectUrl);
     const edition = await store.hackathon(team.hackathonId);
     assertProjectHackathon(project,{externalId:edition.externalId??0,slug:edition.externalSlug??''});
     if (!member || !project.members.some(m=>m.username===member.username)) throw new BuilderError('This teammate is no longer listed on Colosseum.');
-    return {ok:true,data:{code:await store.createInvite(user.id,projectId,memberId)}};
+    return {ok:true,data:{code:await store.createInvite(actor.id,projectId,memberId)}};
   } catch (error) { return fail(error); }
 }
 
@@ -143,11 +154,13 @@ export async function acceptBuilderInvite(input:{code:string;confirmed:boolean})
   } catch (error) { return fail(error); }
 }
 
-export async function saveBuilderTeam(input:{projectId:string;stage:string;leadUsername:string}):Promise<BuilderResult<{saved:true}>> {
-  const user = await requireMember();
+export async function saveBuilderTeam(input:{projectId:string;hackathonId:number;stage:string;leadUsername:string}):Promise<BuilderResult<{saved:true}>> {
+  const actor = await requireMemberActor();
   try {
-    const value = z.object({projectId:uuid,stage:stageSchema,leadUsername:z.string().min(1).max(120)}).parse(input);
-    await builderStore().updateTeam(user.id,value.projectId,value.stage,value.leadUsername);
+    const value = z.object({projectId:uuid,hackathonId:hackathonIdSchema,stage:stageSchema,leadUsername:z.string().min(1).max(120)}).parse(input);
+    // Choosing the lead is a membership change: the verified team lead's alone.
+    if (!(await authorizedTeam(actor,{projectId:value.projectId,hackathonId:value.hackathonId,action:'membership.change'}))) throw new BuilderError(TEAM_NOT_AVAILABLE);
+    await builderStore().updateTeam(actor.id,value.projectId,value.stage,value.leadUsername);
     refresh();
     return {ok:true,data:{saved:true}};
   } catch (error) { return fail(error); }

@@ -15,7 +15,12 @@ import type { Person } from "./types";
 /** The assigned Captain as a team may see them: a display name and the contact the Captain approved for the team, nothing else. */
 export type TeamCaptainView = { displayName: string; contact: string | null };
 
-/** What a verified team member sees of their own team. */
+/**
+ * What a team member sees of their own team, and what the account that
+ * submitted a still-unverified import sees of its own claim: the fields the
+ * team page renders, and nothing from the operator side or from another
+ * account's identity.
+ */
 export type MemberTeamView = {
   id: string;
   name: string;
@@ -24,6 +29,11 @@ export type MemberTeamView = {
   membership: { role: "owner" | "member"; verification: BuilderTeam["verification"] };
   /** Null until phase 4 assigns Captains. */
   captain: TeamCaptainView | null;
+  projectUrl: string;
+  stage: ProjectStage;
+  lead: { username: string };
+  /** The imported roster as the team page shows it. `id` is the roster row a team lead names when inviting; no account id is included. */
+  roster: { id: string; name: string; username: string; joined: boolean }[];
 };
 
 /** What an assigned Captain sees of a team: minimal contact and roster fields, no operator state. */
@@ -53,9 +63,9 @@ export type PublicPersonView = {
 /**
  * Precondition: the viewer was already authorized on the team through
  * `authorizeProjectAction` (or the team came from a query scoped to their
- * account, such as `builderStore().teams(viewer.id)`). The mapper does not
- * check membership; it derives `role: "member"` for any viewer who is not
- * the owner.
+ * account, such as `builderStore().teams(viewer.id)` or their own claim).
+ * The mapper does not check membership; it derives `role: "member"` for any
+ * viewer who is not the owner.
  */
 export function toMemberTeamView(team: BuilderTeam, viewer: { id: string }, captain: TeamCaptainView | null = null): MemberTeamView {
   return {
@@ -64,6 +74,10 @@ export function toMemberTeamView(team: BuilderTeam, viewer: { id: string }, capt
     edition: { id: team.hackathonId, name: team.hackathonName },
     membership: { role: team.ownerId === viewer.id ? "owner" : "member", verification: team.verification },
     captain: captain ? { displayName: captain.displayName, contact: captain.contact } : null,
+    projectUrl: team.projectUrl,
+    stage: team.stage,
+    lead: { username: team.leadUsername },
+    roster: team.members.map((member) => ({ id: member.id, name: member.name, username: member.username, joined: member.joined })),
   };
 }
 

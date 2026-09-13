@@ -13,8 +13,16 @@ export type { BuilderDatabase, BuilderQuery };
 
 const hashCode = (code: string) => createHash('sha256').update(code.toUpperCase().replace(/[\s-]/g, '')).digest('hex');
 const asDate = (value: unknown) => value ? new Date(String(value)).toISOString() : null;
-/** An address the CRM may hold: a real email, or nothing. The internal placeholder never reaches a row. */
-const realEmail = (value: unknown): string | null => typeof value === 'string' && value !== '' && !isPlaceholderEmail(value) ? value : null;
+/** An address the CRM may hold or show: a real email, or nothing. The internal placeholder never reaches a row or a page. */
+export const realEmail = (value: unknown): string | null => typeof value === 'string' && value !== '' && !isPlaceholderEmail(value) ? value : null;
+
+const TEAM_SELECT = `SELECT o.*,p.name,h.name AS hackathon_name,
+      (SELECT json_agg(json_build_object('id',m.id,'name',m.name,'username',m.colosseum_username,'joined',m.builder_user_id IS NOT NULL) ORDER BY m.sort)
+       FROM hq_project_members m WHERE m.project_id=p.id) AS members
+      FROM hq_project_onboarding o JOIN hq_projects p ON p.id=o.project_id JOIN hq_hackathons h ON h.id=o.hackathon_id`;
+const toTeam = (r: Record<string, unknown>): BuilderTeam => ({ id: String(r.project_id), name: String(r.name), hackathonId: Number(r.hackathon_id), hackathonName: String(r.hackathon_name),
+  projectUrl: String(r.project_url), description: String(r.description), stage: r.stage as ProjectStage, verification: r.verification as BuilderTeam['verification'],
+  ownerId: String(r.owner_user_id), leadUsername: String(r.lead_username), members: (r.members ?? []) as BuilderTeam['members'] });
 
 async function enroll(db: BuilderQuery, user: BuilderIdentity, hackathonId: number, participation: 'builder' | 'supporter' = 'builder') {
   const { rows: editions } = await db.query('SELECT id FROM hq_hackathons WHERE id=$1 AND archived_at IS NULL', [hackathonId]);
@@ -177,22 +185,40 @@ export class BuilderStore {
     });
   }
 
+  /** The account's own teams for its dashboard: every claim it owns and every roster row it has joined, whatever the verification state. */
   async teams(userId: string): Promise<BuilderTeam[]> {
-    const { rows } = await this.db.query(`SELECT o.*,p.name,h.name AS hackathon_name,
-      (SELECT json_agg(json_build_object('id',m.id,'name',m.name,'username',m.colosseum_username,'joined',m.builder_user_id IS NOT NULL) ORDER BY m.sort)
-       FROM hq_project_members m WHERE m.project_id=p.id) AS members
-      FROM hq_project_onboarding o JOIN hq_projects p ON p.id=o.project_id JOIN hq_hackathons h ON h.id=o.hackathon_id
+    const { rows } = await this.db.query(`${TEAM_SELECT}
       WHERE o.owner_user_id=$1 OR EXISTS(SELECT 1 FROM hq_project_members m WHERE m.project_id=o.project_id AND m.builder_user_id=$1)
       ORDER BY o.created_at DESC`, [userId]);
-    return rows.map(r => ({ id: String(r.project_id), name: String(r.name), hackathonId: Number(r.hackathon_id), hackathonName: String(r.hackathon_name),
-      projectUrl: String(r.project_url),description:String(r.description),stage:r.stage as ProjectStage,verification:r.verification as BuilderTeam['verification'],
-      ownerId:String(r.owner_user_id),leadUsername:String(r.lead_username),members:(r.members??[]) as BuilderTeam['members'] }));
+    return rows.map(toTeam);
   }
 
   async team(userId: string, id: string) {
     const team = (await this.teams(userId)).find(t => t.id === id);
     if (!team) throw new BuilderError('This team is not available to your account.');
     return team;
+  }
+
+  /**
+   * One imported team by id, with no relationship filter. Only for a caller
+   * that has already authorized the reader through lib/hq/authz (see
+   * lib/hq/member-teams.ts); never a member-facing read on its own.
+   */
+  async teamById(projectId: string): Promise<BuilderTeam | null> {
+    const { rows } = await this.db.query(`${TEAM_SELECT} WHERE o.project_id=$1::uuid`, [projectId]);
+    return rows.length ? toTeam(rows[0]) : null;
+  }
+
+  /**
+   * The account's own claim on a project that is not, or no longer, verified:
+   * the import it submitted, awaiting or refused review. Read by account like
+   * the dashboard's import requests, it shows the claimant their own
+   * submission and its status; it authorizes nothing on the project, and a
+   * verified team is never returned here.
+   */
+  async ownClaim(userId: string, projectId: string): Promise<BuilderTeam | null> {
+    const { rows } = await this.db.query(`${TEAM_SELECT} WHERE o.project_id=$1::uuid AND o.owner_user_id=$2 AND o.verification<>'verified'`, [projectId, userId]);
+    return rows.length ? toTeam(rows[0]) : null;
   }
 
   async createInvite(userId: string, projectId: string, memberId: string) {

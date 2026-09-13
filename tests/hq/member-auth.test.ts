@@ -218,6 +218,42 @@ describe("public HQ sign-in through Better Auth", () => {
     });
   });
 
+  it("completes a Telegram-only profile through the one verified-account rule and never writes the placeholder", async () => {
+    const id = "telegram-only-unnamed";
+    state.cookie = await seedSession({ id, email: "5555555555555555555@telegram.placeholder.invalid", emailVerified: false, name: "" });
+    await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id, username) VALUES ($1, '5555555555555555555', 5550000000055, 'tg_unnamed')`, [id]);
+    const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
+    // Admitted by the identity row, not yet named: no People card until the profile step, as for an email account.
+    expect(await currentMember()).toEqual({ id, email: null, name: "" });
+    await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/profile?next=%2Fhq%2Fdashboard");
+    expect(state.synced).not.toHaveBeenCalled();
+    expect((await state.pg!.query("SELECT * FROM hq_people")).rows).toHaveLength(0);
+
+    const { completeMemberProfile } = await import("@/app/hq/(member)/profile/actions");
+    const form = new FormData();
+    form.set("name", "Named Telegram Builder");
+    form.set("next", "/hq/dashboard");
+    await expect(completeMemberProfile(null, form)).rejects.toThrow("REDIRECT:/hq/dashboard");
+    expect(state.synced).toHaveBeenCalledWith({ id, email: null, name: "Named Telegram Builder" });
+    expect((await state.pg!.query("SELECT id, email, contact_email, name FROM hq_builder_profiles")).rows).toEqual([{ id, email: null, contact_email: null, name: "Named Telegram Builder" }]);
+    expect((await state.pg!.query("SELECT name, contact, hackathon_id FROM hq_people")).rows).toEqual([{ name: "Named Telegram Builder", contact: "", hackathon_id: 41 }]);
+    expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_people WHERE contact ILIKE '%placeholder.invalid%'")).rows).toEqual([{ n: 0 }]);
+    expect((await requireMember("/hq/dashboard")).name).toBe("Named Telegram Builder");
+  });
+
+  it("defines the verified-account rule once, in lib/hq/identity.ts, and every session reader imports it", () => {
+    const identity = readFileSync("lib/hq/identity.ts", "utf8");
+    expect(identity).toMatch(/export async function isVerifiedAccount\(/);
+    expect(identity).toMatch(/export function verifiedLoginEmail\(/);
+    const memberAuth = readFileSync("lib/hq/member-auth.ts", "utf8");
+    expect(memberAuth).toMatch(/isVerifiedAccount\(session\.user\)/);
+    expect(memberAuth).toMatch(/isVerifiedAccount\(user\)/);
+    // No second copy of the rule: neither the session module nor the profile action re-derives it.
+    for (const file of ["lib/hq/member-auth.ts", "app/hq/(member)/profile/actions.ts"]) {
+      expect(readFileSync(file, "utf8"), file).not.toMatch(/hasTelegramIdentity|emailVerified\s*&&/);
+    }
+  });
+
   it("returns no contact for an unverified real email admitted through a Telegram identity", async () => {
     // A still-registered OAuth provider can store a real address with emailVerified false.
     const id = "telegram-with-unverified-email";

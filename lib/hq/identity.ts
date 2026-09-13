@@ -47,6 +47,32 @@ export async function hasTelegramIdentity(userId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** The stored account fields the verified-account rule reads, as Better Auth hands them to hooks and sessions. */
+export type StoredAccount = { id: string; email: string; emailVerified: boolean };
+
+/**
+ * The login email as pages and the CRM see it: only a verified real address.
+ * Null for the placeholder (never shown or mailed) and for an unverified real
+ * address, which an OAuth provider can supply for an account admitted through
+ * its Telegram identity. Distinct from the self-declared contact email on the
+ * profile, which is never derived from this.
+ */
+export function verifiedLoginEmail(user: Pick<StoredAccount, "email" | "emailVerified">): string | null {
+  return user.emailVerified && !isPlaceholderEmail(user.email) ? user.email : null;
+}
+
+/**
+ * What "verified account" means for HQ, defined once: a verified real email,
+ * or a Telegram identity row. A session alone is not enough, and a
+ * placeholder user whose identity row is missing fails closed. Every reader
+ * of the member session (`currentMember()`, the account-creation hook and
+ * whatever those serve) goes through this; nothing re-derives the rule.
+ */
+export async function isVerifiedAccount(user: StoredAccount): Promise<boolean> {
+  if (verifiedLoginEmail(user) !== null) return true;
+  return hasTelegramIdentity(user.id);
+}
+
 export type LoginMethods = {
   /** The stored login address; null when it is the internal placeholder, so it is never shown or mailed. */
   email: { address: string; verified: boolean } | null;

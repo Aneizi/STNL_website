@@ -10,7 +10,7 @@ import { Pool } from "pg";
 import { Resend } from "resend";
 import { getMemberAuthAvailability, memberAuthOrigin, safeMemberNext } from "./member-auth-config";
 import { syncBuilderAccount } from "./builder-store";
-import { hasTelegramIdentity } from "./identity";
+import { isVerifiedAccount, verifiedLoginEmail } from "./identity";
 import { memberEmailDeliveryFailed } from "./member-auth-delivery";
 import { hqTelegramIdentity } from "./telegram-identity-plugin";
 import { isPlaceholderEmail } from "./telegram-provider";
@@ -25,25 +25,10 @@ export class MemberAuthUnavailableError extends Error {
   }
 }
 
-/**
- * The login email as pages and the CRM see it: only a verified real address.
- * Null for the placeholder (never shown or mailed) and for an unverified real
- * address, which an OAuth provider can supply for an account admitted through
- * its Telegram identity. Distinct from the self-declared contact email on the
- * profile, which is never derived from this.
- */
-const verifiedLoginEmail = (user: { email: string; emailVerified: boolean }) =>
-  user.emailVerified && !isPlaceholderEmail(user.email) ? user.email : null;
-
-/**
- * What "verified account" means for HQ: a verified real email, or a Telegram
- * identity row. A session alone is not enough, and a placeholder user whose
- * identity row is missing fails closed.
- */
-async function isVerifiedMember(user: { id: string; email: string; emailVerified: boolean }): Promise<boolean> {
-  if (user.emailVerified && !isPlaceholderEmail(user.email)) return true;
-  return hasTelegramIdentity(user.id);
-}
+// The verified-account rule and the login email it yields live in
+// ./identity (`isVerifiedAccount`, `verifiedLoginEmail`). The session reader
+// below and the account-creation hook both import them; neither restates the
+// rule. The placeholder checks that remain here guard endpoints, not access.
 
 function createMemberAuth() {
   const available = getMemberAuthAvailability();
@@ -115,7 +100,7 @@ function createMemberAuth() {
       user: {
         create: {
           after: async (user) => {
-            if (!user.name.trim() || !(await isVerifiedMember(user))) return;
+            if (!user.name.trim() || !(await isVerifiedAccount(user))) return;
             await syncBuilderAccount({ id: user.id, email: verifiedLoginEmail(user), name: user.name.trim() });
           },
         },
@@ -171,7 +156,7 @@ export function getAuth() {
 export const currentMember = cache(async (): Promise<MemberSessionUser | null> => {
   if (!getMemberAuthAvailability().configured) return null;
   const session = await getAuth().api.getSession({ headers: await headers() });
-  if (!session || !(await isVerifiedMember(session.user))) return null;
+  if (!session || !(await isVerifiedAccount(session.user))) return null;
   const user = { id: session.user.id, email: verifiedLoginEmail(session.user), name: session.user.name };
   // Also repairs an interrupted CRM sync without duplicating People entries.
   // A Telegram-only account syncs like any other, with no email.
