@@ -420,6 +420,190 @@ displayName })`, `linkPersonToAccount(db, { personId, userId })` in
 
 None added. The list from task T0.1 stands.
 
+### What changed, task T1.2
+
+Capability grants, the append-only audit trail, the Captain tag in People
+and the explicit person-match correction. Captain is an admin-controlled
+account capability: granted and revoked in Admin with a reason, shown in
+People as a locked tag, never derived from a People role, a tag edit or the
+membership tier, and opening no project on its own (assignment is phase 4).
+
+- `scripts/hq/builder-schema.sql`: new `hq_account_capabilities` (one
+  active grant per account and capability, revoked grants kept as history,
+  the granting and revoking operator recorded) and `hq_audit_events`
+  (append-only, `bigserial` id, structural `metadata`, never a note body).
+  The T1.1 person backfill skips a card whose edition already carries the
+  person, so a re-run of `hq:migrate` can never trip
+  `hq_people_person_idx`. The one `;` inside a `--` comment is gone.
+- `scripts/hq/seed.ts` and `scripts/hq/upgrades.ts` (ruling Q4): the seeded
+  partner-liaison People role is "Partner captain" ("Partner captains" as
+  the filter label). One guarded, idempotent upgrade step renames it in
+  place on a populated database, same id, so every card keeps its role.
+- `scripts/hq/reset-statements.ts` (ruling Q10): both new tables are KEEP.
+- New `lib/hq/capabilities.ts`: `Capability = "captain"`,
+  `grantCapability`, `revokeCapability` (idempotent; the only writers of
+  the table; the audit event is written in the same transaction and a test
+  makes it fail to prove the grant rolls back with it),
+  `listActiveCapabilities`, `listActiveCapabilitiesForUsers` (one query for
+  a whole list), `listCapabilityGrants`, `personTags`. Reads take no cache.
+- New `lib/hq/audit.ts` and pure `lib/hq/audit-sql.ts`: `recordAuditEvent`,
+  `listAuditEvents` (keyset paged, filtered by kind, subject, edition or
+  project), the `AUDIT_EVENT_KINDS` union. No update, no delete; a test
+  asserts the exported names.
+- New `lib/hq/actions/capabilities.ts`: `grantCaptainCapability(userId,
+  reason)` and `revokeCaptainCapability(userId, reason)`, operator gated by
+  `requireUser()`, actor id from the session only.
+- `lib/hq/crm-identity.ts`: `correctPersonMatch(db, { personId, toUserId,
+  reason, actor })`. Detaching (`toUserId: null`) unlinks the person, drops
+  it from the old account's cards and gives that account a fresh person of
+  its own. Attaching links the person when the account has none, and
+  otherwise merges it into the account's own person: People cards and
+  roster rows are re-pointed, a card whose edition already holds a card for
+  the survivor is left unlinked and reported, the provisional Colosseum
+  username moves to the survivor when it has none, the merged person is
+  deleted and `person.match_corrected` is recorded, all in one transaction.
+  Never by display name. `linkPersonToAccount`'s card stamp now skips a
+  colliding card instead of failing.
+- `lib/hq/actions/people.ts`: the operator action
+  `correctPersonMatch({ personId, toUserId, reason })` over it.
+- `lib/hq/queries.ts` and `lib/hq/types.ts`: `getPeople` returns
+  `builderUserId`, `personId` and `tags: PersonTag[]` (the editable role
+  tag first, then one protected tag per active capability, read in one
+  batched query through `operatorQuery()`). `roleId` and `tier` are
+  unchanged.
+- `lib/hq/builder-admin-queries.ts`: `BuilderAccount.captain` and the
+  `captains` list (`ActiveCaptain`, account-global).
+- `components/hq/people.tsx`: renders the tags; the Captain tag has a lock
+  and the hint "Granted in Admin" and is not editable; the role editor is
+  unchanged; "Wrong match?" on an account-linked card clears the link with
+  a reason. `components/hq/builder-admin.tsx`: active Captains, and grant
+  or revoke per account with a reason and a confirmation.
+- New `lib/hq/builder-db.ts` holds the builder-side pool and handle types,
+  re-exported from `builder-store.ts`, so identity, audit and capability
+  modules take the pool without an import cycle. `atomically()` moved
+  there from `crm-identity.ts`.
+- `tests/hq/helpers/db.ts`: `pgliteBuilderDatabase(pg)`, the serialized
+  PGlite adapter the onboarding test used to carry privately.
+- New `tests/hq/capabilities.test.ts`; additions to
+  `tests/hq/builders-admin.test.ts`, `tests/hq/builder-onboarding.test.ts`,
+  `tests/hq/migration-order.test.ts` and `tests/hq/reset.test.ts`.
+
+Migrations, all in `scripts/hq/builder-schema.sql` plus one guarded step in
+`scripts/hq/upgrades.ts`, applied by `hq:migrate` in the usual order:
+
+```sql
+CREATE TABLE IF NOT EXISTS hq_account_capabilities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
+  capability text NOT NULL CHECK (capability IN ('captain')),
+  granted_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  granted_at timestamptz NOT NULL DEFAULT now(),
+  revoked_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  revoked_at timestamptz,
+  reason text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS hq_account_capabilities_active_idx ON hq_account_capabilities (user_id, capability) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS hq_account_capabilities_capability_idx ON hq_account_capabilities (capability) WHERE revoked_at IS NULL;
+CREATE TABLE IF NOT EXISTS hq_audit_events (
+  id bigserial PRIMARY KEY,
+  kind text NOT NULL,
+  actor_kind text NOT NULL CHECK (actor_kind IN ('operator','member','system')),
+  actor_id text,
+  subject_user_id text,
+  hackathon_id integer REFERENCES hq_hackathons(id) ON DELETE SET NULL,
+  project_id uuid,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hq_audit_events_subject_idx ON hq_audit_events (subject_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS hq_audit_events_kind_idx ON hq_audit_events (kind, created_at DESC);
+```
+
+The T1.1 backfill now reads `UPDATE hq_people SET person_id = c.id FROM
+hq_crm_persons c WHERE ... AND NOT EXISTS (SELECT 1 FROM hq_people q WHERE
+q.hackathon_id = hq_people.hackathon_id AND q.person_id = c.id)`. The
+upgrade step is `UPDATE hq_people_roles SET label = 'Partner captain',
+filter_label = 'Partner captains' WHERE label = 'Captain' AND NOT EXISTS
+(SELECT 1 FROM hq_people_roles WHERE label = 'Partner captain')`, guarded
+by `to_regclass('hq_people_roles')`.
+
+### Checks passed, task T1.2
+
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 491 tests pass
+  (462 before, 29 new).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: the same 18 pre-existing warnings, nothing new.
+- Phase 1 gate, "editing a People role or tag cannot grant `captain`":
+  `tests/hq/builders-admin.test.ts` edits a card to the "Partner captain"
+  role, creates a person with it and changes a tier, and asserts no
+  `hq_account_capabilities` row, no audit event and no protected tag.
+- Phase 1 gate, "grant plus audit are written atomically":
+  `tests/hq/capabilities.test.ts` makes the audit insert fail with a check
+  constraint and asserts no grant row, and the same for a revocation; a
+  failing later statement in the caller's transaction takes the grant with
+  it. `tests/hq/builder-onboarding.test.ts` does the same for a person-match
+  correction.
+- Phase 1 gate, "a revocation is visible on the next request":
+  `listActiveCapabilities`, `getPeople` and the Admin account list all read
+  the revoked state on the very next call.
+- Phase 1 gate, "additive migrations apply twice, on a fresh and on a
+  populated database": the migration test now also creates
+  `hq_builder_profiles` in its pre-T1.1 shape, seeds the old "Captain" role
+  with a card, and runs a fourth pass over a card the unguarded backfill
+  would have failed on.
+- Acceptance "a Captain capability grants no project access without
+  assignment": nothing in this task reads a capability to open anything;
+  the authorization helpers are task T1.3.
+- The audit module exports exactly `recordAuditEvent` and
+  `listAuditEvents`, the statement builders contain no `UPDATE` or
+  `DELETE`, and the `person.match_corrected` metadata carries ids, a reason
+  and counts only.
+
+### Blocked or deferred, task T1.2
+
+- A revocation's reason is on its `capability.revoked` event; the grant row
+  keeps the reason it was granted for, because the table has one `reason`
+  column by design.
+- `enroll()` is unchanged (ruling Q5). Its `INSERT ... ON CONFLICT` still
+  assumes no other card in the edition carries the account's person. That
+  state cannot arise today (only accounts get People cards with a person),
+  but a phase 3 roster import that creates People cards for roster persons
+  would make it reachable, and `enroll()` would then need the same
+  `NOT EXISTS` guard the backfill and the link stamp have.
+- "Wrong match?" in People only clears a link. Re-pointing and merging are
+  reachable through the `correctPersonMatch` action and tested, and get a
+  UI when phase 3 creates roster persons to point at.
+- Captain invitations (phase 4) and every authorization helper (T1.3) are
+  untouched.
+
+### Changed interfaces, task T1.2
+
+`Capability`, `CAPABILITIES`, `CAPABILITY_LABELS`, `CapabilityGrant`,
+`CapabilityChange`, `isCapability`, `grantCapability`, `revokeCapability`,
+`listActiveCapabilities`, `listActiveCapabilitiesForUsers`,
+`listCapabilityGrants`, `personTags` in `lib/hq/capabilities.ts`;
+`recordAuditEvent`, `listAuditEvents` in `lib/hq/audit.ts` and
+`AUDIT_EVENT_KINDS`, `AuditEventKind`, `AuditActor`, `AuditEvent`,
+`AuditEventInput`, `AuditEventFilter`, `AuditEventPage`,
+`insertAuditEventStatement`, `listAuditEventsStatement`, `toAuditEvent` in
+`lib/hq/audit-sql.ts`; `grantCaptainCapability`, `revokeCaptainCapability`
+in `lib/hq/actions/capabilities.ts`; `correctPersonMatch`,
+`PersonMatchCorrection` in `lib/hq/crm-identity.ts` and the
+`correctPersonMatch` action in `lib/hq/actions/people.ts`; `PersonTag`,
+`Person.builderUserId`, `Person.personId`, `Person.tags` in
+`lib/hq/types.ts`; `operatorQuery()` in `lib/hq/queries.ts`;
+`BuilderAccount.captain`, `ActiveCaptain` and the `captains` field of
+`getBuilderAdminData()`; `builderDatabase`, `BuilderQuery`,
+`BuilderDatabase`, `atomically` in `lib/hq/builder-db.ts` (the first three
+still importable from `lib/hq/builder-store.ts`);
+`pgliteBuilderDatabase(pg)` in `tests/hq/helpers/db.ts`. Tables:
+`hq_account_capabilities`, `hq_audit_events`. The seeded role label
+"Captain" is now "Partner captain".
+
+### External configuration still required, task T1.2
+
+None added. The list from task T0.1 stands.
+
 ## Phase 2, sign-in, linking and the member shell
 
 Not started.

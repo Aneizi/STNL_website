@@ -76,9 +76,9 @@ exists yet and none should be created before that phase.
 |---|---|---|---|---|
 | Identity | verified login identities, sessions, linking, optional contact email | `lib/hq/member-auth.ts`, new `lib/hq/telegram-provider.ts`, new `lib/hq/telegram-identity-plugin.ts`, new `lib/hq/identity.ts` | `isPlaceholderEmail(email)`, `getLoginMethods(userId)`, `hasTelegramIdentity(userId)`, `getTelegramIdentity(userId)` | 0 spike, then 1 and 2 |
 | Authorization | operator checks, capabilities, membership, assignment, note audience | new `lib/hq/authz.ts` with pure loaders in `lib/hq/authz-sql.ts` | `getActorCapabilities(actor)`, `authorizeProjectAction(actor, projectId, action)`, `requireOperator()`, `isTeamMember(actor, projectId)`, `isAssignedCaptain(actor, projectId)`, `entryAudience(entry, actor)`, `canEditEntry(actor, entry)`, `assertHackathonMatches(record, hackathonId)` | 1 |
-| Capability grants | grant and revoke, one effective grant per capability, audit trail | new `lib/hq/capabilities.ts`, new `lib/hq/actions/capabilities.ts` (operator gated) | `grantCapability({ actorId, userId, capability, reason })`, `revokeCapability(...)`, `listCapabilityGrants(hackathonId?)`, `Capability = "captain"` | 1 |
-| CRM person identity | stable person id, account link, edition People references, explicit correction | new `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch({ personId, fromUserId, toUserId, actor, reason })` (T1.2) | 1, used from 3 |
-| Audit | append only metadata events | new `lib/hq/audit.ts`, new `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata })` | 1 |
+| Capability grants | grant and revoke, one effective grant per capability, audit trail | `lib/hq/capabilities.ts`, `lib/hq/actions/capabilities.ts` (operator gated) | `Capability = "captain"`, `grantCapability(db, { actorOperatorId, userId, capability, reason })` and `revokeCapability(db, ...)` (idempotent, the only writers of `hq_account_capabilities`, audit event in the same transaction), `listActiveCapabilities(userId)`, `listActiveCapabilitiesForUsers(userIds)`, `listCapabilityGrants({ capability, activeOnly? })`, `personTags(roleLabel, capabilities)`; actions `grantCaptainCapability(userId, reason)`, `revokeCaptainCapability(userId, reason)` | 1 |
+| CRM person identity | stable person id, account link, edition People references, explicit correction | `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch(db, { personId, toUserId, reason, actor })` (detach, link, or merge into the account's own person; never by display name) and the operator action `correctPersonMatch({ personId, toUserId, reason })` | 1, used from 3 |
+| Audit | append only metadata events | `lib/hq/audit.ts`, `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata? })`, `listAuditEvents(filter, { limit, cursor })`; nothing else | 1 |
 | Actor aware response types | the smallest DTO per audience | new `lib/hq/view-models.ts` | `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView` | 1 |
 | Shell and navigation | capability driven member menu | new `app/hq/(member)/layout.tsx`, new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `lib/hq/member-routes.ts` | `MEMBER_PUBLIC_PATHS`, `getMemberNav(actor)` | 2 |
 | Colosseum integration | validated snapshots, normalized fields, source status | `lib/colosseum-api.ts` extended, `lib/hq/colosseum-snapshot.ts` named only | `claimProject`, `refreshProject`, `listCountryProjects` | 3 |
@@ -91,9 +91,21 @@ exists yet and none should be created before that phase.
 Audit event kinds, so that later phases extend one vocabulary instead of
 inventing their own: `capability.granted`, `capability.revoked`,
 `identity.linked`, `identity.unlinked`, `identity.email_changed`,
-`person.linked`, `person.match_corrected`, and from phase 4 onward
-`captain.assigned`. Note bodies never go into audit. The audit module exposes no
-update and no delete, and a test asserts that.
+`person.linked`, `person.match_corrected`, and reserved for phase 4
+`captain.assigned` and `captain.unassigned`. They are the
+`AUDIT_EVENT_KINDS` union in `lib/hq/audit-sql.ts`. Note bodies never go into
+audit. The audit module exposes no update and no delete, and
+`tests/hq/capabilities.test.ts` asserts that.
+
+The builder-side pool lives in `lib/hq/builder-db.ts` (`builderDatabase()`,
+`BuilderQuery`, `BuilderDatabase`, `atomically()`), re-exported from
+`lib/hq/builder-store.ts`. Modules the store imports (identity, audit,
+capabilities) take the pool from `builder-db.ts` so there is no import cycle.
+
+A People card's tags are presentation: `PersonTag = { kind: "role" |
+"capability"; label; protected }`. The role tag is the editable role. The
+capability tag mirrors an active grant and nothing reads a tag back to decide
+access; access is checked against `hq_account_capabilities` per request.
 
 Operator only fields stay in `lib/hq/types.ts`. The view models exist so that a
 member response cannot accidentally carry an operator field.
@@ -171,6 +183,12 @@ Where DDL goes:
    `ADD COLUMN IF NOT EXISTS`, `to_regclass('name')` before a unique or partial
    index, a `pg_constraint` lookup before a constraint, and `columnInfo()` for
    nullability. Identifiers are interpolated constants, never input.
+   **Exception (DDL-PLACEMENT ruling):** a core-table column whose foreign key
+   targets a builder-side table lives in `builder-schema.sql`, after the table
+   it references, because `upgrades.ts` runs before that table exists.
+   `hq_people.person_id` and `hq_project_members.person_id` are the examples.
+   Seeded-row edits such as the "Partner captain" rename stay in
+   `upgrades.ts`, guarded by `to_regclass` and a `NOT EXISTS` on the new value.
 3. **Changes to existing builder or auth tables:**
    `ADD COLUMN IF NOT EXISTS` and `ALTER COLUMN ... DROP NOT NULL` are
    idempotent single statements and may live directly in the additive `.sql`
@@ -182,9 +200,11 @@ Where DDL goes:
 4. **New `hackathon_id` indexes** on pre-existing tables stay in `upgrades.ts`,
    not in `schema.sql`.
 5. **Classify every new `hq_%` table** in `scripts/hq/reset-statements.ts`, in
-   `CLEAR_TABLES` or `KEEP_TABLES`. Task T1.1 adds a test that applies all three
-   SQL files through the splitter, in migrate order, and asserts that every
-   `hq_%` table is classified.
+   `CLEAR_TABLES` or `KEEP_TABLES`. `tests/hq/migration-order.test.ts` applies
+   all three SQL files through the splitter, in migrate order, and asserts that
+   every `hq_%` table is classified. The one table in neither list is
+   `hq_luma_sync`: `RESET_STATEMENTS` rewinds its single row with a dedicated
+   `UPDATE` instead of clearing or keeping it, and the test names it as such.
 6. **Test the migration** twice on a fresh database and once over
    `tests/hq/fixtures/schema-pre-hackathon.sql` with a populated fixture. Assert
    with `to_regclass` and `information_schema.columns`.
