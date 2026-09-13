@@ -608,6 +608,151 @@ still importable from `lib/hq/builder-store.ts`);
 
 None added. The list from task T0.1 stands.
 
+### What changed, task T1.3
+
+The actor representation, the central authorization helpers with typed
+hooks for the phase 4 and phase 5 records, the actor-aware view models and
+the widened auth-boundary test. Nothing is wired into an existing page or
+action yet; that is task T1.4.
+
+- New `lib/hq/actor.ts` (server-only): `Actor`, the one actor shape every
+  service takes, with the two session origins kept distinct. The operator
+  shape comes from `requireUser()` (hq_users), the member shape from
+  `currentMember()` (Better Auth) plus the account's active capabilities
+  (`listActiveCapabilities`, read when the actor is built) and its Telegram
+  identity (`telegram.userId` is a string). `job` is reserved for phase 8.
+  `currentActor()` resolves the operator session first, then the member
+  session; an operator who still has to change their password is not
+  handed an operator actor. `requireMemberActor(next?)` redirects like
+  `requireMember()`; `requireOperatorActor()` wraps `requireUser()` and is
+  the only way to obtain `kind: "operator"`. No function reads a form
+  field, a query parameter, a request body or a cookie; a test scans the
+  three modules for exactly that.
+- New `lib/hq/authz-sql.ts` (pure, no `server-only`): `loadProjectEdition`
+  (hq_projects), `loadTeamMembership` (verified owner or joined roster member
+  through `hq_project_onboarding` and `hq_project_members`, with the
+  project's edition; a pending or rejected claim is no membership), and the
+  two typed hooks per ruling STUBS: `loadCurrentAssignment` returning null
+  with a `TODO(phase 4)` and `loadEntry` returning null with a
+  `TODO(phase 5)`. A malformed project id is treated as missing before it
+  reaches the database.
+- New `lib/hq/authz.ts` (server-only): `ProjectAction`, `Authorization`,
+  `AuthzLoaders` (injectable; every call builds its own defaults over the
+  builder-side pool, nothing survives a request), `getActorCapabilities`,
+  `authorizeProjectAction(actor, { projectId, hackathonId, action },
+  loaders?)`, `requireOperator()`, `isTeamMember`, `isAssignedCaptain`,
+  `entryAudience`, `canEditEntry`, `canReadRevisionHistory` and
+  `assertHackathonMatches`. Operators have full access only through their
+  kind. A member is evaluated per resource: team membership first, then the
+  `captain` grant read from the database together with the injected or
+  loaded assignment. The actor's own capability set is never trusted for a
+  decision. To a member, a project they have no relationship with is
+  `not_found` whether it is missing, in another edition or someone else's;
+  `wrong_edition` is only returned to a related actor asking under another
+  edition; `not_member` is a related actor lacking the team relationship the
+  action needs (membership changes are the team lead's, and a Captain holds
+  no Captain-only permission there); `not_assigned` is a `captain` holder
+  who is not the project's current Captain; `no_capability` is a job actor.
+  Entry audience follows the plan: shared entries are read by the team and
+  the assigned Captain and edited by their author while still authorized on
+  the project; a sensitive note is its author's and the operators', the
+  author keeps a read-only view while their capability is active, editing
+  again requires current project authorization, and another Captain or the
+  team gets nothing. Revision history is operator-only.
+- New `lib/hq/view-models.ts` (pure): `MemberTeamView` (id, name, edition,
+  the viewer's own membership, the Captain's display name and approved
+  contact or null), `CaptainAssignmentView` (id, name, edition, project URL,
+  stage, lead username, roster names and handles), `PublicPersonView` (name
+  and tag labels) with `toMemberTeamView`, `toCaptainAssignmentView` and
+  `toPublicPersonView` over the existing `BuilderTeam` and `Person` rows.
+  Operator-only shapes stay in `lib/hq/types.ts`.
+- `tests/hq/auth-boundary.test.ts` (ruling Q9): an explicit map from every
+  `"use server"` module under `lib/hq/actions` to its gate (operator or
+  member), a check that the map and the directory agree in both directions,
+  and `requireOperatorActor(` and `requireMemberActor(` accepted as gate
+  spellings next to `requireUser(`, `currentUser(`, `requireMember(` and
+  `currentMember(`.
+- New `tests/hq/authz.test.ts` and `tests/hq/view-models.test.ts`.
+
+Migrations: none. No SQL file and nothing in `scripts/hq/` changed.
+
+### Checks passed, task T1.3
+
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 526 tests pass
+  (494 before, 32 new).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: the same 18 pre-existing warnings, nothing new.
+- Phase 1 gate, "a member cannot read operator data through a URL, a body
+  field, a project id or the hackathon cookie": `tests/hq/authz.test.ts`
+  drives `authorizeProjectAction` on PGlite with real membership and grant
+  rows. A member gets `not_found` for a foreign project, a project in
+  another edition, a pending claim, an unclaimed roster row, an unknown id
+  and a malformed id alike; a related project under the wrong edition is
+  `wrong_edition`; only `kind: "operator"` reaches `via: "operator"`, and a
+  member session never passes `requireOperator()`.
+- Phase 1 gate, "a `captain` grant on its own opens no project": with a
+  real grant and no assignment every action is `not_assigned`; an assignment
+  for an account without the grant opens nothing; an assignment to someone
+  else is `not_assigned`; with the grant and an injected assignment the
+  shared surface is allowed `via: "captain"` and a membership change is not.
+- Phase 1 gate, "a revocation is visible on the next request": the same
+  actor object is allowed, then denied after `revokeCapability`, then
+  allowed again after a fresh grant; leaving a roster ends access on the
+  next call; `getActorCapabilities` and `isAssignedCaptain` follow suit.
+- Combined roles per resource: a Captain assigned to project A who is a
+  roster member of project B is allowed on A `via: "captain"`, on B
+  `via: "member"`, denied on C, and may change membership on neither.
+- The section 5 entry matrix, including the reassigned Captain's read-only
+  author view, another Captain getting nothing, sensitive notes hidden from
+  the team, and revision history for operators only.
+- `currentActor()` returns the operator actor when both sessions are
+  present without consulting the member session; the member actor carries
+  current grants and the Telegram id as a string beyond the safe integer
+  range; the actor and authorization modules contain no form, body, query
+  or cookie read.
+
+### Blocked or deferred, task T1.3
+
+- Wiring into `lib/hq/actions/builders.ts`, the project state actions and
+  the member pages is task T1.4. Until then the helpers have no caller in
+  the app and the existing per-action checks stand.
+- `loadCurrentAssignment` and `loadEntry` return null until phase 4 and
+  phase 5 create their tables; the decisions over them are tested with
+  injected fixtures, so those phases replace one body each.
+- `MemberTeamView.captain` is null until phase 4 assigns Captains, and the
+  contact a Captain approves for a team is a phase 4 field.
+- `Authorization.reason` includes `not_author`, reserved for entry edits by
+  someone other than the author once phase 5 routes edits through an
+  entry-level decision; `canEditEntry` answers that today with a boolean.
+- `assertHackathonMatches` throws a `BuilderError` with one message for a
+  missing record and for one from another edition; operator actions adopt
+  it in T1.4.
+
+### Changed interfaces, task T1.3
+
+`Actor`, `OperatorActor`, `MemberActor`, `currentActor()`,
+`requireMemberActor(next?)`, `requireOperatorActor()` in `lib/hq/actor.ts`;
+`ProjectEdition`, `TeamMembership`, `CurrentAssignment`, `Entry`,
+`EntryVisibility`, `AssignmentLoader`, `EntryLoader`,
+`loadProjectEdition(db, projectId)`, `loadTeamMembership(db, { userId,
+projectId })`, `loadCurrentAssignment(db, projectId)`, `loadEntry(db,
+entryId)` in `lib/hq/authz-sql.ts`; `ProjectAction`, `Authorization`,
+`ProjectActionRequest`, `AuthzLoaders`, `EntryAudience`,
+`requireOperator()`, `getActorCapabilities(actor, loaders?)`,
+`authorizeProjectAction(actor, { projectId, hackathonId, action },
+loaders?)`, `isTeamMember(actor, projectId, loaders?)`,
+`isAssignedCaptain(actor, projectId, loaders?)`, `entryAudience(entry,
+actor, loaders?)`, `canEditEntry(actor, entry, loaders?)`,
+`canReadRevisionHistory(actor)`, `assertHackathonMatches(record,
+hackathonId)` in `lib/hq/authz.ts`; `TeamCaptainView`, `MemberTeamView`,
+`CaptainAssignmentView`, `PublicPersonView`, `toMemberTeamView`,
+`toCaptainAssignmentView`, `toPublicPersonView` in `lib/hq/view-models.ts`.
+No existing export changed.
+
+### External configuration still required, task T1.3
+
+None added. The list from task T0.1 stands.
+
 ## Phase 2, sign-in, linking and the member shell
 
 Not started.
