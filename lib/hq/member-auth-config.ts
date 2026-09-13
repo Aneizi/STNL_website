@@ -35,7 +35,7 @@ export function safeMemberNext(value: unknown): string {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u0020]/.test(value)) return "/hq/welcome";
   try {
     const url = new URL(value, "https://hq.invalid");
-    const routes = ["/hq/welcome", "/hq/dashboard", "/hq/join", "/hq/initialize", "/hq/profile"];
+    const routes = ["/hq/welcome", "/hq/dashboard", "/hq/join", "/hq/initialize", "/hq/profile", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram"];
     const isTeam = /^\/hq\/team\/[a-zA-Z0-9_-]+$/.test(url.pathname);
     if (url.origin !== "https://hq.invalid" || (!routes.includes(url.pathname) && !isTeam)) return "/hq/welcome";
     return `${url.pathname}${url.search}`;

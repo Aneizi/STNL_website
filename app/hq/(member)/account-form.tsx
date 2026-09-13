@@ -3,12 +3,35 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { IconArrowLeft, IconArrowRight } from "symbols-react";
+import { IconArrowLeft, IconArrowRight, IconPaperplaneFill } from "symbols-react";
 import { memberAuthClient } from "@/lib/hq/member-auth-client";
 import { safeMemberNext, type MemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import styles from "./account.module.css";
+import { telegramErrorMessage } from "./telegram-copy";
 
-type Props = { mode: "signup" | "signin"; next: string; availability: MemberAuthAvailability };
+type Props = {
+  mode: "signup" | "signin";
+  next: string;
+  availability: MemberAuthAvailability;
+  /** The `error` code the Telegram callback or a sign-in redirect put in the URL; shown once, as copy. */
+  error?: string;
+};
+
+/**
+ * Honest unavailable copy per method and per mode. When neither method is
+ * configured there is one line, not two; when one is, its line says which
+ * and points at the other.
+ */
+function unavailableCopy(mode: Props["mode"], availability: MemberAuthAvailability): { all: string | null; telegram: string | null; email: string | null } {
+  const action = mode === "signup" ? "Sign-up" : "Sign-in";
+  const verb = mode === "signup" ? "sign-up" : "sign-in";
+  if (!availability.telegram && !availability.email) return { all: `${action} is not available yet. Please check back shortly.`, telegram: null, email: null };
+  return {
+    all: null,
+    telegram: availability.telegram ? null : `Telegram ${verb} is not available yet. Use email below.`,
+    email: availability.email ? null : `Email ${verb} is not available yet. Use Telegram above.`,
+  };
+}
 
 function messageFor(error: { code?: string; status?: number }, verifying = false): string {
   if (error.status === 429 || error.code === "TOO_MANY_REQUESTS") return "Too many attempts. Please wait a minute and try again.";
@@ -18,18 +41,19 @@ function messageFor(error: { code?: string; status?: number }, verifying = false
   return verifying ? "We could not verify that code. Please try again." : "We could not send your code. Please try again shortly.";
 }
 
-export function AccountForm({ mode, next, availability }: Props) {
+export function AccountForm({ mode, next, availability, error: initialError }: Props) {
   const [step, setStep] = useState<"details" | "verify">("details");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(telegramErrorMessage(initialError) ?? "");
   const [status, setStatus] = useState("");
   const [resendAt, setResendAt] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const codeInput = useRef<HTMLInputElement>(null);
   const destination = safeMemberNext(next);
+  const unavailable = unavailableCopy(mode, availability);
 
   useEffect(() => {
     if (step === "verify") codeInput.current?.focus();
@@ -42,6 +66,32 @@ export function AccountForm({ mode, next, availability }: Props) {
     const timer = window.setInterval(tick, 1000);
     return () => window.clearInterval(timer);
   }, [resendAt]);
+
+  async function signInWithTelegram() {
+    if (busy || !availability.telegram) return;
+    setBusy(true);
+    setError("");
+    setStatus("");
+    try {
+      // The redirect flow only: the server mints state, PKCE and nonce and
+      // sends the browser to Telegram. On success the client follows the
+      // returned URL, so `busy` stays on. A first-time account lands on the
+      // name step, which needs no email.
+      const result = await memberAuthClient.signIn.social({
+        provider: "telegram",
+        callbackURL: destination,
+        errorCallbackURL: `/hq/signin?error=telegram&next=${encodeURIComponent(destination)}`,
+        newUserCallbackURL: `/hq/profile?next=${encodeURIComponent(destination)}`,
+      });
+      if (result.error) {
+        setError(telegramErrorMessage(result.error.code) ?? messageFor(result.error));
+        setBusy(false);
+      }
+    } catch {
+      setError("We could not connect. Check your connection and try again.");
+      setBusy(false);
+    }
+  }
 
   async function sendCode(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
@@ -107,7 +157,14 @@ export function AccountForm({ mode, next, availability }: Props) {
 
           {step === "details" ? (
             <>
-              {/* Telegram sign-in button and its "or use email" divider go here (task T2.2). */}
+              <div className={styles.providers}>
+                <button type="button" className={styles.provider} disabled={busy || !availability.telegram} onClick={signInWithTelegram}>
+                  <IconPaperplaneFill width={18} height={18} fill="currentColor" aria-hidden="true" />
+                  Continue with Telegram
+                </button>
+                {unavailable.telegram && <p className={styles.hint}>{unavailable.telegram}</p>}
+              </div>
+              <div className={styles.divider} aria-hidden="true"><span>or use email</span></div>
               <form onSubmit={sendCode} className={styles.form}>
                 {mode === "signup" && <label className={styles.field}>
                   Name
@@ -117,14 +174,14 @@ export function AccountForm({ mode, next, availability }: Props) {
                   Email
                   <input name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required disabled={busy} />
                 </label>
-                {/* Email is the only sign-in method, so its absence leaves no way in. */}
-                {!availability.email && <p className={styles.hint}>Sign-in is not available yet. Please check back shortly.</p>}
+                {unavailable.email && <p className={styles.hint}>{unavailable.email}</p>}
                 <button className={styles.submit} disabled={busy || !availability.email} type="submit">
                   {busy ? "Sending code…" : "Continue with email"}
                   <IconArrowRight width={19} height={19} fill="currentColor" aria-hidden="true" />
                 </button>
                 <p className={styles.hint}>We&apos;ll email you a verification code. No password needed.</p>
               </form>
+              {unavailable.all && <p className={styles.hint}>{unavailable.all}</p>}
               {mode === "signup" && <p className={styles.switchMode}>Already have an account? <Link href={`/hq/signin?next=${encodeURIComponent(destination)}`}>Sign in</Link></p>}
             </>
           ) : (

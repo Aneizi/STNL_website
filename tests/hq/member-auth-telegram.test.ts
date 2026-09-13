@@ -8,10 +8,11 @@ import { betterAuth } from "better-auth";
 import { supportsIdTokenSignIn } from "@better-auth/core/oauth2";
 import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { Pool } from "pg";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyMigrations } from "./helpers/db";
 import { getTelegramIdentity } from "@/lib/hq/identity";
-import { hqTelegramIdentity } from "@/lib/hq/telegram-identity-plugin";
+import { hqTelegramIdentity, PLACEHOLDER_GUARDED_ENDPOINTS, RECENT_SESSION_ENDPOINTS, recordTelegramIntent } from "@/lib/hq/telegram-identity-plugin";
 import { TELEGRAM_ISSUER, TELEGRAM_REJECTION_LOG_PREFIX, telegramProvider } from "@/lib/hq/telegram-provider";
 
 const state = vi.hoisted(() => ({
@@ -29,6 +30,12 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("server-only", () => ({}));
+// The icon package ships its source, so importing it makes vitest transform thousands of icons; the pages here render markup, not icons.
+vi.mock("symbols-react", async () => {
+  const { createElement } = await import("react");
+  const icon = (props: Record<string, unknown>) => createElement("svg", props);
+  return { IconArrowLeft: icon, IconArrowRight: icon, IconPaperplaneFill: icon };
+});
 vi.mock("next/headers", () => ({ headers: async () => new Headers({ Origin: "https://hq-test.example", Cookie: state.cookie }) }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); } }));
 vi.mock("@/lib/hq/builder-store", async (importOriginal) => {
@@ -86,11 +93,12 @@ let requestNumber = 0;
 
 type TokenOverride = {
   sub?: string; id?: number | null; nonce?: string | null; iss?: string; aud?: string;
-  iat?: number; exp?: number | string; key?: CryptoKey; kid?: string;
+  iat?: number; exp?: number | string; key?: CryptoKey; kid?: string; name?: string | null;
 };
 
 async function mintIdToken(o: TokenOverride = {}) {
-  const payload: Record<string, unknown> = { name: NAME, preferred_username: USERNAME, picture: PICTURE };
+  const payload: Record<string, unknown> = { preferred_username: USERNAME, picture: PICTURE };
+  if (o.name !== null) payload.name = o.name ?? NAME;
   if (o.id !== null) payload.id = o.id ?? TELEGRAM_ID;
   if (o.nonce !== null) payload.nonce = o.nonce ?? state.nonce;
   return new SignJWT(payload)
@@ -150,6 +158,54 @@ async function signInWithEmail(email: string, name = "Email Builder") {
   return { user: (await response.json()).user as { id: string }, cookie: sessionCookie(response)!.split(";")[0] };
 }
 
+const LINK_BODY = { provider: "telegram", callbackURL: "/hq/account?connected=telegram", errorCallbackURL: "/hq/account?error=telegram", disableRedirect: true };
+
+/** The intent store the confirmation actions write to: Better Auth's own internal adapter. */
+async function intentStore() {
+  const { getAuth } = await import("@/lib/hq/member-auth");
+  return (await getAuth().$context).internalAdapter;
+}
+
+/** Starts /link-social for the session behind `cookie`; the caller has confirmed (or not) beforehand. */
+async function startLink(cookie: string) {
+  const response = await request("/link-social", LINK_BODY, cookie);
+  if (response.status !== 200) return { response, start: null };
+  const url = new URL((await response.json()).url);
+  return { response, start: { url, state: url.searchParams.get("state")!, nonce: url.searchParams.get("nonce")!, codeChallenge: url.searchParams.get("code_challenge")!, cookie: cookieHeader(response) } };
+}
+
+/** The whole Connect Telegram flow for a signed-in member: confirmation step, /link-social, callback. */
+async function linkTelegramTo(cookie: string, override: TokenOverride = {}) {
+  state.cookie = cookie;
+  const { confirmLinkTelegram } = await import("@/lib/hq/actions/telegram");
+  expect(await confirmLinkTelegram()).toEqual({ ok: true });
+  const { response, start } = await startLink(cookie);
+  expect(response.status).toBe(200);
+  state.tokenOverride = override;
+  return completeCallback(start!);
+}
+
+async function auditEvents() {
+  const { rows } = await state.pg!.query<{ kind: string; actor_kind: string; actor_id: string | null; subject_user_id: string | null; metadata: unknown }>(
+    "SELECT kind, actor_kind, actor_id, subject_user_id, metadata FROM hq_audit_events ORDER BY id",
+  );
+  return rows;
+}
+
+const identityEvent = (kind: "identity.linked" | "identity.unlinked", userId: string) =>
+  ({ kind, actor_kind: "member", actor_id: userId, subject_user_id: userId, metadata: { provider: "telegram" } });
+
+/** What linking must never touch: the account id, its profile, enrollments, capability grants and team rows. */
+async function accountSnapshot(userId: string) {
+  const one = async (sql: string) => (await state.pg!.query<{ n: number }>(sql, [userId])).rows[0].n;
+  return {
+    profile: (await state.pg!.query("SELECT id, email, name FROM hq_builder_profiles WHERE id = $1", [userId])).rows,
+    enrollments: await one("SELECT count(*)::int AS n FROM hq_builder_enrollments WHERE user_id = $1"),
+    capabilities: (await state.pg!.query("SELECT capability FROM hq_account_capabilities WHERE user_id = $1 AND revoked_at IS NULL", [userId])).rows,
+    teams: await one("SELECT count(*)::int AS n FROM hq_project_members WHERE builder_user_id = $1"),
+  };
+}
+
 describe("Telegram OIDC sign-in through Better Auth", () => {
   beforeAll(async () => {
     vi.stubEnv("DATABASE_URL", "postgres://test-only/member-auth-telegram");
@@ -194,7 +250,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     state.tokenOverride = {};
     state.tokenFailure = false;
     state.minted.length = 0;
-    await state.pg!.exec("TRUNCATE hq_auth_user, hq_auth_verification, hq_auth_rate_limit, hq_builder_profiles, hq_hackathons CASCADE");
+    await state.pg!.exec("TRUNCATE hq_auth_user, hq_auth_verification, hq_auth_rate_limit, hq_builder_profiles, hq_hackathons, hq_project_statuses, hq_project_forecasts, hq_audit_events CASCADE");
     await state.pg!.exec(`INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES(41,'test-builders','Test builders','2098-09-01','2098-10-01')`);
   });
 
@@ -489,5 +545,330 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(state.sent).toHaveLength(2);
     expect((await (await request("/get-session", undefined, emailUser.cookie)).json()).user.id).toBe(emailUser.user.id);
     expect(await count("hq_auth_user")).toBe(1);
+  });
+
+  it("guards and gates endpoints that exist on the installed library", async () => {
+    const { getAuth } = await import("@/lib/hq/member-auth");
+    const paths = new Set(Object.values(getAuth().api as Record<string, { path?: string }>).map((endpoint) => endpoint.path));
+    for (const path of [...PLACEHOLDER_GUARDED_ENDPOINTS, ...RECENT_SESSION_ENDPOINTS]) expect(paths.has(path), path).toBe(true);
+  });
+
+  it("connects Telegram to an email account through the confirmed redirect flow, preserving the account", async () => {
+    const emailUser = await signInWithEmail("linker@example.com", "Linking Builder");
+    const userId = emailUser.user.id;
+    await state.pg!.query("INSERT INTO hq_account_capabilities (user_id, capability, reason) VALUES ($1, 'captain', 'fixture')", [userId]);
+    await state.pg!.exec(`INSERT INTO hq_project_statuses(slug,label,color,counts_as_active,sort) VALUES('onboarding','Onboarding','accent',true,100);
+      INSERT INTO hq_project_forecasts(slug,label,color,sort) VALUES('unassessed','Not assessed','muted',100);
+      INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+        SELECT '11111111-1111-4111-8111-111111111111', 41, 'Fictional Team', s.id, f.id, current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f LIMIT 1`);
+    await state.pg!.query("INSERT INTO hq_project_members(project_id,name,colosseum_username,builder_user_id,joined_at) VALUES ('11111111-1111-4111-8111-111111111111','Linking Builder','linking_builder',$1,now())", [userId]);
+    const before = await accountSnapshot(userId);
+    expect(before.capabilities).toEqual([{ capability: "captain" }]);
+    expect(before.teams).toBe(1);
+
+    // Without the confirmation step the endpoint refuses and mints no OAuth state.
+    const unconfirmed = await request("/link-social", LINK_BODY, emailUser.cookie);
+    expect(unconfirmed.status).toBe(403);
+    expect((await unconfirmed.json()).code).toBe("CONFIRMATION_REQUIRED");
+    expect(cookieHeader(unconfirmed)).not.toContain("stnl_builder.state=");
+
+    const callback = await linkTelegramTo(emailUser.cookie);
+    expect(callback.status).toBe(302);
+    expect(callback.headers.get("location")).toMatch(/\/hq\/account\?connected=telegram$/);
+    // Linking adds a login method; it does not sign anyone in.
+    expect(sessionCookie(callback)).toBeNull();
+
+    expect((await state.pg!.query('SELECT "providerId", issuer, "accountId", "userId" FROM hq_auth_account')).rows).toEqual([{ providerId: "telegram", issuer: ISSUER, accountId: SUB, userId }]);
+    expect((await state.pg!.query("SELECT user_id, provider_subject, username FROM hq_auth_telegram_identity")).rows).toEqual([{ user_id: userId, provider_subject: SUB, username: USERNAME }]);
+    expect((await state.pg!.query('SELECT id, email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ id: userId, email: "linker@example.com", emailVerified: true }]);
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId)]);
+    expect(await accountSnapshot(userId)).toEqual(before);
+
+    // The confirmation was single use.
+    const again = await request("/link-social", LINK_BODY, emailUser.cookie);
+    expect(again.status).toBe(409);
+    expect((await again.json()).code).toBe("TELEGRAM_ALREADY_CONNECTED");
+
+    // Telegram sign-in now resolves to the very same account, with its real email.
+    const telegram = await signInWithTelegram();
+    expect(telegram.response.status).toBe(302);
+    expect((await (await request("/get-session", undefined, telegram.session!.split(";")[0])).json()).user.id).toBe(userId);
+    expect(await count("hq_auth_user")).toBe(1);
+    expect(await count("hq_auth_account")).toBe(1);
+    state.cookie = telegram.session!.split(";")[0];
+    const { currentMember } = await import("@/lib/hq/member-auth");
+    expect(await currentMember()).toEqual({ id: userId, email: "linker@example.com", name: "Linking Builder" });
+    // A repeat sign-in is not a new link.
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId)]);
+    expect(await accountSnapshot(userId)).toEqual(before);
+  });
+
+  it("refuses a link whose confirmation is missing, expired, for the other action or already used, and a failed link grants nothing", async () => {
+    const emailUser = await signInWithEmail("careful@example.com");
+    const userId = emailUser.user.id;
+    const store = await intentStore();
+    const intents = () => state.pg!.query("SELECT value FROM hq_auth_verification WHERE identifier = $1", [`hq-telegram-intent:${userId}`]).then((r) => r.rows);
+    const refused = async (label: string) => {
+      const response = await request("/link-social", LINK_BODY, emailUser.cookie);
+      expect(response.status, label).toBe(403);
+      expect((await response.json()).code, label).toBe("CONFIRMATION_REQUIRED");
+      expect(await intents(), label).toEqual([]);
+    };
+
+    await refused("never confirmed");
+    await recordTelegramIntent(store, userId, "link");
+    await state.pg!.query(`UPDATE hq_auth_verification SET "expiresAt" = now() - interval '1 minute' WHERE identifier = $1`, [`hq-telegram-intent:${userId}`]);
+    await refused("expired");
+    await recordTelegramIntent(store, userId, "unlink");
+    await refused("confirmed the other action");
+    await recordTelegramIntent(store, "someone-else", "link");
+    await refused("confirmed by another account");
+
+    // A valid confirmation opens exactly one attempt.
+    await recordTelegramIntent(store, userId, "link");
+    expect(await intents()).toEqual([{ value: "link" }]);
+    const { response, start } = await startLink(emailUser.cookie);
+    expect(response.status).toBe(200);
+    expect(await intents()).toEqual([]);
+    await refused("already used");
+
+    // That attempt fails at the token exchange: nothing is linked, nothing is recorded, and the state cannot be replayed.
+    state.tokenFailure = true;
+    const failed = await completeCallback(start!);
+    expect(failed.status).toBe(302);
+    const location = new URL(failed.headers.get("location")!, ORIGIN);
+    expect(location.pathname).toBe("/hq/account");
+    expect(location.searchParams.getAll("error")).toEqual(["telegram", "invalid_code"]);
+    state.tokenFailure = false;
+    expect(errorCode(await completeCallback(start!))).toBe("state_mismatch");
+    expect(await count("hq_auth_account")).toBe(0);
+    expect(await count("hq_auth_telegram_identity")).toBe(0);
+    expect(await auditEvents()).toEqual([]);
+    expect(await count("hq_auth_session")).toBe(1);
+  });
+
+  it("refuses a second Telegram for an account, at the endpoint and inside the account transaction", async () => {
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    state.cookie = cookie;
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    const { confirmLinkTelegram } = await import("@/lib/hq/actions/telegram");
+    expect(await confirmLinkTelegram()).toEqual({ ok: false, code: "TELEGRAM_ALREADY_CONNECTED" });
+
+    // Even a recorded confirmation does not open a second link.
+    const store = await intentStore();
+    await recordTelegramIntent(store, userId, "link");
+    const response = await request("/link-social", LINK_BODY, cookie);
+    expect(response.status).toBe(409);
+    expect((await response.json()).code).toBe("TELEGRAM_ALREADY_CONNECTED");
+    expect(cookieHeader(response)).not.toContain("stnl_builder.state=");
+
+    // The in-transaction backstop: a second telegram account row for the same user is refused before it exists.
+    const otherSub = "5555555555555555555";
+    const idToken = await mintIdToken({ sub: otherSub, id: 4_200_000_000_042, nonce: null });
+    await expect(store.createAccount({ userId, providerId: "telegram", issuer: ISSUER, accountId: otherSub, idToken })).rejects.toMatchObject({ body: { code: "telegram_already_connected" } });
+    expect((await state.pg!.query('SELECT "accountId" FROM hq_auth_account')).rows).toEqual([{ accountId: SUB }]);
+    expect((await state.pg!.query("SELECT provider_subject FROM hq_auth_telegram_identity")).rows).toEqual([{ provider_subject: SUB }]);
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId)]);
+  });
+
+  it("refuses to connect a Telegram account that belongs to another HQ account, moving nothing", async () => {
+    const holder = await signInWithTelegram();
+    const holderId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    const emailUser = await signInWithEmail("second@example.com", "Second Builder");
+    const before = { accounts: (await state.pg!.query("SELECT * FROM hq_auth_account ORDER BY id")).rows, identities: (await state.pg!.query("SELECT * FROM hq_auth_telegram_identity")).rows, audit: await auditEvents() };
+
+    const callback = await linkTelegramTo(emailUser.cookie);
+    expect(callback.status).toBe(302);
+    const location = new URL(callback.headers.get("location")!, ORIGIN);
+    expect(location.pathname).toBe("/hq/account");
+    expect(location.searchParams.getAll("error")).toEqual(["telegram", "account_already_linked_to_different_user"]);
+    expect(sessionCookie(callback)).toBeNull();
+
+    expect((await state.pg!.query("SELECT * FROM hq_auth_account ORDER BY id")).rows).toEqual(before.accounts);
+    expect((await state.pg!.query("SELECT * FROM hq_auth_telegram_identity")).rows).toEqual(before.identities);
+    expect(await auditEvents()).toEqual(before.audit);
+    expect((await state.pg!.query('SELECT id, email, "emailVerified" FROM hq_auth_user WHERE id = $1', [emailUser.user.id])).rows).toEqual([{ id: emailUser.user.id, email: "second@example.com", emailVerified: true }]);
+    expect((await state.pg!.query("SELECT user_id FROM hq_auth_telegram_identity")).rows).toEqual([{ user_id: holderId }]);
+    // The holder's session is untouched and still theirs.
+    expect((await (await request("/get-session", undefined, holder.session!.split(";")[0])).json()).user.id).toBe(holderId);
+  });
+
+  it("requires a session created within 15 minutes on every endpoint that adds or removes a login method", async () => {
+    const emailUser = await signInWithEmail("stale@example.com");
+    const userId = emailUser.user.id;
+    const store = await intentStore();
+    state.cookie = emailUser.cookie;
+    // A confirmation recorded while the session was fresh does not outlive the window.
+    await recordTelegramIntent(store, userId, "link");
+    await state.pg!.query(`UPDATE hq_auth_session SET "createdAt" = now() - interval '16 minutes'`);
+    const sent = state.sent.length;
+
+    const attempts: Array<[string, object]> = [
+      ["/link-social", LINK_BODY],
+      ["/unlink-account", { accountId: "any" }],
+      ["/email-otp/request-email-change", { newEmail: "recover@example.com" }],
+      ["/email-otp/change-email", { newEmail: "recover@example.com", otp: "000000" }],
+    ];
+    for (const [path, body] of attempts) {
+      const response = await request(path, body, emailUser.cookie);
+      expect(response.status, path).toBe(403);
+      expect((await response.json()).code, path).toBe("SESSION_NOT_FRESH");
+    }
+    const { confirmLinkTelegram, confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
+    expect(await confirmLinkTelegram()).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: false, code: "TELEGRAM_NOT_CONNECTED" });
+    expect(state.sent).toHaveLength(sent);
+    expect((await state.pg!.query("SELECT identifier FROM hq_auth_verification WHERE identifier ILIKE 'change-email%'")).rows).toEqual([]);
+    expect((await state.pg!.query('SELECT email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ email: "stale@example.com", emailVerified: true }]);
+    expect(await count("hq_auth_account")).toBe(0);
+
+    // Fourteen minutes is within the window; the recorded confirmation is still there to be consumed.
+    await state.pg!.query(`UPDATE hq_auth_session SET "createdAt" = now() - interval '14 minutes'`);
+    const { response } = await startLink(emailUser.cookie);
+    expect(response.status).toBe(200);
+    expect(cookieHeader(response)).toContain("stnl_builder.state=");
+
+    // No session, the operator cookie, or another origin: never.
+    expect((await request("/link-social", LINK_BODY)).status).toBe(401);
+    expect((await request("/link-social", LINK_BODY, "hq_session=operator-cookie")).status).toBe(401);
+    const crossOrigin = await route.POST(new Request(`${ORIGIN}/api/auth/link-social`, {
+      method: "POST", headers: { Origin: "https://evil.example", "Content-Type": "application/json", Cookie: emailUser.cookie },
+      body: JSON.stringify(LINK_BODY),
+    }));
+    expect(crossOrigin.status).toBe(403);
+    expect(await count("hq_auth_account")).toBe(0);
+  });
+
+  it("never removes the last login method: a Telegram-only account cannot disconnect Telegram", async () => {
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    state.cookie = cookie;
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
+    const { confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: false, code: "LAST_LOGIN_METHOD" });
+
+    // Straight at the endpoint, even with a recorded confirmation: refused, and the confirmation is not spent.
+    await recordTelegramIntent(await intentStore(), userId, "unlink");
+    const response = await request("/unlink-account", { accountId }, cookie);
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("LAST_LOGIN_METHOD");
+    expect(await count("hq_auth_account")).toBe(1);
+    expect(await count("hq_auth_telegram_identity")).toBe(1);
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId)]);
+    const { currentMember } = await import("@/lib/hq/member-auth");
+    expect((await currentMember())?.id).toBe(userId);
+
+    // The page agrees: the button is there, disabled, with the reason.
+    const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
+    const html = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
+    expect(html).toContain("cannot be disconnected");
+    expect(html).toMatch(/<button[^>]*disabled[^>]*>Disconnect Telegram<\/button>/);
+    expect(html).not.toContain('href="/hq/account/disconnect-telegram"');
+  });
+
+  it("disconnects Telegram after confirmation when a verified email remains, and records it", async () => {
+    const emailUser = await signInWithEmail("keeps-email@example.com", "Keeps Email");
+    const userId = emailUser.user.id;
+    expect((await linkTelegramTo(emailUser.cookie)).status).toBe(302);
+    const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
+    const before = await accountSnapshot(userId);
+
+    const unconfirmed = await request("/unlink-account", { accountId }, emailUser.cookie);
+    expect(unconfirmed.status).toBe(403);
+    expect((await unconfirmed.json()).code).toBe("CONFIRMATION_REQUIRED");
+    expect(await count("hq_auth_telegram_identity")).toBe(1);
+
+    const { confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: true, accountId });
+    const response = await request("/unlink-account", { accountId }, emailUser.cookie);
+    expect(response.status).toBe(200);
+    expect(await count("hq_auth_account")).toBe(0);
+    expect(await count("hq_auth_telegram_identity")).toBe(0);
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId), identityEvent("identity.unlinked", userId)]);
+    expect(await accountSnapshot(userId)).toEqual(before);
+    const { currentMember } = await import("@/lib/hq/member-auth");
+    expect(await currentMember()).toEqual({ id: userId, email: "keeps-email@example.com", name: "Keeps Email" });
+
+    // The link was removed, so the same Telegram identity now starts a new account of its own.
+    const telegram = await signInWithTelegram();
+    expect(telegram.response.status).toBe(302);
+    expect(await count("hq_auth_user")).toBe(2);
+    expect((await (await request("/get-session", undefined, telegram.session!.split(";")[0])).json()).user.id).not.toBe(userId);
+  });
+
+  it("renders the account page from server data only, and ends a session whose identity row is missing", async () => {
+    const telegram = await signInWithTelegram();
+    const cookie = telegram.session!.split(";")[0];
+    state.cookie = cookie;
+    const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
+    const render = async (params: Record<string, string | string[]> = {}) => renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve(params) }));
+
+    let html = await render();
+    expect(html).toContain(`Connected as @${USERNAME}`);
+    expect(html).toContain("None. This account signs in with Telegram only.");
+    expect(html).not.toContain("placeholder.invalid");
+    expect(html).not.toContain(SUB);
+    expect(html).not.toContain(String(TELEGRAM_ID));
+    expect(html).not.toMatch(/[—·]/);
+    // Better Auth appends its code after ours; the page shows the specific one.
+    html = await render({ error: ["telegram", "account_already_linked_to_different_user"] });
+    expect(html).toContain("already connected to another HQ account");
+    expect(await render({ connected: "telegram" })).toContain("Telegram connected.");
+
+    const emailUser = await signInWithEmail("page@example.com", "Page Builder");
+    state.cookie = emailUser.cookie;
+    html = await render();
+    expect(html).toContain("page@example.com");
+    expect(html).toContain("Not connected");
+    expect(html).toContain('href="/hq/account/connect-telegram"');
+    expect(html).not.toContain("placeholder.invalid");
+
+    // The identity row never landed: the page ends the session and says why; the next Telegram sign-in repairs the row.
+    state.cookie = cookie;
+    await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
+    await expect(AccountPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Faccount");
+    expect(await (await request("/get-session", undefined, cookie)).json()).toBeNull();
+    expect(await count("hq_auth_session")).toBe(1);
+    const repaired = await signInWithTelegram();
+    expect(await count("hq_auth_telegram_identity")).toBe(1);
+    expect(await count("hq_auth_user")).toBe(2);
+    // The confirmation actions fail the same way.
+    state.cookie = repaired.session!.split(";")[0];
+    await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
+    const { confirmLinkTelegram } = await import("@/lib/hq/actions/telegram");
+    await expect(confirmLinkTelegram()).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Faccount%2Fconnect-telegram");
+    expect(await (await request("/get-session", undefined, state.cookie)).json()).toBeNull();
+  });
+
+  it("takes a Telegram-first account through the name step without asking for an email", async () => {
+    state.tokenOverride = { name: null };
+    const start = await startSignIn({ newUserCallbackURL: "/hq/profile?next=%2Fhq%2Fwelcome" });
+    const response = await completeCallback(start);
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toMatch(/\/hq\/profile\?next=%2Fhq%2Fwelcome$/);
+    const cookie = sessionCookie(response)!.split(";")[0];
+    state.cookie = cookie;
+    expect((await state.pg!.query("SELECT name FROM hq_auth_user")).rows).toEqual([{ name: "" }]);
+
+    const { requireMember } = await import("@/lib/hq/member-auth");
+    await expect(requireMember("/hq/welcome")).rejects.toThrow("REDIRECT:/hq/profile?next=%2Fhq%2Fwelcome");
+    const { default: ProfilePage } = await import("@/app/hq/(member)/profile/page");
+    const html = renderToStaticMarkup(await ProfilePage({ searchParams: Promise.resolve({ next: "/hq/welcome" }) }));
+    expect(html).toContain('name="name"');
+    expect(html).not.toContain('type="email"');
+    expect(html).not.toContain("placeholder.invalid");
+
+    const { completeMemberProfile } = await import("@/app/hq/(member)/profile/actions");
+    const form = new FormData();
+    form.set("name", "Named Builder");
+    form.set("next", "/hq/welcome");
+    await expect(completeMemberProfile(null, form)).rejects.toThrow("REDIRECT:/hq/welcome");
+    expect((await state.pg!.query("SELECT name FROM hq_auth_user")).rows).toEqual([{ name: "Named Builder" }]);
+    expect((await state.pg!.query("SELECT email, name FROM hq_builder_profiles")).rows).toEqual([{ email: null, name: "Named Builder" }]);
+    expect(state.synced).toHaveBeenCalledWith({ id: expect.any(String), email: null, name: "Named Builder" });
+    expect(state.sent).toEqual([]);
+    expect((await requireMember("/hq/welcome")).name).toBe("Named Builder");
   });
 });
