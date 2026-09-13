@@ -252,7 +252,173 @@ pre-existing warnings.
 
 ## Phase 1, identity, authorization and the Captain capability
 
-Not started.
+### What changed, task T1.1
+
+Identity and CRM identity schema, a null-safe account sync and the
+migration-order test. A public account is now one stable id whatever it signed
+in with: an account without an email syncs, enrols and gets its People card
+like any other, and every account has one CRM person that People cards in
+every edition point at.
+
+- `scripts/hq/builder-schema.sql`: `hq_builder_profiles.email` is nullable and
+  `contact_email` is a new optional, self-declared column that is never filled
+  from the login address, never a placeholder and never a login identity. New
+  table `hq_crm_persons` (stable person id, display name, provisional
+  normalized Colosseum username, at most one linked account). New nullable
+  `person_id` on `hq_people` and `hq_project_members`, one card per person per
+  edition. Two backfill statements give every existing account a person and
+  stamp its cards. Every statement is a single idempotent statement; nothing
+  was added to `scripts/hq/upgrades.ts`.
+- New `lib/hq/crm-identity.ts`: `normalizeColosseumUsername`,
+  `ensurePersonForAccount` (find by account, else create),
+  `ensurePersonForRosterMember` (find by normalized username, else create;
+  the display name is never a key), `linkPersonToAccount` (stamps the
+  account's cards and links the person in one transaction; refuses to
+  re-point a person or an account that is already linked elsewhere). Each
+  takes the query handle it writes through, so inside a
+  `BuilderDatabase.transaction` callback it commits or rolls back with the
+  caller; the link also accepts the database itself and then opens its own
+  transaction.
+- `lib/hq/builder-store.ts`: `syncAccount` and `enroll` are null-safe. The
+  profile email and the People card contact come only from a real login
+  email; a placeholder given to the store is stored as null, and a card
+  without a contact is the normal state for a Telegram-only account.
+  `syncAccount` guarantees the account's person and `enroll` stamps
+  `hq_people.person_id` on insert, or on a card that has none yet; the role
+  behaviour on conflict is unchanged and `contact_email` is never written by a
+  sync. New `profile(userId)` reader. `BuilderError` now lives in
+  `lib/hq/builder-types.ts` and is re-exported unchanged.
+- `lib/hq/builder-types.ts`: `BuilderIdentity = { id, email: string | null,
+  name }` is what the store writes from; `BuilderUser` adds
+  `contactEmail: string | null` and is what `profile()` reads.
+- `lib/hq/identity.ts`: `getLoginMethods(userId)` returns the login email
+  (null when the stored address is the placeholder), the Telegram identity and
+  the contact email.
+- `lib/hq/member-auth.ts`, `lib/hq/actions/builders.ts`,
+  `app/hq/(member)/profile/actions.ts`: the four `TODO(T1.1)` skips and
+  refusals are gone. `currentMember()`, the user-create hook, the profile
+  action and every builder action sync and enrol an account without an email.
+  Auto-enrolment on read is unchanged.
+- `lib/hq/builder-admin-queries.ts`: `email` and `ownerEmail` are
+  `string | null`. Display of a missing email is task T1.4.
+- `scripts/hq/reset-statements.ts`: `hq_crm_persons` is KEEP. The eight
+  builder tables that T0.1's reset test had left out of the manifest are
+  classified so that a live reset does exactly what it did before:
+  `hq_project_onboarding` and `hq_team_invites`, which the cascade from
+  `hq_projects` already emptied, are CLEAR; `hq_builder_profiles`,
+  `hq_hackathon_onboarding`, `hq_builder_enrollments`, `hq_project_challenges`,
+  `hq_project_import_requests` and `hq_event_host_requests`, which the reset
+  never touched, are KEEP. Whether enrolments, challenges and requests should
+  be emptied with an edition's CRM is an open product ruling; moving a name
+  between the two lists is the whole change.
+- `vitest.config.mts`: `env` blanks `DATABASE_URL` and
+  `DATABASE_URL_UNPOOLED` for every test. No test reads either for an opt-in
+  real-Postgres run; the three that need a value stub it with `vi.stubEnv`.
+- New `tests/hq/migration-order.test.ts`; additions to
+  `tests/hq/builder-onboarding.test.ts`, `tests/hq/member-auth.test.ts`,
+  `tests/hq/member-auth-telegram.test.ts` and `tests/hq/reset.test.ts`.
+
+Migrations, all in `scripts/hq/builder-schema.sql`, applied by `hq:migrate` in
+the usual order, one statement per call:
+
+```sql
+ALTER TABLE hq_builder_profiles ALTER COLUMN email DROP NOT NULL;
+ALTER TABLE hq_builder_profiles ADD COLUMN IF NOT EXISTS contact_email text;
+CREATE TABLE IF NOT EXISTS hq_crm_persons (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  display_name text NOT NULL,
+  normalized_colosseum_username text,
+  builder_user_id text UNIQUE REFERENCES hq_builder_profiles(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS hq_crm_persons_username_idx ON hq_crm_persons (normalized_colosseum_username) WHERE normalized_colosseum_username IS NOT NULL;
+ALTER TABLE hq_people ADD COLUMN IF NOT EXISTS person_id uuid REFERENCES hq_crm_persons(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS hq_people_person_idx ON hq_people (hackathon_id, person_id) WHERE person_id IS NOT NULL;
+ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS person_id uuid REFERENCES hq_crm_persons(id) ON DELETE SET NULL;
+INSERT INTO hq_crm_persons (display_name, builder_user_id) SELECT p.name, p.id FROM hq_builder_profiles p WHERE NOT EXISTS (SELECT 1 FROM hq_crm_persons c WHERE c.builder_user_id = p.id);
+UPDATE hq_people SET person_id = c.id FROM hq_crm_persons c WHERE hq_people.person_id IS NULL AND hq_people.builder_user_id IS NOT NULL AND c.builder_user_id = hq_people.builder_user_id;
+```
+
+The `CREATE TABLE IF NOT EXISTS hq_builder_profiles` definition matches, so a
+fresh database gets the same shape without the two `ALTER` statements doing
+anything.
+
+### Checks passed, task T1.1
+
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 462 tests pass
+  (449 before, 13 new).
+- `npx tsc --noEmit`: clean.
+- `npm run lint`: the same 18 pre-existing warnings, nothing new.
+- Phase 1 gate, "additive migrations apply twice, on a fresh and on a
+  populated database, through the statement splitter":
+  `tests/hq/migration-order.test.ts` applies all three SQL files plus
+  `applyUpgrades()` through the `migrate.ts` splitter twice on a fresh PGlite
+  and compares every `hq_` column and index between the runs, and three times
+  over a database that started from `tests/hq/fixtures/schema-pre-hackathon.sql`
+  with operator logins, a hand-entered person and account-backed People cards
+  inserted before the second run. It also checks that no statement carries a
+  `$$` body or a second statement on the same line.
+- Phase 1 gate, "existing `hq_users` ids, credentials and People links survive
+  the migration": the same test asserts `hq_users` ids, usernames, password
+  hashes and versions and `hq_people.builder_user_id` links are unchanged,
+  that every linked card got the person of its own account, and that a
+  hand-entered person got none.
+- Every `hq_%` table that the migration creates is classified in
+  `scripts/hq/reset-statements.ts`, and nothing is classified that does not
+  exist. `tests/hq/reset.test.ts` now creates the builder tables through the
+  splitter and seeds a row in each, so nothing is kept vacuously.
+- Phase 1 gate, "link plus identity are written atomically":
+  `tests/hq/builder-onboarding.test.ts` makes the second statement of
+  `linkPersonToAccount` fail with a check constraint and asserts that the
+  `hq_people.person_id` stamp written before it is rolled back.
+- A Telegram-only account (`email: null`) syncs a profile with a null email, a
+  People card with an empty contact and a person; the placeholder address is
+  never stored in `email`, `contact_email` or `hq_people.contact`, even when
+  handed to the store directly; the contact email survives a login email
+  change and is never filled from it; a roster person is reused for the same
+  normalized username and never for the same display name; a link is never
+  re-pointed in either direction.
+- `currentMember()` and the spike test now see the Telegram-only account
+  synced with `email: null`; `getLoginMethods` reports the three parts
+  separately, including an unverified real address as an unverified login
+  method and never as a contact.
+
+### Blocked or deferred, task T1.1
+
+- The reset classification of `hq_builder_enrollments`,
+  `hq_project_challenges`, `hq_project_import_requests` and
+  `hq_event_host_requests` preserves the pre-T1.1 behaviour (untouched) and
+  awaits a product ruling.
+- The explicit correction path, `correctPersonMatch`, is task T1.2. Roster
+  persons are created only by callers of `ensurePersonForRosterMember`; the
+  import flow starts doing so in phase 3.
+- A person's `display_name` is set when the person is created and not
+  refreshed by later syncs, in line with People cards keeping an operator's
+  edits. Renames are a later decision.
+- No UI: the contact email has no form yet (phase 2), and the Admin
+  "HQ accounts" list renders a missing email as nothing until task T1.4.
+
+### Changed interfaces, task T1.1
+
+`normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId,
+displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername,
+displayName })`, `linkPersonToAccount(db, { personId, userId })` in
+`lib/hq/crm-identity.ts`; `getLoginMethods(userId)` and `LoginMethods` in
+`lib/hq/identity.ts`; `BuilderIdentity`, `BuilderUser.email: string | null`,
+`BuilderUser.contactEmail` and `BuilderError` in `lib/hq/builder-types.ts`
+(`BuilderError` still importable from `lib/hq/builder-store.ts`);
+`BuilderStore.profile(userId)`; `syncBuilderAccount(user: BuilderIdentity)`;
+`BuilderAccount.email`, `BuilderHostRequest.email`,
+`BuilderImportRequest.email` and `BuilderProjectReview.ownerEmail` are
+`string | null`. Tables and columns: `hq_crm_persons`, `hq_people.person_id`,
+`hq_project_members.person_id`, `hq_builder_profiles.contact_email`.
+`isPlaceholderEmail`, `hasTelegramIdentity`, `getTelegramIdentity`,
+`TelegramIdentity`, `MemberSessionUser` and `applyMigrations` are unchanged.
+
+### External configuration still required, task T1.1
+
+None added. The list from task T0.1 stands.
 
 ## Phase 2, sign-in, linking and the member shell
 
