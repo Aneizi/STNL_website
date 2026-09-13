@@ -88,6 +88,7 @@ describe("public HQ sign-in through Better Auth", () => {
     vi.stubEnv("BETTER_AUTH_SECRET", SECRET);
     vi.stubEnv("RESEND_API_KEY", "test-only-sender");
     vi.stubEnv("EMAIL_FROM", "Superteam NL <test@example.com>");
+    // Removed providers, stubbed deliberately: see the sign-in/social test below.
     vi.stubEnv("GOOGLE_CLIENT_ID", "test-google-client");
     vi.stubEnv("GOOGLE_CLIENT_SECRET", "test-google-secret");
     vi.stubEnv("GITHUB_CLIENT_ID", "test-github-client");
@@ -308,12 +309,12 @@ describe("public HQ sign-in through Better Auth", () => {
     expect(state.synced).not.toHaveBeenCalled();
   });
 
-  it.each(["google", "github"])("starts %s sign-in with the configured callback and CSRF state", async (provider) => {
+  // The GOOGLE_*/GITHUB_* variables stubbed in beforeAll are set on purpose:
+  // credentials left behind in an environment must not resurrect a provider.
+  it.each(["google", "github"])("no longer offers %s sign-in, whatever the environment holds", async (provider) => {
     const response = await request("/sign-in/social", { provider, callbackURL: "/hq/welcome" });
-    expect(response.status).toBe(200);
-    const url = new URL((await response.json()).url);
-    expect(url.searchParams.get("redirect_uri")).toBe(`${ORIGIN}/api/auth/callback/${provider}`);
-    expect(url.searchParams.get("state")).toBeTruthy();
+    expect(response.status).toBe(404);
+    expect((await response.json()).code).toBe("PROVIDER_NOT_FOUND");
   });
 
   it("rejects cross-origin mutation and does not accept the operator cookie as a public session", async () => {

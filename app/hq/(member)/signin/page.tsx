@@ -10,5 +10,5 @@ export default async function SigninPage({ searchParams }: { searchParams: Promi
   const params = await searchParams;
   const next = safeMemberNext(params.next);
   if (await currentMember()) redirect(next);
-  return <AccountForm mode="signin" next={next} availability={getMemberAuthAvailability()} authError={Boolean(params.error)} />;
+  return <AccountForm mode="signin" next={next} availability={getMemberAuthAvailability()} />;
 }

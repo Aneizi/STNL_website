@@ -11,5 +11,5 @@ export default async function SignupPage({ searchParams }: { searchParams: Promi
   const params = await searchParams;
   const next = safeMemberNext(params.next);
   if (await currentMember()) redirect(next);
-  return <AccountForm mode="signup" next={next} availability={getMemberAuthAvailability()} authError={Boolean(params.error)} />;
+  return <AccountForm mode="signup" next={next} availability={getMemberAuthAvailability()} />;
 }

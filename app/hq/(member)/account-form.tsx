@@ -8,7 +8,7 @@ import { memberAuthClient } from "@/lib/hq/member-auth-client";
 import { safeMemberNext, type MemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import styles from "./account.module.css";
 
-type Props = { mode: "signup" | "signin"; next: string; availability: MemberAuthAvailability; authError?: boolean };
+type Props = { mode: "signup" | "signin"; next: string; availability: MemberAuthAvailability };
 
 function messageFor(error: { code?: string; status?: number }, verifying = false): string {
   if (error.status === 429 || error.code === "TOO_MANY_REQUESTS") return "Too many attempts. Please wait a minute and try again.";
@@ -18,13 +18,13 @@ function messageFor(error: { code?: string; status?: number }, verifying = false
   return verifying ? "We could not verify that code. Please try again." : "We could not send your code. Please try again shortly.";
 }
 
-export function AccountForm({ mode, next, availability, authError = false }: Props) {
+export function AccountForm({ mode, next, availability }: Props) {
   const [step, setStep] = useState<"details" | "verify">("details");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(authError ? "Sign-in was not completed. Try again or use email." : "");
+  const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [resendAt, setResendAt] = useState(0);
   const [secondsLeft, setSecondsLeft] = useState(0);
@@ -88,25 +88,6 @@ export function AccountForm({ mode, next, availability, authError = false }: Pro
     }
   }
 
-  async function signInSocial(provider: "google" | "github") {
-    if (busy || !availability[provider]) return;
-    setBusy(true);
-    setError("");
-    const errorCallbackURL = `/hq/${mode}?next=${encodeURIComponent(destination)}&error=oauth`;
-    try {
-      const result = await memberAuthClient.signIn.social({ provider, callbackURL: destination, errorCallbackURL });
-      if (result.error) {
-        setError("Sign-in could not start. Please try again or use email.");
-        setBusy(false);
-      }
-    } catch {
-      setError("We could not connect. Please try again.");
-      setBusy(false);
-    }
-  }
-
-  const unavailableProviders = [!availability.google && "Google", !availability.github && "GitHub"].filter(Boolean).join(" and ");
-
   return (
     <div className={styles.page}>
       <header className={styles.header}>
@@ -126,12 +107,7 @@ export function AccountForm({ mode, next, availability, authError = false }: Pro
 
           {step === "details" ? (
             <>
-              <div className={styles.social}>
-                <button type="button" onClick={() => signInSocial("google")} disabled={busy || !availability.google}>Continue with Google</button>
-                <button type="button" onClick={() => signInSocial("github")} disabled={busy || !availability.github}>Continue with GitHub</button>
-              </div>
-              {unavailableProviders && <p className={styles.hint}>{unavailableProviders} sign-in will be available soon.</p>}
-              <div className={styles.divider}><span>or use email</span></div>
+              {/* Telegram sign-in button and its "or use email" divider go here (task T2.2). */}
               <form onSubmit={sendCode} className={styles.form}>
                 {mode === "signup" && <label className={styles.field}>
                   Name
@@ -141,7 +117,8 @@ export function AccountForm({ mode, next, availability, authError = false }: Pro
                   Email
                   <input name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required disabled={busy} />
                 </label>
-                {!availability.email && <p className={styles.hint}>Email sign-in is not available yet. Please check back shortly.</p>}
+                {/* Email is the only sign-in method, so its absence leaves no way in. */}
+                {!availability.email && <p className={styles.hint}>Sign-in is not available yet. Please check back shortly.</p>}
                 <button className={styles.submit} disabled={busy || !availability.email} type="submit">
                   {busy ? "Sending code…" : "Continue with email"}
                   <IconArrowRight width={19} height={19} fill="currentColor" aria-hidden="true" />

@@ -1,8 +1,6 @@
 export type MemberAuthAvailability = {
   configured: boolean;
   email: boolean;
-  google: boolean;
-  github: boolean;
   telegram: boolean;
 };
 
@@ -25,8 +23,8 @@ export function getMemberAuthAvailability(env: AuthEnvironment = process.env): M
   return {
     configured,
     email: configured && Boolean(env.RESEND_API_KEY && env.EMAIL_FROM),
-    google: configured && Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
-    github: configured && Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
+    // Email and Telegram are the only public sign-in methods; no other
+    // credentials in the environment can add one.
     // TELEGRAM_BOT_USERNAME is UI copy only and does not gate availability.
     telegram: configured && Boolean(env.TELEGRAM_LOGIN_CLIENT_ID && env.TELEGRAM_LOGIN_CLIENT_SECRET),
   };

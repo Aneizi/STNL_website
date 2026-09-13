@@ -946,4 +946,65 @@ None added. The list from task T0.1 stands.
 
 ## Phase 2, sign-in, linking and the member shell
 
-Not started.
+### What changed, task T2.1
+
+Google and GitHub public sign-in is gone. `lib/hq/member-auth-config.ts` no
+longer reads `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID` or
+`GITHUB_CLIENT_SECRET`, and `MemberAuthAvailability` is now exactly
+`{configured, email, telegram}`. `lib/hq/member-auth.ts` passes no
+`socialProviders` option at all: the only OAuth provider is Telegram, which the
+`hqTelegramIdentity` plugin puts on the context in its `init`.
+`app/hq/(member)/account-form.tsx` lost the two "Continue with…" buttons, the
+`signInSocial` helper, the "will be available soon" hint, the "or use email"
+divider and the `authError` prop (that prop existed only to surface the OAuth
+`?error=` round trip, so `signin/page.tsx` and `signup/inactive-page.tsx` stopped
+passing it). Email is the only sign-in method now, so the unavailable-state copy
+says "Sign-in is not available yet", not "Email sign-in is not available yet".
+A comment marks where task T2.2 puts the Telegram button and its divider.
+`account.module.css` lost `.social`, `.divider` and their hover and transition
+rules; `.submit` absorbed the base rule it used to share with `.social button`.
+No migration. `hq_auth_account`, `encryptOAuthTokens`, `account.accountLinking`
+and `lib/hq/github-actions-auth.ts` (GitHub Actions OIDC for the Luma sync, a
+different stack) are untouched, as is operator login.
+
+`env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 545 tests pass (543
+before), `npx tsc --noEmit` clean, `npm run lint` unchanged at the same 18
+pre-existing warnings in `public/deck/deck-stage.js`.
+
+### Checks passed, task T2.1
+
+- Google and GitHub are absent from the public auth flow:
+  `tests/hq/member-auth.test.ts` "no longer offers google/github sign-in,
+  whatever the environment holds" stubs all four credential variables and gets
+  404 `PROVIDER_NOT_FOUND` from `/api/auth/sign-in/social` for each.
+- The availability shape is exactly `{configured, email, telegram}` and the
+  four removed variables change nothing:
+  `tests/hq/member-auth-config.test.ts` "reports exactly the configured, email
+  and telegram flags" and "gives the removed Google and GitHub credentials no
+  effect".
+- Operator login still works: `tests/hq/operator-auth-actions.test.ts` and
+  `tests/hq/authz.test.ts` pass unchanged; nothing under `hq_users` or
+  `lib/hq/actions/auth.ts` was touched.
+- Telegram sign-in is unaffected by the removal of the `socialProviders`
+  option: `tests/hq/member-auth-telegram.test.ts` passes unchanged.
+
+### Blocked or deferred, task T2.1
+
+- The Telegram button, its error copy and the account page are task T2.2. This
+  task deliberately left the sign-in page email-only.
+- Deleting the four variables from the Vercel project is a live step for the
+  owner; it is recorded in `docs/hq/manual-setup.md` under "Remove legacy
+  providers". Nothing reads them any more, so leaving them set changes no
+  behaviour.
+
+### Changed interfaces, task T2.1
+
+`MemberAuthAvailability` in `lib/hq/member-auth-config.ts` drops `google` and
+`github`. `AccountForm` in `app/hq/(member)/account-form.tsx` drops the optional
+`authError` prop.
+
+### External configuration still required, task T2.1
+
+None added. Four names are now removable rather than required:
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`,
+`GITHUB_CLIENT_SECRET`.

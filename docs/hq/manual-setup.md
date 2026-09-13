@@ -21,7 +21,7 @@ that is exactly the false sense of readiness this list exists to prevent.
 
 Missing credentials must never block implementation and must never open a way in.
 An unconfigured provider renders an honest "not available yet" state
-(`app/hq/(member)/account-form.tsx:133,144`) and `/api/auth/*` answers 503
+(`app/hq/(member)/account-form.tsx:121`) and `/api/auth/*` answers 503
 (`app/api/auth/[...all]/route.ts:13`). The same rule applies to Telegram: a
 configured but unreachable Telegram breaks Telegram sign-in only, never email
 sign-in. The provider registers without any network call and
@@ -184,25 +184,33 @@ verifies that either file is present until phase 3 adds the target.
 
 ## Remove legacy providers
 
-**Status:** Pending task T2.1.
+**Status:** Done in code by task T2.1. The live clean-up below is still yours.
 
 **Variables to delete if they exist:** `GOOGLE_CLIENT_ID`,
-`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`.
+`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`. Nothing in
+this checkout reads them any more, so leaving them set changes no behaviour;
+delete them anyway, so that no stale credential outlives the code that used it.
 
-There are no public accounts yet, so nothing has to be migrated. Removal is a
-matter of deleting provider config, UI and tests.
+There were no public accounts, so nothing had to be migrated. Task T2.1 deleted
+the provider configuration, the two buttons and their styles and the availability
+flags, and turned the tests that asserted the providers worked into tests that
+assert they are gone. Email is the only public sign-in method until task T2.2
+adds Telegram.
 
-**Code-level checks:** today's tests assert the opposite, because the providers
-are still wired up. `tests/hq/member-auth-config.test.ts` ("does not advertise
-providers without both credentials or a sender") asserts that Google becomes
-available once both of its variables are set, and
-`tests/hq/member-auth.test.ts:190` starts Google and GitHub sign-in with a
-configured callback and CSRF state. Task T2.1 has to invert both: availability
-must report the providers gone, and the sign-in start test must be removed rather
-than left asserting a removed route.
+**Code-level checks:** `tests/hq/member-auth-config.test.ts` ("reports exactly
+the configured, email and telegram flags" and "gives the removed Google and
+GitHub credentials no effect") pins the availability shape to
+`{configured, email, telegram}` and asserts that the four variables above change
+nothing. `tests/hq/member-auth.test.ts` ("no longer offers google/github
+sign-in, whatever the environment holds") stubs all four and asserts that
+`/api/auth/sign-in/social` answers 404 `PROVIDER_NOT_FOUND` for both.
 
 **Live checks (you):** look at the Vercel environment variables for the project
-and delete the four names above if any are set.
+and delete the four names above if any are set. The gitignored
+`setup/hq/ACTIVATION.md` in your checkout still describes creating a Google
+OAuth client and a GitHub OAuth app, and `setup/hq/auth.env.template` still
+lists the four variables; both are obsolete, so delete those steps and lines
+from your local copies.
 
 ## Local dev
 

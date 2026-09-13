@@ -80,10 +80,8 @@ function createMemberAuth() {
       ipAddress: { ipAddressHeaders: ["x-real-ip"] },
       defaultCookieAttributes: { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" },
     },
-    socialProviders: {
-      ...(available.google ? { google: { clientId: process.env.GOOGLE_CLIENT_ID!, clientSecret: process.env.GOOGLE_CLIENT_SECRET! } } : {}),
-      ...(available.github ? { github: { clientId: process.env.GITHUB_CLIENT_ID!, clientSecret: process.env.GITHUB_CLIENT_SECRET! } } : {}),
-    },
+    // No `socialProviders` option: the only OAuth provider is Telegram, which
+    // the hqTelegramIdentity plugin registers on the context in its init.
     rateLimit: {
       enabled: true,
       storage: "database",

@@ -4,11 +4,21 @@ import { getMemberAuthAvailability, memberAuthOrigin, safeMemberNext } from "@/l
 describe("public HQ authentication configuration", () => {
   const env = { DATABASE_URL: "postgres://local/test", BETTER_AUTH_SECRET: "test-secret-that-is-at-least-thirty-two-characters", BETTER_AUTH_URL: "https://nl.superteam.fun", NODE_ENV: "production" };
 
-  it("does not advertise providers without both credentials or a sender", () => {
-    expect(getMemberAuthAvailability(env)).toEqual({ configured: true, email: false, google: false, github: false, telegram: false });
-    expect(getMemberAuthAvailability({ ...env, GOOGLE_CLIENT_ID: "id" }).google).toBe(false);
-    expect(getMemberAuthAvailability({ ...env, GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret" }).google).toBe(true);
+  it("does not advertise email sign-in without both an API key and a sender", () => {
+    expect(getMemberAuthAvailability(env)).toEqual({ configured: true, email: false, telegram: false });
+    expect(getMemberAuthAvailability({ ...env, RESEND_API_KEY: "key" }).email).toBe(false);
     expect(getMemberAuthAvailability({ ...env, RESEND_API_KEY: "key", EMAIL_FROM: "HQ <hq@example.com>" }).email).toBe(true);
+  });
+
+  it("reports exactly the configured, email and telegram flags", () => {
+    const complete = { ...env, RESEND_API_KEY: "key", EMAIL_FROM: "HQ <hq@example.com>", TELEGRAM_LOGIN_CLIENT_ID: "123456789", TELEGRAM_LOGIN_CLIENT_SECRET: "secret" };
+    expect(Object.keys(getMemberAuthAvailability(complete)).sort()).toEqual(["configured", "email", "telegram"]);
+    expect(getMemberAuthAvailability(complete)).toEqual({ configured: true, email: true, telegram: true });
+  });
+
+  it("gives the removed Google and GitHub credentials no effect", () => {
+    const legacy = { ...env, GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret", GITHUB_CLIENT_ID: "id", GITHUB_CLIENT_SECRET: "secret" };
+    expect(getMemberAuthAvailability(legacy)).toEqual(getMemberAuthAvailability(env));
   });
 
   it("advertises Telegram only with both login credentials, whatever the bot username", () => {
