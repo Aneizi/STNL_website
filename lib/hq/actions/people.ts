@@ -8,7 +8,7 @@ import { correctPersonMatch as correctPersonMatchRecord } from "../crm-identity"
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
 import type { ActionResult } from "../types";
-import { activityStmt, refreshHq } from "./util";
+import { activityStmt, inHackathon, refreshHq } from "./util";
 
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
@@ -62,15 +62,18 @@ export async function updatePerson(
   input: z.infer<typeof personField>,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(personId).success) return { ok: false };
   const parsed = personField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
   const sql = getSql();
   const rows = await sql`SELECT name, hackathon_id FROM hq_people WHERE id = ${personId}`;
-  if (!rows[0]) return { ok: false, error: "Person not found." };
-  const name = rows[0].name as string;
-  const hackathonId = Number(rows[0].hackathon_id);
+  // A card from another edition than the selected one is not found, exactly
+  // like a missing card: neither a swapped cookie nor a crafted id reaches it.
+  const person = inHackathon(rows[0] ? { name: String(rows[0].name), hackathonId: Number(rows[0].hackathon_id) } : null, selected.id);
+  if (!person) return { ok: false, error: "Person not found." };
+  const { name, hackathonId } = person;
 
   const data = parsed.data;
   let update;

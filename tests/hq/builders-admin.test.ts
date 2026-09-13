@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ requireUser: vi.fn(), requireHackathon: vi.fn(), getSql: vi.fn(), refreshHq: vi.fn(), hqToday: vi.fn(), activityStmt: vi.fn(), builderDatabase: vi.fn() }));
@@ -8,7 +10,11 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/hq/auth", () => ({ requireUser: mocks.requireUser }));
 vi.mock("@/lib/hq/hackathon", () => ({ requireHackathon: mocks.requireHackathon }));
 vi.mock("@/lib/hq/db", () => ({ getSql: mocks.getSql }));
-vi.mock("@/lib/hq/actions/util", () => ({ refreshHq: mocks.refreshHq, hqToday: mocks.hqToday, activityStmt: mocks.activityStmt }));
+// inHackathon() stays real: it is the edition rule under test.
+vi.mock("@/lib/hq/actions/util", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/hq/actions/util")>()),
+  refreshHq: mocks.refreshHq, hqToday: mocks.hqToday, activityStmt: mocks.activityStmt,
+}));
 // The builder-side pool that the capability and person-match actions write
 // through. Every test already runs inside BEGIN/ROLLBACK on the one PGlite
 // connection, so its transactions become savepoints.
@@ -27,7 +33,11 @@ import { getBuilderAdminData, getBuilderProjectReviews } from "@/lib/hq/builder-
 import type { BuilderQuery } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { getPeople } from "@/lib/hq/queries";
-import { addProjectMember, removeProjectMember, updateProjectDetail, updateProjectMember } from "@/lib/hq/actions/projects";
+import {
+  addProjectMember, addProjectNote, deleteProject, editProjectNote, logMondayReview, removeProjectMember, saveProjectBlocker,
+  setProjectForecast, setProjectStatus, toggleProjectGate, updateProjectDetail, updateProjectMember,
+} from "@/lib/hq/actions/projects";
+import { BuilderAdmin, BuilderProjectReviews } from "@/components/hq/builder-admin";
 
 const OPERATOR = "00000000-0000-4000-8000-000000000001";
 const PROJECT = "00000000-0000-4000-8000-000000000002";
@@ -59,6 +69,7 @@ const builderDb = {
 beforeAll(async () => {
   pg = new PGlite();
   await pg.exec(readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8"));
+  await pg.exec(readFileSync(join(process.cwd(), "scripts/hq/member-auth-schema.sql"), "utf8"));
   await pg.exec(readFileSync(join(process.cwd(), "scripts/hq/builder-schema.sql"), "utf8"));
   await rows(`INSERT INTO hq_users(id,username,display_name,password_hash) VALUES($1,'operator','Operator','unused')`, [OPERATOR]);
   await pg.exec(`
@@ -210,6 +221,48 @@ describe("builder administration authorization and scoping", () => {
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
   });
 
+  it("answers a record from another edition exactly like a missing one in every project state action and the People editor", async () => {
+    const MISSING = "00000000-0000-4000-8000-0000000000ff";
+    const [note] = await rows("INSERT INTO hq_project_notes(project_id,body) VALUES($1,'Other note') RETURNING id::text AS id", [OTHER_PROJECT]);
+    const [card] = await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='other'");
+    const [gate] = await rows("INSERT INTO hq_submission_gates(hackathon_id,label) VALUES(12,'Deck ready') RETURNING id::text AS id");
+    const attempts: Array<[string, (id: string) => Promise<unknown>]> = [
+      ["status", (id) => setProjectStatus(id, "active")],
+      ["forecast", (id) => setProjectForecast(id, "likely")],
+      ["gate", (id) => toggleProjectGate(id, String(gate.id), true)],
+      ["blocker", (id) => saveProjectBlocker(id, "Blocked")],
+      ["note", (id) => addProjectNote(id, "A note")],
+      ["monday review", (id) => logMondayReview(id, "Still blocked")],
+      ["delete", (id) => deleteProject(id)],
+      ["detail", (id) => updateProjectDetail(id, { field: "leadContact", value: "@wrong" })],
+      ["teammate", (id) => addProjectMember(id, "New teammate", "")],
+    ];
+    for (const [label, attempt] of attempts) {
+      const foreign = await attempt(OTHER_PROJECT);
+      expect(foreign, label).toMatchObject({ ok: false });
+      expect(foreign, label).toEqual(await attempt(MISSING));
+    }
+    expect(await editProjectNote(String(note.id), "Edited")).toEqual(await editProjectNote(MISSING, "Edited"));
+    expect(await updatePerson(String(card.id), { field: "org", value: "Forged" })).toEqual(await updatePerson(MISSING, { field: "org", value: "Forged" }));
+    expect(await updatePerson(MISSING, { field: "org", value: "Forged" })).toMatchObject({ ok: false });
+    // Nothing moved: no activity, no touch, no note, no edit, no deletion, no card change.
+    expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 2 }]);
+    expect(await rows("SELECT body,edited_at FROM hq_project_notes")).toEqual([{ body: "Other note", edited_at: null }]);
+    expect(await rows("SELECT blocker,touched_by_user_id FROM hq_projects WHERE id=$1", [OTHER_PROJECT])).toEqual([{ blocker: "", touched_by_user_id: null }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_project_gates")).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT org FROM hq_people WHERE id=$1", [card.id])).toEqual([{ org: "" }]);
+    expect(mocks.refreshHq).not.toHaveBeenCalled();
+    // The cookie names the edition the operator works in and authorizes nothing: once the other edition is selected the same ids answer, and the first edition's do not.
+    mocks.requireHackathon.mockResolvedValue({ id: 12, name: "Other competition" });
+    expect(await setProjectStatus(OTHER_PROJECT, "active")).toEqual({ ok: true });
+    expect(await editProjectNote(String(note.id), "Edited")).toEqual({ ok: true });
+    expect(await updatePerson(String(card.id), { field: "org", value: "Real org" })).toEqual({ ok: true });
+    expect(await setProjectStatus(PROJECT, "active")).toEqual({ ok: false });
+    expect(await updatePerson((await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='selected'"))[0].id as string, { field: "org", value: "Forged" })).toMatchObject({ ok: false });
+    expect(await rows("SELECT hackathon_id FROM hq_activity ORDER BY created_at")).toEqual([{ hackathon_id: 12 }, { hackathon_id: 12 }, { hackathon_id: 12 }]);
+  });
+
   it("cannot flag another hackathon's team or resolve its requests", async () => {
     expect(await markBuilderProjectPotential(OTHER_PROJECT, true)).toMatchObject({ ok: false });
     expect(await resolveBuilderImportRequest(OTHER_REQUEST)).toMatchObject({ ok: false });
@@ -239,6 +292,64 @@ describe("builder administration authorization and scoping", () => {
     expect(await updateBuilderOnboardingConfig({ ...config, signupUrl: "https://colosseum.com.evil.test/signup" })).toMatchObject({ ok: false });
     expect(await updateBuilderOnboardingConfig({ ...config, signupUrl: "javascript:alert(1)" })).toMatchObject({ ok: false });
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
+  });
+});
+
+describe("accounts without a login email in Admin", () => {
+  const PLACEHOLDER = "9007199254740993@telegram.placeholder.invalid";
+  const TG_PROJECT = "00000000-0000-4000-8000-0000000000aa";
+
+  beforeEach(async () => {
+    await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES
+      ('tg-only','Telegram Builder',$1,false),('tg-plain','Handle-less Builder','9007199254740994@telegram.placeholder.invalid',false)`, [PLACEHOLDER]);
+    await rows(`INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES
+      ('tg-only','subject-1',9007199254740993,'tg_handle'),('tg-plain','subject-2',9007199254740994,NULL)`);
+    await rows(`INSERT INTO hq_builder_profiles(id,email,contact_email,name) VALUES
+      ('tg-only',NULL,'reach-me@example.test','Telegram Builder'),('tg-plain',NULL,NULL,'Handle-less Builder')`);
+    await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT 11,'tg-only','Telegram Builder',id FROM hq_people_roles");
+    await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT 11,'tg-plain','Handle-less Builder',id FROM hq_people_roles");
+    await rows("INSERT INTO hq_event_host_requests(user_id,hackathon_id,title,details) VALUES('tg-only',11,'Telegram meetup','A workshop')");
+    await rows("INSERT INTO hq_project_import_requests(user_id,hackathon_id,project_url,note) VALUES('tg-plain',11,'https://colosseum.com/arena/projects/explore/tg-plain','Please help')");
+    await rows(`INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+      SELECT $1,11,'Telegram project',s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f`, [TG_PROJECT]);
+    await rows(`INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,project_url,slug,raw,owner_user_id,lead_username)
+      VALUES($1,11,300,'https://colosseum.com/arena/projects/explore/tg-only','tg-only','{}','tg-only','tg-only')`, [TG_PROJECT]);
+  });
+
+  it("carries the Telegram identity and the contact email apart from the login email, never the placeholder", async () => {
+    const admin = await getBuilderAdminData();
+    expect(admin.accounts.find((account) => account.id === "tg-only")).toMatchObject({ email: null, telegram: { username: "tg_handle" }, contactEmail: "reach-me@example.test" });
+    expect(admin.accounts.find((account) => account.id === "tg-plain")).toMatchObject({ email: null, telegram: { username: null }, contactEmail: null });
+    expect(admin.accounts.find((account) => account.id === "selected")).toMatchObject({ email: "selected@example.test", telegram: null, contactEmail: null });
+    expect(admin.hostRequests.find((request) => request.title === "Telegram meetup")).toMatchObject({ email: null, telegram: { username: "tg_handle" } });
+    const reviews = await getBuilderProjectReviews();
+    expect(reviews.projects.find((project) => project.id === TG_PROJECT)).toMatchObject({ ownerName: "Telegram Builder", owner: { email: null, telegram: { username: "tg_handle" } } });
+    expect(reviews.projects.find((project) => project.id === PROJECT)).toMatchObject({ owner: { email: "selected@example.test", telegram: null } });
+    expect(reviews.importRequests.find((request) => request.name === "Handle-less Builder")).toMatchObject({ email: null, telegram: { username: null } });
+    expect(JSON.stringify([admin, reviews])).not.toContain("placeholder.invalid");
+    // A profile row that somehow holds the placeholder still never reaches a page.
+    await rows("UPDATE hq_builder_profiles SET email=$1, contact_email=$1 WHERE id='tg-only'", [PLACEHOLDER]);
+    expect((await getBuilderAdminData()).accounts.find((account) => account.id === "tg-only")).toMatchObject({ email: null, contactEmail: null, telegram: { username: "tg_handle" } });
+    expect(JSON.stringify([await getBuilderAdminData(), await getBuilderProjectReviews()])).not.toContain("placeholder.invalid");
+  });
+
+  it("renders a Telegram-only account as its handle, the contact email labelled apart, and an email account as before", async () => {
+    const admin = await getBuilderAdminData();
+    const reviews = await getBuilderProjectReviews();
+    const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, hostRequests: admin.hostRequests }))
+      + renderToStaticMarkup(createElement(BuilderProjectReviews, reviews));
+    expect(html).toContain("Telegram: @tg_handle");
+    expect(html).toContain("Contact email: reach-me@example.test");
+    expect(html).toContain("Telegram account");
+    expect(html).toContain("selected@example.test");
+    expect(html).toContain("Initialized by Telegram Builder (Telegram: @tg_handle).");
+    expect(html).toContain("Telegram Builder (Telegram: @tg_handle)");
+    expect(html).not.toContain("placeholder.invalid");
+    expect(html).not.toContain("()");
+    expect(html).not.toContain("(null)");
+    expect(html).not.toContain("Contact email: reach-me@example.test</p><p>Contact email");
+    // The contact email line appears only for the account that declared one.
+    expect(html.match(/Contact email:/g)).toHaveLength(1);
   });
 });
 

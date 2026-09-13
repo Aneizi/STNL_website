@@ -1,5 +1,6 @@
 import "server-only";
 import { requireUser } from "./auth";
+import { realEmail } from "./builder-store";
 import { listActiveCapabilitiesForUsers, listCapabilityGrants } from "./capabilities";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
@@ -14,11 +15,21 @@ export type OnboardingConfig = {
   hostingEnabled: boolean;
 };
 
-export type BuilderAccount = {
+/** A linked Telegram identity as Admin shows it. `username` is null when Telegram reports none. */
+export type TelegramLogin = { username: string | null };
+
+/**
+ * How an account signs in, for display. `email` is the verified login
+ * address or null; a Telegram-only account has `telegram` instead. The
+ * internal placeholder address is never in either field.
+ */
+export type AccountLogin = { email: string | null; telegram: TelegramLogin | null };
+
+export type BuilderAccount = AccountLogin & {
   id: string;
   name: string;
-  /** The login email; null for an account without one (Telegram-only). */
-  email: string | null;
+  /** The optional, self-declared contact email on the profile. Never derived from the login, never a placeholder. */
+  contactEmail: string | null;
   tier: "regular" | "member";
   /** Holds an active Captain grant. Read from hq_account_capabilities, never from a role or the tier. */
   captain: boolean;
@@ -32,19 +43,17 @@ export type ActiveCaptain = {
   reason: string | null;
 };
 
-export type BuilderHostRequest = {
+export type BuilderHostRequest = AccountLogin & {
   id: string;
   name: string;
-  email: string | null;
   title: string;
   details: string;
   status: "pending" | "approved" | "declined";
 };
 
-export type BuilderImportRequest = {
+export type BuilderImportRequest = AccountLogin & {
   id: string;
   name: string;
-  email: string | null;
   projectUrl: string;
   note: string;
   status: "pending" | "resolved";
@@ -58,7 +67,8 @@ export type BuilderProjectReview = {
   description: string;
   country: string;
   ownerName: string;
-  ownerEmail: string | null;
+  /** How the owner account signs in: the same shape as an account row's `email` and `telegram`. */
+  owner: AccountLogin;
   verification: "pending" | "verified" | "rejected";
   stage: string;
   leadUsername: string;
@@ -71,6 +81,18 @@ export type BuilderProjectReview = {
 /** A nullable text column as the type says: null stays null. */
 const optionalText = (value: unknown) => (value == null ? null : String(value));
 
+/**
+ * The login columns every account-bearing row selects: the profile email
+ * through `realEmail`, so the placeholder can never reach a page even from
+ * a row that somehow holds it, and the Telegram identity when linked.
+ */
+const LOGIN_COLUMNS = `b.email, t.user_id IS NOT NULL AS has_telegram, t.username AS telegram_username`;
+const LOGIN_JOIN = `LEFT JOIN hq_auth_telegram_identity t ON t.user_id = b.id`;
+const login = (row: Record<string, unknown>): AccountLogin => ({
+  email: realEmail(row.email),
+  telegram: row.has_telegram ? { username: optionalText(row.telegram_username) } : null,
+});
+
 export async function getBuilderAdminData() {
   await requireUser();
   const hackathon = await requireHackathon();
@@ -79,14 +101,15 @@ export async function getBuilderAdminData() {
     sql`SELECT external_hackathon_id, external_hackathon_slug, projects_open,
         projects_available_at::text, signup_url, hosting_enabled
         FROM hq_hackathon_onboarding WHERE hackathon_id = ${hackathon.id}`,
-    sql`SELECT b.id, b.name, b.email, b.tier FROM hq_builder_profiles b
+    sql.query(`SELECT b.id, b.name, b.contact_email, b.tier, ${LOGIN_COLUMNS}
+        FROM hq_builder_profiles b ${LOGIN_JOIN}
         WHERE EXISTS (SELECT 1 FROM hq_people p
-          WHERE p.builder_user_id = b.id AND p.hackathon_id = ${hackathon.id})
-        ORDER BY b.created_at DESC`,
-    sql`SELECT r.id, b.name, b.email, r.title, r.details, r.status
-        FROM hq_event_host_requests r JOIN hq_builder_profiles b ON b.id = r.user_id
-        WHERE r.hackathon_id = ${hackathon.id}
-        ORDER BY (r.status = 'pending') DESC, r.created_at DESC`,
+          WHERE p.builder_user_id = b.id AND p.hackathon_id = $1)
+        ORDER BY b.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
+    sql.query(`SELECT r.id, b.name, r.title, r.details, r.status, ${LOGIN_COLUMNS}
+        FROM hq_event_host_requests r JOIN hq_builder_profiles b ON b.id = r.user_id ${LOGIN_JOIN}
+        WHERE r.hackathon_id = $1
+        ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
     listCapabilityGrants({ capability: "captain", activeOnly: true }, operatorQuery()),
   ]);
   const capabilities = await listActiveCapabilitiesForUsers(accounts.map((row) => String(row.id)), operatorQuery());
@@ -102,7 +125,7 @@ export async function getBuilderAdminData() {
       hostingEnabled: Boolean(config?.hosting_enabled),
     } satisfies OnboardingConfig,
     accounts: accounts.map((row) => ({
-      id: String(row.id), name: String(row.name), email: optionalText(row.email),
+      id: String(row.id), name: String(row.name), ...login(row), contactEmail: realEmail(row.contact_email),
       tier: row.tier === "member" ? "member" : "regular",
       captain: (capabilities.get(String(row.id)) ?? []).includes("captain"),
     } satisfies BuilderAccount)),
@@ -110,8 +133,8 @@ export async function getBuilderAdminData() {
       userId: grant.userId, name: grant.userName, grantedAt: grant.grantedAt, reason: grant.reason,
     } satisfies ActiveCaptain)),
     hostRequests: requests.map((row) => ({
-      id: String(row.id), name: String(row.name), email: optionalText(row.email),
-      title: String(row.title), details: String(row.details), status: row.status,
+      id: String(row.id), name: String(row.name), ...login(row),
+      title: String(row.title), details: String(row.details), status: row.status as BuilderHostRequest["status"],
     } satisfies BuilderHostRequest)),
   };
 }
@@ -121,8 +144,8 @@ export async function getBuilderProjectReviews() {
   const hackathon = await requireHackathon();
   const sql = getSql();
   const [projects, requests] = await Promise.all([
-    sql`SELECT p.id, p.name, o.project_url, o.external_id, o.description, o.country,
-        b.name AS owner_name, b.email AS owner_email, o.verification, o.stage,
+    sql.query(`SELECT p.id, p.name, o.project_url, o.external_id, o.description, o.country,
+        b.name AS owner_name, o.verification, o.stage, ${LOGIN_COLUMNS},
         o.lead_username, o.high_potential, o.proof_comment_id::text, o.proof_author_id::text,
         COALESCE((SELECT json_agg(json_build_object(
           'name', m.name, 'username', COALESCE(m.colosseum_username, ''),
@@ -130,26 +153,26 @@ export async function getBuilderProjectReviews() {
         ) ORDER BY m.sort, m.id) FROM hq_project_members m WHERE m.project_id = p.id), '[]') AS members
         FROM hq_project_onboarding o
         JOIN hq_projects p ON p.id = o.project_id AND p.hackathon_id = o.hackathon_id
-        JOIN hq_builder_profiles b ON b.id = o.owner_user_id
-        WHERE o.hackathon_id = ${hackathon.id}
-        ORDER BY (o.verification = 'pending') DESC, o.high_potential DESC, o.created_at DESC`,
-    sql`SELECT r.id, b.name, b.email, r.project_url, r.note, r.status
-        FROM hq_project_import_requests r JOIN hq_builder_profiles b ON b.id = r.user_id
-        WHERE r.hackathon_id = ${hackathon.id}
-        ORDER BY (r.status = 'pending') DESC, r.created_at DESC`,
+        JOIN hq_builder_profiles b ON b.id = o.owner_user_id ${LOGIN_JOIN}
+        WHERE o.hackathon_id = $1
+        ORDER BY (o.verification = 'pending') DESC, o.high_potential DESC, o.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
+    sql.query(`SELECT r.id, b.name, r.project_url, r.note, r.status, ${LOGIN_COLUMNS}
+        FROM hq_project_import_requests r JOIN hq_builder_profiles b ON b.id = r.user_id ${LOGIN_JOIN}
+        WHERE r.hackathon_id = $1
+        ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
   ]);
   return {
     projects: projects.map((row) => ({
       id: String(row.id), name: String(row.name), projectUrl: String(row.project_url),
       externalId: Number(row.external_id), description: String(row.description ?? ""),
-      country: String(row.country ?? ""), ownerName: String(row.owner_name), ownerEmail: optionalText(row.owner_email),
-      verification: row.verification, stage: String(row.stage), leadUsername: String(row.lead_username ?? ""),
-      highPotential: Boolean(row.high_potential), proofCommentId: row.proof_comment_id ?? null,
-      proofAuthorId: row.proof_author_id ?? null, members: row.members,
+      country: String(row.country ?? ""), ownerName: String(row.owner_name), owner: login(row),
+      verification: row.verification as BuilderProjectReview["verification"], stage: String(row.stage), leadUsername: String(row.lead_username ?? ""),
+      highPotential: Boolean(row.high_potential), proofCommentId: optionalText(row.proof_comment_id),
+      proofAuthorId: optionalText(row.proof_author_id), members: row.members as BuilderProjectReview["members"],
     } satisfies BuilderProjectReview)),
     importRequests: requests.map((row) => ({
-      id: String(row.id), name: String(row.name), email: optionalText(row.email),
-      projectUrl: String(row.project_url), note: String(row.note), status: row.status,
+      id: String(row.id), name: String(row.name), ...login(row),
+      projectUrl: String(row.project_url), note: String(row.note), status: row.status as BuilderImportRequest["status"],
     } satisfies BuilderImportRequest)),
   };
 }

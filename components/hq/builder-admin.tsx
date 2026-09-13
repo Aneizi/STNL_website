@@ -7,10 +7,21 @@ import {
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import type {
-  ActiveCaptain, BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
+  AccountLogin, ActiveCaptain, BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
 } from "@/lib/hq/builder-admin-queries";
 import type { ActionResult } from "@/lib/hq/types";
 import styles from "./builder-admin.module.css";
+
+/**
+ * How an account signs in, as Admin shows it: the verified login email, or
+ * the Telegram handle for a Telegram-only account. The placeholder address
+ * is never in the data, so it is never shown.
+ */
+export function loginLabel({ email, telegram }: AccountLogin): string {
+  if (email) return email;
+  if (telegram) return telegram.username ? `Telegram: @${telegram.username}` : "Telegram account";
+  return "No login email";
+}
 
 function ActionForm({ action, children }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode }) {
   const [pending, startTransition] = useTransition();
@@ -91,7 +102,7 @@ export function BuilderAdmin({ config, hackathonName, accounts, captains, hostRe
         {hostRequests.map((request) => (
           <article className={styles.row} key={request.id}>
             <div className={styles.rowHeader}><h3>{request.title}</h3><span className={styles.badge}>{request.status}</span></div>
-            <p>{request.name} ({request.email})</p><p>{request.details}</p>
+            <p>{request.name} ({loginLabel(request)})</p><p>{request.details}</p>
             {request.status === "pending" && <ActionForm action={(data) => reviewBuilderHostRequest(request.id, data.get("decision") === "approved" ? "approved" : "declined")}>
               <div className={styles.actions}>
                 <button className={styles.button} name="decision" value="approved" type="submit">Approve request</button>
@@ -125,7 +136,8 @@ export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccou
             <h3>{account.name}</h3>
             {account.captain && <span className={`${styles.badge} ${styles.potential}`}>Captain</span>}
           </div>
-          <p>{account.email}</p>
+          <p>{loginLabel(account)}</p>
+          {account.contactEmail && <p>Contact email: {account.contactEmail}</p>}
           <ActionForm action={(data) => updateBuilderTier(account.id, data.get("tier") === "member" ? "member" : "regular")}>
             <div className={styles.tier}>
               <label>Membership<select name="tier" defaultValue={account.tier}><option value="regular">Regular</option><option value="member">Member</option></select></label>
@@ -176,7 +188,7 @@ export function BuilderProjectReviews({ projects, importRequests }: {
             <p>{project.description}</p>
             <p><a href={projectHref(project.projectUrl)} target="_blank" rel="noopener noreferrer">View project on Colosseum</a></p>
             <p>Country: <strong>{project.country || "Not provided"}</strong><br />Stage: {STAGES[project.stage] ?? project.stage}<br />Lead: {project.leadUsername ? `@${project.leadUsername}` : "Not selected"}</p>
-            <p>Initialized by {project.ownerName} ({project.ownerEmail}).</p>
+            <p>Initialized by {project.ownerName} ({loginLabel(project.owner)}).</p>
             <ul className={styles.roster} aria-label={`${project.name} team members`}>
               {project.members.map((member, index) => <li key={member.username || `${member.name}-${index}`}>
                 <span>{member.name}{member.username ? ` (@${member.username})` : ""}{member.username === project.leadUsername ? " (lead)" : ""}</span>
@@ -217,7 +229,7 @@ export function BuilderProjectReviews({ projects, importRequests }: {
         {importRequests.length === 0 && <p>No import requests need attention.</p>}
         {importRequests.map((request) => <article className={styles.row} key={request.id}>
           <div className={styles.rowHeader}><h3>{request.name}</h3><span className={styles.badge}>{request.status}</span></div>
-          <p>{request.email}</p><p><a href={projectHref(request.projectUrl)} target="_blank" rel="noopener noreferrer">{request.projectUrl}</a></p><p>{request.note}</p>
+          <p>{loginLabel(request)}</p><p><a href={projectHref(request.projectUrl)} target="_blank" rel="noopener noreferrer">{request.projectUrl}</a></p><p>{request.note}</p>
           {request.status === "pending" && <ActionForm action={() => resolveBuilderImportRequest(request.id)}>
             <div className={styles.actions}><button className={styles.secondary} type="submit">Mark resolved</button></div>
           </ActionForm>}

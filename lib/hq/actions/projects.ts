@@ -5,7 +5,14 @@ import { requireUser } from "../auth";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
 import type { ActionResult } from "../types";
-import { activityStmt, hqToday, refreshHq } from "./util";
+import { activityStmt, hqToday, inHackathon, refreshHq } from "./util";
+
+// Every action that takes a record id resolves it through inHackathon():
+// the record must exist and belong to the edition the operator is working
+// in (the hq_hackathon cookie names that edition and authorizes nothing on
+// its own), and a missing record and one from another edition answer the
+// same way, so neither a form field nor a swapped cookie can reach a record
+// outside the selected edition.
 
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
@@ -81,8 +88,8 @@ export async function updateProjectDetail(
   const parsed = detailField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
-  const project = await getProject(projectId);
-  if (!project || project.hackathonId !== selected.id) return { ok: false, error: "Project not found in this hackathon." };
+  const project = inHackathon(await getProject(projectId), selected.id);
+  if (!project) return { ok: false, error: "Project not found in this hackathon." };
   if (project.imported && parsed.data.field === "leadName") {
     return { ok: false, error: "Choose the lead from the Colosseum roster in Imported teams." };
   }
@@ -166,8 +173,8 @@ export async function addProjectMember(
   if (!parsedName.success || !parsedContact.success) return { ok: false };
   const trimmedName = parsedName.data.trim();
   if (!trimmedName) return { ok: false };
-  const project = await getProject(projectId);
-  if (!project || project.hackathonId !== selected.id) return { ok: false, error: "Project not found in this hackathon." };
+  const project = inHackathon(await getProject(projectId), selected.id);
+  if (!project) return { ok: false, error: "Project not found in this hackathon." };
   if (project.imported) return { ok: false, error: "Imported teammates must be listed on the Colosseum project. The roster cannot be extended in HQ." };
 
   const sql = getSql();
@@ -205,8 +212,8 @@ export async function updateProjectMember(
   if (!id.safeParse(memberId).success) return { ok: false };
   const parsed = memberField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
-  const member = await getMemberProject(memberId);
-  if (!member || member.hackathonId !== selected.id) return { ok: false, error: "Teammate not found in this hackathon." };
+  const member = inHackathon(await getMemberProject(memberId), selected.id);
+  if (!member) return { ok: false, error: "Teammate not found in this hackathon." };
   if (member.imported && parsed.data.field === "name") return { ok: false, error: "This teammate's identity comes from Colosseum. Only their contact can be edited in HQ." };
 
   const sql = getSql();
@@ -234,8 +241,8 @@ export async function removeProjectMember(memberId: string): Promise<ActionResul
   const user = await requireUser();
   const selected = await requireHackathon();
   if (!id.safeParse(memberId).success) return { ok: false };
-  const member = await getMemberProject(memberId);
-  if (!member || member.hackathonId !== selected.id) return { ok: false, error: "Teammate not found in this hackathon." };
+  const member = inHackathon(await getMemberProject(memberId), selected.id);
+  if (!member) return { ok: false, error: "Teammate not found in this hackathon." };
   if (member.imported) return { ok: false, error: "This teammate belongs to the imported Colosseum roster and cannot be removed in HQ." };
 
   const sql = getSql();
@@ -262,8 +269,9 @@ export async function setProjectStatus(
   opts?: { review?: boolean },
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -293,8 +301,9 @@ export async function setProjectForecast(
   forecastSlug: string,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -324,8 +333,9 @@ export async function toggleProjectGate(
   done: boolean,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success || !id.safeParse(gateId).success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -363,10 +373,11 @@ export async function saveProjectBlocker(
   blocker: string,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsed = text(500).safeParse(blocker);
   if (!parsed.success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -385,10 +396,11 @@ export async function saveProjectBlocker(
 
 export async function addProjectNote(projectId: string, body: string): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsed = z.string().min(1).max(2000).safeParse(body);
   if (!parsed.success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -416,8 +428,9 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
  */
 export async function deleteProject(projectId: string): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false, error: "Project not found." };
 
   const sql = getSql();
@@ -437,6 +450,7 @@ export async function deleteProject(projectId: string): Promise<ActionResult> {
  */
 export async function editProjectNote(noteId: string, body: string): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(noteId).success) return { ok: false };
   const parsed = z.string().min(1).max(2000).safeParse(body);
   if (!parsed.success) return { ok: false };
@@ -448,10 +462,13 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
     JOIN hq_projects p ON p.id = n.project_id
     WHERE n.id = ${noteId}
   `;
-  const note = rows[0];
+  const note = inHackathon(
+    rows[0] ? { projectId: String(rows[0].project_id), name: String(rows[0].name), hackathonId: Number(rows[0].hackathon_id) } : null,
+    selected.id,
+  );
   if (!note) return { ok: false };
 
-  const today = await hqToday(note.hackathon_id);
+  const today = await hqToday(note.hackathonId);
   await sql.transaction([
     sql`
       UPDATE hq_project_notes SET body = ${parsed.data}, edited_at = now()
@@ -459,9 +476,9 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
     `,
     sql`
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
-      WHERE id = ${note.project_id}
+      WHERE id = ${note.projectId}
     `,
-    activityStmt(user.id, note.hackathon_id, `Edited note on ${note.name}`),
+    activityStmt(user.id, note.hackathonId, `Edited note on ${note.name}`),
   ]);
   refreshHq();
   return { ok: true };
@@ -476,6 +493,7 @@ export async function logMondayReview(
   blocker: string | undefined,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   if (blocker !== undefined && !text(500).safeParse(blocker).success) return { ok: false };
 
@@ -486,15 +504,20 @@ export async function logMondayReview(
     JOIN hq_project_statuses s ON s.id = p.status_id
     WHERE p.id = ${projectId}
   `;
-  const project = rows[0];
+  const project = inHackathon(
+    rows[0]
+      ? { name: String(rows[0].name), blocker: rows[0].blocker as string | null, hackathonId: Number(rows[0].hackathon_id), statusSlug: String(rows[0].status_slug) }
+      : null,
+    selected.id,
+  );
   if (!project) return { ok: false };
 
   const finalBlocker = blocker !== undefined ? blocker : project.blocker;
-  const noteBody = `Monday review: ${project.status_slug}${
+  const noteBody = `Monday review: ${project.statusSlug}${
     finalBlocker ? `, blocker: ${finalBlocker}` : ", no blocker"
   }`;
 
-  const today = await hqToday(project.hackathon_id);
+  const today = await hqToday(project.hackathonId);
   // Only rewrite the blocker column when the reviewer actually typed one —
   // the read-back value could race a save from another operator.
   const updateStmt =
@@ -517,7 +540,7 @@ export async function logMondayReview(
       INSERT INTO hq_project_notes (project_id, author_user_id, body)
       VALUES (${projectId}, ${user.id}, ${noteBody})
     `,
-    activityStmt(user.id, project.hackathon_id, `Monday review logged for ${project.name}`),
+    activityStmt(user.id, project.hackathonId, `Monday review logged for ${project.name}`),
   ]);
   refreshHq();
   return { ok: true };
