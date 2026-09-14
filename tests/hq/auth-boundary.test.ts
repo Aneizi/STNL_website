@@ -55,6 +55,7 @@ describe("every server action authenticates", () => {
     "builders-admin.ts": "operator",
     "builders.ts": "member",
     "capabilities.ts": "operator",
+    "captains.ts": "operator",
     "demo.ts": "operator",
     "events.ts": "operator",
     "hackathons.ts": "operator",
