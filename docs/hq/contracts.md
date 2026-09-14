@@ -36,8 +36,11 @@ Two standing rules:
 - The `hq_hackathon` cookie is a convenience, never authorization. Captain
   scoping is checked server side, per request, against current grants and
   assignments.
-- A member route must be added in two places, `proxy.ts` and `safeMemberNext`,
-  until task T2.4 unifies them behind one exported list.
+- A member route is added in exactly one place, `MEMBER_PUBLIC_PATHS` in
+  `lib/hq/member-routes.ts`. `proxy.ts` asks `isMemberPath()` and
+  `lib/hq/member-auth-config.ts` re-exports `safeMemberNext`, so neither file
+  keeps a route literal of its own. Task T2.4 unified the two lists;
+  `tests/hq/member-routes.test.ts` asserts that neither file drifts back.
 
 ## Actor representation, phase 1
 
@@ -80,7 +83,7 @@ exists yet and none should be created before that phase.
 | CRM person identity | stable person id, account link, edition People references, explicit correction | `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch(db, { personId, toUserId, reason, actor })` (detach, link, or merge into the account's own person; never by display name) and the operator action `correctPersonMatch({ personId, toUserId, reason })` | 1, used from 3 |
 | Audit | append only metadata events | `lib/hq/audit.ts`, `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata? })`, `listAuditEvents(filter, { limit, cursor })`; nothing else | 1 |
 | Actor aware response types | the smallest DTO per audience | new `lib/hq/view-models.ts` | `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView` | 1 |
-| Shell and navigation | capability driven member menu | new `app/hq/(member)/layout.tsx`, new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `lib/hq/member-routes.ts` | `MEMBER_PUBLIC_PATHS`, `getMemberNav(actor)` | 2 |
+| Shell and navigation | capability driven member menu, one member route list | new `lib/hq/member-routes.ts`, new `lib/hq/member-nav.ts` (both pure and client-safe), new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `app/hq/(member)/layout.tsx` (a provider, **not** the auth boundary) | `MEMBER_PUBLIC_PATHS`, `isMemberPath(pathname)`, `safeMemberNext(value)` in `member-routes.ts`; `NavItem`, `MemberNavInput`, `getMemberNav({ capabilities, hasTelegram, teamCount })`, `isNavItemCurrent(item, pathname)` in `member-nav.ts`; `MemberNavProvider`, `BuilderNav`, `BuilderAccount` in `builder-nav.tsx`. The menu is derived from the request-cached `currentActor()` plus the account's team count; the layout passes it to the provider and every page composes `BuilderShell` itself | 2 |
 | Colosseum integration | validated snapshots, normalized fields, source status | `lib/colosseum-api.ts` extended, `lib/hq/colosseum-snapshot.ts` named only | `claimProject`, `refreshProject`, `listCountryProjects` | 3 |
 | Captain service | invitations, assignment changes | `lib/hq/captains.ts`, `lib/hq/actions/captains.ts`, named only | `acceptCaptainInvitation`, `assignCaptain`, `unassignCaptain`, `leaderboard` | 4 |
 | Reporting service | periods, entries, revisions, completion | `lib/hq/reporting.ts`, named only | `createUpdate`, `editUpdate`, `readAuthorizedUpdates`, `reportingStatus`, `closePeriod` | 5 |
@@ -153,6 +156,10 @@ member response cannot accidentally carry an operator field.
   outage does not affect email login.
 - Both member route allowlists come from one source.
 - The rate limit and cookie review is recorded with outcomes, task T2.5.
+
+Every item in the three lists above is met. The acceptance checklists that name
+the test proving each item, and the items explicitly deferred to phases 3, 4 and
+7, are in `docs/hq/implementation-log.md`.
 
 ## Migration conventions
 
@@ -280,3 +287,116 @@ The approved project fallback image:
 
 The plan's original path, `assets/hq-project-fallback.png`, does not exist at the
 repository root. Phase 3 copies the source above and references the target path.
+
+## Handoff to phase 3
+
+Phases 0, 1 and 2 are complete. This section is what phase 3 needs to start
+without re-reading the whole log. The per-task detail is in
+`docs/hq/implementation-log.md`; this is the short list.
+
+### Interfaces available now
+
+- **Actor and authorization.** `currentActor()`, `requireMemberActor(next?)`,
+  `requireOperatorActor()` in `lib/hq/actor.ts`;
+  `authorizeProjectAction(actor, { projectId, hackathonId, action }, loaders?)`,
+  `requireOperator()`, `isTeamMember`, `isAssignedCaptain`, `entryAudience`,
+  `canEditEntry`, `canReadRevisionHistory`, `assertHackathonMatches` in
+  `lib/hq/authz.ts`; the pure loaders in `lib/hq/authz-sql.ts`;
+  `authorizedTeam`, `memberTeamView`, `TEAM_NOT_AVAILABLE` in
+  `lib/hq/member-teams.ts`; `inHackathon(record, hackathonId)` in
+  `lib/hq/actions/util.ts`. Every new member-facing read or write goes through
+  one of these, never through a second per-action rule.
+- **CRM person identity.** `normalizeColosseumUsername`,
+  `ensurePersonForAccount`, `ensurePersonForRosterMember`,
+  `linkPersonToAccount`, `correctPersonMatch` in `lib/hq/crm-identity.ts`, each
+  writing through the query handle it is given so it joins the caller's
+  `BuilderDatabase.transaction`.
+- **Capabilities and audit.** `grantCapability`, `revokeCapability`,
+  `listActiveCapabilities`, `listActiveCapabilitiesForUsers`,
+  `listCapabilityGrants`, `personTags` in `lib/hq/capabilities.ts`;
+  `recordAuditEvent`, `listAuditEvents` in `lib/hq/audit.ts` over the
+  `AUDIT_EVENT_KINDS` vocabulary in `lib/hq/audit-sql.ts`.
+- **Identity and login methods.** `getLoginMethods(userId)`,
+  `verifiedLoginEmail(user)`, `isVerifiedAccount(user)`, `isPlaceholderEmail`,
+  `getTelegramIdentity(userId)`, `hasTelegramIdentity(userId)` in
+  `lib/hq/identity.ts`; `getBotConsent`, `setBotConsent`, `revokeBotConsent` in
+  `lib/hq/telegram-consent.ts`.
+- **Store and view models.** `BuilderStore.profile(userId)`,
+  `BuilderStore.teamById(projectId)`, `BuilderStore.ownClaim(userId,
+  projectId)`, `realEmail` in `lib/hq/builder-store.ts`; `builderDatabase()`,
+  `BuilderQuery`, `BuilderDatabase`, `atomically()` in `lib/hq/builder-db.ts`;
+  `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView` and their
+  mappers in `lib/hq/view-models.ts`. A member response is built from a view
+  model so it cannot carry an operator field.
+- **Shell and routes.** `MEMBER_PUBLIC_PATHS`, `isMemberPath`, `safeMemberNext`
+  in `lib/hq/member-routes.ts`; `getMemberNav({ capabilities, hasTelegram,
+  teamCount })` and `isNavItemCurrent` in `lib/hq/member-nav.ts`. A new phase 3
+  member page is one entry in `MEMBER_PUBLIC_PATHS` and, if it needs a menu
+  item, one item in `getMemberNav`.
+- **Test helpers.** `applyMigrations(pg)` and `pgliteBuilderDatabase(pg)` in
+  `tests/hq/helpers/db.ts`.
+
+### The fallback asset
+
+Source `docs/plans/assets/hq-project-fallback.png` (untracked in this checkout;
+a copy is kept at
+`.superpowers/sdd/2026-09-13-hq-captains-and-colosseum/hq-project-fallback.png`).
+Phase 3 copies it to `public/images/hq/project-fallback.png` and references that
+target path. See "Companion asset" above.
+
+### The unverified Colosseum edition
+
+The World's Fair external Colosseum id and slug are **unverified** and must not
+be guessed, seeded or hard coded. External id 6 is the finished **Frontier**
+edition, slug `frontier`. An edition with external id 7 exists but its project
+directory is disabled, so its name, slug and dates cannot be read from the
+public API. The operator types the confirmed id and slug into Admin, under
+Builder onboarding, and they are stored in `hq_hackathon_onboarding`. The `6`
+that appears inside HQ is the internal `hq_hackathons.id`, not Colosseum's id;
+never copy it into the external mapping. A "Dutch registrations" view must say
+"edition not available", never 0.
+
+### Fixtures
+
+`tests/hq/fixtures/colosseum/`: `directories.json`, `listing.json`,
+`detail.json`, `errors.json` and a `README.md` that records provenance and which
+shapes are assumptions. Every project, roster, handle, display name, avatar URL
+and project id in them is invented. Phase 3 extends these files rather than
+inlining new response shapes, and `tests/colosseum-api.test.ts` already
+validates `detail.json`'s `submitted` entry against `projectSchema` on every
+run. `detail.json`'s `unsubmitted` entry is a structural assumption, unverified
+against a live draft.
+
+### Four notes phase 3 must not rediscover
+
+1. **Import then claim is `ensurePersonForRosterMember` plus a
+   `correctPersonMatch` merge.** The roster import creates or reuses a person by
+   normalized Colosseum username with `ensurePersonForRosterMember`, never by
+   display name. When that person's human later signs in, the account already
+   has its own person from `ensurePersonForAccount`, so joining the two is the
+   merge branch of `correctPersonMatch(db, { personId, toUserId, reason, actor
+   })`: cards and roster rows are re-pointed onto the survivor, the provisional
+   username moves, the merged person is deleted and `person.match_corrected` is
+   recorded, all in one transaction. Do not add a second link path, and do not
+   call `linkPersonToAccount` for this case; it refuses an account that already
+   holds a person.
+2. **`hq_people_person_idx` is `(hackathon_id, person_id)` unique where
+   `person_id IS NOT NULL`:** one People card per person per edition. Once
+   phase 3 creates People cards for roster persons, two cards of the same
+   edition can carry the same person, so every writer needs the guard the
+   backfill, the link stamp and `enroll()` already have (stamp only when no
+   other card of that edition carries the person, and report the collision
+   rather than failing). `correctPersonMatch` already reports an unstamped
+   colliding card in its result.
+3. **Remove the hard-coded `HACKATHON_ID = 6` in
+   `lib/hq/colosseum-interest.ts`.** It is the internal `hq_hackathons.id` of
+   the current edition written as a constant, which is exactly what the standing
+   rule forbids. Phase 3 takes the edition from the selection the rest of HQ
+   already uses and removes the constant.
+4. **Phase 7 joins bot consent on the identity row.** Permission to message
+   someone lives in `hq_telegram_bot_consent` (`user_id`, `telegram_user_id`,
+   `messaging_enabled`), and the Telegram account to message lives in
+   `hq_auth_telegram_identity`. Delivery must join the two and send only where
+   `messaging_enabled` is true and an identity row still exists; disconnecting
+   Telegram already revokes consent in the same operation. Nothing reads the
+   consent row to send anything today.

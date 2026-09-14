@@ -250,6 +250,76 @@ touched. `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 449 tests pass
 (435 before), `npx tsc --noEmit` clean, `npm run lint` unchanged at the same 18
 pre-existing warnings.
 
+### Phase 0 summary and acceptance checklist
+
+Tasks T0.1, T0.2 and T0.3, closed out in task T2.6.
+
+**What changed and which migrations apply.** The Telegram OIDC spike proved a
+real HQ account without an email against the installed Better Auth 1.7.2
+(`lib/hq/telegram-provider.ts`, `lib/hq/telegram-identity-plugin.ts`,
+`lib/hq/identity.ts`, the nullable `MemberSessionUser.email`). Fictional
+Colosseum fixtures, the three documents in `docs/hq/` and the module contracts
+were written. The operator login regression anchor
+(`tests/hq/operator-auth-actions.test.ts`) was added. One migration, in
+`scripts/hq/member-auth-schema.sql`: `CREATE TABLE IF NOT EXISTS
+hq_auth_telegram_identity`. Nothing in `scripts/hq/upgrades.ts`.
+
+**Acceptance checklist.** The plan's phase 0 acceptance list, each item with the
+test that proves it or the document that records it.
+
+1. "Existing auth/import tests have a recorded baseline." Met by the Baseline
+   section above, measured on `main` at `bcba7df`: 421 tests pass, `tsc` clean,
+   18 pre-existing lint warnings in `public/deck/deck-stage.js`. A recorded
+   measurement, not a test.
+2. "The Telegram identity strategy supports a real account without requiring an
+   email afterward." Passed, `tests/hq/member-auth-telegram.test.ts`: "completes
+   the callback into a verified HQ account that has no email", "signs a
+   returning Telegram user into the same account" and "never mails, looks up or
+   verifies a placeholder address".
+3. "Existing admin username/password login is covered by regression checks. No
+   public-account migration work is introduced." Passed,
+   `tests/hq/operator-auth-actions.test.ts`, 14 checks over the real `login`,
+   `changePassword` and `logout` Server Actions, including "signs a known
+   operator in, issues the session cookie and lands on the picker", "bumps
+   password_version, revokes every live session and re-issues one" and "does not
+   accept a live public member cookie as an operator session". The second
+   sentence is a negative: no public-account migration route exists in the
+   checkout, and none was added in phases 0 to 2.
+4. "Colosseum capabilities and limitations are explicitly recorded." Met by
+   `docs/hq/contracts.md` ("Colosseum integration, what the API can and cannot
+   do") and `tests/hq/fixtures/colosseum/README.md`. The fixture is validated
+   against `projectSchema` on every run through `tests/colosseum-api.test.ts`,
+   whose "requires the correct hackathon ID and slug" pins the edition check.
+5. "Later phases have named service boundaries and no dependency on real secrets
+   in code." Met by the module map in `docs/hq/contracts.md` and by
+   `docs/hq/manual-setup.md` carrying variable names only. A documentation rule,
+   not a test.
+
+**Gate.** "Do not proceed with a Telegram login UI that only works by pretending
+Telegram verified an email." Passed before phase 1 began: the placeholder
+address is an internal non-deliverable identifier with `emailVerified: false`,
+it is never displayed, mailed or synced as a contact, and every mailing,
+lookup and verification endpoint refuses it.
+
+**Blocked or deferred out of phase 0, with the phase that owns each.**
+
+- The World's Fair external Colosseum id and slug are unverified. Owner input,
+  entered in Admin; phase 3 consumes it. See `docs/hq/manual-setup.md`.
+- Colosseum exposes no registered but unsubmitted projects, so ownership proof
+  before submission is not possible through the API. The manual review path is
+  the fallback; phase 3 owns it.
+- `projectCompletion.fieldErrors` element type is unverified. Phase 3.
+- Live email delivery, Telegram login and Telegram bot messaging cannot be
+  proven by any automated test. Owner checks, listed in
+  `docs/hq/manual-setup.md`; bot delivery itself is phase 7.
+- No stub source files were created. Phases 3 to 10 are named in
+  `docs/hq/contracts.md` and nowhere else.
+
+**Changed interfaces and external configuration.** See "Changed interfaces, task
+T0.1" and "External configuration still required, task T0.1" above. Phases 1 and
+2 added nothing to the variable list; the consolidated list is in the phase 2
+summary at the end of this file.
+
 ## Phase 1, identity, authorization and the Captain capability
 
 ### What changed, task T1.1
@@ -568,12 +638,28 @@ by `to_regclass('hq_people_roles')`.
 - A revocation's reason is on its `capability.revoked` event; the grant row
   keeps the reason it was granted for, because the table has one `reason`
   column by design.
-- `enroll()` is unchanged (ruling Q5). Its `INSERT ... ON CONFLICT` still
-  assumes no other card in the edition carries the account's person. That
-  state cannot arise today (only accounts get People cards with a person),
-  but a phase 3 roster import that creates People cards for roster persons
-  would make it reachable, and `enroll()` would then need the same
-  `NOT EXISTS` guard the backfill and the link stamp have.
+- `enroll()` was guarded in the task's fix round, so this bullet is closed,
+  not deferred. The earlier text said `enroll()` was unchanged (ruling Q5)
+  and still assumed that no other card in the edition carried the account's
+  person. A person-match clear can leave exactly that state (a roster card
+  keeps the person while the account's own card is unstamped), so the
+  `INSERT ... ON CONFLICT` now stamps the person only when no other card of
+  that edition already carries it, on insert through a `CASE WHEN EXISTS`
+  and on conflict through the existing `COALESCE`, the same guard the
+  backfill and the link stamp have. The `role_id` behaviour on conflict is
+  unchanged. Test: `tests/hq/builder-onboarding.test.ts` "enrolls without
+  tripping the per-edition person index when another card already carries
+  the account's person". What remains for phase 3 is the other direction:
+  once a roster import creates People cards for roster persons, every new
+  writer of `hq_people.person_id` needs the same guard.
+- The same fix round made a clear delete the detached person when nothing
+  identifies it any more (no provisional Colosseum username, no card, no
+  roster row) instead of orphaning it, reported `replacementPersonId` and
+  `deletedPersonId` in the result and the audit metadata, and hid
+  "Wrong match?" on a card whose link was cleared in the session. Tests:
+  "removes a cleared person that nothing identifies any more, instead of
+  orphaning it" and "keeps a cleared person that a roster row or another
+  card still names", both in `tests/hq/builder-onboarding.test.ts`.
 - "Wrong match?" in People only clears a link. Re-pointing and merging are
   reachable through the `correctPersonMatch` action and tested, and get a
   UI when phase 3 creates roster persons to point at.
@@ -944,6 +1030,118 @@ Phase 1 acceptance checklist, with the test that proves each item:
 
 None added. The list from task T0.1 stands.
 
+### Phase 1 summary and acceptance checklist
+
+Tasks T1.1, T1.2, T1.3 and T1.4, closed out in task T2.6. The checklist under
+"Checks passed, task T1.4" maps the seven **gate** items in
+`docs/hq/contracts.md`. This checklist maps the plan's own five phase 1
+acceptance bullets, quoted verbatim, so that every plan bullet has a named test
+or an explicit deferral.
+
+**What changed and which migrations apply.** One stable public account id
+whatever it signs in with, a CRM person behind every People card, an
+admin-controlled `captain` capability with an append-only audit trail, one
+central authorization module, and all of it wired into the existing member and
+operator surfaces. Migrations, all additive and all listed in full in the
+per-task entries above: in `scripts/hq/builder-schema.sql` the nullable
+`hq_builder_profiles.email`, the new `hq_builder_profiles.contact_email`, the
+new tables `hq_crm_persons`, `hq_account_capabilities` and `hq_audit_events`,
+the new `person_id` columns on `hq_people` and `hq_project_members` with
+`hq_people_person_idx` and the two backfills; in `scripts/hq/upgrades.ts` one
+guarded step renaming the seeded "Captain" People role to "Partner captain".
+T1.3 and T1.4 added no SQL.
+
+**Acceptance checklist.**
+
+1. "A regular account cannot read operator data by changing a URL, request body,
+   project ID or hackathon cookie." Passed.
+   - URL: `tests/hq/member-actions-authz.test.ts` "answers a foreign,
+     other-edition, unknown or malformed id with the same not-found page,
+     whatever the URL says".
+   - Request body and project ID: the same file's "answers a foreign team,
+     another edition's team, a pending claim, an unknown id and a crafted body
+     edition identically, and changes nothing".
+   - Hackathon cookie: the same file's "never reads the hackathon cookie: a
+     tampered value changes no answer".
+   - No operator field reaches a member response: the same file's "renders the
+     member's own view of a verified team and nothing wider", and
+     `tests/hq/view-models.test.ts` "carries the team page's fields, the
+     viewer's own membership and the Captain's approved contact, and no other
+     account's identity".
+   - The decision matrix behind all four: `tests/hq/authz.test.ts` "makes a
+     foreign, other-edition, pending, unknown or malformed project
+     indistinguishable from a missing one", "refuses a related project under the
+     wrong edition", "never grants a member through the operator branch, and a
+     job nothing at all", "requireOperatorActor and requireOperator wrap
+     requireUser and never admit a member session" and "takes no identity from a
+     request: no form, body, query or cookie read anywhere in the actor or
+     authorization modules".
+   - The operator side of the same rule: `tests/hq/builders-admin.test.ts`
+     "answers a record from another edition exactly like a missing one in every
+     project state action and the People editor".
+2. "A Captain capability grants no project access without assignment, except
+   legitimate team membership." Passed, `tests/hq/authz.test.ts` "gives a captain
+   grant nothing without an assignment, and the shared surface with one",
+   "evaluates combined roles per resource", "reads the grant from the database,
+   never from the actor's own capability set" and "lets an unassigned Captain
+   learn nothing about projects outside the requested edition";
+   `tests/hq/member-actions-authz.test.ts` "gives a captain grant no team action
+   on its own, and no lead-only action through a roster seat". The "except
+   legitimate team membership" half is `tests/hq/authz.test.ts` "gives a team
+   member read, create, edit and the Captain assignment; membership changes are
+   the lead's alone".
+3. "Editing an ordinary People tag cannot grant Captain or admin permissions."
+   Passed, `tests/hq/builders-admin.test.ts` "never turns a People role edit, a
+   new person or a tier change into a Captain grant" and "keeps the renamed
+   Partner captain role an ordinary, editable role beside the Captain
+   capability"; `tests/hq/capabilities.test.ts` "renders the role tag first and
+   one locked tag per capability". No path exists from a public account to an
+   `hq_users` row: `tests/hq/authz.test.ts` "requireOperatorActor and
+   requireOperator wrap requireUser and never admit a member session".
+4. "Revocation affects the next protected request, including bot requests."
+   Passed for web requests, `tests/hq/authz.test.ts` "sees a revocation on the
+   very next call, with the same actor object and no caching in between";
+   `tests/hq/member-actions-authz.test.ts` "sees a lost relationship on the very
+   next call" and "loses the page on the next request after leaving the roster,
+   without a session change"; `tests/hq/builders-admin.test.ts` "grants and
+   revokes Captain from Admin with the operator recorded, visible on the next
+   read". **"Including bot requests" is deferred to phase 7**: no bot exists, no
+   bot request path exists, and nothing can be asserted about one. The deferral
+   is recorded in the header of `tests/hq/member-actions-authz.test.ts`.
+5. "Existing admin account IDs, credentials and CRM People relationships survive
+   additive, repeatable schema changes." Passed,
+   `tests/hq/migration-order.test.ts`: "takes the whole migration twice without
+   drift", "keeps operator logins and People links, and gives every linked
+   People card its person", "contain nothing the one-statement-per-call runner
+   cannot send" and "has every hq_ table classified in the reset manifest, and
+   nothing classified that does not exist"; `tests/hq/reset.test.ts` "names every
+   table in the schema as either cleared or kept" and "keeps everyone logged in".
+
+**Blocked or deferred out of phase 1, with the phase that owns each.**
+
+- Revocation as a bot request sees it: **phase 7**.
+- `loadCurrentAssignment` and `loadEntry` return null until their tables exist:
+  **phase 4** and **phase 5**. Each phase replaces one function body; the
+  decisions over them are already tested with injected fixtures.
+- `MemberTeamView.captain`, the Captain's approved contact for a team, and the
+  `/hq/captain` assignment list: **phase 4**.
+- `Authorization.reason` includes `not_author`, reserved for entry-level edit
+  decisions: **phase 5**.
+- Re-pointing and merging a person from the People UI: **phase 3**, when a
+  roster import creates roster persons to point at. The action and its merge are
+  already implemented and tested.
+- The reset classification of `hq_builder_enrollments`,
+  `hq_project_challenges`, `hq_project_import_requests` and
+  `hq_event_host_requests` preserves the pre-T1.1 behaviour and awaits a product
+  ruling, not a phase.
+- A claimant editing their pending import's stage or lead: a product ruling, not
+  a phase. Recorded under "Blocked or deferred, task T1.4".
+
+**Changed interfaces and external configuration.** See the four per-task
+"Changed interfaces" sections above; the phase 3 shortlist is in
+`docs/hq/contracts.md` under "Handoff to phase 3". Phase 1 added no environment
+variable.
+
 ## Phase 2, sign-in, linking and the member shell
 
 ### What changed, task T2.1
@@ -1273,6 +1471,27 @@ a stale session. Copy for the endpoint outcomes lives in
 up with `Object.hasOwn` and knows `EMAIL_UNAVAILABLE`, `INVALID_EMAIL` and
 `EMAIL_UNCHANGED`. The route joined the proxy allowlist and `safeMemberNext`
 (both lists become one in task T2.4).
+
+Fix round 1 of the task review added five things. The notice to a previous
+verified login address no longer names the new address, so a mailbox that
+has changed hands cannot learn the account's new identifier from it; the
+notice still says that the login email changed and still carries no code.
+Three shared pieces replaced the copies each form had grown:
+`app/hq/(member)/use-resend-cooldown.ts` (one resend cooldown hook),
+`app/hq/(member)/otp-code-field.tsx` (one code field with one-time-code
+semantics and the resend button that counts down) and
+`app/hq/(member)/stale-session.tsx` (one "Sign in again" control), now used
+by the sign-in form, the Telegram confirmation step and the recovery-email
+form alike. `lib/hq/member-auth.ts` gained a null guard on the
+`user.update.after` hook for an update that carries no email. The
+`?email=added` notice renders only when the address really was added. And a
+test pins that the core `/delete-user` route stays disabled. Tests:
+`tests/hq/account-form.test.ts` "renders the sign-in-again control a stale
+session needs, disabled with its form" and "renders the code field with
+one-time-code semantics and a resend button that counts down";
+`tests/hq/member-auth-telegram.test.ts` "tells the previous verified
+address, once, when the login email changes" and "keeps the core delete-user
+route disabled".
 
 ### Checks passed, task T2.3
 
@@ -1727,3 +1946,273 @@ regardless of `NODE_ENV`. No migration.
 
 Nothing new. `BETTER_AUTH_URL` now also decides the cookies' `Secure`
 attribute; it must stay the https origin (`docs/hq/manual-setup.md`).
+
+### Phase 2 summary and acceptance checklist
+
+Tasks T2.1, T2.2, T2.3, T2.4, T2.5 and T2.6.
+
+**What changed and which migrations apply.** Google and GitHub are gone from
+public sign-in. Telegram sign-in is live in code behind its two credentials, with
+Connect Telegram and Disconnect Telegram from `/hq/account`, each behind a
+confirmation step, a session created within 15 minutes and a single-use intent.
+A Telegram-first account can add a verified recovery email, the previous
+verified login address is notified without being told the new one, and bot
+messaging is a separate, revocable decision that delivers nothing yet. Every
+member route lives in one list, the member shell has a capability-driven menu
+and an account corner, and `/hq/captain` exists and is not found without the
+grant. Rate limits and session-cookie behaviour were reviewed for both methods
+with one ruling per item, and every Change in that review is implemented.
+
+Migrations, both additive and both applied by `hq:migrate` in the usual order:
+`hq_auth_account_telegram_user_idx`, a partial unique index on
+`hq_auth_account("userId") WHERE "providerId" = 'telegram'`, in
+`scripts/hq/member-auth-schema.sql` (T2.2); and `CREATE TABLE IF NOT EXISTS
+hq_telegram_bot_consent` in `scripts/hq/builder-schema.sql`, classified KEEP in
+`scripts/hq/reset-statements.ts` (T2.3). T2.1, T2.4 and T2.5 added no SQL. The
+Telegram link confirmation intent is a single-use row in the existing
+`hq_auth_verification` table, not a new one.
+
+**Acceptance checklist.** The plan's phase 2 acceptance list and its external
+setup rule, quoted verbatim, each with the test that proves it or an explicit
+deferral naming the phase that owns it.
+
+1. "Telegram-only, email-only and linked accounts complete signup/login and
+   return to the correct destination." Passed.
+   - Telegram-only: `tests/hq/member-auth-telegram.test.ts` "completes the
+     callback into a verified HQ account that has no email", "signs a returning
+     Telegram user into the same account" and "takes a Telegram-first account
+     through the name step without asking for an email".
+   - Email-only: `tests/hq/member-auth.test.ts` "creates a verified account and
+     CRM profile only after a valid email code", "signs an existing user in
+     without duplicating accounts or changing their name" and "completes a new
+     email-only sign-in profile before creating its Person".
+   - Linked: `tests/hq/member-auth-telegram.test.ts` "connects Telegram to an
+     email account through the confirmed redirect flow, preserving the account"
+     and "adds a verified recovery email to a Telegram-first account, mailing the
+     new address once and nobody else", which ends by signing the same account in
+     with an email code.
+   - The correct destination: `tests/hq/member-routes.test.ts` "names every
+     member page once, the team and invitation subtrees included, and nothing
+     operator-side", its `it.each` cases "preserves %s" over every member
+     destination and "rejects %s" over the open-redirect and traversal attempts,
+     and "keeps the query, whatever it carries, and drops the fragment";
+     `tests/hq/member-actions-authz.test.ts` "sends a signed-out visitor to sign
+     in with the team URL as the destination".
+   - Not covered by a test: the browser round trip after `signIn.social`
+     follows the library's returned URL. Recorded under "Live checks still
+     pending" in `docs/hq/manual-setup.md`.
+2. "Connecting Telegram preserves the account, team memberships and Captain
+   access." Passed, `tests/hq/member-auth-telegram.test.ts` "connects Telegram to
+   an email account through the confirmed redirect flow, preserving the account",
+   which asserts the account id, the profile, the enrollment, the capability
+   grant and the team row unchanged and exactly one `identity.linked` event. The
+   conflict cases that must move nothing: "refuses to connect a Telegram account
+   that belongs to another HQ account, moving nothing", "refuses a second
+   Telegram for an account, at the endpoint and inside the account transaction"
+   and "lets the database refuse a second Telegram account row even when the
+   identity backstop cannot see it".
+3. "Existing admin accounts continue to sign in with their unchanged usernames
+   and passwords; public signup cannot claim or convert an admin account."
+   Passed. Admin sign-in: `tests/hq/operator-auth-actions.test.ts`, 14 checks
+   over the real Server Actions, including "signs a known operator in, issues the
+   session cookie and lands on the picker", "normalises the submitted username
+   before the lookup" and "bumps password_version, revokes every live session and
+   re-issues one"; nothing under `hq_users` or `lib/hq/actions/auth.ts` changed in
+   phases 0 to 2, and `tests/hq/migration-order.test.ts` "keeps operator logins
+   and People links, and gives every linked People card its person" proves the
+   ids, usernames, password hashes and versions survive the migrations. Neither
+   session can be the other: `tests/hq/operator-auth-actions.test.ts` "does not
+   accept a live public member cookie as an operator session" and
+   `tests/hq/member-auth.test.ts` "rejects cross-origin mutation and does not
+   accept the operator cookie as a public session". No public path reaches an
+   operator record: `tests/hq/authz.test.ts` "requireOperatorActor and
+   requireOperator wrap requireUser and never admit a member session" and
+   `tests/hq/auth-boundary.test.ts` "maps every action module to a gate, and only
+   existing modules".
+4. "A failed or expired login/link attempt grants no roles and consumes no
+   Captain invitation use." Passed for the login and link halves; the invitation
+   half is deferred.
+   - A failed or expired login: `tests/hq/member-auth-telegram.test.ts` "refuses
+     replayed, unbound, forged and stale callbacks", "never accepts a
+     client-supplied id_token, with each fence sufficient on its own" and
+     "refuses a Telegram identity another account already holds, before any row
+     is committed"; `tests/hq/member-auth.test.ts` "rejects incorrect and expired
+     codes without populating People" and "spends the sign-in code's three
+     attempts and then refuses even the right code".
+   - A failed or expired link: `tests/hq/member-auth-telegram.test.ts` "refuses a
+     link whose confirmation is missing, expired, for the other action or already
+     used, and a failed link grants nothing", "requires a session created within
+     15 minutes on every endpoint that adds or removes a login method", "stays
+     stale through the library's own session refresh" and "lets a stale session
+     neither add an email nor use one to disconnect Telegram".
+   - **"Consumes no Captain invitation use" is deferred to phase 4.** No
+     invitation table, token, landing page or redemption path exists in the
+     checkout, so there is nothing an attempt could consume and nothing to
+     assert. Phase 4 creates them and owns this half of the bullet.
+5. "Bot messaging is optional and is accurately reflected in connection status."
+   Passed for the decision and the status; delivery is deferred.
+   `tests/hq/member-auth-telegram.test.ts` "keeps bot messages a separate
+   decision from the Telegram connection, and declining changes nothing about
+   access" covers the separation, the Disabled default, enabling and disabling
+   through the action with the `bot.consent_changed` events, a repeat recording
+   nothing, `currentMember()` and `requireMember()` unchanged after declining, an
+   email-only account refused with `TELEGRAM_NOT_CONNECTED` and no Bot messages
+   section at all. The test "revokes bot messages when Telegram is disconnected,
+   in the same operation" covers the status staying accurate when the connection
+   goes,
+   and that reconnecting does not restore it. The page renders from server data
+   only: "renders the account page from server data only, and ends a session
+   whose identity row is missing". **Delivery is deferred to phase 7**: nothing
+   reads `hq_telegram_bot_consent` to send a message, no chat id is stored, no
+   webhook exists, and no test claims otherwise.
+6. "Google/GitHub are absent from the final public auth flow; operator login
+   still works." Passed. `tests/hq/member-auth.test.ts` "no longer offers google
+   sign-in, whatever the environment holds" and "no longer offers github sign-in,
+   whatever the environment holds" (one `it.each` over the two providers) stub
+   all four credential variables and get 404 `PROVIDER_NOT_FOUND` from
+   `/api/auth/sign-in/social`. `tests/hq/member-auth-config.test.ts` "reports
+   exactly the configured, email and telegram flags" and "gives the removed
+   Google and GitHub credentials no effect" pin the availability shape.
+   `tests/hq/account-form.test.ts` "offers Telegram first and email second, with
+   nothing left of the removed providers" pins the markup. Operator login still
+   works: `tests/hq/operator-auth-actions.test.ts`, passing unchanged. **Owner
+   action outstanding:** delete `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+   `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` from the Vercel project. Nothing
+   reads them, so leaving them set changes no behaviour.
+7. External setup rule: "Unconfigured public login methods should show an
+   accurate unavailable state without affecting existing admin login." Passed.
+   `tests/hq/account-form.test.ts` "says which method is unavailable and points
+   at the other, per mode" and "collapses to one honest line when neither method
+   is configured"; `tests/hq/member-auth-config.test.ts` "does not advertise
+   email sign-in without both an API key and a sender" and "advertises Telegram
+   only with both login credentials, whatever the bot username";
+   `tests/hq/member-auth-telegram.test.ts` "keeps email sign-in and existing
+   sessions working while Telegram is unreachable", which also fails the suite on
+   any request to the discovery document. Admin login is untouched:
+   `tests/hq/operator-auth-actions.test.ts`. **One gap, unchanged since task
+   T0.2:** the 503 `AUTH_UNAVAILABLE` response in
+   `app/api/auth/[...all]/route.ts` has no test of its own. It is recorded as a
+   gap in `docs/hq/manual-setup.md` rather than claimed as covered.
+8. External setup rule: "It must not invent credentials, DNS records, verified
+   domains or successful live tests." Held, and not a test. Resend and Telegram
+   are recorded "Not configured" in `docs/hq/manual-setup.md`; every check that
+   needs the owner's accounts sits in a separate "Live checks still pending"
+   group and none of them is reported as done; no credential, DNS record, domain
+   or endpoint secret appears anywhere in this repository; and the World's Fair
+   external Colosseum id and slug are recorded as unverified owner input rather
+   than guessed.
+
+**Contract gate items beyond the plan's list.**
+
+- "Both member route allowlists come from one source":
+  `tests/hq/member-routes.test.ts` "is the same list in both places: neither file
+  keeps a route list of its own", with its `it.each` pairs "both let a member
+  reach %s" and "both keep a member off %s".
+- The capability-driven shell: `tests/hq/member-nav.test.ts` "Captain appears
+  with the capability only, never from a team or a Telegram link", "email-only
+  account with no teams: Home, Register team, Connect Telegram, Account",
+  "Telegram-only account with teams: Home, My teams, Account", "captain who is
+  also a team member sees both modules together", "marks exactly one derived item
+  current on each member page" and "never links anywhere operator-side, and every
+  target is a member route"; `tests/hq/member-shell.test.ts` "is not found
+  without the capability, whatever else the account holds", "derives the menu and
+  the account corner from the actor and the team count, for the shell a page
+  renders" and "renders no menu for a visitor, and none for an operator session,
+  which is not a member".
+- The admin application stays separate: `tests/hq/member-shell.test.ts` "scans
+  the layout, the two pure modules and every builder component" (a static import
+  scan against the operator queries, session, chrome, UI and every operator
+  action module) and "keeps the two pure modules client-safe: no server-only, no
+  environment, no runtime import of a server module".
+- "The rate limit and cookie review is recorded with outcomes": the "T2.5 review"
+  section above, one ruling per item. The rulings are pinned by
+  `tests/hq/member-auth-config.test.ts` "marks cookies Secure exactly when the
+  origin is https, whatever NODE_ENV says"; `tests/hq/member-auth.test.ts` "reads
+  the client address from x-real-ip alone, and only when it is a single address",
+  "rate-limits code sends across requests using the database", "keeps the code
+  endpoints HQ does not use disabled, ahead of the rate limiter", "answers a
+  sign-in code request for a known address exactly like one for an unknown
+  address, and serves no other code type" and "spends the sign-in code's three
+  attempts and then refuses even the right code"; and
+  `tests/hq/member-auth-telegram.test.ts` "rate-limits the Telegram callback per
+  IP without touching Telegram", "answers a request for an address another
+  account holds exactly like one for a free address, sending nothing to it",
+  "answers a failed code for an address another account holds exactly like one
+  for a free address, whatever the attempt or the code's age", "does not expose
+  the stored provider tokens to the session holder", "keeps the core change-email
+  route disabled" and "keeps the core delete-user route disabled".
+
+**Blocked or deferred out of phase 2, with the phase that owns each.**
+
+- "Consumes no Captain invitation use", and the `/hq/invite/<token>` destination
+  that the route list already accepts with no page behind it: **phase 4**.
+- Bot message delivery, chat ids, the webhook and revocation as a bot request
+  sees it: **phase 7**.
+- The `/hq/captain` assignment list, which shows "No assignments yet" today:
+  **phase 4**.
+- Whether to offer Change email to accounts that already sign in with email: a
+  product decision, not a phase. The action and the endpoints support it; no page
+  links to it.
+- Whether to hide Connect Telegram entirely while Telegram sign-in is
+  unconfigured, rather than leading to the honest unavailable line: a product
+  decision, not a phase.
+- Accepted rather than closed, with the reasoning in the T2.5 review: the timing
+  difference on `/email-otp/request-email-change` between a free and a taken
+  address, and the honest 503 that a delivery failure can only produce for a free
+  address.
+- Not verified in a browser, and therefore owner checks: the client flows
+  (`signIn.social`, `linkSocial`, `unlinkAccount`, `requestEmailChange`,
+  `changeEmail`, the refreshed cookie), the 960px header wrap and the 400px
+  layout. All three are in `docs/hq/manual-setup.md`.
+- Behind a proxy other than Vercel the client-address rule needs
+  `trustedProxies`. No such deployment exists.
+- `TOO_MANY_ATTEMPTS` and `OTP_EXPIRED` in
+  `app/hq/(member)/account/email-copy.ts` no longer have a route that emits them.
+  Harmless copy, outside the task.
+
+**Changed interfaces later phases use.** The full per-task lists are above. The
+phase 3 shortlist, with the fallback asset path, the unverified Colosseum
+edition, the fixtures and four notes phase 3 must not rediscover, is in
+`docs/hq/contracts.md` under "Handoff to phase 3".
+
+**External configuration still required, names only.**
+
+- Not configured, and public sign-in stays unavailable until they are set:
+  `RESEND_API_KEY` and `EMAIL_FROM` (email sign-in, the recovery-email code and
+  the change notice); `TELEGRAM_LOGIN_CLIENT_ID` and
+  `TELEGRAM_LOGIN_CLIENT_SECRET` (Telegram sign-in and Connect Telegram).
+  `TELEGRAM_BOT_USERNAME` is copy only and gates nothing.
+- State unknown from a checkout, so treat as unconfirmed: `BETTER_AUTH_URL` and
+  `BETTER_AUTH_SECRET`. Since task T2.5, `BETTER_AUTH_URL` also decides the
+  `Secure` attribute and the `__Secure-` cookie prefix, so it must be the https
+  production origin.
+- Phase 7 only: `TELEGRAM_BOT_TOKEN`, plus the webhook URL registered with
+  Telegram.
+- To delete if set: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`,
+  `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`.
+- Not an environment variable: the Colosseum external edition id and slug. Typed
+  into Admin, stored in `hq_hackathon_onboarding`, never seeded and never hard
+  coded.
+
+Who does what, in dependency order, is in `docs/hq/manual-setup.md`.
+
+### Verification run for phases 0 to 2, task T2.6
+
+Run on branch `hq-captains-phases-0-2` at commit `c9667e3`, before this
+documentation commit. Counts, not logs.
+
+- `npm run lint`: 0 errors, 18 warnings, all pre-existing and all in
+  `public/deck/deck-stage.js`. Unchanged from the phase 0 baseline.
+- `npx tsc --noEmit`: clean, no output.
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 754 tests in 33 files,
+  all passing. The phase 0 baseline was 421.
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm run build`: passes. Every
+  `/hq` route compiles, `/hq/captain`, `/hq/account`, `/hq/account/add-email`,
+  `/hq/account/connect-telegram` and `/hq/account/disconnect-telegram` are listed
+  as dynamic, and the proxy compiles as middleware. No environment variable was
+  needed for the build.
+
+The two `env -u` flags matter for the same reason they did at the baseline: an
+exported `DATABASE_URL` can reach an unmocked `getSql()` during a run.
+`vitest.config.mts` blanks both for every test as well, so the flags are now belt
+and braces rather than the only guard.
