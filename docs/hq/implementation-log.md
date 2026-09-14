@@ -4083,3 +4083,361 @@ between the owner and any import at all: until it is set in Admin, every
 import answers "Superteam NL has not confirmed this hackathon's Colosseum
 edition yet". Item **2.7** is done in code, with an optional smaller image
 left to the owner.
+
+## Phase 5, weekly reporting periods, entries, revisions, outcomes and privacy
+
+Implemented in one session on branch `hq-captains-phases-0-2`, on top of
+phase 3. The plan's Phase 5 section is the authority for everything below,
+together with section 2's "Weekly reporting" and "Hackathon dates and final
+submission" and section 5's privacy contract.
+
+The goal of this phase is the model, not the screens: "establish a single
+reliable reporting model before adding reminders". Phase 6 builds the
+dashboards and the Server Actions that call this service, phase 7 the bot
+handlers, phase 8 the reminder and closure jobs. **No Server Action and no
+page was added here on purpose** — `docs/hq/contracts.md`'s standing rule 1
+("a stub module is work with no user", "a stub route handler would be a live
+endpoint") applies exactly to an action with no screen behind it, and every
+entry point phase 6 needs is already a typed function on the service.
+
+### What changed
+
+**The period generator (`lib/hq/reporting-periods.ts`, new).** Pure, no
+`server-only` and no database handle, following the `lib/hq/luma-sync-sql.ts`
+pattern, so the plan's period table is asserted literally in a test including
+its UTC instants. `generateReportingPeriods(schedule)` turns a campaign's
+local `startDate`/`endDate`, its timezone, an optional final-period start and
+a nudge weekday and time into consecutive windows. Each period carries both
+readings the plan asks for: `startDate`/`endDate` are the **inclusive local
+dates** a screen displays, `startsAt`/`endsAt` are **UTC instants with an
+exclusive end**, and one period's `endsAt` is exactly the next one's
+`startsAt`. The last period's exclusive end is local midnight on the day
+*after* `end_date`, which is why **there is no fifth period beginning 12
+October**: the campaign's final day sits inside the final period rather than
+opening a new one. `zonedDateTimeToUtc` resolves a local wall clock to an
+instant by guessing with the offset at the naive reading and correcting once
+with the offset at the guess, which is exact for every real zone outside a
+spring-forward gap; `addDays` is calendar arithmetic in UTC, so a clock change
+moves the instant and never the date.
+
+The merge rule is the plan's "explicit final-period start/merge setting":
+every weekly period that would begin on or after `final_period_start_date`
+becomes one submission-focus period running to the campaign's end, and a
+weekly period the final start interrupts mid-week is truncated the day before
+it. A final start outside the campaign is ignored rather than clamped, because
+clamping would silently relabel every week, or none, on a typo.
+
+**Six additive tables (`scripts/hq/builder-schema.sql`).** Documented in full
+where they are created; read those comment blocks before touching
+`lib/hq/reporting.ts`.
+
+- `hq_reporting_config`, per edition. Deliberately thin: the reporting window
+  is `hq_hackathons.start_date`/`end_date` and the timezone is
+  `hq_settings.timezone`, both already operator-editable, and copying either
+  here would be the competing source of truth the data contract forbids. What
+  is left is what had no home: `final_period_start_date`,
+  `official_submission_deadline` (for when Colosseum's own cutoff is earlier
+  than HQ's window) and `nudge_weekday`/`nudge_time`, stored so phase 8 can
+  change the reminder time without editing bot code.
+- `hq_reporting_periods`, with `(hackathon_id, sequence)` unique. `sequence`
+  is the period's identity, which is what lets a stored period be matched to a
+  regenerated one field by field.
+- `hq_reporting_eligibility`, one row per project: `eligible_from`,
+  `paused_at`, and `enabled_by_user_id` (NULL for a self-service import, the
+  operator for a manually tracked project).
+- `hq_reporting_entries`. `author_kind`/`author_id` follow
+  `hq_audit_events.actor_kind`/`actor_id` rather than a foreign key, for the
+  same two reasons: an author may be a public account (a text id) or an
+  operator (a uuid), which no single foreign key expresses, and the plan
+  requires the **original author preserved even when an admin edits**, which a
+  SET NULL on account deletion would quietly undo. `submitted_at` is the
+  server's clock at first save and never moves. `version` is the optimistic
+  token. `late` marks an entry added to a period that had passed. `voided_at`
+  is moderation, never deletion.
+- `hq_reporting_entry_revisions`, `UNIQUE (entry_id, version)`: one immutable
+  row per version, version 1 being the content as first submitted, written in
+  the same transaction as the insert or update it records. The invariant is
+  `revisions == entry.version`, so "the previous version" is the preceding row
+  and history can never be missing a step.
+- `hq_reporting_outcomes`, `UNIQUE (period_id, project_id)`. `completed` is
+  the factual on-time answer at close and is never rewritten; an admin
+  correction writes `corrected_completed` beside it with a reason, so the
+  effective answer is `COALESCE(corrected_completed, completed)` and the
+  original stays readable. `captain_user_id` is the Captain at close, carried
+  as history without a foreign key so a later reassignment cannot change what
+  a period recorded.
+
+**`loadEntry` (`lib/hq/authz-sql.ts`) is no longer a stub.** Only the body
+changed, exactly as the hand-off specified: `Entry`, `CurrentAssignment`,
+`entryAudience` and `canEditEntry` are untouched, and their phase 1
+injected-fixture tests needed no change. The edition comes from the project
+rather than a column of the entry's own, so an entry can never claim an
+edition its project is not in. An **operator author is namespaced as
+`operator:<id>`** on the way out: the only reader of `authorUserId` compares
+it against a *member* actor's id, and the two id spaces are different tables,
+so namespacing means an admin-authored sensitive note can never be read back
+as a member's own however those spaces happen to overlap. A voided entry is
+still returned, because whether an edit is refused for that reason is the
+service's business, not an authorization fact's. The file-local `isProjectId`
+became `isRecordId`, since it now also guards an entry id.
+
+**The reporting service (`lib/hq/reporting.ts` and
+`lib/hq/reporting-enrolment.ts`, new).** The contract names one module; it is
+split in two for one reason, recorded in both headers: the store has to enrol
+a team inside the import's own transaction, `lib/hq/reporting.ts` imports
+`./authz` for the entry rules, and `./authz -> ./actor -> ./member-auth ->
+./builder-store` is a cycle — the same one `./authz-sql` and
+`./placeholder-email` were extracted to avoid. `reporting-enrolment.ts` holds
+the schedule and eligibility, imports no `./authz` and takes no `Actor`, and
+everything it owns is re-exported unchanged from `reporting.ts`, which stays
+the one module a caller looks in.
+
+- `readReportingSchedule` assembles the schedule from the records that already
+  own each part, never from Colosseum. Colosseum's `projectSubmissionEndDate`
+  is a separate external deadline, stored as `official_submission_deadline`
+  when an admin records one, and it never moves HQ's window.
+- `ensureReportingPeriods` reconciles stored periods with the schedule in one
+  transaction, matching **by `sequence`, never by dates**: a one-day shift in
+  the campaign window is then "three periods moved", not "four deleted and
+  four created". A period that already holds an entry or an outcome, or that
+  has been closed, is **never moved or removed** — it comes back as a
+  `ReportingPeriodConflict` naming what it stores and what the schedule now
+  says, which is the plan's "show affected periods before an admin changes a
+  live schedule". `previewReportingPeriods` is the same computation with no
+  writes, for that confirmation.
+- `enableReporting`/`pauseReporting` own `hq_reporting_eligibility`. Enabling
+  is idempotent and **never moves an existing `eligible_from`**, so
+  re-enabling cannot erase the weeks a project was already accountable for,
+  and resuming a pause leaves the original start alone. Entering reporting is
+  also what makes the edition's schedule exist ("store period identities once
+  reporting begins"), so the first team in an edition brings its periods with
+  it. Neither takes an `Actor`: the presence of an `operatorId` is the whole
+  difference between the import path (no event, since `project.imported`
+  already records it) and an admin's (audited), and an `Actor` parameter would
+  have pulled the member auth graph into a module the store imports.
+- `createUpdate` authorizes through `authorizeProjectAction` with the
+  **loaders bound to its own transaction** (`loadersOver`), validates and trims
+  the body, resolves the period from the instant, and writes the entry and its
+  version 1 revision together. `expectedPeriodId` is the plan's draft binding:
+  a save whose bound period is no longer open is refused with
+  `period_changed` and the period that is open now, so the caller asks before
+  moving the text into a different week. An explicitly chosen past period is
+  accepted and marked `late`, and completes nothing.
+- Sensitive is authorized per project by reading the decision, not by
+  re-deriving a rule: `via === "captain"` means "the project's current
+  Captain and not one of its team members", because `authorizeProjectAction`
+  checks membership first. An account that is a Captain elsewhere, posting on
+  its own team, comes back `via: "member"` and cannot hide an update from its
+  own teammates.
+- `editUpdate` locks the row, checks `expectedVersion`, and on a mismatch
+  returns the **current entry so the caller keeps the unsaved text**. A no-op
+  save appends nothing. The original author, `submitted_at` and the period are
+  never touched, so an edit is a correction to a week and never a new week's
+  completion. Making a sensitive note shared needs `confirmAudienceChange`;
+  only the current version becomes shared, and prior revisions stay where they
+  always were.
+- `voidUpdate` is the only moderation path and is operators only. The entry,
+  its body and every revision stay; the audit event carries the ids and the
+  reason and never the body. There is no delete anywhere in the module, which
+  is how "prevent production hard deletion of revisions through ordinary app
+  permissions" is met.
+- `readAuthorizedUpdates` applies the audience **in SQL**: a member who is not
+  an entry's author never receives a sensitive body, its existence, or a
+  voided entry at all, so there is nothing to hide in the browser. A denial is
+  an empty page, so an unrelated Captain cannot tell a project with no updates
+  from one they may not read. Keyset paged on `(submitted_at, id)`; no
+  revision is ever joined.
+- `readRevisionHistory` is operators only, the author included, and returns an
+  empty list rather than a refusal that would confirm the entry exists.
+- `reportingStatus` answers a whole edition in **seven queries whatever the
+  project count**. A stored outcome is authoritative wherever one exists,
+  correction included; for a period that has ended but has not been closed
+  yet, the same rule `closePeriod` would apply is computed live, so a
+  dashboard is honest about a missed week before the closure job has run. It
+  carries `projectName` and `imported` and no entry body at all.
+- `closePeriod` is idempotent: every insert is `ON CONFLICT DO NOTHING` and an
+  already-closed period returns its stored outcomes unchanged, so a job that
+  runs twice cannot rewrite history. It records the Captain at close and
+  audits as a `system` actor when a job calls it.
+- `correctOutcome` is operators only, requires a reason, refuses a correction
+  that changes nothing, and writes `reporting.outcome_corrected`.
+
+**A successful import enters reporting (`lib/hq/builder-store.ts`).**
+`importTeam` calls `enableReporting` inside its own transaction, beside the
+`project.imported` audit event and for the same reason: a committed team is
+never outside reporting, and a rolled-back import leaves no eligibility row.
+
+**Both deletions extended (`lib/hq/record-deletion.ts`).**
+`teamRemovalImpact` and `teamRemovalImpacts` now count the eligibility row,
+the entries, **every saved version of them** and the recorded weeks; the audit
+event records the same counts, and Admin's Delete team confirmation names
+them. All four cascade, which is right for all four — a team's updates, its
+history, whether it was in reporting and what each week recorded are
+statements about that team. `hq_reporting_periods` is deliberately untouched:
+the periods belong to the edition, and the other teams still report against
+them. **`deletePersonRecord` needed no row change**, which is a decision and
+not an omission: nothing in the reporting tables points at `hq_people` or
+`hq_crm_persons`, and deleting a People card never deletes the
+`hq_builder_profiles` account an entry names. A person's updates therefore
+survive their card, which is correct — the card is an edition's CRM entry, the
+updates are a team's record of its own weeks. A test pins it.
+
+**The Captain reduced-card gap, decided rather than rediscovered.** Reporting
+is keyed on `hq_projects`, never on `hq_project_onboarding`. A project an
+admin created directly in the CRM therefore gets the same eligibility row, the
+same periods, the same status and its own name, and `ReportingEligibility` and
+`ProjectReportingStatus` both carry `imported` so a caller that also wants
+team detail knows in advance whether there is any. What such a project lacks
+is roster and Colosseum detail, which reporting never needed, so a **reporting
+surface has nothing reduced about it**; `/hq/captain`'s existing reduced card
+stays reduced only in the team fields it never had. A test asserts both
+shapes side by side.
+
+**Four audit kinds added** to the one vocabulary in `lib/hq/audit-sql.ts`:
+`reporting.eligibility_changed`, `reporting.entry_voided`,
+`reporting.outcome_corrected` and `reporting.period_closed`. Reporting content
+itself is never audited; these record only the decisions about it.
+
+### Which migrations apply
+
+All in `scripts/hq/builder-schema.sql`, applied by `hq:migrate` in the usual
+order, all idempotent single statements through the splitter:
+
+- Six `CREATE TABLE IF NOT EXISTS` and five `CREATE INDEX IF NOT EXISTS`. Every
+  CHECK constraint is written **inside** its column or as a named table
+  constraint in the `CREATE TABLE`, never as a separate `DROP CONSTRAINT` /
+  `ADD CONSTRAINT` pair: migration convention 8's reasoning about
+  drop-then-create pairs applies to constraints exactly as to indexes, and a
+  constraint created with its table is skipped with the table on every later
+  run.
+- No backfill: there is nothing to backfill. A period row is created by
+  `ensureReportingPeriods` from the edition's own dates, and eligibility by an
+  import or an admin, both after the migration.
+- `scripts/hq/reset-statements.ts`: `hq_reporting_config` in `KEEP_TABLES`
+  (Admin configuration, like `hq_settings` and `hq_hackathon_onboarding`); the
+  other five in `CLEAR_TABLES`, children first. The periods go too, even
+  though nobody typed them: they are generated deterministically from the
+  edition's dates and `hq_reporting_config`, which both survive, so the
+  schedule comes back identical on the next `ensureReportingPeriods` — and
+  keeping them while their entries and outcomes were cleared would leave
+  periods marked closed with nothing recorded against them.
+
+### Checks passed
+
+Named tests, one per acceptance bullet.
+
+| Acceptance bullet | Test |
+|---|---|
+| Team, Captain, admin and sensitive-note entries each correctly complete a week | `tests/hq/reporting.test.ts`: "an update from %s completes the week" (six cases: team lead, joined teammate, assigned Captain, Captain privately, admin, admin privately), "completes the week from a sensitive note without the team learning anything about it" |
+| Empty entries, edits to older weeks and failed saves do not complete the current week | `tests/hq/reporting.test.ts`: "refuses an empty body and one over the maximum, and saves neither", "does not complete the week from a save that failed", "never completes the current week by editing an older one", "does not let a late entry complete a week that has already passed, closed or not" |
+| Multiple entries, conflicting edits and bot/web retries preserve correct authorship and history | `tests/hq/reporting.test.ts`: "does not let a second entry create a second completion", "keeps authorship and history correct when both surfaces edit the same entry", "refuses an edit whose expected version is stale, and hands back the current entry so the unsaved text survives", "records which surface an entry came from, and applies the same rules to both", "does not create two entries when the same save is retried after a refusal", "lets an admin correct any entry while the original author is preserved" |
+| Late entries preserve the original missed outcome. Admin corrections retain an audit reason | `tests/hq/reporting.test.ts`: "keeps the missed outcome after a late entry is added, and marks the entry late", "is idempotent, and a second close never rewrites what the first recorded", "is admin only and requires a reason", "writes the correction beside the original outcome and audits it" |
+| Team views reveal no sensitive body or revision, including after visibility changes | `tests/hq/reporting.test.ts`: "shows the team its own updates and the shared Captain note, and nothing of the sensitive one", "shows another Captain nothing at all, not even that the project exists", "keeps the sensitive note out of the team's view after it is made shared, and only from that version on", "is admin only, whoever wrote the entry", "hides a voided entry from the team and shows it to an admin, marked", "carries no entry body and no revision in a dashboard response" |
+| Timezone, boundary, final-Monday and late-enrollment tests match the period table | `tests/hq/reporting-periods.test.ts`: "produces exactly the four periods the plan's table names", "stores UTC instants with an exclusive end, so no fifth period begins on 12 October", "leaves no gap and no overlap between consecutive periods", "keeps local midnight boundaries across an autumn clock change", "resolves a summer-time / winter-time local midnight", "truncates the weekly period that a mid-week final start interrupts", "treats the end as exclusive, so a boundary instant belongs to the next period"; `tests/hq/reporting.test.ts`: "fabricates no missed week before a project entered reporting", "leaves out a project that had not entered reporting by the period's end" |
+
+The performance rules have their own tests: "answers a whole edition's
+dashboard in a fixed number of queries, whatever the project count" (seven,
+measured at twelve projects and at one) and "carries no entry body and no
+revision in a dashboard response". `tests/hq/migration-order.test.ts`
+("phase 5: the reporting tables") applies the whole migration twice on a
+fresh database and asserts each table, the body and visibility constraints,
+the two uniqueness rules, the cascade from `hq_projects` and that an entry
+keeps its author when the authoring account is deleted.
+`tests/hq/reset.test.ts` seeds a full reporting chain so neither the keep nor
+the clear side is vacuous. `tests/hq/authz.test.ts` replaced its stub
+assertion with "loadEntry reads a reporting entry with its project's edition,
+and treats a malformed id as missing without a query", covering the operator
+namespacing. `tests/hq/builder-onboarding.test.ts` gained "puts the imported
+team straight into weekly reporting, with the edition's schedule" and "leaves
+no eligibility row behind when the import itself rolls back".
+
+Verification run at commit `bd94560`, re-run at the docs commit: `npm test`
+1,091 tests in 48 files passing (phase 3 closed at 970); `npx tsc --noEmit` clean; `npm run lint` 0
+errors and 18 warnings, all pre-existing and all in
+`public/deck/deck-stage.js`, unchanged from the phase 0 baseline; `npm run
+build` passes.
+
+### Blocked or deferred
+
+- **Nothing in this phase is browser-verified**, because nothing in it renders:
+  phase 5 is the model, phase 6 the screens. Every check is at the service,
+  SQL or schema level.
+- **No Server Action and no page was added**, deliberately, per the standing
+  "no stub source files" rule. Phase 6 adds the team, Captain and admin
+  surfaces and the actions behind them; phase 7 the bot handlers; phase 8 the
+  reminder and closure jobs. `previewReportingPeriods`,
+  `ensureReportingPeriods`, `pauseReporting`, `closePeriod` and
+  `correctOutcome` therefore have no production caller yet — they are the
+  service entry points those phases call, named in the contract, not stubs.
+- **"Concurrent" is proven by outcome arithmetic and a real row lock, not by
+  true interleaving.** PGlite serializes whole transactions on one connection,
+  the same limit phase 4 recorded. "Keeps authorship and history correct when
+  both surfaces edit the same entry" proves exactly one edit wins, the loser is
+  told and keeps its text, and the revision chain has no gap; it does not prove
+  the behaviour of two genuinely simultaneous connections, which the row lock
+  and the `version` predicate in the `UPDATE` are what actually enforce.
+- **A spring-forward local time has no instant.** `zonedDateTimeToUtc` lands on
+  the moment the clock jumped to rather than throwing. No campaign date in the
+  plan falls in such a gap, and a period boundary at local midnight cannot,
+  since no zone skips midnight; it is recorded because a future edition with a
+  different timezone or nudge time could.
+- **The team-level preferred contact** is still not built (phase 3's carried
+  deferral). `MemberTeamView.captain.contact` is still always null, and phase
+  6's team dashboard remains its natural home.
+- The **Wednesday nudge instant** is computed and stored per period
+  (`nudge_at`) but nothing sends anything: delivery is phase 8's, and the
+  setting lives in `hq_reporting_config` so that phase does not have to edit
+  bot code to change it.
+
+### Changed interfaces
+
+For phase 6 and later. Everything below is reachable from
+`lib/hq/reporting.ts`; `lib/hq/reporting-enrolment.ts` and
+`lib/hq/reporting-periods.ts` are implementation detail a caller need not
+import directly.
+
+- Schedule and periods: `readReportingSchedule(db, hackathonId)`,
+  `listReportingPeriods(db, hackathonId)`,
+  `currentReportingPeriod(db, hackathonId, atMs?)`,
+  `ensureReportingPeriods(db, hackathonId)`,
+  `previewReportingPeriods(db, hackathonId)`; types `ReportingPeriod`,
+  `ReportingPeriodPlan`, `ReportingPeriodConflict`, `ReportingSchedule`,
+  `GeneratedPeriod`, `ReportingPeriodMode`.
+- Eligibility: `reportingEligibility(db, projectId)`,
+  `listReportingEligibility(db, hackathonId)`,
+  `enableReporting(db, { projectId, hackathonId, operatorId? })`,
+  `pauseReporting(db, { projectId, hackathonId, paused, operatorId, reason? })`;
+  types `ReportingEligibility`, `ReportingEligibilityResult`.
+- Entries: `createUpdate(actor, input, db?)`, `editUpdate(actor, input, db?)`,
+  `voidUpdate(actor, input, db?)`, `readAuthorizedUpdates(actor, input, db?)`,
+  `readRevisionHistory(actor, input, db?)`, `MAX_BODY_LENGTH`; types
+  `ReportingEntryView`, `ReportingEntryPage`, `ReportingRevision`,
+  `CreateUpdateInput`/`CreateUpdateResult`/`CreateUpdateRefusal`,
+  `EditUpdateInput`/`EditUpdateResult`/`EditUpdateRefusal`, `VoidUpdateResult`.
+- Status and outcomes: `reportingStatus(db, input)`,
+  `closePeriod(db, { periodId, actor, atMs? })`,
+  `listPeriodOutcomes(db, periodId)`, `correctOutcome(actor, input, db?)`;
+  types `ProjectReportingStatus`, `PeriodStatus`, `PeriodOutcome`,
+  `SubmissionStatus`, `ClosePeriodResult`, `CorrectOutcomeResult`.
+- `lib/hq/authz-sql.ts#loadEntry` reads real rows. Its type and the decisions
+  over it are unchanged; an operator author reads back as `operator:<id>`.
+- `lib/hq/record-deletion.ts#TeamRemovalImpact` gained `reportingEnrolled`,
+  `reportingEntries`, `reportingRevisions` and `reportingOutcomes`. Any new
+  reader of that type must handle them; `components/hq/builder-admin.tsx`
+  already names them in the Delete team confirmation.
+- `lib/hq/audit-sql.ts#AUDIT_EVENT_KINDS` gained the four `reporting.*` kinds.
+  `tests/hq/capabilities.test.ts` pins the exact list, so a later phase adding
+  a kind updates it there too.
+
+### External configuration still required
+
+None new. Phase 5 needs nothing from Colosseum and no environment variable of
+its own. The one operator input it does depend on is the edition's own
+`start_date` and `end_date` in Admin, which are already set, plus — optionally
+— the edition's `hq_reporting_config` row. Without that row an edition still
+has a schedule: a purely weekly one over its own dates, with a Wednesday 12:00
+nudge. The agreed 2026 campaign needs `final_period_start_date = 2026-10-05`
+for the 5 to 12 October window to be one submission-focus period rather than a
+week plus a stray day, and `official_submission_deadline` only if Colosseum's
+own cutoff turns out to be earlier than 13 October 00:00 Amsterdam. Both are
+recorded in `docs/hq/manual-setup.md`.

@@ -54,6 +54,7 @@ sessions working while Telegram is unreachable") asserts it.
 | Colosseum edition mapping | **Not configured**, but the value is verified: id `7`, slug `crypto-worlds-fair` (item 2.6) | Every self-service import: phase 3 answers "Superteam NL has not confirmed this hackathon's Colosseum edition yet" until it is typed into Admin |
 | Project fallback image | Done in code; an optional smaller copy is yours if you want it | Nothing |
 | Telegram bot messaging | **Not configured** | Phase 7 only. Nothing before then |
+| Reporting schedule for this edition (item 2.10) | **Not configured**, and the value is agreed: final period starts `2026-10-05` | Nothing breaks without it, but the 5 to 12 October window would be a weekly period plus a stray day instead of one submission-focus period |
 | Local dev environment | Absent | Running the app locally. Tests need none of it |
 
 ---
@@ -461,6 +462,70 @@ separately from Telegram sign-in, and one never implies the other.
 None of these can be run from a checkout, and none of them has been run. Each
 names the group 2 item it depends on. Report them as done only after you have
 actually seen the result.
+
+## 2.10 Reporting schedule for this edition
+
+**Status:** Not configured. One row, one value, and the value is already
+agreed.
+
+**Who:** you. **Where:** the `hq_reporting_config` row for the World's Fair
+edition (phase 6 puts this on an Admin screen; until then it is one SQL
+statement).
+
+**Variables:** none. This is edition data, not configuration in an
+environment.
+
+**Why it matters.** Phase 5 generates the reporting periods from the
+edition's own record: `hq_hackathons.start_date` and `end_date` (already set
+to 14 September and 12 October 2026 in Admin) with the campaign timezone from
+`hq_settings.timezone` (Europe/Amsterdam). Those alone give five weekly
+periods, the last of which is 12 October on its own. The agreed schedule is
+four periods, the last running **5 to 12 October as a submission-focus
+window**, and the setting that produces it is
+`hq_reporting_config.final_period_start_date = 2026-10-05`. Nothing is broken
+without the row — an edition with no reporting configuration still reports
+weekly — but the final period will not be the agreed one.
+
+**What to set.**
+
+```sql
+INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date)
+VALUES (<the World's Fair hq_hackathons.id>, '2026-10-05')
+ON CONFLICT (hackathon_id) DO UPDATE SET final_period_start_date = EXCLUDED.final_period_start_date, updated_at = now();
+```
+
+Two optional columns on the same row:
+
+- `official_submission_deadline` — set this **only if Colosseum's own cutoff
+  turns out to be earlier** than 13 October 00:00 Europe/Amsterdam, which is
+  where HQ's own window ends. It is what an on-time confirmed submission is
+  measured against when deciding whether it satisfies the final period. It is
+  not readable from Colosseum today: that edition's project directory is still
+  disabled (item 2.6), so `projectSubmissionEndDate` cannot be fetched. Leave
+  it NULL until you know the real value. HQ's reporting window never changes
+  the external deadline either way.
+- `nudge_weekday` and `nudge_time` — default to ISO weekday 3 (Wednesday) and
+  12:00 local, which is the agreed reminder slot. Change them here rather than
+  in bot code; phase 8 reads this row.
+
+**How to verify.** After setting the row, the edition's four periods appear as
+soon as any team is in reporting (an import does it automatically). In psql:
+
+```sql
+SELECT sequence, mode, start_date, end_date, nudge_at FROM hq_reporting_periods
+WHERE hackathon_id = <id> ORDER BY sequence;
+```
+
+Expect exactly four rows: three `weekly` (14-20 September, 21-27 September,
+28 September-4 October) and one `submission` (5-12 October), with nudges on
+16, 23 and 30 September and 7 October. `tests/hq/reporting-periods.test.ts`
+asserts the same table without a database.
+
+**One thing to know before changing these dates later.** Phase 5 will not
+silently relabel a week people have already reported in: a period that holds
+an entry or an outcome, or that has been closed, is left alone and reported as
+a conflict instead. Phase 6's Admin screen shows those conflicts before the
+change; today, a date edit simply leaves such periods as they are.
 
 ## Email, after item 2.2
 
