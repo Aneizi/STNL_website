@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { BuilderTeam } from "@/lib/hq/builder-types";
 import type { Person } from "@/lib/hq/types";
-import { toCaptainAssignmentView, toMemberTeamView, toPublicPersonView } from "@/lib/hq/view-models";
+import { toCaptainAssignmentView, toCaptainLeaderboardView, toMemberTeamView, toPublicPersonView } from "@/lib/hq/view-models";
 
 const TEAM: BuilderTeam = {
   id: "00000000-0000-4000-8000-00000000000a",
@@ -83,6 +83,22 @@ describe("toCaptainAssignmentView", () => {
     });
     expect(Object.keys(view).sort()).toEqual(["edition", "id", "lead", "name", "projectUrl", "roster", "stage"]);
     for (const row of view.roster) expect(Object.keys(row).sort()).toEqual(["joined", "name", "username"]);
+  });
+});
+
+describe("toCaptainLeaderboardView", () => {
+  const row = { captainUserId: "cap-1", displayName: "Fictional Captain", assignedCount: 3 };
+
+  it("carries rank, display name, assigned count and isYou — never the raw captain id it was given", () => {
+    const view = toCaptainLeaderboardView(row, 1, "cap-1");
+    expect(view).toEqual({ rank: 1, displayName: "Fictional Captain", assignedCount: 3, isYou: true });
+    expect(Object.keys(view).sort()).toEqual(["assignedCount", "displayName", "isYou", "rank"]);
+    expect(JSON.stringify(view)).not.toContain("cap-1");
+  });
+
+  it("marks isYou false for a different viewer, and for every row when there is no viewer at all", () => {
+    expect(toCaptainLeaderboardView(row, 2, "cap-2").isYou).toBe(false);
+    expect(toCaptainLeaderboardView(row, 2, null).isYou).toBe(false);
   });
 });
 

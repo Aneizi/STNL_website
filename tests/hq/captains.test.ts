@@ -3,7 +3,7 @@
 // idempotence and "no resurrection on replay" rules hold, revocation stops
 // only future redemption, and a redemption's capability grant and audit
 // event commit or roll back together with its redemption row.
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,8 +17,8 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 
 import {
   acceptCaptainInvitation, assignCaptain, clearCaptainAssignments, countAssignmentsByCaptain, countAssignmentsForCaptain,
-  countAssignmentsForUsers, createCaptainInvitation, listAssignments, listCaptainInvitations, readCaptainInvitationByToken,
-  revokeCaptainInvitation, unassignCaptain,
+  countAssignmentsForUsers, createCaptainInvitation, currentCaptainOfProject, leaderboard, listAssignments, listCaptainInvitations,
+  readCaptainInvitationByToken, revokeCaptainInvitation, unassignCaptain,
 } from "@/lib/hq/captains";
 import { loadTeamMembership } from "@/lib/hq/authz-sql";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
@@ -647,6 +647,29 @@ describe("assignCaptain", () => {
     expect(exact.outcome).toBe("assigned");
   });
 
+  it("refuses a duplicate-id substitution: the same real id sent twice never counts as acknowledging two distinct rows", async () => {
+    await seedCaptain("cap-dup");
+    const project = "00000000-0000-4000-8000-000000000111";
+    await seedImportedProject({ id: project, ownerUserId: "owner-other-dup" });
+    await unclaimedRosterRow(project, "Unclaimed One", "unclaimed_one_dup");
+    await unclaimedRosterRow(project, "Unclaimed Two", "unclaimed_two_dup");
+
+    const first = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-dup" });
+    if (first.outcome !== "needs_review") throw new Error("expected needs_review");
+    expect(first.unresolved).toHaveLength(2);
+
+    // Same array length as the real set, and every id sent is a real one —
+    // a plain "same length, every id known" check would pass this — but
+    // only one of the two rows was actually named twice, so the other was
+    // never acknowledged at all.
+    const duplicated = await assignCaptain(db, {
+      actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-dup",
+      acknowledgedUnresolvedIds: [first.unresolved[0].memberId, first.unresolved[0].memberId],
+    });
+    expect(duplicated).toEqual({ outcome: "needs_review", unresolved: first.unresolved });
+    expect(await currentAssignments()).toEqual([]);
+  });
+
   it("never compares display names: an unclaimed roster row whose name matches the candidate is still only 'needs review', never a silent conflict or a silent pass", async () => {
     await seedCaptain("Same Display Name");
     const project = "00000000-0000-4000-8000-000000001010";
@@ -933,5 +956,132 @@ describe("countAssignmentsByCaptain", () => {
     await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-count-orphan" });
     await rows("DELETE FROM hq_builder_profiles WHERE id = 'cap-count-orphan'");
     expect(await countAssignmentsByCaptain(db, EDITION_A)).toEqual([]);
+  });
+
+  it("excludes a project whose status does not count as active (plan section 3's 'active HQ projects')", async () => {
+    await seedCaptain("cap-count-inactive");
+    const [{ id: redStatusId }] = await rows("INSERT INTO hq_project_statuses(slug,label,color,counts_as_active,sort) VALUES('red-count','Red','red',false,2) RETURNING id::text AS id");
+    const project = "00000000-0000-4000-8000-000000001038";
+    await rows(
+      `INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+       SELECT $1,$2,$3,$4,f.id,current_date FROM hq_project_forecasts f`,
+      [project, EDITION_A, "Red Project", redStatusId],
+    );
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-count-inactive" });
+    expect(await countAssignmentsByCaptain(db, EDITION_A)).toEqual([]);
+  });
+});
+
+describe("leaderboard", () => {
+  it("carries only rank, display name, assigned count and the isYou marker — no id, project name or link", async () => {
+    await seedCaptain("cap-lb-shape");
+    const project = "00000000-0000-4000-8000-000000001031";
+    await seedProject(project, EDITION_A, "Shape Project");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-lb-shape" });
+
+    const board = await leaderboard(db, EDITION_A);
+    expect(board).toEqual([{ rank: 1, displayName: "cap-lb-shape", assignedCount: 1, isYou: false }]);
+    expect(Object.keys(board[0]).sort()).toEqual(["assignedCount", "displayName", "isYou", "rank"]);
+    expect(JSON.stringify(board)).not.toContain(project);
+    expect(JSON.stringify(board)).not.toMatch(/https?:\/\//);
+  });
+
+  it("orders by assigned count descending, then display name ascending for ties, with a zero-assignment Captain falling to the bottom on its own — no second rule needed", async () => {
+    await seedCaptain("Zed");
+    await seedCaptain("Amy A");
+    await seedCaptain("Amy B");
+    const p1 = "00000000-0000-4000-8000-000000001032";
+    const p2 = "00000000-0000-4000-8000-000000001033";
+    await seedProject(p1, EDITION_A, "One");
+    await seedProject(p2, EDITION_A, "Two");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "Amy A" });
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p2, hackathonId: EDITION_A, captainUserId: "Amy B" });
+
+    expect(await leaderboard(db, EDITION_A)).toEqual([
+      { rank: 1, displayName: "Amy A", assignedCount: 1, isYou: false },
+      { rank: 2, displayName: "Amy B", assignedCount: 1, isYou: false },
+      { rank: 3, displayName: "Zed", assignedCount: 0, isYou: false },
+    ]);
+  });
+
+  it("does not count an ended assignment or another edition's assignment", async () => {
+    await seedCaptain("cap-lb-ended");
+    const ended = "00000000-0000-4000-8000-000000001034";
+    await seedProject(ended, EDITION_A, "Ended Project");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: ended, hackathonId: EDITION_A, captainUserId: "cap-lb-ended" });
+    await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: ended, hackathonId: EDITION_A });
+
+    await seedCaptain("cap-lb-other-edition");
+    const otherEdition = "00000000-0000-4000-8000-000000001035";
+    await seedProject(otherEdition, EDITION_B, "Other Edition Project");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: otherEdition, hackathonId: EDITION_B, captainUserId: "cap-lb-other-edition" });
+
+    const board = await leaderboard(db, EDITION_A);
+    expect(board.map((row) => row.displayName).sort()).toEqual(["cap-lb-ended", "cap-lb-other-edition"]);
+    expect(board.every((row) => row.assignedCount === 0)).toBe(true);
+  });
+
+  it("drops a revoked Captain entirely, even one whose live assignment row a bare revokeCapability call (without clearCaptainAssignments) left standing", async () => {
+    await seedCaptain("cap-lb-revoked");
+    const project = "00000000-0000-4000-8000-000000001037";
+    await seedProject(project, EDITION_A, "Still Live");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-lb-revoked" });
+    await revokeCapability(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "cap-lb-revoked", capability: "captain", reason: "test" });
+
+    // The stray row really is still live — this proves the merge drops it, not that the state cannot occur.
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-lb-revoked" }]);
+    expect((await leaderboard(db, EDITION_A)).map((row) => row.displayName)).not.toContain("cap-lb-revoked");
+  });
+
+  it("includes an eligible Captain with no current assignment", async () => {
+    await seedCaptain("cap-lb-zero");
+    expect(await leaderboard(db, EDITION_A)).toEqual([{ rank: 1, displayName: "cap-lb-zero", assignedCount: 0, isYou: false }]);
+  });
+
+  it("marks only the viewer's own row, and marks none when there is no viewer", async () => {
+    await seedCaptain("cap-lb-me");
+    await seedCaptain("cap-lb-other");
+
+    const mine = await leaderboard(db, EDITION_A, "cap-lb-me");
+    expect(mine.find((row) => row.displayName === "cap-lb-me")?.isYou).toBe(true);
+    expect(mine.find((row) => row.displayName === "cap-lb-other")?.isYou).toBe(false);
+
+    expect((await leaderboard(db, EDITION_A)).every((row) => row.isYou === false)).toBe(true);
+    expect((await leaderboard(db, EDITION_A, null)).every((row) => row.isYou === false)).toBe(true);
+  });
+});
+
+describe("currentCaptainOfProject", () => {
+  it("returns the current Captain's id and name, or null while none is assigned", async () => {
+    await seedCaptain("cap-project-view");
+    const project = "00000000-0000-4000-8000-000000001039";
+    await seedProject(project, EDITION_A, "Viewed Project");
+    expect(await currentCaptainOfProject(db, project)).toBeNull();
+
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-project-view" });
+    expect(await currentCaptainOfProject(db, project)).toEqual({ captainUserId: "cap-project-view", captainName: "cap-project-view" });
+
+    await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A });
+    expect(await currentCaptainOfProject(db, project)).toBeNull();
+  });
+});
+
+describe("the T4.5 reads are not exposed as a Server Action", () => {
+  // "No route a Captain can hit to read another Captain's assignments: ...
+  // no action that takes a captainUserId" — this task adds no Server Action
+  // at all (reads only), and this keeps it that way: none of the new
+  // functions may be re-exported from a "use server" module, which is what
+  // would turn a server-side read into something a client could call
+  // directly with an id of its choosing.
+  it("finds no reference to leaderboard, listAssignments or currentCaptainOfProject in any Server Action module", () => {
+    const actionsDir = join(process.cwd(), "lib/hq/actions");
+    const files = readdirSync(actionsDir).filter((name) => name.endsWith(".ts") && readFileSync(join(actionsDir, name), "utf8").startsWith('"use server"'));
+    expect(files.length).toBeGreaterThan(0);
+    for (const name of files) {
+      const source = readFileSync(join(actionsDir, name), "utf8");
+      for (const symbol of ["leaderboard", "listAssignments", "currentCaptainOfProject"]) {
+        expect(source, `${name} references ${symbol}`).not.toMatch(new RegExp(`\\b${symbol}\\b`));
+      }
+    }
   });
 });

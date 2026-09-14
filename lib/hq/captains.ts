@@ -4,13 +4,15 @@ import { recordAuditEvent, type AuditActor } from "./audit";
 import { loadTeamMembership } from "./authz-sql";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { BuilderError } from "./builder-types";
-import { grantCapability, listActiveCapabilitiesForUsers } from "./capabilities";
+import { grantCapability, listActiveCapabilitiesForUsers, listCapabilityGrants } from "./capabilities";
 import { isVerifiedAccount } from "./identity";
+import { toCaptainLeaderboardView, type CaptainLeaderboardView } from "./view-models";
 
 /**
  * The Captain service (contracts.md's "Captain service" row): invitations
- * (T4.2) above, assignment (T4.4, this section) below. T4.5 (`leaderboard`)
- * extends this same file next.
+ * (T4.2) above, assignment (T4.4) below, then the reads (T4.5) — the
+ * leaderboard, the admin drilldown and a team's own Captain lookup — at the
+ * end of the file.
  *
  * The invitation tables are both from T4.1 (scripts/hq/builder-schema.sql,
  * read the comment blocks above them before touching this file):
@@ -593,12 +595,20 @@ async function checkCaptainConflict(
   return unresolved.length ? { kind: "needs_review", unresolved } : { kind: "clear" };
 }
 
-/** Whether `acknowledgedIds` names exactly the current unresolved set — no fewer, no more, no stale or substituted ids. Order-independent; `undefined` (no acknowledgement offered at all) never matches. */
+/**
+ * Whether `acknowledgedIds` names exactly the current unresolved set — no
+ * fewer, no more, no stale or substituted ids. Order-independent;
+ * `undefined` (no acknowledgement offered at all) never matches. The set
+ * sizes are compared, not just the array lengths: a duplicate id inflates
+ * `acknowledgedIds.length` to match `unresolved.length` while naming fewer
+ * distinct rows than it actually shows, which a plain length check would
+ * accept.
+ */
 function acknowledgesExactly(unresolved: UnresolvedRosterMember[], acknowledgedIds: string[] | undefined): boolean {
   if (!acknowledgedIds) return false;
-  if (acknowledgedIds.length !== unresolved.length) return false;
   const current = new Set(unresolved.map((member) => member.memberId));
-  return acknowledgedIds.every((id) => current.has(id));
+  const acknowledged = new Set(acknowledgedIds);
+  return acknowledged.size === current.size && acknowledgedIds.every((id) => current.has(id));
 }
 
 /**
@@ -664,7 +674,14 @@ export async function assignCaptain(
     // a set-based end that survives that invariant ever breaking, instead
     // of a by-id end of an arbitrarily chosen first row that would leave
     // any others (an orphaned row alongside a live one; a hypothetical
-    // future bug) still marked current.
+    // future bug) still marked current. That guarantee holds on the
+    // reassignment path below, through the `toEnd` loop. The no-op path
+    // right here (the candidate is already the current Captain) returns
+    // before that loop runs, so it does NOT end a stray extra live row: if
+    // the invariant were already broken (an orphaned row alongside the
+    // live one this candidate holds, say), re-assigning the same candidate
+    // leaves that stray row exactly as it was. Only a real change — a
+    // different candidate, which always reaches `toEnd` — cleans up strays.
     const { rows: current } = await tx.query(
       `SELECT id::text AS id, captain_user_id::text AS captain_user_id FROM hq_captain_assignments
        WHERE project_id = $1::uuid AND unassigned_at IS NULL FOR UPDATE`,
@@ -898,25 +915,106 @@ export async function listAssignments(db: BuilderQuery, input: { hackathonId: nu
 export type CaptainAssignmentCount = { captainUserId: string; captainName: string; assignedCount: number };
 
 /**
- * The leaderboard's own read: one Captain per row with how many projects
- * they currently captain in the edition, highest first — a `GROUP BY`
- * query, not `listAssignments`'s per-project rows grouped in JS (the "load
- * every project and count in the client" shape the plan forbids).
- * `lib/hq/view-models.ts#CaptainLeaderboardView` (`{ rank, displayName,
- * assignedCount }`) is a direct map over this: `rank` is the row's 1-based
- * position in the array this already returns in count order, `displayName`
- * is `captainName`.
+ * The leaderboard's own read: one Captain per row with how many *active*
+ * projects they currently captain in the edition, highest first — a
+ * `GROUP BY` query, not `listAssignments`'s per-project rows grouped in JS
+ * (the "load every project and count in the client" shape the plan
+ * forbids).
+ *
+ * "Active HQ projects" (plan section 3) reads as
+ * `hq_project_statuses.counts_as_active`, the same health flag
+ * `getEventsWithOutputs`/`attributeOutputs` already use to separate a
+ * project's "active" count from its raw "qualified" one: a project marked
+ * red (not counting as active) drops out of the count here, though it still
+ * appears in `listAssignments`'s admin drilldown, which shows the operator
+ * everything regardless of status. Archived editions are already excluded
+ * by the caller choosing a live `hackathonId`, and there are no discovery
+ * records yet for this to filter out (a later phase's concern). The join
+ * costs nothing extra: `hq_project_statuses` has a handful of rows, and the
+ * row set driving it is already the small one
+ * `hq_captain_assignments_captain_current_idx` selects.
+ *
+ * `leaderboard()` below maps this into
+ * `lib/hq/view-models.ts#CaptainLeaderboardView`.
  */
 export async function countAssignmentsByCaptain(db: BuilderQuery, hackathonId: number): Promise<CaptainAssignmentCount[]> {
   const { rows } = await db.query(
     `SELECT a.captain_user_id AS captain_user_id, b.name AS captain_name, count(*)::int AS n
      FROM hq_captain_assignments a
      JOIN hq_projects p ON p.id = a.project_id
+     JOIN hq_project_statuses s ON s.id = p.status_id
      JOIN hq_builder_profiles b ON b.id = a.captain_user_id
-     WHERE p.hackathon_id = $1 AND a.unassigned_at IS NULL AND a.captain_user_id IS NOT NULL
+     WHERE p.hackathon_id = $1 AND a.unassigned_at IS NULL AND a.captain_user_id IS NOT NULL AND s.counts_as_active
      GROUP BY a.captain_user_id, b.name
      ORDER BY n DESC, b.name`,
     [hackathonId],
   );
   return rows.map((row) => ({ captainUserId: String(row.captain_user_id), captainName: String(row.captain_name), assignedCount: Number(row.n) }));
+}
+
+export type ProjectCaptain = { captainUserId: string; captainName: string };
+
+/**
+ * The project's current Captain by display name, or null while none is
+ * assigned. For a team's own view of who captains them
+ * (`TeamCaptainView`, via `lib/hq/member-teams.ts#memberTeamView`): the
+ * privacy contract lets a team read its own Captain, so this is safe for
+ * any caller that has already authorized the viewer on this project — it
+ * adds nothing about any *other* project or Captain. Unlike
+ * `loadCurrentAssignment` (authz-sql.ts), which only needs the id for a
+ * decision, this also carries the name a team page renders.
+ */
+export async function currentCaptainOfProject(db: BuilderQuery, projectId: string): Promise<ProjectCaptain | null> {
+  const { rows } = await db.query(
+    `SELECT a.captain_user_id AS captain_user_id, b.name AS captain_name
+     FROM hq_captain_assignments a JOIN hq_builder_profiles b ON b.id = a.captain_user_id
+     WHERE a.project_id = $1::uuid AND a.unassigned_at IS NULL AND a.captain_user_id IS NOT NULL`,
+    [projectId],
+  );
+  return rows.length ? { captainUserId: String(rows[0].captain_user_id), captainName: String(rows[0].captain_name) } : null;
+}
+
+/**
+ * The leaderboard: rank, display name and current assigned-team count for
+ * every account that currently holds an active Captain grant, in the given
+ * edition — visible to admins and Captains alike (plan section 2), so this
+ * one function is shared by both, each gated at its own call site (the
+ * Captain's `/hq/captain` page after `requireMemberActor` confirms the
+ * `captain` capability; Admin's data loader after its own `requireUser()`).
+ * `leaderboard` itself takes no actor and decides nothing: like
+ * `listCapabilityGrants` and `listAuditEvents`, it would otherwise have to
+ * import `./actor`, which `lib/hq/actions/captains.ts` (an operator action
+ * module) reaches transitively through this file —
+ * `tests/hq/operator-imports.test.ts` holds that boundary.
+ *
+ * Combines two reads in application code, not one SQL query: the indexed
+ * assignment aggregate (`countAssignmentsByCaptain`) and the active-grant
+ * list (`listCapabilityGrants`, `capabilities.ts`'s operator-only reader,
+ * called here with `activeOnly: true` and narrowed to `userId`/`userName`
+ * immediately — `reason`, `grantedByUserId` and `revokedByUserId` never
+ * leave this function). The grant list is what makes a zero-assignment
+ * Captain appear at all: `countAssignmentsByCaptain` only returns Captains
+ * who currently hold at least one active-status project, so an eligible
+ * Captain with none would otherwise be invisible. Driving the merge from
+ * the grant list also means a count row for an id the grant list does not
+ * name — a revoked Captain, if a stray live assignment ever outlived its
+ * revocation — is silently dropped rather than carried into the result.
+ *
+ * Sorted by count descending, then display name ascending for a stable tie
+ * order; zero-assignment Captains fall out of that same order into last
+ * place, which is why there is no second "zero last" rule. `viewerUserId`
+ * only marks the caller's own row (`CaptainLeaderboardView.isYou`); it is
+ * compared and never returned. Pass null from a surface with no single
+ * viewer, such as Admin's.
+ */
+export async function leaderboard(db: BuilderQuery, hackathonId: number, viewerUserId: string | null = null): Promise<CaptainLeaderboardView[]> {
+  const [counts, grants] = await Promise.all([
+    countAssignmentsByCaptain(db, hackathonId),
+    listCapabilityGrants({ capability: "captain", activeOnly: true }, db),
+  ]);
+  const countByUser = new Map(counts.map((row) => [row.captainUserId, row.assignedCount]));
+  const rows = grants
+    .map((grant) => ({ captainUserId: grant.userId, displayName: grant.userName, assignedCount: countByUser.get(grant.userId) ?? 0 }))
+    .sort((a, b) => b.assignedCount - a.assignedCount || a.displayName.localeCompare(b.displayName));
+  return rows.map((row, index) => toCaptainLeaderboardView(row, index + 1, viewerUserId));
 }

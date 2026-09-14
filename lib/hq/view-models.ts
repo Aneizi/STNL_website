@@ -12,7 +12,14 @@
 import type { BuilderTeam, ProjectStage } from "./builder-types";
 import type { Person } from "./types";
 
-/** The assigned Captain as a team may see them: a display name and the contact the Captain approved for the team, nothing else. */
+/**
+ * The assigned Captain as a team may see them: a display name, and the
+ * contact the Captain has approved for the team. `contact` is always null as
+ * of phase 4: nothing in the plan gives a Captain a way to approve one for a
+ * team, so this field has no writer yet. It stays on the type because the
+ * plan names it as part of what a team may eventually see, not because
+ * anything populates it today.
+ */
 export type TeamCaptainView = { displayName: string; contact: string | null };
 
 /**
@@ -27,7 +34,7 @@ export type MemberTeamView = {
   edition: { id: number; name: string };
   /** The viewer's own relationship with the team; no other account's identity is included. */
   membership: { role: "owner" | "member"; verification: BuilderTeam["verification"] };
-  /** Null until phase 4 assigns Captains. */
+  /** The team's current Captain, or null while none is assigned. See TeamCaptainView for why `contact` is always null. */
   captain: TeamCaptainView | null;
   projectUrl: string;
   stage: ProjectStage;
@@ -53,11 +60,21 @@ export type CaptainAssignmentView = {
  * admin's free-text `reason` for the grant, the `grantedByUserId` and
  * `revokedByUserId` operator ids, the grant id and the timestamps, none of
  * which a Captain may see about another Captain. The account id is left out
- * too, so a name on this page cannot be joined to an account. Phase 4 fills
- * `assignedCount` from the assignment table; there is no reader here yet
- * because there is nothing to count.
+ * too, so a name on this page cannot be joined to an account.
  */
-export type CaptainLeaderboardView = { rank: number; displayName: string; assignedCount: number };
+export type CaptainLeaderboardView = {
+  rank: number;
+  displayName: string;
+  assignedCount: number;
+  /**
+   * Whether this row is the viewer's own, for "you" styling. Carries no
+   * account id of its own: `toCaptainLeaderboardView` compares the row's
+   * raw captain id against the viewer's id and keeps only the boolean, so
+   * marking "you" never gives a Captain anything to join another Captain's
+   * row to an account.
+   */
+  isYou: boolean;
+};
 
 /** A person as a public surface may show them: the name and the tag labels, never contact, org, notes or ids. */
 export type PublicPersonView = {
@@ -101,6 +118,22 @@ export function toCaptainAssignmentView(team: BuilderTeam): CaptainAssignmentVie
     lead: { username: team.leadUsername },
     roster: team.members.map((member) => ({ name: member.name, username: member.username, joined: member.joined })),
   };
+}
+
+/**
+ * One leaderboard row. `row.captainUserId` is compared against
+ * `viewerUserId` to derive `isYou` and then discarded — it is the only place
+ * a raw account id from `countAssignmentsByCaptain` or `listCapabilityGrants`
+ * may appear on the way to this view, and it never reaches the returned
+ * object. `viewerUserId` is null for a surface with no single viewer to mark
+ * (the Admin leaderboard).
+ */
+export function toCaptainLeaderboardView(
+  row: { captainUserId: string; displayName: string; assignedCount: number },
+  rank: number,
+  viewerUserId: string | null,
+): CaptainLeaderboardView {
+  return { rank, displayName: row.displayName, assignedCount: row.assignedCount, isYou: viewerUserId !== null && row.captainUserId === viewerUserId };
 }
 
 /**
