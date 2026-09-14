@@ -1056,8 +1056,10 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(changed.status).toBe(200);
     // Exactly two messages: the code to the new address, then the notice to the old one, which carries no code.
     expect(state.sent.map((message) => message.to)).toEqual(["after@example.com", "before@example.com"]);
+    // The notice names neither the new address (whoever still reads the old mailbox must not learn it) nor a code.
     expect(state.sent[1].subject).toContain("email changed");
-    expect(state.sent[1].text).toContain("after@example.com");
+    expect(state.sent[1].text).toContain("contact Superteam NL");
+    expect(state.sent[1].text).not.toContain("after@example.com");
     expect(state.sent[1].text).not.toMatch(/\b\d{6}\b/);
     expect((await state.pg!.query('SELECT id, email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ id: userId, email: "after@example.com", emailVerified: true }]);
     expect(await auditEvents()).toEqual([memberEvent("identity.email_changed", userId, { hadPreviousEmail: true })]);
@@ -1134,6 +1136,17 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await response.json()).code).toBe("CHANGE_EMAIL_DISABLED");
     expect(state.sent).toHaveLength(1);
     expect((await state.pg!.query("SELECT email FROM hq_auth_user")).rows).toEqual([{ email: "core@example.com" }]);
+  });
+
+  it("keeps the core delete-user route disabled", async () => {
+    const emailUser = await signInWithEmail("stays@example.com");
+    // `user.deleteUser` is unset, so the route answers 404 before reading the session (update-user.mjs).
+    const response = await request("/delete-user", {}, emailUser.cookie);
+    expect(response.status).toBe(404);
+    expect(await count("hq_auth_user")).toBe(1);
+    expect(await count("hq_auth_session")).toBe(1);
+    expect((await (await request("/get-session", undefined, emailUser.cookie)).json()).user.id).toBe(emailUser.user.id);
+    expect(state.sent).toHaveLength(1);
   });
 
   it("keeps bot messages a separate decision from the Telegram connection, and declining changes nothing about access", async () => {

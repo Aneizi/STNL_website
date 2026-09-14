@@ -7,6 +7,7 @@ import { IconArrowRight } from "symbols-react";
 import styles from "@/components/hq/builder-shell.module.css";
 import { confirmLinkTelegram, confirmUnlinkTelegram } from "@/lib/hq/actions/telegram";
 import { memberAuthClient } from "@/lib/hq/member-auth-client";
+import { SignInAgain } from "../stale-session";
 import { telegramErrorMessage } from "../telegram-copy";
 
 type Props = { action: "link" | "unlink" };
@@ -53,15 +54,6 @@ export function TelegramConfirmForm({ action }: Props) {
     });
   };
 
-  // A session older than the recency window cannot be made recent in place:
-  // sign out, then sign in and come straight back here.
-  const signInAgain = () => start(async () => {
-    const result = await memberAuthClient.signOut();
-    if (result.error) return setError("Could not sign out. Please try again.");
-    router.replace(`/hq/signin?next=${encodeURIComponent(here)}`);
-    router.refresh();
-  });
-
   return (
     <form onSubmit={submit}>
       <div className={styles.actions}>
@@ -72,7 +64,7 @@ export function TelegramConfirmForm({ action }: Props) {
         <Link className={styles.textButton} href="/hq/account">Cancel</Link>
       </div>
       {error && <p role="alert" className={styles.error}>{error}</p>}
-      {stale && <button type="button" className={styles.textButton} disabled={pending} onClick={signInAgain}>Sign in again</button>}
+      {stale && <SignInAgain next={here} start={start} disabled={pending} onError={setError} />}
     </form>
   );
 }

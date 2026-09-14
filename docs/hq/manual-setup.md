@@ -77,12 +77,13 @@ same file asserts a 503 rather than a silent success.
 3. Send one real code to a Superteam mailbox and sign in with it.
 4. Confirm the five minute expiry wording in the email matches the product copy.
 5. Since task T2.3 the same key also sends the code for Add a recovery email
-   (to the new address only) and the notice to the previous address when a
-   login email changes. Add a recovery email to a Telegram-only account and
-   confirm exactly one code arrives; then change an email account's address
-   and confirm the old mailbox gets the notice. Nothing is ever sent to the
-   internal placeholder address, and `tests/hq/member-auth-telegram.test.ts`
-   asserts both counts.
+   (to the new address only). Add a recovery email to a Telegram-only test
+   account on `/hq/account` and confirm exactly one code arrives, at the new
+   address. The notice to a previous verified address when a login email
+   changes is automated-only today: no page offers Change email to an email
+   account, and `tests/hq/member-auth-telegram.test.ts` ("tells the previous
+   verified address, once") asserts it goes out, carries no code and names
+   no new address. Nothing is ever sent to the internal placeholder address.
 
 ## Telegram login (OIDC)
 

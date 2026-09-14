@@ -7,6 +7,9 @@ import { IconArrowRight } from "symbols-react";
 import styles from "@/components/hq/builder-shell.module.css";
 import { confirmEmailChange } from "@/lib/hq/actions/telegram";
 import { memberAuthClient } from "@/lib/hq/member-auth-client";
+import { CODE_SENT_COPY, OtpCodeField, ResendCodeButton } from "../otp-code-field";
+import { SignInAgain } from "../stale-session";
+import { useResendCooldown } from "../use-resend-cooldown";
 import { emailChangeErrorMessage, type EndpointError } from "./email-copy";
 
 const HERE = "/hq/account/add-email";
@@ -29,21 +32,12 @@ export function AddEmailForm() {
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [stale, setStale] = useState(false);
-  const [resendAt, setResendAt] = useState(0);
-  const [secondsLeft, setSecondsLeft] = useState(0);
+  const { secondsLeft, startCooldown } = useResendCooldown();
   const codeInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (step === "verify") codeInput.current?.focus();
   }, [step]);
-
-  useEffect(() => {
-    if (!resendAt) return;
-    const tick = () => setSecondsLeft(Math.max(0, Math.ceil((resendAt - Date.now()) / 1000)));
-    tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => window.clearInterval(timer);
-  }, [resendAt]);
 
   const fail = (failure: EndpointError | string | undefined, fallback: string) => {
     const code = typeof failure === "string" ? failure : failure?.code;
@@ -68,8 +62,8 @@ export function AddEmailForm() {
         setEmail(confirmation.newEmail);
         setOtp("");
         setStep("verify");
-        setResendAt(Date.now() + 60_000);
-        setStatus("Code sent. It expires in 5 minutes.");
+        startCooldown();
+        setStatus(CODE_SENT_COPY);
       } catch {
         setError("We could not connect. Check your connection and try again.");
       }
@@ -92,15 +86,6 @@ export function AddEmailForm() {
     });
   };
 
-  // A session older than the recency window cannot be made recent in place:
-  // sign out, then sign in and come straight back here.
-  const signInAgain = () => start(async () => {
-    const result = await memberAuthClient.signOut();
-    if (result.error) return setError("Could not sign out. Please try again.");
-    router.replace(`/hq/signin?next=${encodeURIComponent(HERE)}`);
-    router.refresh();
-  });
-
   return step === "address" ? (
     <form className={styles.form} onSubmit={sendCode}>
       <label className={styles.field}>
@@ -115,26 +100,23 @@ export function AddEmailForm() {
         <Link className={styles.textButton} href="/hq/account">Cancel</Link>
       </div>
       {error && <p role="alert" className={styles.error}>{error}</p>}
-      {stale && <button type="button" className={styles.textButton} disabled={pending} onClick={signInAgain}>Sign in again</button>}
+      {stale && <SignInAgain next={HERE} start={start} disabled={pending} onError={setError} />}
     </form>
   ) : (
     <form className={styles.form} onSubmit={verifyCode}>
       <p>Enter the 6-digit code sent to <strong>{confirmed}</strong>.</p>
-      <label className={styles.field}>
-        Verification code
-        <input ref={codeInput} name="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} aria-describedby="add-email-status" required disabled={pending} />
-      </label>
+      <OtpCodeField inputRef={codeInput} value={otp} onChange={setOtp} disabled={pending} describedBy="add-email-status" labelClassName={styles.field} />
       <div className={styles.actions}>
         <button className={styles.button} type="submit" disabled={pending || otp.length !== 6}>
           {pending ? "Checking code…" : "Verify email"}
           <IconArrowRight width={18} height={18} fill="currentColor" aria-hidden="true" />
         </button>
-        <button type="button" className={styles.textButton} disabled={pending || secondsLeft > 0} onClick={() => sendCode()}>{secondsLeft > 0 ? `Resend in ${secondsLeft}s` : "Resend code"}</button>
+        <ResendCodeButton className={styles.textButton} secondsLeft={secondsLeft} disabled={pending} onClick={() => sendCode()} />
         <button type="button" className={styles.textButton} disabled={pending} onClick={() => { setStep("address"); setOtp(""); setError(""); setStatus(""); setStale(false); }}>Use a different address</button>
       </div>
       <p id="add-email-status" role="status" className={styles.success}>{status}</p>
       {error && <p role="alert" className={styles.error}>{error}</p>}
-      {stale && <button type="button" className={styles.textButton} disabled={pending} onClick={signInAgain}>Sign in again</button>}
+      {stale && <SignInAgain next={HERE} start={start} disabled={pending} onError={setError} />}
     </form>
   );
 }

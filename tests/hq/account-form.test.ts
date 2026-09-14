@@ -12,8 +12,12 @@ vi.mock("symbols-react", () => {
   const icon = (props: Record<string, unknown>) => createElement("svg", props);
   return { IconArrowLeft: icon, IconArrowRight: icon, IconPaperplaneFill: icon };
 });
+// The shared sign-in-again control routes after signing out; static markup needs the hook to exist, not to navigate.
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {}, refresh() {} }) }));
 
 import { AccountForm } from "@/app/hq/(member)/account-form";
+import { CODE_SENT_COPY, OtpCodeField, ResendCodeButton } from "@/app/hq/(member)/otp-code-field";
+import { SignInAgain } from "@/app/hq/(member)/stale-session";
 import type { MemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import { LAST_LOGIN_METHOD_COPY, lastParam, telegramErrorMessage, telegramFailure } from "@/app/hq/(member)/telegram-copy";
 
@@ -121,5 +125,30 @@ describe("telegram copy helpers", () => {
       expect(telegramErrorMessage(["telegram", value]), value).toBe(telegramFailure("signin"));
     }
     expect(alertText(render({ error: ["telegram", "__proto__"] }))).toBe(telegramFailure("signin"));
+  });
+});
+
+describe("the pieces the code forms share", () => {
+  const start = (work: () => void) => work();
+
+  it("renders the sign-in-again control a stale session needs, disabled with its form", () => {
+    const html = renderToStaticMarkup(createElement(SignInAgain, { next: "/hq/account/add-email", start, disabled: false, onError: () => {} }));
+    expect(html).toMatch(/<button type="button"[^>]*>Sign in again<\/button>/);
+    expect(html).not.toContain("disabled");
+    expect(renderToStaticMarkup(createElement(SignInAgain, { next: "/hq/account", start, disabled: true, onError: () => {} }))).toContain("disabled");
+  });
+
+  it("renders the code field with one-time-code semantics and a resend button that counts down", () => {
+    const field = renderToStaticMarkup(createElement(OtpCodeField, { value: "12", onChange: () => {}, disabled: false, describedBy: "code-status account-error", inputClassName: "code" }));
+    expect(field).toContain("Verification code");
+    // renderToStaticMarkup keeps React's attribute spellings (inputMode, autoComplete, minLength, maxLength).
+    for (const attribute of ['name="code"', 'inputMode="numeric"', 'autoComplete="one-time-code"', 'pattern="[0-9]{6}"', 'minLength="6"', 'maxLength="6"', 'aria-describedby="code-status account-error"', 'class="code"', 'value="12"', "required"]) {
+      expect(field, attribute).toContain(attribute);
+    }
+    expect(renderToStaticMarkup(createElement(OtpCodeField, { value: "", onChange: () => {}, disabled: true }))).toContain("disabled");
+    expect(renderToStaticMarkup(createElement(ResendCodeButton, { secondsLeft: 12, disabled: false, onClick: () => {} }))).toMatch(/<button type="button" disabled="">Resend in 12s<\/button>/);
+    expect(renderToStaticMarkup(createElement(ResendCodeButton, { secondsLeft: 0, disabled: false, onClick: () => {} }))).toBe('<button type="button">Resend code</button>');
+    expect(renderToStaticMarkup(createElement(ResendCodeButton, { secondsLeft: 0, disabled: true, onClick: () => {}, className: "textButton" }))).toMatch(/<button type="button" class="textButton" disabled="">Resend code<\/button>/);
+    expect(CODE_SENT_COPY).toBe("Code sent. It expires in 5 minutes.");
   });
 });

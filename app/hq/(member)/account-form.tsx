@@ -7,7 +7,9 @@ import { IconArrowLeft, IconArrowRight, IconPaperplaneFill } from "symbols-react
 import { memberAuthClient } from "@/lib/hq/member-auth-client";
 import { safeMemberNext, type MemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import styles from "./account.module.css";
+import { CODE_SENT_COPY, OtpCodeField, ResendCodeButton } from "./otp-code-field";
 import { telegramErrorMessage, telegramFailure } from "./telegram-copy";
+import { useResendCooldown } from "./use-resend-cooldown";
 
 type Props = {
   mode: "signup" | "signin";
@@ -49,8 +51,7 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(telegramErrorMessage(initialError) ?? "");
   const [status, setStatus] = useState("");
-  const [resendAt, setResendAt] = useState(0);
-  const [secondsLeft, setSecondsLeft] = useState(0);
+  const { secondsLeft, startCooldown } = useResendCooldown();
   const codeInput = useRef<HTMLInputElement>(null);
   const destination = safeMemberNext(next);
   const unavailable = unavailableCopy(mode, availability);
@@ -58,14 +59,6 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
   useEffect(() => {
     if (step === "verify") codeInput.current?.focus();
   }, [step]);
-
-  useEffect(() => {
-    if (!resendAt) return;
-    const tick = () => setSecondsLeft(Math.max(0, Math.ceil((resendAt - Date.now()) / 1000)));
-    tick();
-    const timer = window.setInterval(tick, 1000);
-    return () => window.clearInterval(timer);
-  }, [resendAt]);
 
   async function signInWithTelegram() {
     if (busy || !availability.telegram) return;
@@ -108,8 +101,8 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
       setEmail(email.trim());
       setOtp("");
       setStep("verify");
-      setResendAt(Date.now() + 60_000);
-      setStatus("Code sent. It expires in 5 minutes.");
+      startCooldown();
+      setStatus(CODE_SENT_COPY);
       codeInput.current?.focus();
     } catch {
       setError("We could not connect. Check your connection and try again.");
@@ -186,16 +179,13 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
             </>
           ) : (
             <form className={styles.form} onSubmit={verifyCode}>
-              <label className={styles.field}>
-                Verification code
-                <input ref={codeInput} className={styles.code} name="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" minLength={6} maxLength={6} value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, "").slice(0, 6))} aria-describedby="code-status account-error" required disabled={busy} />
-              </label>
+              <OtpCodeField inputRef={codeInput} value={otp} onChange={setOtp} disabled={busy} describedBy="code-status account-error" labelClassName={styles.field} inputClassName={styles.code} />
               <button className={styles.submit} disabled={busy || otp.length !== 6} type="submit">
                 {busy ? "Checking code…" : "Verify and continue"}
                 <IconArrowRight width={19} height={19} fill="currentColor" aria-hidden="true" />
               </button>
               <div className={styles.codeActions}>
-                <button type="button" disabled={busy || secondsLeft > 0} onClick={() => sendCode()}>{secondsLeft > 0 ? `Resend in ${secondsLeft}s` : "Resend code"}</button>
+                <ResendCodeButton secondsLeft={secondsLeft} disabled={busy} onClick={() => sendCode()} />
                 <button type="button" disabled={busy} onClick={() => { setStep("details"); setOtp(""); setError(""); setStatus(""); }}>Change email</button>
               </div>
             </form>

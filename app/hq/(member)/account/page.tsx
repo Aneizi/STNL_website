@@ -27,11 +27,12 @@ export default async function AccountPage({ searchParams }: { searchParams: Sear
   const consent = methods.telegram ? await getBotConsent(actor.id) : null;
   const botMessages = consent?.messagingEnabled ?? false;
   const error = telegramErrorMessage(params.error, "connect");
+  // The added-email notice is shown only when it is true of this account: a real address next to a Telegram connection.
   const notice = lastParam(params.connected) === "telegram"
     ? "Telegram connected."
     : lastParam(params.disconnected) === "telegram"
       ? "Telegram disconnected."
-      : lastParam(params.email) === "added"
+      : lastParam(params.email) === "added" && methods.email && methods.telegram
         ? "Email added. You can now sign in with it as well as with Telegram."
         : null;
   // actor.email is the verified login email (null for Telegram-only accounts),

@@ -143,15 +143,20 @@ function createMemberAuth() {
            * a failure here is logged, never surfaced as a failed change.
            */
           after: async (user, context) => {
+            // updateWithHooks hands null when the update matched no row.
+            if (!user) return;
             const previous = context?.context.session?.user;
             if (!previous || previous.id !== user.id || typeof user.email !== "string" || user.email === previous.email) return;
             const previousEmail = verifiedLoginEmail(previous);
             try {
               if (previousEmail !== null) {
+                // The notice names no new address: whoever still reads the
+                // old mailbox (the usual reason to move) must not learn the
+                // account's new login identifier.
                 const delivered = await deliver({
                   to: previousEmail,
                   subject: "Your Superteam NL HQ sign-in email changed",
-                  text: `The email address for signing in to your Superteam NL HQ account was changed to ${user.email}.\n\nIf this was you, there is nothing to do. If it was not, contact Superteam NL right away.`,
+                  text: "The email address for signing in to your Superteam NL HQ account was changed, and this address no longer signs in to it.\n\nIf this was you, there is nothing to do. If it was not, contact Superteam NL right away.",
                 });
                 if (!delivered) context.context.logger.error("hq-member-auth: the previous address was not notified of the email change", { userId: user.id });
               }
