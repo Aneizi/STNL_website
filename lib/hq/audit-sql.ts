@@ -35,6 +35,17 @@ export const AUDIT_EVENT_KINDS = [
   "project.imported",
   "project.deleted",
   "person.deleted",
+  // Phase 5. Reporting content itself is never audited — a note body belongs
+  // in protected entry storage, not in a log operators read in bulk — so
+  // these record only the decisions about it: a project entering, leaving or
+  // being paused in reporting, an admin voiding an entry, an admin correcting
+  // a closed period's recorded outcome, and a period being closed (the one
+  // kind written by a `system` actor, since closure is a job rather than
+  // something a person does).
+  "reporting.eligibility_changed",
+  "reporting.entry_voided",
+  "reporting.outcome_corrected",
+  "reporting.period_closed",
 ] as const;
 
 export type AuditEventKind = (typeof AUDIT_EVENT_KINDS)[number];
