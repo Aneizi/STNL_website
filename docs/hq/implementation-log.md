@@ -3683,3 +3683,328 @@ commit on this branch after `eebf1f6`.
 - `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm run build`: passes. Every
   `/hq` route compiles; `/hq/invite/[token]` (Route Handler) and
   `/hq/invite/continue`, `/hq/captain` are listed as distinct dynamic routes.
+
+## Phase 3, self-service imports, joining, enrichment and admin record management
+
+Implemented in one session on branch `hq-captains-phases-0-2`, on top of
+phase 4. This phase was rewritten by the owner on 14 September 2026, and
+section 2's "Team import and joining" plus phase 3's "The import gate,
+joining and error reporting" and "Admin record deletion" are the authority
+for everything below; where an earlier draft of the plan contradicts them,
+they win.
+
+### What changed
+
+**The import gate (`lib/hq/project-import.ts`, new).** An import is accepted
+when, and only when, the fetched project satisfies both halves of the owner's
+rule: `project.country` is Netherlands, and `project.hackathonId` equals the
+external edition id an admin configured in `hq_hackathon_onboarding`. Neither
+value is hard coded. `gateProject(project, edition)` is the pure decision, so
+the two rules are testable directly against the recorded fixtures;
+`importColosseumTeam` is the entry point the member action calls, and it
+checks the edition mapping **before** any network call so that an
+unconfigured edition — HQ's own state — can never look like a Colosseum
+outage. There is no ownership-proof challenge, no pending state, no approval
+queue and no teammate-selection step: a Dutch project in the current edition
+goes in from the pasted link alone.
+
+**The failure taxonomy (`lib/colosseum-api.ts`, `lib/colosseum-schema.ts`).**
+The adapter no longer collapses every non-2xx other than 404 and 429 into
+`UNAVAILABLE`. `ColosseumErrorCode` now separates `NOT_FOUND`,
+`RATE_LIMITED`, `TIMED_OUT`, `UNREACHABLE`, `INVALID_RESPONSE`,
+`SOURCE_REJECTED` (a 4xx whose body carries Colosseum's own `code`/`message`,
+which is what finally tells "directory disabled" apart from "unknown
+edition") and `UNAVAILABLE`, and each carries `sourceCode`/`sourceMessage` as
+data. Nine member-facing outcomes each get their own wording
+(`IMPORT_REFUSAL_MESSAGES` plus the adapter's own messages); the upstream text
+is never one of them and is never rendered as markup — it is stored on the
+project's row in `source_error_message` for operators. Field names moved into
+one schema module (`lib/colosseum-schema.ts`) so a renamed upstream field is a
+one-file change.
+
+**The already-imported case.** Its own outcome, routed to help rather than to
+a retry: `components/hq/builder-onboarding.tsx` renders the Superteam NL
+Telegram group as a **logo control with an accessible name**
+(`IconTelegramLogo`, `fill="currentColor"`, `aria-label`), never a bare URL
+and never the raw invite string as link text, and says nothing about who
+imported the team or who is on it. The URL and its accessible name live in
+`lib/hq/community.ts`, written once.
+
+**The `verification` decision (the first of the plan's four named
+consequences).** The column stays and a successful import writes `'verified'`.
+That is the smaller of the two options the hand-off offered: every existing
+reader — `loadTeamMembership` in `lib/hq/authz-sql.ts`, and through it
+`authorizeProjectAction`, `memberTeamView`, `updateTeam`, `createInvite` and
+`redeemInvite` — keeps working unmodified, and no membership check is left
+that no import can satisfy. What is removed is the *step*, not the column.
+
+**The dead review surface (the second consequence).** `reviewBuilderProject`
+is deleted from `lib/hq/actions/builders-admin.ts`; the verification controls
+and the proof-comment line are gone from the "Imported teams" panel;
+`hq_project_onboarding.proof_comment_id` and `proof_author_id` are dropped;
+and `hq_project_challenges` is dropped entirely, with its entry removed from
+`scripts/hq/reset-statements.ts`. A pre-existing `'pending'` or `'rejected'`
+row from before this change is not auto-approved and not hidden: the team page
+tells that account it is an old import request that never became a team, and
+an admin clears it with the new Delete team control. In practice there are
+none — public signup has not been released.
+
+**Joining by link.** `createInvite` is unchanged in shape (one link per
+unclaimed roster seat, issued by the team's own importer, previous link for
+that seat retired) but is now presented as a **link**: `joinLink(code)` in
+`lib/hq/member-routes.ts` builds `/hq/join/<code>`, and
+`app/hq/(member)/join/[code]/page.tsx` is the page it points at, member
+gated, which looks the seat up and asks for confirmation — arriving redeems
+nothing. `parseJoinCode` accepts the whole pasted link or a bare code and
+survives a trailing slash, surrounding or internal whitespace, an appended
+tracking query and a fragment; it runs on the client for the form and again
+on the server, which is the check that counts. `store.invitation` now returns
+a typed lookup rather than throwing one shared message, so invalid, expired,
+used and wrong-edition each get their own wording (`JOIN_LINK_MESSAGES`) and
+**none of them names the team**. `/hq/join/:path*` gained the same
+`Referrer-Policy`/`X-Robots-Tag` headers the Captain invitation subtree has,
+for the same reason.
+
+A self-service import deliberately claims **no** roster seat for the
+importer: there is no teammate-selection step to claim one with, and the
+plan's "one step" leaves no room for one. The importer is the project's owner
+(`owner_user_id`), which is what membership is read from, and their own
+roster seat is simply one more unclaimed seat with a join link they can open
+themselves. The team page says so.
+
+**The CRM merge (contracts note 1).** The roster import creates or reuses a
+person by normalized Colosseum username through `ensurePersonForRosterMember`
+— never by display name — and gives that person a People card in the edition
+only when it has none (`hq_people_person_idx`, one card per person per
+edition, guarded on every write). When that person's human later joins with a
+link, `redeemInvite` runs the **merge** branch of `correctPersonMatch` inside
+its own transaction, exactly as the hand-off specified: cards and roster rows
+move onto the account's own person, the provisional username moves with them,
+the merged person is deleted, `person.match_corrected` is recorded. No second
+link path was added and `linkPersonToAccount` is not used for this case.
+
+**The snapshot.** `hq_project_onboarding` gains the normalized fields beside
+its bounded raw snapshot: category, tracks, X handle, website, repo, the four
+material links, image, the external edition id/slug/name, `submitted_at`, the
+two `completion_*` readiness fields, `submission_status`, and
+`source_status`/`source_checked_at`/`source_error_code`/`source_error_message`.
+Existing rows are backfilled from the raw payload they already hold, one
+guarded statement per field, matched by the row's own snapshot rather than by
+name. `hq_project_members` gains `avatar_url`.
+
+**The submission signal, in one function.**
+`lib/hq/colosseum-snapshot.ts#interpretSubmission` is the only writer of
+`submission_status`. A non-null `submittedAt` is Submitted. A null reads as
+**Not checked**, not "Not submitted", because `DRAFT_SIGNAL_CONFIRMED` is
+`false`: `submittedAt` was non-null on every project ever observed live and no
+draft was reachable, so "null means draft" is an assumption HQ will not put a
+red badge behind. The constant's comment and manual-setup item L13 both name
+exactly what would confirm it. `projectCompletion.isComplete` is not an input
+to that function at all. `fetchEditionSubmissionWindow` is the one function
+that reads `hackathons[].projectSubmissionEndDate`.
+
+**Refresh** (`store.refreshTeam`, `refreshColosseumTeam`) is separate and
+idempotent. It rewrites the snapshot and upserts roster identities; it never
+deletes a roster row, never changes `owner_user_id`, `verification`, `stage`,
+`lead_username`, notes or a Captain assignment, and never overwrites a
+`person_id` an operator corrected. A failed check records `source_status`,
+the HQ error code and Colosseum's own message, and leaves the last known
+submission status and last successful check time alone — green never turns
+red because a request failed.
+
+**The fallback image.** `docs/plans/assets/hq-project-fallback.png` copied to
+`public/images/hq/project-fallback.png`, referenced through one constant, and
+rendered by `components/hq/builder-project-image.tsx` on the team page, the
+Captain's assignment cards and the Admin list. Deliberately a plain `<img>`
+with an `onError` fallback rather than `next/image`: routing a third-party
+CDN through `next/image` would mean allow-listing that host and having this
+application fetch and re-serve arbitrary remote bytes, which the plan rules
+out. The `<img>` lint warning is suppressed at the line with that reason.
+
+**Admin deletion** (`lib/hq/record-deletion.ts`, new). Delete team (the
+"Imported teams" panel) and Delete person (People) are operator-only,
+edition-scoped through the usual resolution, audited (`project.deleted`,
+`person.deleted`), and each runs in **one transaction** with the real counts
+read before the destructive step for the confirmation and again inside the
+transaction for the audit metadata. Deleting a person removes their People
+card and this edition's enrollment, deletes the CRM person only when that was
+its last card anywhere, detaches roster rows rather than removing them, and
+**never touches the HQ account**. The Projects board's pre-existing
+`deleteProject` now calls the same function, so there is one deletion
+implementation rather than two that could drift.
+
+**The Captain-conflict race (the fourth consequence).** Decided: **lock**.
+`checkCaptainConflict` now takes a `FOR UPDATE` on the CRM person rows this
+project's roster points at, in id order, in a statement of its own (Postgres
+refuses `FOR UPDATE` on the nullable side of an outer join). It is lock-order
+step 3b. Why locking rather than accepting the race: the state it can land in
+is a product invariant the plan states unconditionally ("A Captain cannot be
+assigned to a team they participate in"), and one extra statement on a path
+that already holds three locks is a cheap way to close it. It cannot
+deadlock against `correctPersonMatch`, which locks one person row by id and
+never reaches for the capability, project or assignment locks this
+transaction already holds.
+
+**Also.** The hard-coded `HACKATHON_ID = 6` is gone from
+`lib/hq/colosseum-interest.ts` (contracts note 3): the public interest form
+now resolves the current edition with the same server-side pick every other
+surface without a selector uses, and files a submission under the next
+edition rather than silently dropping it when the current one is archived.
+`scripts/hq/seed.ts`'s comment claiming its `id` is "Colosseum's hackathon
+id (World's Fair is 6)" is corrected — it is HQ's own internal id.
+
+### Which migrations apply
+
+All in `scripts/hq/builder-schema.sql`, applied by `hq:migrate` in the usual
+order, all idempotent single statements through the splitter:
+
+- `ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS ...` for the 21
+  snapshot columns. The two status columns carry their CHECK constraints
+  **inside** the `ADD COLUMN IF NOT EXISTS`, not as a separate
+  `DROP CONSTRAINT` / `ADD CONSTRAINT` pair: migration convention 8's
+  reasoning about drop-then-create pairs applies to constraints exactly as it
+  does to indexes, and a check attached to the column is skipped with the
+  column on every later run.
+- `ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS avatar_url text`.
+- `ALTER TABLE hq_project_onboarding DROP COLUMN IF EXISTS proof_comment_id`
+  and `proof_author_id`; `DROP TABLE IF EXISTS hq_project_challenges`. All
+  three are idempotent single statements and converge to no-ops.
+- Fourteen guarded backfill `UPDATE`s from `raw`, each conditioned on the
+  column still being NULL, so each matches nothing on a fresh database,
+  nothing on a re-run, and never overwrites a later refresh or an operator's
+  edit. `submission_status` is deliberately **not** backfilled.
+- `scripts/hq/reset-statements.ts`: `hq_project_challenges` removed from
+  `KEEP_TABLES` along with the table itself.
+
+### Checks passed
+
+Named tests, one per acceptance bullet.
+
+| Acceptance bullet | Test |
+|---|---|
+| Full, partial, null-image and duplicate-link fixtures render correctly | `tests/hq/colosseum-snapshot.test.ts`: "keeps every queryable field of the full fixture", "imports a partial project, with every optional field missing", "treats an unusable image URL as no image", "shows a URL pasted into two fields once, naming both" |
+| A project imported twice does not create duplicate teams or People identities | `tests/hq/builder-onboarding.test.ts`: "reports an already-imported project rather than creating a second team", "refuses a simultaneous second import", "gives one People card per person per edition, even when two teams share a roster member" |
+| Refresh retains membership claims, contacts, notes and Captain assignment | `tests/hq/builder-onboarding.test.ts`: "updates the snapshot and adds new roster members without touching HQ state", "keeps a member who left the Colosseum roster, and their claimed HQ membership", "is idempotent" |
+| A complete draft, confirmed submission, unknown state and network failure produce distinct correct behavior | `tests/hq/colosseum-snapshot.test.ts` ("the submission signal", five cases) and `tests/hq/builder-onboarding.test.ts`: "a failed check records the failure and keeps the last known submission status" |
+| The fallback image works on desktop/mobile and on image loading failure | `tests/hq/colosseum-snapshot.test.ts`: "is in place under public/", "is used for a missing image and for one that fails to load". **Browser-verified: no** — see the limits below |
+| A Dutch project in the current edition imports in one step, with no verification, approval or pending state anywhere | `tests/hq/builder-onboarding.test.ts`: "imports the project, its normalized snapshot, its roster and its People identities in one step" (asserts `verification: 'verified'` and a single call), "imports through the member action end to end" |
+| Each of the nine failures produces its own distinct message, and none is generic | `tests/hq/builder-import-ui.test.ts`: "gives each refusal a distinct, actionable message", "keeps the transport failures apart from 'not found', each inviting a retry"; `tests/hq/builder-onboarding.test.ts`: "imports through the member action end to end, and answers each Colosseum failure with its own reason"; `tests/colosseum-api.test.ts`: "classifies HTTP %s as its own code", "carries Colosseum's own code and message as data" |
+| Importing an already-imported team says so, offers the Telegram group as a logo control with an accessible name, and reveals nothing about who imported it | `tests/hq/builder-import-ui.test.ts`: "renders the Telegram group as a logo control with an accessible name, never a raw URL, and names nobody" |
+| A join link admits exactly one teammate, survives a trailing slash, whitespace and an appended query, and fails distinctly when invalid, expired, used or from another edition, without naming the team | `tests/hq/builder-onboarding.test.ts`: "accepts a whole pasted join link, a bare code and a link with a tracking query or trailing slash", "redeems once", "permits only one successful concurrent redemption", "refuses %s with its own reason, naming nothing about the team", "does not let one HQ account claim two seats", "merges the roster person into the joining account's own person"; `tests/hq/builder-import-ui.test.ts`: "the join link" |
+| Deleting a team and deleting a person each remove or detach every dependent row in one transaction, are audited, confirm real counts beforehand, and leave the account intact | `tests/hq/builders-admin.test.ts`: "deletes a team with everything attached to it, in the selected hackathon only, and audits what went", "deletes a person's card without deleting their HQ account, and detaches what pointed at them", plus both entries in the "requires an operator session for %s" table |
+
+Plus: `tests/hq/migration-order.test.ts` ("phase 3: the Colosseum source
+snapshot and the removed challenge") applies the whole migration twice on a
+fresh database and once more over a populated row, asserting every new column,
+both drops, the CHECK constraints and the backfill's guard;
+`tests/hq/captains.test.ts` pins lock-order step 3b and pins that
+`importTeam`'s old Captain check is gone because the path it guarded is gone;
+`tests/hq/invite-config-headers.test.ts` covers the `/hq/join` headers entry;
+`tests/hq/colosseum-interest.test.ts` pins the removed constant's replacement.
+
+Verification run at commit `c324269`: `npm test` 969 tests in 46 files
+passing (phase 4 closed at 953); `npx tsc --noEmit` clean; `npm run lint` 0
+errors and 18 warnings, all pre-existing and all in
+`public/deck/deck-stage.js`, unchanged from the phase 0 baseline; `npm run
+build` passes, with `/hq/join/[code]` listed as a distinct dynamic route.
+
+### Blocked or deferred
+
+- **Nothing in this phase is browser-verified.** Every check is at the
+  endpoint, source or markup level. The fallback image on a real phone, the
+  Telegram logo control's rendered size and the join screen's paste behaviour
+  all want one manual pass.
+- **The `Referrer-Policy`/`X-Robots-Tag` headers on `/hq/join/:path*`** are
+  asserted at config level only, exactly like `/hq/invite/:path*` before them.
+  Manual setup item L14; a `curl -I` against a running server is the check,
+  and it was not run this session.
+- **The draft submission signal stays unconfirmed.** Not submitted never
+  shows. Manual setup item L13 names what would confirm it and which single
+  constant to flip. Not resolvable from a checkout: the World's Fair
+  directory is disabled, so no draft is reachable.
+- **The listing client stops at the submission window.**
+  `fetchEditionSubmissionWindow` is the one listing read this phase needed.
+  Nothing pages the country subset or diffs submissions, because phase 9 —
+  the "Dutch projects missing from HQ" discovery list — was removed by the
+  owner, and nothing else in the plan asks for it.
+- **A preferred team contact** ("Let the owner confirm a preferred team
+  contact using the existing contact model, including a Telegram contact when
+  available") is **not built**. The existing contact model here is
+  `hq_builder_profiles.contact_email` (self-declared, already in place from
+  phase 2) and `hq_people.contact`; what the plan asks for is a *team*-level
+  preferred contact, which no table models and which no phase 3 acceptance
+  bullet checks. Deferred rather than invented: it is one nullable column and
+  one field on the team page whenever the owner wants it, and phase 6's team
+  dashboard is the natural place. Called out here rather than left silent.
+- **`hq_project_onboarding` rows with legacy `verification <> 'verified'`**
+  have no path back to a usable team other than an admin deleting them.
+  Correct under the new rules (there is no approval step to approve them
+  with), and empty in practice, but stated so nobody looks for a control that
+  does not exist.
+- **The fallback image is 1.1 MB.** Works, cached after first load, but a
+  smaller export would be better on a phone. Left to the owner (manual setup
+  2.7) rather than re-encoding approved artwork unasked.
+- **Phase 5's reporting rows do not exist yet**, so deletion cannot handle
+  them. `lib/hq/record-deletion.ts` says so at the top, and the contracts
+  hand-off tells phase 5 to extend both deletions rather than assume they are
+  complete.
+
+### Changed interfaces
+
+- `lib/colosseum-schema.ts` (new, pure): every field name the API adapter
+  reads, as zod schemas. `projectBodySchema`, `projectDetailSchema`,
+  `listingSchema`, `listingHackathonSchema`, `errorBodySchema`.
+- `lib/colosseum-api.ts`: `ColosseumErrorCode` widened and split (see above);
+  `ColosseumApiError` gained `sourceCode`/`sourceMessage`; `isRetryable`;
+  `ImportedProject` gained `category`, `tracks`, `twitterHandle`,
+  `submittedAt`, `completion`; `fetchEditionSubmissionWindow` added;
+  `fetchProjectComments`, `verifyProjectClaim`, `findProjectProof`,
+  `ProjectChallenge` and `ProjectProof` **removed** with the challenge flow.
+- `lib/hq/colosseum-snapshot.ts` (new, pure): `PROJECT_FALLBACK_IMAGE`,
+  `SubmissionStatus`, `SUBMISSION_LABELS`, `DRAFT_SIGNAL_CONFIRMED`,
+  `interpretSubmission`, `submittedOnTime`, `toSnapshotFields`,
+  `groupedMaterials`.
+- `lib/hq/project-import.ts` (new, server): `ImportFailureReason`,
+  `ImportOutcome`, `importFailureFor`, `inviteRetry`, `gateProject`,
+  `importColosseumTeam`, `refreshColosseumTeam`.
+- `lib/hq/record-deletion.ts` (new, server): `TeamRemovalImpact`,
+  `teamRemovalImpact`, `deleteTeamRecord`, `PersonRemovalImpact`,
+  `personRemovalImpact`, `deletePersonRecord`.
+- `lib/hq/community.ts` (new, client-safe): `SUPERTEAM_NL_TELEGRAM_GROUP`,
+  `SUPERTEAM_NL_TELEGRAM_GROUP_LABEL`.
+- `lib/hq/builder-types.ts`: `NETHERLANDS`, `isNetherlands`, `ImportRefusal`,
+  `IMPORT_REFUSAL_MESSAGES`, `ImportRefusedError`, `JoinLinkRefusal`,
+  `JOIN_LINK_MESSAGES`, `JoinSeat`, `JoinLinkLookup`, `BuilderTeamSource`;
+  `BuilderTeam` gained `source` and its roster rows gained `avatarUrl`.
+- `lib/hq/builder-store.ts`: `issueChallenge` and `challenge` **removed**;
+  `importTeam(user, { hackathonId, project, projectUrl })` replaces the
+  six-argument version; `importedProject`, `refreshTeam`,
+  `recordSourceFailure` added; `invitation(code)` returns `JoinLinkLookup`
+  instead of throwing.
+- `lib/hq/member-routes.ts`: `/hq/join/` subtree, `joinLink`, `parseJoinCode`.
+- `lib/hq/view-models.ts`: `MemberTeamView` and `CaptainAssignmentView` gained
+  `source`; roster rows gained `avatarUrl`.
+- `lib/hq/audit-sql.ts`: `project.imported`, `project.deleted`,
+  `person.deleted` added to `AUDIT_EVENT_KINDS`.
+- `lib/hq/types.ts`: `Person` gained `removal` (operator-only counts).
+- `lib/hq/actions/builders.ts`: `previewBuilderProject`,
+  `beginBuilderVerification` and `completeBuilderImport` **removed**;
+  `importBuilderTeam` and `refreshBuilderTeam` added;
+  `previewBuilderInvite` now takes a pasted link or code and returns a typed
+  refusal. `lib/hq/actions/builders-admin.ts`: `reviewBuilderProject`
+  **removed**, `deleteBuilderTeam` added. `lib/hq/actions/people.ts`:
+  `deletePerson` added.
+- `components/hq/builder-project-image.tsx` (new, client):
+  `BuilderProjectImage`. `components/hq/builder-onboarding.tsx` gained
+  `SubmissionBadge` and `TeamSourceDetails` and lost the preview/challenge UI.
+
+### External configuration still required
+
+Unchanged by this phase, with two additions: manual setup **L13** (confirm the
+draft submission signal against a live submitted/unsubmitted pair, then flip
+`DRAFT_SIGNAL_CONFIRMED`) and **L14** (`curl -I` the `/hq/join/<code>`
+headers). Item **2.6**, the Colosseum edition mapping, is now what stands
+between the owner and any import at all: until it is set in Admin, every
+import answers "Superteam NL has not confirmed this hackathon's Colosseum
+edition yet". Item **2.7** is done in code, with an optional smaller image
+left to the owner.

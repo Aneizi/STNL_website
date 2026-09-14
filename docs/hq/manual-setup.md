@@ -51,8 +51,8 @@ sessions working while Telegram is unreachable") asserts it.
 | Telegram login (OIDC) | **Not configured** | Telegram sign-in and Connect Telegram |
 | Legacy Google and GitHub variables | Removed from code, live clean-up outstanding | Nothing. They are dead weight |
 | Local `setup/hq/auth.env.template` | Stale, gitignored, must be regenerated | Nothing in production. It misleads the next person who reads it |
-| Colosseum edition mapping | **Not configured, and the correct value is unverified** | Phase 3 imports for the current edition |
-| Project fallback image | Source located, not yet in `public/` | Phase 3 project presentation |
+| Colosseum edition mapping | **Not configured, and the correct value is unverified** | Every self-service import: phase 3 answers "Superteam NL has not confirmed this hackathon's Colosseum edition yet" until it is set |
+| Project fallback image | Done in code; an optional smaller copy is yours if you want it | Nothing |
 | Telegram bot messaging | **Not configured** | Phase 7 only. Nothing before then |
 | Local dev environment | Absent | Running the app locally. Tests need none of it |
 
@@ -365,25 +365,34 @@ test of their own.
 
 ## 2.7 Project fallback image
 
-**Status:** Pending, source located. Phase 3 work.
+**Status:** Done in code (phase 3). One optional follow-up for you.
 
-**Who:** the implementer of phase 3, not you. **Where:** the repository.
+**Who:** you, only if you want the optional follow-up. **Where:** the
+repository.
 
 **Variables:** none.
 
-**Steps.** The approved image is at `docs/plans/assets/hq-project-fallback.png`,
-untracked in this checkout, with a copy at
-`.superpowers/sdd/2026-09-13-hq-captains-and-colosseum/hq-project-fallback.png`.
-Phase 3 copies it to `public/images/hq/project-fallback.png` and references that
-path.
+**What phase 3 did.** The approved image was copied from
+`docs/plans/assets/hq-project-fallback.png` to
+`public/images/hq/project-fallback.png` and is referenced through the one
+constant `PROJECT_FALLBACK_IMAGE` (`lib/hq/colosseum-snapshot.ts`).
+`components/hq/builder-project-image.tsx` renders it when a project has no
+Colosseum image and when the source image fails to load, at a contained
+aspect ratio, on the team page, the Captain's assignment cards and the Admin
+"Imported teams" list.
 
-**How to verify.** The target file exists and the project cards render it.
+**The optional follow-up.** The approved file is 1288x816 and **1.1 MB**. It
+is served as a static asset and cached after the first load, so this is a
+first-paint cost rather than a per-card one, and nothing is broken — but a
+smaller copy (say a square export under 60 KB) would be a real improvement on
+a phone. Replacing the file at that same path is the whole change; no code
+moves. Left to you deliberately rather than re-encoding approved artwork
+without being asked.
 
-**Unavailable until done:** phase 3 project presentation falls back to nothing.
-
-**Code-level checks:** none, and none are possible until the target exists. Task
-T0.2 recorded both paths in `docs/hq/contracts.md` so that phase 3 does not have
-to guess them.
+**How to verify.** `tests/hq/colosseum-snapshot.test.ts` ("the approved
+fallback image") asserts the file exists at that path, that the component
+falls back on both a missing and a failed image, and that no image proxy or
+`remotePatterns` host was added for the Colosseum CDN.
 
 ## 2.8 Local dev
 
@@ -497,6 +506,32 @@ actually seen the result.
 - **L11.** Confirm the World's Fair external id and slug with Colosseum, and
   check them against Colosseum's own page before saving them in Admin. They
   cannot be corrected after the first import.
+
+## Colosseum submission signal, after real projects exist
+
+- **L13.** Phase 3 shows a green **Submitted** badge from Colosseum's own
+  `submittedAt`, and shows **Not checked** rather than a red **Not submitted**
+  for a project whose `submittedAt` is null. The reason is in
+  `lib/hq/colosseum-snapshot.ts`: `submittedAt` was non-null on every project
+  observed live, but no unsubmitted project was ever reachable through the
+  public API, so "null means draft" is an assumption HQ will not put a red
+  badge behind. **What would confirm it:** open two projects of the same
+  edition through `GET /api/project?slug=...&type=HACKATHON`, one genuinely
+  submitted and one genuinely not, and see `submittedAt` set on the first and
+  null on the second. When that has been observed, flip
+  `DRAFT_SIGNAL_CONFIRMED` to `true` in that file (one constant, one line),
+  record the observation here, and Not submitted starts showing. Nothing else
+  changes. Not possible this session: the World's Fair directory is not
+  enabled, so no draft is reachable.
+
+## Team join links, no owner setup required
+
+- **L14.** The same `curl -I` check as L12 below, for `/hq/join/<any code>`:
+  confirm the response carries `Referrer-Policy: no-referrer` and
+  `X-Robots-Tag: noindex, noarchive`. A join link carries a bearer code in its
+  path, exactly like a Captain invitation link.
+  `tests/hq/invite-config-headers.test.ts` proves the `next.config.ts` entry;
+  it cannot prove the served header. Not run this session.
 
 ## Captain invitation links, no owner setup required
 

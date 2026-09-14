@@ -8,7 +8,7 @@ guess a path.
 
 Two standing rules:
 
-1. **No stub source files.** Phases 3 to 10 are named here and nowhere else. A
+1. **No stub source files.** Phases 5 to 10 are named here and nowhere else. A
    stub route handler would be a live endpoint, and a stub module is work with no
    user. The typed hooks that authorization needs for phase 4 and phase 5 records
    live inside `lib/hq/authz.ts`, which phase 1 creates, not in placeholder
@@ -84,9 +84,10 @@ exists yet and none should be created before that phase.
 | Audit | append only metadata events | `lib/hq/audit.ts`, `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata? })`, `listAuditEvents(filter, { limit, cursor })`; nothing else | 1 |
 | Actor aware response types | the smallest DTO per audience | new `lib/hq/view-models.ts` | `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView`, `CaptainLeaderboardView` (`{ rank, displayName, assignedCount, isYou }`; `assignedCount` and `isYou` filled by task T4.5, `toCaptainLeaderboardView`) | 1, filled by 4 |
 | Shell and navigation | capability driven member menu, one member route list | new `lib/hq/member-routes.ts`, new `lib/hq/member-nav.ts` (both pure and client-safe), new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `app/hq/(member)/layout.tsx` (a provider, **not** the auth boundary) | `MEMBER_PUBLIC_PATHS`, `isMemberPath(pathname)`, `safeMemberNext(value)` in `member-routes.ts`; `NavItem`, `MemberNavInput`, `getMemberNav({ capabilities, hasTelegram, hasTeams })`, `isNavItemCurrent(item, pathname)` in `member-nav.ts`; `MemberNavProvider`, `BuilderNav`, `BuilderAccount` in `builder-nav.tsx`. The menu is derived from the request-cached `currentActor()` plus the store's `hasTeams(userId)` existence check, never the team rows; the layout passes it to the provider and every page composes `BuilderShell` itself | 2 |
-| Colosseum integration | validated snapshots, normalized fields, source status | `lib/colosseum-api.ts` extended, `lib/hq/colosseum-snapshot.ts` named only | `claimProject`, `refreshProject`, `listCountryProjects` | 3 |
+| Colosseum integration | validated snapshots, normalized fields, source status | `lib/colosseum-api.ts` (HTTP and error taxonomy), `lib/colosseum-schema.ts` (the ONE place upstream field names are written down), `lib/hq/colosseum-snapshot.ts` (pure normalization and the submission interpretation), `lib/hq/project-import.ts` (the gate and the import/refresh entry points) | `fetchColosseumProject`, `fetchEditionSubmissionWindow` (the one reader of `hackathons[].projectSubmissionEndDate`), `isRetryable`; `interpretSubmission` (the ONE writer of `submission_status`; `DRAFT_SIGNAL_CONFIRMED` gates whether a null `submittedAt` may read as Not submitted), `toSnapshotFields`, `groupedMaterials`, `submittedOnTime`, `PROJECT_FALLBACK_IMAGE`; `gateProject`, `importColosseumTeam`, `refreshColosseumTeam`, `importFailureFor`, `inviteRetry`. `listCountryProjects` was never built: phase 9, the discovery list it existed for, was removed by the owner | 3, complete |
 | Captain service | invitations, redemptions, assignments, leaderboard | `lib/hq/captains.ts` (the service); `lib/hq/actions/captains.ts` (operator actions, gated `requireUser()`, scanned by `tests/hq/operator-imports.test.ts`); `lib/hq/actions/invite.ts` (the one member-gated action, its own module because `actions/captains.ts` is operator-scanned); `lib/hq/invite-exchange.ts` and `lib/hq/invite-continuation.ts` (the `/hq/invite/<token>` exchange and its short-lived continuation, written directly into `hq_auth_verification`) | Invitations: `createCaptainInvitation`, `readCaptainInvitationByToken`, `acceptCaptainInvitation`, `revokeCaptainInvitation`, `listCaptainInvitations`. Assignments: `assignCaptain`, `unassignCaptain`, `clearCaptainAssignments`, `countAssignmentsForCaptain`, `countAssignmentsForUsers`, `listAssignments`, `countAssignmentsByCaptain`. Reads: `leaderboard(db, hackathonId, viewerUserId?)`, `currentCaptainOfProject(db, projectId)`. Operator actions: `createCaptainInvitation`, `revokeCaptainInvitation`, `assignProjectCaptain`, `unassignProjectCaptain`, `bulkAssignProjectCaptain`. Member action: `acceptCaptainInvitationFromContinuation`. Route helpers: `inviteLink(token)`, `INVITE_CONTINUE_PATH` in `lib/hq/member-routes.ts` | 4, complete |
-| Reporting service | periods, entries, revisions, completion | `lib/hq/reporting.ts`, named only | `createUpdate`, `editUpdate`, `readAuthorizedUpdates`, `reportingStatus`, `closePeriod` | 5 |
+| Record deletion | admin removal of a team and of a person | `lib/hq/record-deletion.ts`; operator actions in `lib/hq/actions/builders-admin.ts` (`deleteBuilderTeam`), `lib/hq/actions/people.ts` (`deletePerson`) and `lib/hq/actions/projects.ts` (`deleteProject`, which delegates here so there is one deletion, not two) | `teamRemovalImpact`, `deleteTeamRecord`, `personRemovalImpact`, `deletePersonRecord`. One transaction each, audited (`project.deleted`, `person.deleted`), real counts read before the destructive step and again inside it. Deleting a person NEVER deletes the `hq_builder_profiles` account behind them | 3 |
+| Reporting service | periods, entries, revisions, completion | `lib/hq/reporting.ts`, named only | `createUpdate`, `editUpdate`, `readAuthorizedUpdates`, `reportingStatus`, `closePeriod`. **Phase 5 must also extend `lib/hq/record-deletion.ts`**: its tables will reference a project and an author account, and phase 3's deletions were written before they existed | 5 |
 | Telegram adapter | authenticated chat commands, drafts, delivery | `lib/hq/telegram-bot.ts`, `app/api/telegram/webhook/route.ts`, named only | decided in phase 7 | 7 |
 | Job runner | reminders, closures, bounded sync | `lib/hq/jobs.ts` named only, `lib/hq/github-actions-auth.ts` parameterised by audience and workflow | `prepareReminder`, with a separate OIDC audience and no shared privileges | 8 |
 | Discovery and readiness | final submission readiness | named only | decided in phase 10 | 10 |
@@ -96,7 +97,9 @@ inventing their own: `capability.granted`, `capability.revoked`,
 `identity.linked`, `identity.unlinked`, `identity.email_changed`,
 `bot.consent_changed`, `person.linked`, `person.match_corrected`,
 `captain.invitation_created`, `captain.invitation_revoked`,
-`captain.invitation_redeemed`, `captain.assigned` and `captain.unassigned`.
+`captain.invitation_redeemed`, `captain.assigned`, `captain.unassigned`,
+and phase 3's `project.imported` (the first member-actor project event),
+`project.deleted` and `person.deleted`.
 Task T4.1 added the five Captain kinds to `AUDIT_EVENT_KINDS`; task T4.2 is
 the first writer of the three invitation kinds and task T4.4 is the first
 writer of `captain.assigned`/`captain.unassigned` (with `cause:
@@ -197,7 +200,29 @@ Full detail, including the named test proving each bullet and the two
 concurrency and browser-verification limits that apply throughout, is the
 phase 4 acceptance checklist in `docs/hq/implementation-log.md`.
 
-Every item in the four lists above is met. The acceptance checklists that name
+### Phase 3 gate
+
+- A Dutch project in the configured external edition imports in one step,
+  with no verification, approval or pending state anywhere in the flow.
+- A non-Dutch project, another edition, an unconfigured edition mapping, a
+  malformed URL, a 404, a timeout, a 429, an unreadable body and an already
+  imported team each produce their own message; none is generic, and
+  Colosseum's own error text never reaches the browser.
+- An already-imported team offers the Superteam NL Telegram group as a logo
+  control with an accessible name, and reveals nothing about who imported it.
+- A join link admits exactly one teammate, survives a trailing slash,
+  whitespace and an appended query, and fails distinctly when invalid,
+  expired, used or from another edition, without naming the team.
+- A project imported twice creates no duplicate team and no duplicate People
+  identity; refresh is idempotent and retains membership, notes and the
+  Captain assignment.
+- Deleting a team and deleting a person each run in one transaction, are
+  audited, confirm real counts beforehand, and leave the HQ account intact.
+
+Full detail, and the acceptance checklist naming the test behind each bullet,
+is in `docs/hq/implementation-log.md`.
+
+Every item in the five lists above is met. The acceptance checklists that name
 the test proving each item, and the items explicitly deferred to phases 3, 4, 5
 and 7, are in `docs/hq/implementation-log.md`.
 
@@ -306,14 +331,15 @@ Limitations, all of which shape phase 3 and later:
 - **There is no registration feed.** Only submitted projects of enabled editions
   are listed, and no parameter to include drafts is documented. Registered but
   unsubmitted teams cannot be discovered.
-- **Ownership proof before submission is not possible** through the API, because
-  the comment challenge needs the detail endpoint to return the project. As
-  of this checkout the fallback is the existing manual review path — but the
-  owner's 14 September 2026 change removes that step from phase 3 entirely
-  (see "Three consequences of the owner's phase 3 rewrite" below), so this
-  limitation stops having a fallback the moment phase 3 lands; it becomes an
-  open question the country/edition gate has to answer some other way, not a
-  gap manual review quietly covers.
+- **Ownership proof before submission is not possible** through the API. This
+  stopped being a gap phase 3 had to cover: the owner removed ownership proof
+  entirely on 14 September 2026, and the country/edition gate is now the whole
+  answer. What HQ actually relies on is that a project's Colosseum page is
+  public, so the first person from a Dutch team to paste the link owns it in
+  HQ; anyone else on that team joins with a link from them, and anyone who
+  believes the wrong person imported it is routed to the Superteam NL
+  Telegram group, where an admin can delete the team. That is the owner's
+  chosen trade, recorded here so nobody re-derives it as an oversight.
 - **`submittedAt` is the submission signal.** It was non null on every observed
   row. Its value for a draft is unverified, assumed `null`.
 - **`projectCompletion` is a readiness diagnostic**, returned by the detail
@@ -321,23 +347,33 @@ Limitations, all of which shape phase 3 and later:
   `fieldErrors` is unverified.
 - **No sort by submission date.** A "new submissions since X" poll has to page
   the country subset and diff by id and `submittedAt`.
-- **Error bodies are discarded today.** Every non 2xx other than 404 and 429
-  collapses to `UNAVAILABLE`, so "directory disabled" and "unknown edition" are
-  indistinguishable until an adapter reads `code` and `message`.
+- **Error bodies are discarded today.** ~~Every non 2xx other than 404 and 429
+  collapses to `UNAVAILABLE`~~ — **closed by phase 3**: `lib/colosseum-api.ts`
+  reads the body's `code` and `message` and gives a 4xx its own
+  `SOURCE_REJECTED`, so "directory disabled" and "unknown edition" are now
+  distinguishable. The text is carried as data, never shown.
 - **Rate limits are unknown.** No 429 was observed. A listing refresh must be
   server side, bounded, cached, and must show the last successful refresh time.
 - **Images and avatars are on a third party host**,
-  `static.narrative-violation.com`. If images are ever proxied or run through
-  `next/image`, that host has to be allow-listed in `remotePatterns`.
+  `static.narrative-violation.com`. Phase 3's decision: do **not** proxy them.
+  `components/hq/builder-project-image.tsx` renders a plain `<img>` so the
+  viewer's browser fetches the image directly, with `referrerPolicy`
+  `no-referrer` and a local fallback; no Colosseum host is in
+  `remotePatterns` and none should be added, because `next/image` would make
+  this application fetch and re-serve arbitrary remote bytes.
 - **The client's zod objects are not strict.** Unknown fields survive only
   inside the retained `raw` snapshot, and a renamed `teamMembers` would surface
   as a generic `INVALID_RESPONSE` rather than a precise error.
 
-Client gaps to close in phase 3: there is no listing client, no bracket array
-query builder, no `hackathons` envelope parsing, and `submittedAt`,
-`projectCompletion`, `category`, `twitterHandle`, `comments` and
-`isUniversityProject` are not in `projectSchema` or `ImportedProject`. There is
-also no storage for a snapshot's submission status or last refresh time.
+Client gaps as of phase 3: closed, except deliberately.
+`fetchEditionSubmissionWindow` parses the `hackathons` envelope with the
+bracket array form; `submittedAt`, `projectCompletion`, `category`, `tracks`
+and `twitterHandle` are in `lib/colosseum-schema.ts` and on `ImportedProject`;
+`hq_project_onboarding` stores the submission status, the last successful
+check and the last failure. Left out on purpose: a general listing client
+(nothing needs one now that phase 9 is removed), and `comments` /
+`isUniversityProject`, which no surface shows — the comment client went with
+the ownership-proof challenge.
 
 ## Companion asset
 
@@ -346,22 +382,20 @@ The approved project fallback image:
 - **Source:** `docs/plans/assets/hq-project-fallback.png`, untracked in this
   checkout. A copy is kept at
   `.superpowers/sdd/2026-09-13-hq-captains-and-colosseum/hq-project-fallback.png`.
-- **Target, phase 3:** `public/images/hq/project-fallback.png`.
+- **Target, phase 3: DONE.** `public/images/hq/project-fallback.png`,
+  referenced through `PROJECT_FALLBACK_IMAGE` in
+  `lib/hq/colosseum-snapshot.ts` and rendered by
+  `components/hq/builder-project-image.tsx`.
 
 The plan's original path, `assets/hq-project-fallback.png`, does not exist at the
-repository root. Phase 3 copies the source above and references the target path.
+repository root. Phase 3 copied the source above to the target path.
 
-## Handoff to phase 3 and phase 5
+## Handoff to phase 5 and later
 
-Phases 0, 1, 2 and 4 are complete. Phase 3 is next: the owner moved it ahead
-of phase 5 on 14 September 2026 and rewrote its scope (self-service imports
-gated on country and the admin-configured external edition id, no
-verification or approval step, join-by-link, admin deletion) — see
-`docs/plans/2026-09-13-hq-captains-and-colosseum.md`'s "Instructions for the
-next implementing session" for the brief. This section is what phase 3 needs
-to start without re-reading the whole log, plus what phase 5 will need
-whenever it follows. The per-task detail is in
-`docs/hq/implementation-log.md`; this is the short list.
+Phases 0, 1, 2, 3 and 4 are complete. **Phase 5 (weekly reporting) is next**,
+then phase 6 onward; there is no phase 9. This section is what a later phase
+needs to start without re-reading the whole log. The per-task detail is in
+`docs/hq/implementation-log.md`.
 
 ### Interfaces available now
 
@@ -379,7 +413,9 @@ whenever it follows. The per-task detail is in
   `ensurePersonForAccount`, `ensurePersonForRosterMember`,
   `linkPersonToAccount`, `correctPersonMatch` in `lib/hq/crm-identity.ts`, each
   writing through the query handle it is given so it joins the caller's
-  `BuilderDatabase.transaction`.
+  `BuilderDatabase.transaction`. Since phase 3, imported roster rows carry real
+  `person_id` values and a joiner's link redemption runs the merge branch of
+  `correctPersonMatch`.
 - **Capabilities and audit.** `grantCapability`, `revokeCapability`,
   `listActiveCapabilities`, `listActiveCapabilitiesForUsers`,
   `listCapabilityGrants`, `personTags` in `lib/hq/capabilities.ts`;
@@ -391,19 +427,21 @@ whenever it follows. The per-task detail is in
   `lib/hq/identity.ts`; `getBotConsent`, `setBotConsent`, `revokeBotConsent` in
   `lib/hq/telegram-consent.ts`.
 - **Store and view models.** `BuilderStore.profile(userId)`,
-  `BuilderStore.hasTeams(userId)`, `BuilderStore.teamById(projectId)`, `BuilderStore.ownClaim(userId,
-  projectId)`, `realEmail` in `lib/hq/builder-store.ts`; `builderDatabase()`,
-  `BuilderQuery`, `BuilderDatabase`, `atomically()` in `lib/hq/builder-db.ts`;
+  `BuilderStore.hasTeams(userId)`, `BuilderStore.teamById(projectId)`,
+  `BuilderStore.ownClaim(userId, projectId)`, `realEmail` in
+  `lib/hq/builder-store.ts`; `builderDatabase()`, `BuilderQuery`,
+  `BuilderDatabase`, `atomically()` in `lib/hq/builder-db.ts`;
   `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView`,
   `CaptainLeaderboardView` and their mappers in `lib/hq/view-models.ts`. A
   member response is built from a view model so it cannot carry an operator
-  field; `CapabilityGrant` and `AuditEvent` are operator-only shapes and never
-  reach one.
-- **Shell and routes.** `MEMBER_PUBLIC_PATHS`, `isMemberPath`, `safeMemberNext`
-  in `lib/hq/member-routes.ts`; `getMemberNav({ capabilities, hasTelegram,
-  hasTeams })` and `isNavItemCurrent` in `lib/hq/member-nav.ts`. A new phase 3
-  member page is one entry in `MEMBER_PUBLIC_PATHS` and, if it needs a menu
-  item, one item in `getMemberNav`.
+  field; `CapabilityGrant`, `AuditEvent` and `Person.removal` are
+  operator-only shapes and never reach one.
+- **Shell and routes.** `MEMBER_PUBLIC_PATHS`, `isMemberPath`, `safeMemberNext`,
+  `inviteLink`, `joinLink`, `parseJoinCode` in `lib/hq/member-routes.ts`;
+  `getMemberNav({ capabilities, hasTelegram, hasTeams })` and
+  `isNavItemCurrent` in `lib/hq/member-nav.ts`. A new member page is one entry
+  in `MEMBER_PUBLIC_PATHS` and, if it needs a menu item, one item in
+  `getMemberNav`.
 - **Test helpers.** `applyMigrations(pg)` and `pgliteBuilderDatabase(pg)` in
   `tests/hq/helpers/db.ts`.
 - **Captain service (phase 4, complete).** `lib/hq/captains.ts`:
@@ -412,149 +450,108 @@ whenever it follows. The per-task detail is in
   `listCaptainInvitations`), assignments (`assignCaptain`, `unassignCaptain`,
   `clearCaptainAssignments`, `countAssignmentsForCaptain`,
   `countAssignmentsForUsers`, `listAssignments`, `countAssignmentsByCaptain`),
-  reads (`leaderboard`, `currentCaptainOfProject`). `hq_captain_assignments`
-  is `CLEAR` on `hq:reset` (a project's Captain only means something for a
-  project that still exists); `hq_captain_invitations` and
-  `hq_captain_invitation_redemptions` are `KEEP` (account-level grant
-  history). Relevant to phase 3's admin deletion feature: deleting an
-  `hq_projects` row cascades into `hq_captain_assignments`
-  (`ON DELETE CASCADE`), so a deleted project's Captain history goes with it;
-  deleting an `hq_builder_profiles` row (a person) does **not** remove that
-  account's invitation, redemption or assignment rows — the foreign keys are
-  `ON DELETE SET NULL`, so the rows survive as history with a null actor,
-  which is what the non-replenishment rule and the leaderboard's "revoked
-  Captain disappears" behaviour both depend on.
+  reads (`leaderboard`, `currentCaptainOfProject`).
+- **Colosseum integration and deletion (phase 3, complete).** See the two rows
+  in the module map above, and the sections below.
 
-### Three consequences of the owner's phase 3 rewrite
+### What phase 3 settled, and what a later phase must not undo
 
-Recorded here, not only in the untracked plan file, because a session
-working from the repository checkout alone must not be left with a pointer
-to a file that is not in it. The owner's 14 September 2026 change removed
-Phase 3's verification/approval step entirely and added self-service
-join-by-link and admin deletion; three things in the existing codebase must
-be handled as a result, not discovered mid-task.
+1. **`verification` stays, and a successful import writes `'verified'`.** The
+   owner removed the verification *step*, not the column: it is the marker
+   `loadTeamMembership` (`lib/hq/authz-sql.ts`) and every reader over it uses
+   for "is this account a member of this team". Do not drop it, and do not
+   introduce a state an import cannot reach. A pre-existing row with
+   `verification <> 'verified'` is a legacy claim from before 14 September
+   2026; it has no route back to a usable team except an admin deleting it,
+   which is correct under the new rules and empty in practice.
+2. **There is no review surface.** `reviewBuilderProject`, the verification
+   controls, `proof_comment_id`, `proof_author_id` and
+   `hq_project_challenges` are gone. Do not re-add a control that implies a
+   review step still happens.
+3. **The gate is exactly two comparisons**, both read from the response body
+   and neither hard coded: `isNetherlands(project.country)` and
+   `project.hackathonId === hq_hackathon_onboarding.external_hackathon_id`.
+   `gateProject` in `lib/hq/project-import.ts` is the one copy;
+   `builder-store.ts#importTeam` re-checks inside its transaction as a last
+   line of defence, not as a second rule.
+4. **Every failure keeps its own message.** `IMPORT_REFUSAL_MESSAGES` and the
+   adapter's own per-code messages are asserted distinct by
+   `tests/hq/builder-import-ui.test.ts`. Colosseum's own error text is data
+   (`sourceCode`/`sourceMessage`, stored in `source_error_message` for
+   operators), never a member-facing message and never markup.
+5. **One submission interpretation.**
+   `lib/hq/colosseum-snapshot.ts#interpretSubmission` is the only writer of
+   `submission_status`, and `DRAFT_SIGNAL_CONFIRMED` (currently `false`) is
+   the single switch that decides whether a null `submittedAt` may read as
+   Not submitted. `projectCompletion.isComplete` is readiness and is not an
+   input. Phase 10's final-period work builds on this function; it does not
+   add a second reading.
+6. **The Captain-conflict race is closed by a lock.**
+   `checkCaptainConflict` (`lib/hq/captains.ts`) now locks the CRM person
+   rows its roster points at, in id order — lock-order step 3b. Phase 3
+   stamping `person_id` onto roster rows is what made that check reachable
+   and the race real; the decision recorded here is that locking beat
+   accepting it, because the state at stake is a stated product invariant.
 
-1. **The `verification = 'verified'` decision.**
-   `lib/hq/authz-sql.ts#loadTeamMembership` requires
-   `o.verification = 'verified'`, and `lib/hq/member-teams.ts`,
-   `lib/hq/builder-store.ts#updateTeam` and `redeemInvite` all lean on that
-   column being set correctly. Removing the verification *step* does not
-   mean dropping the column blind: phase 3 must choose between writing
-   `'verified'` on a successful import (the smallest change — every existing
-   reader keeps working unmodified) or retiring the concept and following
-   every one of those readers to a replacement rule. Either way, the choice
-   must not leave a membership check that no import can ever satisfy, which
-   would silently break every "verified team member" authorization path.
-2. **The admin review surface becomes vestigial.** `reviewBuilderProject` in
-   `lib/hq/actions/builders-admin.ts`, the verification controls in the
-   "Imported teams" panel (`components/hq/builder-admin.tsx`), and
-   `hq_project_onboarding.verification` / `proof_comment_id` /
-   `proof_author_id` exist to support a step phase 3 removes. Remove what is
-   dead rather than leaving controls that do nothing — a control with no
-   effect is worse than no control, because it tells the operator a review
-   step still happens.
-3. **Admin deletion reaches further than `hq_captain_assignments`.** The
-   "Captain service" row above already covers what deleting an `hq_projects`
-   or `hq_builder_profiles` row does to phase 4's tables. Phase 5, once it
-   exists, will add reporting rows (updates, entries, revisions) that will
-   also reference a project and an author account, and those tables do not
-   exist yet at this checkout. If phase 3's deletion feature lands before
-   phase 5's tables do, it cannot handle rows that do not yet exist — but
-   phase 5 must then check what phase 3 built and extend it, rather than
-   assuming phase 3's deletion is already complete for a project or a
-   person once phase 5's tables are added. Whichever phase is implemented
-   second should read this note and confirm deletion handles both.
+### Deletion, and what phase 5 owes it
 
-### What phase 3 also inherits from phase 4
+`lib/hq/record-deletion.ts` deletes a team and a person in one transaction
+each, audited, with the real counts read before the destructive step. Its
+header lists exactly what points at `hq_projects`, `hq_people` and
+`hq_crm_persons` **as of this checkout**.
 
-`assignCaptain`'s conflict check (`lib/hq/captains.ts#checkCaptainConflict`)
-has a second source — a linked imported-roster identity — that is
-**unreachable today**: every roster row's `person_id` is `NULL` until a
-roster import creates one, so the check can only ever resolve a roster row
-once someone has joined it directly. The moment phase 3 wires
-`ensurePersonForRosterMember` into the import path, roster rows start
-carrying real `person_id` values, and `assignCaptain`'s conflict check and
-`correctPersonMatch` (an operator action, `lib/hq/crm-identity.ts`) start
-sharing state with **no lock between them**: an admin correcting a person
-match at the same moment another admin assigns a Captain to a project that
-match's roster row belongs to could, in principle, land the very state T4.4
-closed for its other two races (a participant Captaining their own team).
-T4.4's own report names this explicitly and defers the decision — whether
-`checkCaptainConflict`'s roster scan needs to lock `hq_project_members`/
-`hq_crm_persons` the way it already locks `hq_project_onboarding`, or
-whether this is rare and operator-triggered enough on both sides to leave
-unlocked — to whoever implements phase 3.
+**Phase 5 must extend both functions.** Its reporting tables (periods,
+entries, revisions, outcomes) will reference a project and an author account,
+and they do not exist yet, so phase 3's deletions cannot handle them. Decide
+per table whether a cascade is right — a team update is meaningless without
+its team, a period outcome may be history worth keeping — and do not assume
+phase 3's deletion is already complete for a project or a person once phase
+5's tables land. `deleteProject` in `lib/hq/actions/projects.ts` delegates
+here, so extending these two functions covers the Projects board as well.
 
 ### The fallback asset
 
-Source `docs/plans/assets/hq-project-fallback.png` (untracked in this checkout;
-a copy is kept at
-`.superpowers/sdd/2026-09-13-hq-captains-and-colosseum/hq-project-fallback.png`).
-Phase 3 copies it to `public/images/hq/project-fallback.png` and references that
-target path. See "Companion asset" above.
+Done. `docs/plans/assets/hq-project-fallback.png` (untracked source) was
+copied to `public/images/hq/project-fallback.png` and is referenced through
+`PROJECT_FALLBACK_IMAGE` in `lib/hq/colosseum-snapshot.ts`.
+`components/hq/builder-project-image.tsx` renders it, as a plain `<img>` with
+an `onError` fallback and **not** `next/image`: routing a third-party CDN
+through `next/image` would mean allow-listing that host in `remotePatterns`
+and re-serving arbitrary remote bytes from this application. It is decorative
+project imagery, never a fallback for a human avatar. The file is 1.1 MB; a
+smaller export is an optional owner follow-up (manual setup 2.7).
 
 ### The unverified Colosseum edition
 
-The World's Fair external Colosseum id and slug are **unverified** and must not
-be guessed, seeded or hard coded. External id 6 is the finished **Frontier**
-edition, slug `frontier`. An edition with external id 7 exists but its project
-directory is disabled, so its name, slug and dates cannot be read from the
-public API. The operator types the confirmed id and slug into Admin, under
-Builder onboarding, and they are stored in `hq_hackathon_onboarding`. The `6`
-that appears inside HQ is the internal `hq_hackathons.id`, not Colosseum's id;
-never copy it into the external mapping. A "Dutch registrations" view must say
-"edition not available", never 0.
+Unchanged and still outstanding. The World's Fair external Colosseum id and
+slug are **unverified** and must not be guessed, seeded or hard coded.
+External id 6 is the finished **Frontier** edition, slug `frontier`. An
+edition with external id 7 exists but its project directory is disabled. The
+operator types the confirmed id and slug into Admin, under Builder
+onboarding, and they are stored in `hq_hackathon_onboarding`. The `6` that
+appears inside HQ is the internal `hq_hackathons.id`, never the external
+mapping. **Until it is set, every self-service import is refused with
+`edition_not_configured`** — phase 3 does not silently compare against null.
 
 ### Fixtures
 
 `tests/hq/fixtures/colosseum/`: `directories.json`, `listing.json`,
-`detail.json`, `errors.json` and a `README.md` that records provenance and which
-shapes are assumptions. Every project, roster, handle, display name, avatar URL
-and project id in them is invented. Phase 3 extends these files rather than
-inlining new response shapes, and `tests/colosseum-api.test.ts` already
-validates `detail.json`'s `submitted` entry against `projectSchema` on every
-run. `detail.json`'s `unsubmitted` entry is a structural assumption, unverified
-against a live draft.
+`detail.json`, `errors.json` and a `README.md` recording provenance and which
+shapes are assumptions. Every project, roster, handle, display name, avatar
+URL and project id in them is invented. Phase 3 extended the tests over these
+files rather than the files themselves: `tests/colosseum-api.test.ts`,
+`tests/hq/colosseum-snapshot.test.ts` and `tests/hq/builder-import-ui.test.ts`
+all validate against them, including `errors.json`'s "directory disabled" and
+"unknown edition" bodies, which are the pair the old adapter could not tell
+apart. `detail.json`'s `unsubmitted` entry remains a structural assumption,
+unverified against a live draft — which is exactly what
+`DRAFT_SIGNAL_CONFIRMED` refuses to build a red badge on.
 
-### Four notes phase 3 must not rediscover
-
-1. **Import then claim is `ensurePersonForRosterMember` plus a
-   `correctPersonMatch` merge.** The roster import creates or reuses a person by
-   normalized Colosseum username with `ensurePersonForRosterMember`, never by
-   display name. When that person's human later signs in, the account already
-   has its own person from `ensurePersonForAccount`, so joining the two is the
-   merge branch of `correctPersonMatch(db, { personId, toUserId, reason, actor
-   })`: cards and roster rows are re-pointed onto the survivor, the provisional
-   username moves, the merged person is deleted and `person.match_corrected` is
-   recorded, all in one transaction. Do not add a second link path, and do not
-   call `linkPersonToAccount` for this case; it refuses an account that already
-   holds a person.
-2. **`hq_people_person_idx` is `(hackathon_id, person_id)` unique where
-   `person_id IS NOT NULL`:** one People card per person per edition. Once
-   phase 3 creates People cards for roster persons, two cards of the same
-   edition can carry the same person, so every writer needs the guard the
-   backfill, the link stamp and `enroll()` already have (stamp only when no
-   other card of that edition carries the person, and report the collision
-   rather than failing). `correctPersonMatch` already reports an unstamped
-   colliding card in its result.
-3. **Remove the hard-coded `HACKATHON_ID = 6` in
-   `lib/hq/colosseum-interest.ts`.** It is the internal `hq_hackathons.id` of
-   the current edition written as a constant, which is exactly what the standing
-   rule forbids. Phase 3 takes the edition from the selection the rest of HQ
-   already uses and removes the constant.
-4. **Phase 7 joins bot consent on the identity row.** Permission to message
-   someone lives in `hq_telegram_bot_consent` (`user_id`, `telegram_user_id`,
-   `messaging_enabled`), and the Telegram account to message lives in
-   `hq_auth_telegram_identity`. Delivery must join the two and send only where
-   `messaging_enabled` is true and an identity row still exists; disconnecting
-   Telegram already revokes consent in the same operation. Nothing reads the
-   consent row to send anything today.
 
 ### What phase 5 needs from phase 4
 
-Phase 5 (reporting) is next after phase 3 in the plan's current order, but
-these facts are recorded now, while they are fresh, rather than left for
-whoever implements phase 5 to re-derive:
+Phase 5 (reporting) is the next phase. These facts were recorded when phase 4
+closed, rather than left for whoever implements phase 5 to re-derive:
 
 - **Assignment records are real.** `lib/hq/captains.ts#listAssignments(db, {
   hackathonId, captainUserId? })` returns every project's current Captain in
