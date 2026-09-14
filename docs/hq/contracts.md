@@ -77,7 +77,7 @@ exists yet and none should be created before that phase.
 
 | Module | Owns | Repo files | Typed entry points | Phase |
 |---|---|---|---|---|
-| Identity | verified login identities, sessions, linking, optional contact email | `lib/hq/member-auth.ts`, new `lib/hq/telegram-provider.ts`, new `lib/hq/telegram-identity-plugin.ts`, new `lib/hq/identity.ts`, `lib/hq/actions/telegram.ts` (member gated) | `isPlaceholderEmail(email)`, `getLoginMethods(userId)`, `hasTelegramIdentity(userId)`, `getTelegramIdentity(userId)`, `verifiedLoginEmail(user)`, `isVerifiedAccount(user)` (the one definition of "verified account"; every session reader imports it); phase 2: `isRecentSession(session)` and `telegramIsLastLoginMethod(user)` (the one recency rule and the one last-login-method rule, enforced by the plugin's before hooks and read by the confirmation actions), `recordTelegramIntent(store, userId, intent)`, `currentMemberSession()` (its `user.email` is null for a Telegram-only account: a `customSession` transform replaces the internal placeholder on `/get-session`, and so on every reader of a session, `StoredAccount.email` being `string | null` for that reason), `redirectToMemberSignIn(next)`, and the actions `confirmLinkTelegram()`, `confirmUnlinkTelegram()`; task T2.3: `confirmEmailChange(newEmail)` (the confirmation before the emailOTP change-email endpoints; the intent is bound to the address, and an account that already has a verified login email is refused with `EMAIL_ALREADY_SET`, so the endpoints only ever add a first address), `normalizeEmailAddress(value)`, the `user.update.after` hook in `member-auth.ts` (notifies the previous verified real address and records `identity.email_changed`), and in `lib/hq/telegram-consent.ts` `getBotConsent(userId)`, `setBotConsent(actor, enabled)`, `revokeBotConsent(userId, db)` with the action `setBotMessaging(enabled)` | 0 spike, then 1 and 2 |
+| Identity | verified login identities, sessions, linking, optional contact email | `lib/hq/member-auth.ts`, new `lib/hq/telegram-provider.ts`, new `lib/hq/telegram-identity-plugin.ts`, new `lib/hq/identity.ts`, `lib/hq/actions/telegram.ts` (member gated); task T4.2 added `lib/hq/placeholder-email.ts` (`PLACEHOLDER_DOMAIN` and `isPlaceholderEmail` are defined here — the one leaf module with no `server-only` and no Better Auth import — and re-exported, unchanged, from `telegram-provider.ts` and `identity.ts` for every existing caller) | `isPlaceholderEmail(email)`, `getLoginMethods(userId)`, `hasTelegramIdentity(userId)`, `getTelegramIdentity(userId)`, `verifiedLoginEmail(user)`, `isVerifiedAccount(user)` (the one definition of "verified account"; every session reader imports it); phase 2: `isRecentSession(session)` and `telegramIsLastLoginMethod(user)` (the one recency rule and the one last-login-method rule, enforced by the plugin's before hooks and read by the confirmation actions), `recordTelegramIntent(store, userId, intent)`, `currentMemberSession()` (its `user.email` is null for a Telegram-only account: a `customSession` transform replaces the internal placeholder on `/get-session`, and so on every reader of a session, `StoredAccount.email` being `string | null` for that reason), `redirectToMemberSignIn(next)`, and the actions `confirmLinkTelegram()`, `confirmUnlinkTelegram()`; task T2.3: `confirmEmailChange(newEmail)` (the confirmation before the emailOTP change-email endpoints; the intent is bound to the address, and an account that already has a verified login email is refused with `EMAIL_ALREADY_SET`, so the endpoints only ever add a first address), `normalizeEmailAddress(value)`, the `user.update.after` hook in `member-auth.ts` (notifies the previous verified real address and records `identity.email_changed`), and in `lib/hq/telegram-consent.ts` `getBotConsent(userId)`, `setBotConsent(actor, enabled)`, `revokeBotConsent(userId, db)` with the action `setBotMessaging(enabled)` | 0 spike, then 1 and 2 |
 | Authorization | operator checks, capabilities, membership, assignment, note audience | `lib/hq/authz.ts` with pure loaders in `lib/hq/authz-sql.ts`; member-facing team reads over the decision in `lib/hq/member-teams.ts`; operator actions resolve record ids through `inHackathon` in `lib/hq/actions/util.ts` | `getActorCapabilities(actor)`, `authorizeProjectAction(actor, { projectId, hackathonId, action }, loaders?)` returning `Authorization`, `requireOperator()`, `isTeamMember(actor, projectId)`, `isAssignedCaptain(actor, projectId)`, `entryAudience(entry, actor)`, `canEditEntry(actor, entry)`, `canReadRevisionHistory(actor)`, `assertHackathonMatches(record, hackathonId)`; loaders are injectable per call and never cached across requests. The typed hooks `loadCurrentAssignment(db, projectId)` (phase 4, reads real rows from `hq_captain_assignments` since task T4.1) and `loadEntry(db, entryId)` (phase 5, still a stub returning null until that table exists) live in `authz-sql.ts`; the decisions over them are tested with injected fixtures, independent of whether the loader body is real. `assertHackathonMatches` is defined in `authz-sql.ts` and re-exported from `authz.ts`: it reads no session, and `actions/util.ts` imports it from the leaf so the operator action modules do not reach the member auth graph (`tests/hq/operator-imports.test.ts`). `authorizedTeam(actor, { projectId, hackathonId?, action })` and `memberTeamView(actor, projectId)` return null for every denial; `inHackathon(record, hackathonId)` returns null for a missing record and for one from another edition alike | 1 |
 | Capability grants | grant and revoke, one effective grant per capability, audit trail | `lib/hq/capabilities.ts`, `lib/hq/actions/capabilities.ts` (operator gated) | `Capability = "captain"`, `grantCapability(db, { actor, byOperatorId, userId, capability, reason })` and `revokeCapability(db, ...)` (idempotent, the only writers of `hq_account_capabilities`, audit event in the same transaction). `actor` is the `AuditActor` the event records, `byOperatorId` the `hq_users` id the row is attributed to (`granted_by_user_id` / `revoked_by_user_id`) or null: a member redeeming a Captain invitation in phase 4 is a member actor with the inviting operator as `byOperatorId`. Grants are account-global, never scoped to an edition. Also `listActiveCapabilities(userId)`, `listActiveCapabilitiesForUsers(userIds)`, `listCapabilityGrants({ capability, activeOnly? })`, `personTags(roleLabel, capabilities)`; actions `grantCaptainCapability(userId, reason)`, `revokeCaptainCapability(userId, reason)` | 1 |
 | CRM person identity | stable person id, account link, edition People references, explicit correction | `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch(db, { personId, toUserId, reason, actor })` (detach, link, or merge into the account's own person; never by display name) and the operator action `correctPersonMatch({ personId, toUserId, reason })` | 1, used from 3 |
@@ -307,8 +307,13 @@ Limitations, all of which shape phase 3 and later:
   are listed, and no parameter to include drafts is documented. Registered but
   unsubmitted teams cannot be discovered.
 - **Ownership proof before submission is not possible** through the API, because
-  the comment challenge needs the detail endpoint to return the project. The
-  fallback is the existing manual review path.
+  the comment challenge needs the detail endpoint to return the project. As
+  of this checkout the fallback is the existing manual review path — but the
+  owner's 14 September 2026 change removes that step from phase 3 entirely
+  (see "Three consequences of the owner's phase 3 rewrite" below), so this
+  limitation stops having a fallback the moment phase 3 lands; it becomes an
+  open question the country/edition gate has to answer some other way, not a
+  gap manual review quietly covers.
 - **`submittedAt` is the submission signal.** It was non null on every observed
   row. Its value for a draft is unverified, assumed `null`.
 - **`projectCompletion` is a readiness diagnostic**, returned by the detail
@@ -419,6 +424,46 @@ whenever it follows. The per-task detail is in
   `ON DELETE SET NULL`, so the rows survive as history with a null actor,
   which is what the non-replenishment rule and the leaderboard's "revoked
   Captain disappears" behaviour both depend on.
+
+### Three consequences of the owner's phase 3 rewrite
+
+Recorded here, not only in the untracked plan file, because a session
+working from the repository checkout alone must not be left with a pointer
+to a file that is not in it. The owner's 14 September 2026 change removed
+Phase 3's verification/approval step entirely and added self-service
+join-by-link and admin deletion; three things in the existing codebase must
+be handled as a result, not discovered mid-task.
+
+1. **The `verification = 'verified'` decision.**
+   `lib/hq/authz-sql.ts#loadTeamMembership` requires
+   `o.verification = 'verified'`, and `lib/hq/member-teams.ts`,
+   `lib/hq/builder-store.ts#updateTeam` and `redeemInvite` all lean on that
+   column being set correctly. Removing the verification *step* does not
+   mean dropping the column blind: phase 3 must choose between writing
+   `'verified'` on a successful import (the smallest change — every existing
+   reader keeps working unmodified) or retiring the concept and following
+   every one of those readers to a replacement rule. Either way, the choice
+   must not leave a membership check that no import can ever satisfy, which
+   would silently break every "verified team member" authorization path.
+2. **The admin review surface becomes vestigial.** `reviewBuilderProject` in
+   `lib/hq/actions/builders-admin.ts`, the verification controls in the
+   "Imported teams" panel (`components/hq/builder-admin.tsx`), and
+   `hq_project_onboarding.verification` / `proof_comment_id` /
+   `proof_author_id` exist to support a step phase 3 removes. Remove what is
+   dead rather than leaving controls that do nothing — a control with no
+   effect is worse than no control, because it tells the operator a review
+   step still happens.
+3. **Admin deletion reaches further than `hq_captain_assignments`.** The
+   "Captain service" row above already covers what deleting an `hq_projects`
+   or `hq_builder_profiles` row does to phase 4's tables. Phase 5, once it
+   exists, will add reporting rows (updates, entries, revisions) that will
+   also reference a project and an author account, and those tables do not
+   exist yet at this checkout. If phase 3's deletion feature lands before
+   phase 5's tables do, it cannot handle rows that do not yet exist — but
+   phase 5 must then check what phase 3 built and extend it, rather than
+   assuming phase 3's deletion is already complete for a project or a
+   person once phase 5's tables are added. Whichever phase is implemented
+   second should read this note and confirm deletion handles both.
 
 ### What phase 3 also inherits from phase 4
 

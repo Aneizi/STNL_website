@@ -10,8 +10,9 @@ This file is tracked and it is the authoritative list. It contains variable
 code, waiting on the owner, or a live check that only the owner can run.
 Phase 4 (Captain invitations, assignments and the leaderboard) added no new
 environment variable; it added one live check, item L12 below. The remaining
-phases (3 and 5 to 11) will add to this file; nothing in it is removed as
-phases land, only moved between the three groups.
+phases — 3, 5, 6, 7, 8, 10 and 11; the owner removed phase 9 and the plan
+does not renumber around the gap — will add to this file; nothing in it is
+removed as phases land, only moved between the three groups.
 
 ## How to read this list
 

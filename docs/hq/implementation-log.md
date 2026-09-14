@@ -2443,7 +2443,40 @@ HQ does not currently offer.
 explicitly excluded from this fix wave as a phase 3 item, per the ledger; see
 `docs/hq/contracts.md`'s "Handoff to phase 3" for the current state of that
 control. The "agreed, can stay deferred" Minors from the review report are
-unchanged.
+unchanged. Three items created by this fix wave's own re-review, not
+recorded anywhere else tracked (the workspace ledger they were only in is
+deleted when the plan finishes):
+
+- **`lib/hq/member-auth-client.ts` is built without `customSessionClient`**,
+  so the inferred client session type still says `user.email: string` while
+  `lib/hq/member-auth.ts`'s `customSession` transform returns `null` for
+  every reader (including this one, once a client actually calls it).
+  Nothing calls `useSession()` today, so nothing is wrong yet — but this is
+  exactly the future client component the transform was chosen over
+  `disabledPaths` to protect (see "I2 fixed" above), and its type will lie
+  to that first caller instead of warning it. **Phase 7 hand-off**: whoever
+  writes the first client component that calls `useSession()` must add the
+  `customSessionClient` plugin at that point, not assume the inferred type
+  is already correct.
+- **`customSession` swallows a `getSession()` failure into a sign-out.** The
+  transform wraps the core `getSession()` call in `.catch(() => null)`, so
+  an adapter or database failure during a member session read now presents
+  to the member as an ordinary sign-out rather than an error. Fail-closed,
+  which is the right default, but undocumented until now. **Phase 7
+  hand-off**: the bot adapter and anything else built on top of a member
+  session read should expect this and not treat "no session" as proof the
+  member actually signed out.
+- **`AuditActor` still permits `{ kind: "operator", id: null }`**, and
+  nothing validates at runtime that `byOperatorId` (on `grantCapability`/
+  `revokeCapability`) is an `hq_users` uuid — a member id passed there fails
+  on the `::uuid` cast rather than being refused with a clear error. Noted
+  during the fix wave's own review as "phase 4 is the natural place to
+  narrow it"; phase 4 built two more callers of the same functions
+  (`lib/hq/captains.ts`'s invitation redemption and assignment revocation
+  cascade) without adding that validation. Not owned by a specific later
+  phase — carried forward for whoever next changes `lib/hq/capabilities.ts`
+  or adds another caller to reconsider, rather than left to be rediscovered
+  as a confusing cast error.
 
 **Changed interfaces:** `CapabilityChange = { actor: AuditActor;
 byOperatorId: string | null; userId: string; capability: Capability; reason:
@@ -2715,9 +2748,18 @@ passing.
 
 ### Blocked or deferred, task T4.2
 
-Two minors deferred by the coordinator, out of scope: the inline `style={{}}`
-on the Admin link panel; `hasTelegramIdentity` reading the global pool
-rather than the query handle it is passed. Neither affects correctness.
+Two minors deferred by the coordinator during fix round 1, out of scope: the
+inline `style={{}}` on the Admin link panel; `hasTelegramIdentity` reading
+the global pool rather than the query handle it is passed. Neither affects
+correctness. Two further minors surfaced only by the fix-round re-review,
+not overlapping the pair above: no automated test exercises the create
+form's `try/catch` added for Important 2 (component tests in this codebase
+use `renderToStaticMarkup`, which never drives `onSubmit`, so a regression
+here would currently pass unnoticed); and no test pins `MAX_VALIDITY_DAYS`'s
+365/366-day boundary, though the sibling `maxRedemptions` bound is tested at
+both edges. Both correct by inspection at this commit; neither is owned by
+a later phase specifically — either is a small addition whenever
+`lib/hq/actions/captains.ts` or `lib/hq/captains.ts` is next touched.
 
 ### Changed interfaces, task T4.2
 
@@ -2849,7 +2891,8 @@ token, and writes nothing"; "still records a continuation for a revoked
 token, carrying the revoked flag" (and the equivalent for expired and full);
 "rate-limits an address after repeated exchanges, and a limited request
 creates no continuation either". `tests/hq/invite-route.test.ts`: "checks
-the session (every /hq surface does) without ever gating on it"; "redirects
+the session (every /hq surface does, tests/hq/auth-boundary.test.ts) without
+ever gating on it"; "redirects
 to the tokenless continuation page, with no token anywhere in the target";
 "sets an httpOnly continuation cookie scoped to /hq/invite, and the stored
 continuation names the right invitation"; "consumes nothing, exchanged twice
@@ -3455,11 +3498,15 @@ proven.
      asserts the exact `FOR UPDATE` SQL text is still in
      `lib/hq/captains.ts`. The equivalent pair exists for assignment
      capacity: "two Promise.all-issued assignCaptain calls for the same
-     never-before-assigned project settle to one current row" (arithmetic)
-     plus "the ON CONFLICT DO NOTHING guard itself: a second current-row
-     insert for the same project is silently refused at the database level,
-     never a raised constraint violation" (a direct database-level proof of
-     the actual guarantee for the one case no lock covers) and "locks the
+     never-before-assigned project settle to one current row — proves
+     sequential safety only, the same thing the reassignment test already
+     proves" (both calls return `assigned`; this exercises the ordinary
+     reassignment path under PGlite's forced ordering, not the capacity
+     guard itself) plus "the ON CONFLICT DO NOTHING guard itself: a second
+     current-row insert for the same project is silently refused at the
+     database level, never a raised constraint violation" (a direct
+     database-level proof of the actual guarantee for the one case no lock
+     covers) and "locks the
      candidate's active grant, the project's onboarding row (if any) and the
      current assignment row for update" (the source-level lock guard for
      every other case).
@@ -3609,7 +3656,13 @@ environment variable.
 
 ### Verification run for phase 4, task T4.6
 
-Run at commit `e363fbe`, before this documentation commit.
+First run at commit `e363fbe` (the last commit to touch source, before this
+documentation task's own commits). Re-run and confirmed byte-for-byte
+identical at `9d7009a` (task T4.6's first documentation commit) and again at
+`fce1a9c` (the fix round below, this section's own final edit) — no source,
+schema or test file was touched by either documentation commit, so the
+numbers hold at every commit from `e363fbe` onward, including the branch's
+current head.
 
 - `npm run lint`: 0 errors, 18 warnings, all pre-existing and all in
   `public/deck/deck-stage.js`. Unchanged from the phase 0 baseline and from
