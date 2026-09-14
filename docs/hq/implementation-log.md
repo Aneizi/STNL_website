@@ -1357,3 +1357,150 @@ in `builder-schema.sql`.
 
 Nothing new. `RESEND_API_KEY` and `EMAIL_FROM` now also carry the
 recovery-email code and the change notice; see `docs/hq/manual-setup.md`.
+
+### What changed, task T2.4
+
+One member route list, a capability-driven member menu, and the captain
+page. No migration.
+
+New `lib/hq/member-routes.ts` (pure, client-safe: it is bundled for the
+browser through `member-auth-config.ts` and the sign-in form):
+`MEMBER_PUBLIC_PATHS` (thirteen entries; an entry ending in `/` names a
+subtree whose one remaining segment is an id, so `/hq/team/` and the phase 4
+invitation continuation `/hq/invite/`), `isMemberPath(pathname)` and
+`safeMemberNext(value)`, moved here with the same behaviour (same-origin
+relative paths only, `..` resolved before matching, query kept, fragment
+dropped, `/hq/welcome` fallback). `proxy.ts` asks `isMemberPath()` and keeps
+only its own two exceptions, the operator login and the retired signup URL;
+`lib/hq/member-auth-config.ts` re-exports `safeMemberNext` so the sign-in
+surfaces are unchanged. The team segment is now the same `[A-Za-z0-9_-]+`
+in both places (project ids are UUIDs; the proxy previously took any
+slash-free segment).
+
+New `lib/hq/member-nav.ts` (pure): `NavItem { key, label, href,
+activeUnder? }`, `getMemberNav({ capabilities, hasTelegram, teamCount })`
+and `isNavItemCurrent(item, pathname)`. Home goes to `/hq/dashboard`;
+Register team to `/hq/initialize` until the account has a team, then My
+teams to `/hq/dashboard` with the team pages as its section; Captain to
+`/hq/captain` with the capability only; Connect Telegram to `/hq/account`
+while no Telegram identity is linked (a call to action, never current);
+Account to `/hq/account`. Exactly one item is current on every member page.
+
+New `components/hq/builder-nav.tsx` (client): `MemberNavProvider`,
+`BuilderNav` (`usePathname`, `aria-current`, a list inside
+`<nav aria-label="HQ navigation">`) and `BuilderAccount` (the name and the
+Sign out control). `components/hq/builder-shell.tsx` renders both in the
+header; `back` is opt-in now and renders above the content; `wide` is
+unchanged. `BuilderSignOut` takes a `className`. The header wraps: below
+960px the menu drops onto its own wrapping row, the operator chrome's
+pattern, the account name ellipsises at 40vw, and nothing scrolls sideways
+at 400px.
+
+New `app/hq/(member)/layout.tsx`, NOT the auth boundary: it reads the
+request-cached `currentActor()` and the account's team count, derives the
+menu and hands it to the provider; null for a visitor or an operator
+session. A provider rather than a shell in the layout because layouts
+cannot pass data to their children and cannot read the pathname (installed
+`layout.md`, "Fetching Data" and "Pathname"); every page keeps composing
+`BuilderShell` with its own `back`, and the pre-auth screens render no
+shell, so they carry no menu. `actor.telegram` is the same identity-row
+read `getLoginMethods()` makes, so the layout does not call
+`getLoginMethods()`, which would add the user-row and profile reads for
+nothing the menu shows. It imports nothing operator-side.
+
+New `/hq/captain` (`captain/page.tsx` with its `loading.tsx`):
+`requireMemberActor()`, then `capabilities.has("captain")` from the grants
+read for this request, `notFound()` otherwise; "No assignments yet.
+Assignments appear here once an admin assigns you a team."; the Connect
+Telegram hint without a Telegram identity. Phase 4 fills it.
+
+`app/hq/(member)/dashboard/page.tsx`: `requireMemberActor`, a Connect
+Telegram card pointing at `/hq/account` for an account without a Telegram
+identity (a Telegram-only account always has one), sign-out moved to the
+shell, no Back (Home covers it). The account page and its skeleton lose
+their Back for the same reason; the team page states its Back to the
+dashboard. `/hq/signin` was already accurate per method from
+`getMemberAuthAvailability()` since task T2.1 (`unavailableCopy` in
+`account-form.tsx`: one line when neither method is configured), verified
+by `tests/hq/account-form.test.ts` and unchanged. The admin `(app)` layout,
+chrome and preloads are untouched.
+
+### Checks passed, task T2.4
+
+- Baseline 598 tests; after this task 744 in 33 files, `env -u DATABASE_URL
+  -u DATABASE_URL_UNPOOLED npm test`. `npx tsc --noEmit` clean. `npm run
+  lint`: 0 errors, the same 18 warnings in `public/deck/deck-stage.js`.
+  `npm run build` (same env) passes with `/hq/captain` a dynamic route and
+  the proxy compiled.
+- `tests/hq/member-routes.test.ts` (95): the list names every member page
+  once and nothing operator-side; every member page and the team and
+  invitation subtrees pass the proxy without a cookie and survive
+  `safeMemberNext` unchanged; every operator page bounces to `/hq/login`
+  and falls back to `/hq/welcome`; `/hq/login` and `/hq/signup` pass the
+  gate and are never destinations; neither `proxy.ts` nor
+  `member-auth-config.ts` carries a route literal of its own and the
+  re-export is the same function; `/hq/captain`, `/hq/account`,
+  `/hq/invite/abc` accepted; `//evil`, `https://evil`, `/hq/../..`,
+  `/hq/%61dmin`, a backslash, control characters and `javascript:`
+  rejected.
+- `tests/hq/member-nav.test.ts` (14): the capability sets from the brief
+  plus a captain without a team; Captain from the capability only, never
+  from a team or a link; every href is a member path and no label or href
+  is operator-side; one current item per member page; `BuilderNav` markup
+  with a single `aria-current`; `BuilderAccount` with the name and Sign
+  out; nothing without a provider; the shell with and without Back and
+  without the old "My HQ".
+- `tests/hq/member-shell.test.ts` (18): a static import scan of the layout,
+  the two pure modules and every `builder-*.tsx` (except
+  `builder-admin.tsx`, the operator's panel, which is forbidden as an
+  import instead) against queries, builder-admin-queries, auth, session,
+  hackathon, db, authz, chrome, toast, ui and every operator action module;
+  the pure modules carry no `server-only`, no `process.env` and no runtime
+  library import; the shell is a server component and the nav a client
+  one; the captain page is not found without the grant even with Telegram
+  linked, shows the empty state and the hint with it, and drops the hint
+  once linked; the dashboard card is present and absent by identity and
+  the page body carries no Sign out; the layout derives the menu from the
+  actor and the team count and provides nothing for a visitor or an
+  operator session.
+- `tests/hq/navigation-loading.test.ts` and `tests/hq/auth-boundary.test.ts`
+  pass with the new page; `tests/hq/member-auth-config.test.ts` unchanged
+  and passing through the re-export; `tests/hq/member-actions-authz.test.ts`
+  renders the team page through the new shell and passes.
+
+### Blocked or deferred, task T2.4
+
+- Not verified in a browser: the 960px wrap and the 400px header rest on
+  the CSS and the render tests.
+- Connect Telegram, in the menu and on the dashboard, follows the identity
+  rule the plan states. When Telegram sign-in is not configured both lead
+  to the account page's honest "Telegram sign-in is not available yet."
+  Hiding them until it is configured is a product decision.
+- Register team goes to `/hq/initialize`, the import flow for the current
+  edition, as the brief says; the dashboard's own call to action still goes
+  through `/hq/welcome` (edition choice, import or invite code).
+- `docs/hq/contracts.md` still says a member route is added "in two places,
+  until task T2.4", and its module map spells the derivation
+  `getMemberNav(actor)`; both are behind this task and belong to the T2.6
+  documentation pass.
+- Entering the member group from outside renders the layout's actor read
+  before a page's `loading.tsx` can show, the trade-off `(app)/layout.tsx`
+  already makes; navigating between member pages keeps the layout and shows
+  the page's skeleton with the menu in it.
+
+### Changed interfaces, task T2.4
+
+`lib/hq/member-routes.ts` exports `MEMBER_PUBLIC_PATHS`, `isMemberPath`,
+`safeMemberNext`; `lib/hq/member-auth-config.ts` re-exports
+`safeMemberNext`. `lib/hq/member-nav.ts` exports `NavItem`,
+`MemberNavInput`, `getMemberNav`, `isNavItemCurrent`.
+`components/hq/builder-nav.tsx` exports `MemberNavState`,
+`MemberNavProvider`, `BuilderNav`, `BuilderAccount`.
+`BuilderShell({ children, wide?, back? })`: `back` no longer defaults to
+the dashboard. `BuilderSignOut({ className? })`. Routes: `/hq/captain`;
+`/hq/invite/<token>` is an accepted destination with no page yet (phase 4).
+No migration.
+
+### External configuration still required, task T2.4
+
+Nothing new.
