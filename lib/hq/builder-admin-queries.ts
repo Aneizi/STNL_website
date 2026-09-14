@@ -2,10 +2,14 @@ import "server-only";
 import { requireUser } from "./auth";
 import { realEmail } from "./builder-store";
 import { listActiveCapabilitiesForUsers, listCapabilityGrants } from "./capabilities";
-import { countAssignmentsForUsers, listCaptainInvitations, type CaptainInvitationListing } from "./captains";
+import {
+  countAssignmentsForUsers, leaderboard, listAssignments, listCaptainInvitations,
+  type CaptainInvitationListing, type CurrentCaptainAssignment,
+} from "./captains";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
 import { operatorQuery } from "./queries";
+import type { CaptainLeaderboardView } from "./view-models";
 
 export type OnboardingConfig = {
   externalHackathonId: number | null;
@@ -100,7 +104,7 @@ export async function getBuilderAdminData() {
   await requireUser();
   const hackathon = await requireHackathon();
   const sql = getSql();
-  const [configs, accounts, requests, captains, invitations] = await Promise.all([
+  const [configs, accounts, requests, captains, invitations, captainLeaderboard, captainAssignments] = await Promise.all([
     sql`SELECT external_hackathon_id, external_hackathon_slug, projects_open,
         projects_available_at::text, signup_url, hosting_enabled
         FROM hq_hackathon_onboarding WHERE hackathon_id = ${hackathon.id}`,
@@ -117,6 +121,15 @@ export async function getBuilderAdminData() {
     // Invitations are account-global like the grants above, never scoped to
     // this hackathon's People list.
     listCaptainInvitations(operatorQuery()),
+    // The same leaderboard the Captain's own dashboard reads, gated here by
+    // this function's own requireUser() above rather than a second flag or
+    // function — see lib/hq/captains.ts#leaderboard. No viewer to mark "you".
+    leaderboard(operatorQuery(), hackathon.id, null),
+    // The admin-only drilldown: every current assignment in the edition,
+    // with the captain id and name listAssignments() carries and the
+    // member-facing leaderboard never does. A separate call from the
+    // Captain's own (which passes captainUserId), not a flag on this one.
+    listAssignments(operatorQuery(), { hackathonId: hackathon.id }),
   ]);
   const capabilities = await listActiveCapabilitiesForUsers(accounts.map((row) => String(row.id)), operatorQuery());
   // Confirm the affected project count to the admin before they revoke: this
@@ -148,6 +161,8 @@ export async function getBuilderAdminData() {
       title: String(row.title), details: String(row.details), status: row.status as BuilderHostRequest["status"],
     } satisfies BuilderHostRequest)),
     captainInvitations: invitations satisfies CaptainInvitationListing[],
+    captainLeaderboard: captainLeaderboard satisfies CaptainLeaderboardView[],
+    captainAssignments: captainAssignments satisfies CurrentCaptainAssignment[],
   };
 }
 

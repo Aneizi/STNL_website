@@ -637,3 +637,60 @@ describe("Captain assignment in Admin (task T4.4)", () => {
       .toContain("It captains no project right now.");
   });
 });
+
+describe("Captain leaderboard in Admin (task T4.5)", () => {
+  it("adds the edition-scoped leaderboard and the admin-only project drilldown, and never leaks another edition's Captain or project into them", async () => {
+    await grantCaptainCapability("selected", "Leads the cohort");
+    expect(await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" })).toEqual({ outcome: "assigned" });
+    // A live assignment in the OTHER edition, seeded directly: this edition's leaderboard and drilldown must never show it.
+    await grantCaptainCapability("other", "Leads elsewhere");
+    await rows("INSERT INTO hq_captain_assignments(project_id,captain_user_id,assigned_by_user_id) VALUES($1,$2,$3)", [OTHER_PROJECT, "other", OPERATOR]);
+
+    const admin = await getBuilderAdminData();
+    // "other" holds an active grant (account-global) but its one assignment
+    // is in the OTHER edition, so it correctly appears here at zero rather
+    // than being left off — a Captain grant, not a project, is what makes
+    // an account eligible for this edition's leaderboard at all.
+    expect(admin.captainLeaderboard).toEqual([
+      { rank: 1, displayName: "Selected Builder", assignedCount: 1, isYou: false },
+      { rank: 2, displayName: "Other Builder", assignedCount: 0, isYou: false },
+    ]);
+    expect(admin.captainAssignments).toEqual([
+      { projectId: BARE_PROJECT, projectName: "Bare project", hackathonId: 11, captainUserId: "selected", captainName: "Selected Builder", assignedAt: expect.any(String) },
+    ]);
+
+    const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, timezone: "Europe/Amsterdam" }));
+    expect(html).toContain("Captain leaderboard — Selected competition");
+    expect(html).toContain("Bare project");
+    // "Other Builder" legitimately appears on the leaderboard itself (an
+    // active grant, zero assignments in this edition); what must never
+    // appear is the other edition's own project, in the drilldown or
+    // anywhere else.
+    expect(html).not.toContain("other project");
+  });
+
+  it("excludes a not-active-status project from the count (but not from the drilldown), includes an eligible zero-assignment Captain in stable name order, and drops a revoked Captain entirely", async () => {
+    await grantCaptainCapability("selected", "Leads the cohort");
+    await grantCaptainCapability("other", "Leads the cohort");
+
+    await rows("INSERT INTO hq_project_statuses(slug,label,color,counts_as_active,sort) VALUES('red','Red','red',false,2)");
+    const [{ id: redStatusId }] = await rows("SELECT id::text AS id FROM hq_project_statuses WHERE slug='red'");
+    const redProject = "00000000-0000-4000-8000-0000000000aa";
+    await rows(`INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+      SELECT $1,11,'Red project',$2,f.id,current_date FROM hq_project_forecasts f`, [redProject, redStatusId]);
+    expect(await assignProjectCaptain({ projectId: redProject, captainUserId: "selected" })).toEqual({ outcome: "assigned" });
+
+    let admin = await getBuilderAdminData();
+    // Both Captains show zero: "selected"'s only assignment is on a not-active-status project, and "other" holds none in this edition at all. Stable name order for the tie.
+    expect(admin.captainLeaderboard).toEqual([
+      { rank: 1, displayName: "Other Builder", assignedCount: 0, isYou: false },
+      { rank: 2, displayName: "Selected Builder", assignedCount: 0, isYou: false },
+    ]);
+    // Admin's own drilldown still shows the red project: it is the full truth, unlike the leaderboard's active-only count.
+    expect(admin.captainAssignments.map((a) => a.projectName)).toContain("Red project");
+
+    expect(await revokeCaptainCapability("selected", "Stepped down")).toEqual({ ok: true });
+    admin = await getBuilderAdminData();
+    expect(admin.captainLeaderboard.map((row) => row.displayName)).toEqual(["Other Builder"]);
+  });
+});

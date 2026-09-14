@@ -10,10 +10,11 @@ import { createCaptainInvitation, revokeCaptainInvitation } from "@/lib/hq/actio
 import type {
   AccountLogin, ActiveCaptain, BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
 } from "@/lib/hq/builder-admin-queries";
-import type { CaptainInvitationListing } from "@/lib/hq/captains";
+import type { CaptainInvitationListing, CurrentCaptainAssignment } from "@/lib/hq/captains";
 import { fmtWithZone } from "@/lib/hq/format";
 import { inviteLink } from "@/lib/hq/member-routes";
 import type { ActionResult } from "@/lib/hq/types";
+import type { CaptainLeaderboardView } from "@/lib/hq/view-models";
 import { CopyButton } from "./ui-client";
 import styles from "./builder-admin.module.css";
 
@@ -93,9 +94,12 @@ function projectHref(value: string): string | undefined {
   return undefined;
 }
 
-export function BuilderAdmin({ config, hackathonName, accounts, captains, hostRequests, captainInvitations, timezone }: {
+export function BuilderAdmin({
+  config, hackathonName, accounts, captains, hostRequests, captainInvitations, captainLeaderboard, captainAssignments, timezone,
+}: {
   config: OnboardingConfig; hackathonName: string; accounts: BuilderAccount[]; captains: ActiveCaptain[]; hostRequests: BuilderHostRequest[];
-  captainInvitations: CaptainInvitationListing[]; timezone: string;
+  captainInvitations: CaptainInvitationListing[]; captainLeaderboard: CaptainLeaderboardView[]; captainAssignments: CurrentCaptainAssignment[];
+  timezone: string;
 }) {
   return (
     <>
@@ -123,6 +127,7 @@ export function BuilderAdmin({ config, hackathonName, accounts, captains, hostRe
       </section>
       <BuilderAccounts accounts={accounts} captains={captains} />
       <CaptainInvitations invitations={captainInvitations} timezone={timezone} />
+      <CaptainLeaderboard hackathonName={hackathonName} leaderboard={captainLeaderboard} assignments={captainAssignments} />
       <section className={styles.section} aria-labelledby="hosting-requests-title">
         <h2 id="hosting-requests-title">Event hosting requests</h2>
         <p>{config.hostingEnabled ? "Members can apply to host an event." : "Applications are disabled. Enable them in onboarding settings when ready."}</p>
@@ -330,6 +335,54 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
             </ActionForm>
           )}
           <p className={styles.muted}>Revoking stops future redemptions only. Accounts that already used this link keep Captain access until it is revoked for that account above.</p>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+/**
+ * The Captain leaderboard, edition-scoped, plus its drilldown — the one
+ * operator-only extra a Captain's own copy of this list never carries.
+ * `leaderboard` is the exact rank/name/count shape a Captain sees on their
+ * own dashboard (lib/hq/captains.ts#leaderboard, shared and separately
+ * gated at each call site); `assignments` is the wider admin-only read
+ * (`listAssignments`, with account ids), grouped here by Captain to answer
+ * "which projects does this Captain currently hold" without threading an id
+ * through the privacy-shaped leaderboard rows above.
+ */
+function CaptainLeaderboard({ hackathonName, leaderboard, assignments }: {
+  hackathonName: string; leaderboard: CaptainLeaderboardView[]; assignments: CurrentCaptainAssignment[];
+}) {
+  const byCaptain = new Map<string, { name: string; projects: string[] }>();
+  for (const row of assignments) {
+    const entry = byCaptain.get(row.captainUserId) ?? { name: row.captainName, projects: [] };
+    entry.projects.push(row.projectName);
+    byCaptain.set(row.captainUserId, entry);
+  }
+  return (
+    <section className={styles.section} aria-labelledby="captain-leaderboard-title">
+      <h2 id="captain-leaderboard-title">Captain leaderboard — {hackathonName}</h2>
+      <p>Current assigned-team counts for this hackathon&apos;s active projects. An account with an active Captain grant still appears at zero until it holds one.</p>
+      {leaderboard.length === 0 && <p>No account holds Captain access yet.</p>}
+      {leaderboard.length > 0 && (
+        <ol className={styles.roster} aria-label="Captain leaderboard">
+          {leaderboard.map((row) => (
+            <li key={row.rank}>
+              <span>{row.rank}. {row.displayName}</span>
+              <span className={styles.badge}>{row.assignedCount} project{row.assignedCount === 1 ? "" : "s"}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      <p>Which projects each Captain currently holds:</p>
+      {byCaptain.size === 0 && <p>No project currently has a Captain in this hackathon.</p>}
+      {[...byCaptain.entries()].map(([userId, entry]) => (
+        <article className={styles.row} key={userId}>
+          <h3>{entry.name}</h3>
+          <ul className={styles.roster} aria-label={`${entry.name} projects`}>
+            {entry.projects.map((name) => <li key={name}><span>{name}</span></li>)}
+          </ul>
         </article>
       ))}
     </section>
