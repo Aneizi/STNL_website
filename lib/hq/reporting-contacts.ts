@@ -1,6 +1,6 @@
 import "server-only";
 import { builderDatabase, type BuilderQuery } from "./builder-db";
-import { MAX_CONTACT_LENGTH, normalizeContact } from "./reporting-view";
+import { normalizeContact } from "./reporting-view";
 
 /**
  * The two opt-in contacts the reporting dashboards show, read and written

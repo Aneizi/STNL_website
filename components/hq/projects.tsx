@@ -11,6 +11,7 @@ import {
   useTransition,
 } from "react";
 import { IconBubbleAndPencil } from "@/components/hq/icons/IconBubbleAndPencil";
+import { ProjectReportingPanel } from "@/components/hq/reporting-project-panel";
 import { showToast } from "@/components/hq/toast";
 import { Badge, FormField, accentBtn, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
@@ -35,7 +36,10 @@ import {
   updateProjectDetail,
   updateProjectMember,
 } from "@/lib/hq/actions/projects";
+import type { CaptainReach } from "@/lib/hq/builder-admin-queries";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
+import type { ProjectReportingStatus } from "@/lib/hq/reporting";
+import { SUBMISSION_FILTER_LABEL, statusLabel } from "@/lib/hq/reporting-view";
 import type {
   Classifiers,
   NoteItem,
@@ -135,10 +139,12 @@ const panelField: React.CSSProperties = {
 
 // Gates carries a bar and a count, so it gets the widest fixed track; Blocker
 // is only a tick in this view (the text lives in the details panel), so it
-// needs no more than the glyph. The last track is the action column, wide
-// enough for the two-step delete's "Sure?", the same as the one on Links.
+// needs no more than the glyph. Weekly holds "Not updated" plus a missed
+// count, so it needs a little more than Check-in. The last track is the
+// action column, wide enough for the two-step delete's "Sure?", the same as
+// the one on Links.
 const gridColumns =
-  "minmax(0,1.8fr) minmax(0,1.3fr) minmax(0,1.4fr) 92px 105px 176px 92px 64px 46px";
+  "minmax(0,1.8fr) minmax(0,1.3fr) minmax(0,1.4fr) 92px 105px 176px 92px 104px 64px 46px";
 
 /**
  * The detail panel's Captain control: a picker limited to accounts with an
@@ -227,6 +233,8 @@ export function Projects({
   partnerOptions,
   eventOptions,
   captainOptions,
+  reporting,
+  captainReach,
   classifiers,
   settings,
   now,
@@ -237,6 +245,15 @@ export function Projects({
   eventOptions: EventOption[];
   /** Accounts with an active Captain grant, resolved server side — never every account, filtered on the client. */
   captainOptions: CaptainOption[];
+  /**
+   * Each project's weekly reporting state for this edition, from
+   * `reportingStatus` (a fixed number of queries whatever the project count).
+   * A project with no row here is simply not in weekly reporting, which is a
+   * real state rather than a missing one.
+   */
+  reporting: ProjectReportingStatus[];
+  /** Contact and delivery availability for the Captains currently assigned in this edition, keyed by account id. */
+  captainReach: Record<string, CaptainReach>;
   classifiers: Classifiers;
   settings: Settings;
   now: number;
@@ -255,6 +272,13 @@ export function Projects({
   const [statusFilter, setStatusFilter] = useState("");
   const [forecastFilter, setForecastFilter] = useState("");
   const [partnerFilter, setPartnerFilter] = useState("");
+  // The four reporting filters the plan names. Independent booleans, not one
+  // select: "Keep those indicators independent and combinable", so an admin
+  // can ask for an unassigned team that also missed a week.
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [notUpdatedOnly, setNotUpdatedOnly] = useState(false);
+  const [missedOnly, setMissedOnly] = useState(false);
+  const [notSubmittedOnly, setNotSubmittedOnly] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [teamModalFor, setTeamModalFor] = useState<string | null>(null);
   // One commit path: every panel control saves on change or blur, and this
@@ -290,6 +314,10 @@ export function Projects({
       setStatusFilter("");
       setForecastFilter("");
       setPartnerFilter("");
+      setUnassignedOnly(false);
+      setNotUpdatedOnly(false);
+      setMissedOnly(false);
+      setNotSubmittedOnly(false);
       setReviewMode(false);
       router.replace("/hq/projects");
     }
@@ -300,6 +328,10 @@ export function Projects({
   const statusBySlug = new Map(classifiers.statuses.map((s) => [s.slug, s]));
   const forecastBySlug = new Map(classifiers.forecasts.map((f) => [f.slug, f]));
   const srcOf = (p: Project) => [p.partnerName, p.eventSrc].filter(Boolean).join(", ");
+  // The board's reporting rows, by project id. A project with no row is not
+  // in weekly reporting; the column says so and the three weekly filters
+  // leave it out rather than guessing a state for it.
+  const reportingBy = new Map(reporting.map((row) => [row.projectId, row]));
 
   const pickStatus = (projectId: string, slug: string, review: boolean) => {
     startTransition(async () => {
@@ -535,13 +567,23 @@ export function Projects({
     : null;
 
   const q = projSearch.toLowerCase();
-  const filtered = optimistic.filter(
-    (p) =>
-      (!q || p.name.toLowerCase().includes(q) || p.leadName.toLowerCase().includes(q)) &&
-      (!statusFilter || p.statusSlug === statusFilter) &&
-      (!forecastFilter || uiForecast(p.forecastSlug) === forecastFilter) &&
-      (!partnerFilter || p.partnerId === partnerFilter),
-  );
+  const filtered = optimistic.filter((p) => {
+    const weekly = reportingBy.get(p.id);
+    return (!q || p.name.toLowerCase().includes(q) || p.leadName.toLowerCase().includes(q))
+      && (!statusFilter || p.statusSlug === statusFilter)
+      && (!forecastFilter || uiForecast(p.forecastSlug) === forecastFilter)
+      && (!partnerFilter || p.partnerId === partnerFilter)
+      && (!unassignedOnly || !p.captainUserId)
+      // "Not updated this period" is about the week that is open now, so a
+      // project outside the campaign window, paused, or not in reporting is
+      // not one of them.
+      && (!notUpdatedOnly || Boolean(weekly && !weekly.paused && weekly.current && !weekly.current.completed))
+      && (!missedOnly || (weekly?.missedPeriods ?? 0) > 0)
+      // Colosseum's own signal, kept separate from the weekly one: "Not
+      // checked" is not "Not submitted", so only the confirmed reading
+      // matches here.
+      && (!notSubmittedOnly || weekly?.submissionStatus === "not_submitted");
+  });
 
   const statusFilters = [
     { value: "", label: "All" },
@@ -973,6 +1015,34 @@ export function Projects({
                 </option>
               ))}
             </select>
+            {/* Four independent toggles, so any combination is askable: an
+                unassigned team that also missed a week is one click each. */}
+            <div style={{ display: "flex", boxShadow: "0 0 0 1px var(--sep)", padding: 2, flexWrap: "wrap" }}>
+              {[
+                { label: "Unassigned", on: unassignedOnly, set: setUnassignedOnly },
+                { label: "Not updated", on: notUpdatedOnly, set: setNotUpdatedOnly },
+                { label: "Missed weeks", on: missedOnly, set: setMissedOnly },
+                { label: SUBMISSION_FILTER_LABEL, on: notSubmittedOnly, set: setNotSubmittedOnly },
+              ].map((toggle) => (
+                <button
+                  key={toggle.label}
+                  aria-pressed={toggle.on}
+                  onClick={() => toggle.set(!toggle.on)}
+                  style={{
+                    border: "none",
+                    cursor: "pointer",
+                    padding: "5px 12px",
+                    borderRadius: 0,
+                    fontSize: 13,
+                    background: toggle.on ? "var(--label-1)" : "none",
+                    color: toggle.on ? "var(--bg)" : "var(--label-2)",
+                    fontWeight: toggle.on ? 600 : 400,
+                  }}
+                >
+                  {toggle.label}
+                </button>
+              ))}
+            </div>
           </div>
           <div
             style={{
@@ -983,7 +1053,7 @@ export function Projects({
               overflowX: "auto",
             }}
           >
-            <div style={{ minWidth: 990 }}>
+            <div style={{ minWidth: 1094 }}>
               <div
                 style={{
                   display: "grid",
@@ -1007,6 +1077,7 @@ export function Projects({
                 <span>Forecast</span>
                 <span>Gates</span>
                 <span>Check-in</span>
+                <span>Weekly</span>
                 <span>Blocker</span>
                 <span />
               </div>
@@ -1014,6 +1085,7 @@ export function Projects({
                 const done = p.gates.length;
                 const del = armedDelete(`project-${p.id}`, "×", () => onDeleteProject(p.id));
                 const stale = isStale(p.lastCheckIn, settings.staleDays, now);
+                const weekly = reportingBy.get(p.id) ?? null;
                 const expanded = expandedId === p.id;
                 const status = statusBySlug.get(p.statusSlug);
                 const source = srcOf(p) || "Direct";
@@ -1093,6 +1165,20 @@ export function Projects({
                         }}
                       >
                         {fmtDate(p.lastCheckIn)}
+                      </span>
+                      {/* The week as HQ records it, with any earlier weeks
+                          missed underneath. Colosseum's own submitted signal
+                          stays out of this column: they are separate facts,
+                          and the filters above keep them separate too. */}
+                      <span style={{ fontSize: 13, color: "var(--label-2)", lineHeight: 1.25 }}>
+                        {weekly
+                          ? <>
+                              <span style={{ color: weekly.paused ? "var(--label-3)" : weekly.current?.completed ? "var(--green)" : "var(--label-1)" }}>
+                                {weekly.paused ? "Paused" : weekly.current ? statusLabel(weekly.current.completed) : "No open week"}
+                              </span>
+                              {weekly.missedPeriods > 0 ? <><br /><span style={{ fontSize: 12, color: "var(--red)" }}>{weekly.missedPeriods} missed</span></> : null}
+                            </>
+                          : <span style={{ color: "var(--label-3)" }}>Not in reporting</span>}
                       </span>
                       {/* A blocker is a yes/no signal at this altitude; the
                           text itself is one row-click away, in the panel. */}
@@ -1546,6 +1632,18 @@ export function Projects({
                               );
                             })}
                           </div>
+                          {/* The rest of this project's reporting, loaded when
+                              the row is opened rather than for every row on
+                              the board: the columns above already carry the
+                              week itself. */}
+                          <ProjectReportingPanel
+                            projectId={p.id}
+                            projectName={p.name}
+                            status={weekly}
+                            captainName={p.captainName}
+                            reach={p.captainUserId ? captainReach[p.captainUserId] : undefined}
+                            timezone={settings.timezone}
+                          />
                         </div>
                       </div>
                     ) : null}

@@ -11,6 +11,17 @@ import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
 import { operatorQuery } from "./queries";
 import { teamRemovalImpacts, type TeamRemovalImpact } from "./record-deletion";
+import { readCaptainContacts } from "./reporting-contacts";
+import {
+  previewReportingPeriods,
+  readReportingConfig,
+  readReportingSchedule,
+  reportingStatus,
+  type ProjectReportingStatus,
+  type ReportingConfig,
+  type ReportingPeriodPlan,
+  type ReportingSchedule,
+} from "./reporting";
 import type { CaptainLeaderboardView } from "./view-models";
 
 export type OnboardingConfig = {
@@ -42,6 +53,10 @@ export type BuilderAccount = AccountLogin & {
   captain: boolean;
   /** Current assignments this account would lose if its Captain grant were revoked now, across every edition. 0 when `captain` is false. */
   captainAssignmentCount: number;
+  /** The contact this account approved for the teams it captains, or null. Only ever what they typed in themselves. */
+  captainContact: string | null;
+  /** Whether the HQ bot could message them: a linked Telegram identity is not the same as permission to message it. */
+  botMessaging: boolean;
 };
 
 /** An active Captain grant, for the Admin overview. Grants are account-global, not per hackathon. */
@@ -110,6 +125,15 @@ const optionalText = (value: unknown) => (value == null ? null : String(value));
  */
 const LOGIN_COLUMNS = `b.email, t.user_id IS NOT NULL AS has_telegram, t.username AS telegram_username`;
 const LOGIN_JOIN = `LEFT JOIN hq_auth_telegram_identity t ON t.user_id = b.id`;
+/**
+ * Whether the bot may message this account, which the plan asks Admin to
+ * show beside the Telegram connection. They are two different facts:
+ * connecting Telegram proves who someone is, and this row records that they
+ * agreed to be messaged. Read here rather than through getBotConsent(), so
+ * the account list stays one query instead of one per row.
+ */
+const CONSENT_COLUMNS = `COALESCE(bc.messaging_enabled, false) AS bot_messaging`;
+const CONSENT_JOIN = `LEFT JOIN hq_telegram_bot_consent bc ON bc.user_id = b.id`;
 const login = (row: Record<string, unknown>): AccountLogin => ({
   email: realEmail(row.email),
   telegram: row.has_telegram ? { username: optionalText(row.telegram_username) } : null,
@@ -123,8 +147,8 @@ export async function getBuilderAdminData() {
     sql`SELECT external_hackathon_id, external_hackathon_slug, projects_open,
         projects_available_at::text, signup_url, hosting_enabled
         FROM hq_hackathon_onboarding WHERE hackathon_id = ${hackathon.id}`,
-    sql.query(`SELECT b.id, b.name, b.contact_email, b.tier, ${LOGIN_COLUMNS}
-        FROM hq_builder_profiles b ${LOGIN_JOIN}
+    sql.query(`SELECT b.id, b.name, b.contact_email, b.tier, b.captain_contact, ${LOGIN_COLUMNS}, ${CONSENT_COLUMNS}
+        FROM hq_builder_profiles b ${LOGIN_JOIN} ${CONSENT_JOIN}
         WHERE EXISTS (SELECT 1 FROM hq_people p
           WHERE p.builder_user_id = b.id AND p.hackathon_id = $1)
         ORDER BY b.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
@@ -178,6 +202,8 @@ export async function getBuilderAdminData() {
       tier: row.tier === "member" ? "member" : "regular",
       captain: (capabilities.get(String(row.id)) ?? []).includes("captain"),
       captainAssignmentCount: assignmentCounts.get(String(row.id)) ?? 0,
+      captainContact: optionalText(row.captain_contact),
+      botMessaging: Boolean(row.bot_messaging),
     } satisfies BuilderAccount)),
     captains: captains.map((grant) => ({
       userId: grant.userId, name: grant.userName, grantedAt: grant.grantedAt, reason: grant.reason,
@@ -243,4 +269,105 @@ export async function getBuilderProjectReviews() {
       projectUrl: String(row.project_url), note: String(row.note), status: row.status as BuilderImportRequest["status"],
     } satisfies BuilderImportRequest)),
   };
+}
+
+/* ── Weekly reporting, phase 6 ─────────────────────────────────────── */
+
+/**
+ * The edition's reporting schedule as Admin shows it, with the preview of
+ * what applying the current dates would do.
+ *
+ * `previewReportingPeriods` writes nothing: it is the plan's "show affected
+ * periods before an admin changes a live schedule", and the conflicts it
+ * returns are the weeks a date edit must not move because people have
+ * already reported against them or because they are closed.
+ */
+export type ReportingAdminData = {
+  hackathonId: number;
+  hackathonName: string;
+  /** Null only for an edition that no longer exists. The window and timezone come from the edition's own record. */
+  schedule: ReportingSchedule | null;
+  config: ReportingConfig;
+  plan: ReportingPeriodPlan;
+  /** How many projects are in weekly reporting, and how many of those are paused. */
+  enrolled: number;
+  paused: number;
+};
+
+export async function getReportingAdminData(): Promise<ReportingAdminData> {
+  await requireUser();
+  const hackathon = await requireHackathon();
+  const db = operatorQuery();
+  const [schedule, config, plan, statuses] = await Promise.all([
+    readReportingSchedule(db, hackathon.id),
+    readReportingConfig(db, hackathon.id),
+    previewReportingPeriods(db, hackathon.id),
+    reportingStatus(db, { hackathonId: hackathon.id }),
+  ]);
+  return {
+    hackathonId: hackathon.id,
+    hackathonName: hackathon.name,
+    schedule,
+    config,
+    plan,
+    enrolled: statuses.length,
+    paused: statuses.filter((status) => status.paused).length,
+  };
+}
+
+/** How reachable a Captain is, for the Projects board's own Captain line. */
+export type CaptainReach = {
+  contact: string | null;
+  telegram: boolean;
+  /** Telegram connected AND messaging agreed to. The bot cannot message an account that only did the first. */
+  botMessaging: boolean;
+};
+
+export type ProjectReportingBoard = {
+  /** One row per project in weekly reporting, keyed by project id in the map below. */
+  statuses: ProjectReportingStatus[];
+  /** Reach details for the Captains currently assigned in this edition, keyed by account id. */
+  captains: Record<string, CaptainReach>;
+};
+
+/**
+ * The reporting half of the Projects board: every project's weekly state in
+ * the edition, in `reportingStatus`'s fixed number of queries whatever the
+ * project count, plus the contact and delivery availability of the Captains
+ * those projects are assigned to.
+ *
+ * `ProjectReportingStatus` carries `projectName` and `imported` itself, so a
+ * project with no imported team behind it is a complete row here. The board
+ * joins these to its own rows by project id and leaves a project with no
+ * reporting row showing as not in reporting, which is a real state rather
+ * than a missing one.
+ */
+export async function getProjectReportingBoard(): Promise<ProjectReportingBoard> {
+  await requireUser();
+  const hackathon = await requireHackathon();
+  const db = operatorQuery();
+  const statuses = await reportingStatus(db, { hackathonId: hackathon.id });
+  const captainIds = [...new Set(statuses.map((status) => status.captainUserId).filter((id): id is string => id !== null))];
+  if (!captainIds.length) return { statuses, captains: {} };
+  const sql = getSql();
+  const [contacts, reach] = await Promise.all([
+    readCaptainContacts(db, captainIds),
+    sql.query(
+      `SELECT b.id, t.user_id IS NOT NULL AS has_telegram, COALESCE(bc.messaging_enabled, false) AS bot_messaging
+       FROM hq_builder_profiles b
+       LEFT JOIN hq_auth_telegram_identity t ON t.user_id = b.id
+       LEFT JOIN hq_telegram_bot_consent bc ON bc.user_id = b.id
+       WHERE b.id = ANY($1::text[])`,
+      [captainIds],
+    ) as Promise<Record<string, unknown>[]>,
+  ]);
+  const captains: Record<string, CaptainReach> = {};
+  for (const row of reach) {
+    captains[String(row.id)] = {
+      contact: contacts.get(String(row.id)) ?? null,
+      telegram: Boolean(row.has_telegram),
+      botMessaging: Boolean(row.bot_messaging),
+    };
+  }
+  return { statuses, captains };
 }

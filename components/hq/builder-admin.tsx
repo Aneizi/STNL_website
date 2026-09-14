@@ -173,6 +173,14 @@ export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccou
           </div>
           <p>{loginLabel(account)}</p>
           {account.contactEmail && <p>Contact email: {account.contactEmail}</p>}
+          {/* Two different facts, so they are said separately: a linked
+              Telegram account proves who someone is, and bot messaging is
+              their separate agreement to be messaged. The Wednesday
+              reminders in phase 8 need the second one, not the first. */}
+          <p>{account.telegram
+            ? account.botMessaging ? "Telegram connected, bot messages allowed." : "Telegram connected, bot messages not allowed yet."
+            : "No Telegram connection, so the bot cannot reach this account."}</p>
+          {account.captain && <p>Contact for their teams: {account.captainContact ?? "none shared yet"}</p>}
           <ActionForm action={(data) => updateBuilderTier(account.id, data.get("tier") === "member" ? "member" : "regular")}>
             <div className={styles.tier}>
               <label>Membership<select name="tier" defaultValue={account.tier}><option value="regular">Regular</option><option value="member">Member</option></select></label>
