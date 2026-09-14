@@ -546,8 +546,13 @@ smaller export is an optional owner follow-up (manual setup 2.7).
 live project of that edition whose response carries
 `hackathon: { id: 7, name: "Crypto World's Fair", slug: "crypto-worlds-fair" }`.
 That edition's project directory is still disabled, so it is absent from
-`GET /api/projects/directories` and its submission window cannot be read yet;
-the detail endpoint is what confirmed it. External id 6 is the finished
+`GET /api/projects/directories` and **Colosseum's own** submission deadline
+(`projectSubmissionEndDate`) cannot be read yet; the detail endpoint is what
+confirmed the edition. Do not confuse that deadline with **HQ's** hackathon
+dates (`hq_hackathons.start_date`/`end_date`, set in Admin), which are what
+phase 5's reporting periods run on and which are already in place.
+`fetchEditionSubmissionWindow` and `submittedOnTime` have no production
+caller today — they exist for phase 10. External id 6 is the finished
 **Frontier** edition, slug `frontier`.
 
 **Knowing the value changes nothing about where it lives.** It is still

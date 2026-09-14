@@ -340,8 +340,12 @@ variable, never a constant and never seeded.
 - That edition's **project directory is still disabled**, so it does not
   appear in `GET /api/projects/directories` and its projects cannot be
   listed — which is why the detail endpoint, not the directory, is what
-  confirmed it. It also means the edition's submission window
-  (`projectSubmissionEndDate`) cannot be read yet.
+  confirmed it. It also means **Colosseum's own** submission deadline
+  (`projectSubmissionEndDate`, from the listing envelope) cannot be read yet.
+  That is a different thing from **HQ's** hackathon dates, which you already
+  set in Admin and which are what reporting periods run on; nothing in HQ
+  reads Colosseum's deadline today, and only phase 10 ("a confirmed, on-time
+  Colosseum submission satisfies the final reporting period") will.
 - External Colosseum id 6 is the **Frontier** edition, slug `frontier`. It
   finished, and submissions closed on 2026-05-12. It is **not** the current
   campaign.
