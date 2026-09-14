@@ -1066,21 +1066,37 @@ describe("currentCaptainOfProject", () => {
   });
 });
 
-describe("the T4.5 reads are not exposed as a Server Action", () => {
+describe("the T4.5 reads are not exposed as a Server Action or a route handler", () => {
   // "No route a Captain can hit to read another Captain's assignments: ...
   // no action that takes a captainUserId" — this task adds no Server Action
-  // at all (reads only), and this keeps it that way: none of the new
-  // functions may be re-exported from a "use server" module, which is what
-  // would turn a server-side read into something a client could call
-  // directly with an id of its choosing.
-  it("finds no reference to leaderboard, listAssignments or currentCaptainOfProject in any Server Action module", () => {
-    const actionsDir = join(process.cwd(), "lib/hq/actions");
-    const files = readdirSync(actionsDir).filter((name) => name.endsWith(".ts") && readFileSync(join(actionsDir, name), "utf8").startsWith('"use server"'));
-    expect(files.length).toBeGreaterThan(0);
-    for (const name of files) {
-      const source = readFileSync(join(actionsDir, name), "utf8");
+  // and no route handler at all (reads only), and this keeps it that way:
+  // none of the new functions may be re-exported from a "use server" module
+  // or a route.ts anywhere in the app, which is what would turn a
+  // server-side read into something a client could call directly with an id
+  // of its choosing. The whole repo is walked, not just lib/hq/actions: two
+  // "use server" files already live outside it
+  // (app/colosseum/start/interest/actions.ts,
+  // app/hq/(member)/profile/actions.ts), and a route handler needs no "use
+  // server" directive to be reachable from a request.
+  function walk(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) return [];
+      const full = join(dir, entry.name);
+      return entry.isDirectory() ? walk(full) : [full];
+    });
+  }
+
+  it("finds no reference to leaderboard, listAssignments or currentCaptainOfProject in any Server Action module or app/**/route.ts", () => {
+    const root = process.cwd();
+    const candidates = [...walk(join(root, "app")), ...walk(join(root, "lib"))].filter((file) => file.endsWith(".ts") || file.endsWith(".tsx"));
+    const files = [...new Set(candidates.filter((file) => file.endsWith("route.ts") || readFileSync(file, "utf8").startsWith('"use server"')))];
+    // Without this the scan could pass by finding nothing at all: 18 "use
+    // server" modules plus 4 route.ts handlers, as of this writing.
+    expect(files.length).toBeGreaterThanOrEqual(20);
+    for (const file of files) {
+      const source = readFileSync(file, "utf8");
       for (const symbol of ["leaderboard", "listAssignments", "currentCaptainOfProject"]) {
-        expect(source, `${name} references ${symbol}`).not.toMatch(new RegExp(`\\b${symbol}\\b`));
+        expect(source, `${file} references ${symbol}`).not.toMatch(new RegExp(`\\b${symbol}\\b`));
       }
     }
   });
