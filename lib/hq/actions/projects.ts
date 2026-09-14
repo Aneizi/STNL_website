@@ -2,8 +2,10 @@
 
 import { z } from "zod";
 import { requireUser } from "../auth";
+import { builderDatabase } from "../builder-db";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
+import { deleteTeamRecord } from "../record-deletion";
 import type { ActionResult } from "../types";
 import { activityStmt, hqToday, inHackathon, refreshHq } from "./util";
 
@@ -426,18 +428,21 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
  * its winner cleared rather than being deleted. Two-step confirmed in the UI,
  * so there is no soft-delete to undo it from.
  */
+/**
+ * Deletes a project from the Projects board. Phase 3 moved the statement
+ * itself into `lib/hq/record-deletion.ts` so this and the Imported teams
+ * panel's own Delete team control (`lib/hq/actions/builders-admin.ts`) share
+ * ONE deletion: one transaction, every dependent row removed or explicitly
+ * detached, and a `project.deleted` audit event naming what went. Two
+ * separately maintained delete paths for the same row is exactly how one of
+ * them ends up stranding a Captain assignment or a reporting entry.
+ */
 export async function deleteProject(projectId: string): Promise<ActionResult> {
   const user = await requireUser();
   const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const project = inHackathon(await getProject(projectId), selected.id);
-  if (!project) return { ok: false, error: "Project not found." };
-
-  const sql = getSql();
-  await sql.transaction([
-    sql`DELETE FROM hq_projects WHERE id = ${projectId}`,
-    activityStmt(user.id, project.hackathonId, `Deleted project ${project.name}`),
-  ]);
+  const removed = await deleteTeamRecord(builderDatabase(), { projectId, hackathonId: selected.id, operatorId: user.id });
+  if (!removed) return { ok: false, error: "Project not found." };
   refreshHq();
   return { ok: true };
 }

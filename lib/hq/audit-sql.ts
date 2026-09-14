@@ -29,6 +29,12 @@ export const AUDIT_EVENT_KINDS = [
   "captain.invitation_created",
   "captain.invitation_revoked",
   "captain.invitation_redeemed",
+  // Phase 3. `project.imported` is the first member-actor write of a project
+  // event; the two deletions are operator-only and are the reason an admin
+  // can remove a record without the removal itself disappearing with it.
+  "project.imported",
+  "project.deleted",
+  "person.deleted",
 ] as const;
 
 export type AuditEventKind = (typeof AUDIT_EVENT_KINDS)[number];

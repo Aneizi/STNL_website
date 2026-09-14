@@ -193,6 +193,7 @@ describe("the audit module", () => {
       "capability.granted", "capability.revoked", "identity.linked", "identity.unlinked", "identity.email_changed",
       "bot.consent_changed", "person.linked", "person.match_corrected", "captain.assigned", "captain.unassigned",
       "captain.invitation_created", "captain.invitation_revoked", "captain.invitation_redeemed",
+      "project.imported", "project.deleted", "person.deleted",
     ]);
   });
 

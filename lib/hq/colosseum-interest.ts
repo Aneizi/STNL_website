@@ -7,15 +7,31 @@ type InterestDb = {
   query: (text: string, params?: unknown[]) => Promise<Record<string, unknown>[]>;
 };
 
-const HACKATHON_ID = 6;
 const LIMIT = 20;
 const RATE_LIMIT_ERROR = "Too many attempts. Please try again in 15 minutes.";
 const UNAVAILABLE_ERROR = "We couldn't save your interest. Please try again shortly.";
 
+/**
+ * The edition a public, unauthenticated submission belongs to: the same
+ * server-side pick every other surface without an edition selector uses
+ * (soonest-ending edition that has not ended, else the soonest upcoming one,
+ * archived excluded). It used to be a hard-coded internal hq_hackathons.id
+ * written into this module — exactly what the standing rule forbids, and a
+ * row this form would have silently stopped writing the moment that edition
+ * was archived.
+ */
+async function currentHackathonId(db: InterestDb): Promise<number | null> {
+  const [row] = await db.query(
+    `SELECT id FROM hq_hackathons WHERE archived_at IS NULL
+     ORDER BY (end_date >= current_date) DESC, start_date ASC LIMIT 1`,
+  );
+  return row ? Number(row.id) : null;
+}
+
 /** A stable UUID makes a repeated public submission insert-only, even after HQ edits it. */
-function personId(input: InterestInput): string {
+function personId(input: InterestInput, hackathonId: number | null): string {
   const hash = createHash("sha256")
-    .update(`colosseum-interest:${HACKATHON_ID}:${input.contactMethod}:${input.contact}`)
+    .update(`colosseum-interest:${hackathonId ?? "unscoped"}:${input.contactMethod}:${input.contact}`)
     .digest("hex")
     .slice(0, 32);
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-8${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20)}`;
@@ -57,13 +73,8 @@ export async function saveColosseumInterest(
     ) AS scoped
   `);
   const scoped = capabilities.scoped === true;
-  if (scoped) {
-    const hackathons = await db.query(
-      `SELECT id FROM hq_hackathons WHERE id = $1 AND archived_at IS NULL`,
-      [HACKATHON_ID],
-    );
-    if (!hackathons[0]) return { ok: false, error: UNAVAILABLE_ERROR };
-  }
+  const hackathonId = scoped ? await currentHackathonId(db) : null;
+  if (scoped && hackathonId === null) return { ok: false, error: UNAVAILABLE_ERROR };
 
   const roleId = await ensureBuilderRole(db);
   if (!roleId) return { ok: false, error: UNAVAILABLE_ERROR };
@@ -82,9 +93,9 @@ export async function saveColosseumInterest(
     INSERT INTO hq_activity (message${scoped ? ", hackathon_id" : ""})
     SELECT $6${scoped ? ", $7" : ""} FROM added
   `, [
-    personId(input), input.name, roleId, input.contact, notes,
+    personId(input, hackathonId), input.name, roleId, input.contact, notes,
     `${input.name} expressed interest in the Colosseum hackathon`,
-    ...(scoped ? [HACKATHON_ID] : []),
+    ...(scoped ? [hackathonId] : []),
   ]);
   return { ok: true };
 }

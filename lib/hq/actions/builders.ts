@@ -2,12 +2,14 @@
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import { assertProjectHackathon, ColosseumApiError, fetchColosseumProject, verifyProjectClaim, parseColosseumProjectUrl } from '@/lib/colosseum-api';
+import { assertProjectHackathon, ColosseumApiError, fetchColosseumProject, parseColosseumProjectUrl } from '@/lib/colosseum-api';
 import { requireMemberActor } from '../actor';
 import { requireMember } from '../member-auth';
 import { authorizedTeam, TEAM_NOT_AVAILABLE } from '../member-teams';
 import { BuilderError, builderStore, syncBuilderAccount } from '../builder-store';
-import { PROJECT_STAGES, type BuilderResult } from '../builder-types';
+import { JOIN_LINK_MESSAGES, PROJECT_STAGES, type BuilderResult, type JoinLinkRefusal } from '../builder-types';
+import { importColosseumTeam, inviteRetry, refreshColosseumTeam, type ImportFailureReason } from '../project-import';
+import { parseJoinCode } from '../member-routes';
 
 // Actions that take a team id from the client go through the central
 // authorization helper (lib/hq/member-teams.ts over lib/hq/authz.ts) before
@@ -20,7 +22,8 @@ import { PROJECT_STAGES, type BuilderResult } from '../builder-types';
 const uuid = z.string().uuid();
 const hackathonIdSchema = z.number().int().positive();
 const stageSchema = z.enum(PROJECT_STAGES.map(s => s.value));
-const inviteSchema = z.string().trim().min(20).max(40).regex(/^[a-fA-F0-9\s-]+$/);
+/** A pasted join link or bare code: normalised in member-routes.ts before it reaches the store. */
+const joinInputSchema = z.string().trim().min(1).max(2048);
 const fail = (error: unknown): {ok:false;error:string} => ({ ok:false, error: error instanceof BuilderError || error instanceof ColosseumApiError
   ? error.message : error instanceof z.ZodError ? 'Check the details and try again.' : 'We could not save this. Please try again.' });
 function refresh() { revalidatePath('/hq', 'layout'); }
@@ -37,59 +40,52 @@ export async function chooseBuilderPath(input: { hackathonId: number; path: 'ini
   } catch (error) { return fail(error); }
 }
 
-export async function previewBuilderProject(input: {hackathonId:number;url:string}) {
+/**
+ * The whole self-service import, in one call: fetch, gate on country plus the
+ * configured external edition id, write. No preview step, no teammate
+ * selection, no verification code, no approval — "A Dutch project in the
+ * current edition imports in one step".
+ *
+ * The result carries `reason` as well as `error` so the screen can answer
+ * each failure differently: `already_imported` renders the Telegram group
+ * control instead of a retry, and `retry` marks the transport failures that
+ * are worth trying again. The reason is a fixed HQ vocabulary
+ * (`ImportFailureReason`), never upstream text.
+ */
+export async function importBuilderTeam(input: {hackathonId:number;url:string}): Promise<
+  BuilderResult<{url:string}> | {ok:false;error:string;reason:ImportFailureReason;retry:boolean}
+> {
   const user = await requireMember();
   try {
-    const {hackathonId,url} = z.object({hackathonId:hackathonIdSchema,url:z.string().max(400)}).parse(input);
+    const parsed = z.object({hackathonId:hackathonIdSchema,url:z.string().max(2048)}).parse(input);
     const store = builderStore();
-    await store.rateLimit(user.id,'preview');
-    const edition = await store.hackathon(hackathonId);
-    if (!edition.projectsOpen || (edition.projectsAvailableAt && Date.parse(edition.projectsAvailableAt)>Date.now())) throw new BuilderError('Project imports are not open yet. Your HQ account is ready; come back when Colosseum opens project access.');
-    if (!edition.externalId || !edition.externalSlug) throw new BuilderError('Superteam NL is confirming this hackathon’s Colosseum registry. You can request help below.');
-    const project = await fetchColosseumProject(url);
-    assertProjectHackathon(project,{externalId:edition.externalId,slug:edition.externalSlug});
-    return {ok:true as const,data:{name:project.name,url:`https://colosseum.com/arena/projects/explore/${project.slug}`,country:project.country,
-      members:project.members.map(m=>({username:m.username,name:m.displayName}))}};
-  } catch (error) { return fail(error); }
-}
-
-export async function beginBuilderVerification(input: {hackathonId:number;url:string;username:string}) {
-  const user = await requireMember();
-  try {
-    const parsed = z.object({hackathonId:hackathonIdSchema,url:z.string().max(400),username:z.string().min(1).max(120)}).parse(input);
-    const store = builderStore();
-    await store.rateLimit(user.id,'challenge',8);
+    await store.rateLimit(user.id,'import',15);
     await syncBuilderAccount(user);
-    const edition = await store.hackathon(parsed.hackathonId);
-    if (!edition.projectsOpen || (edition.projectsAvailableAt && Date.parse(edition.projectsAvailableAt)>Date.now()) || !edition.externalId || !edition.externalSlug) throw new BuilderError('Project imports are not open yet. You can request help below.');
-    const project = await fetchColosseumProject(parsed.url);
-    assertProjectHackathon(project,{externalId:edition.externalId,slug:edition.externalSlug});
-    return {ok:true as const,data:await store.issueChallenge(user,edition.id,project,parsed.username)};
+    const outcome = await importColosseumTeam(user, parsed);
+    if (!outcome.ok) return {ok:false, error: outcome.message, reason: outcome.reason, retry: inviteRetry(outcome.reason)};
+    refresh();
+    return {ok:true,data:{url:`/hq/team/${outcome.projectId}`}};
   } catch (error) { return fail(error); }
 }
 
-export async function completeBuilderImport(input:{challengeId:string;leadUsername:string;stage:string;manual:boolean}): Promise<BuilderResult<{url:string}>> {
-  const user = await requireMember();
+/**
+ * A fresh Colosseum snapshot and submission check for a team the caller is
+ * already a member of. Rate limited, idempotent, and separate from importing:
+ * it never creates a team and never changes who belongs to one.
+ */
+export async function refreshBuilderTeam(input: {projectId:string;hackathonId:number}): Promise<
+  BuilderResult<{submission:string}> | {ok:false;error:string;reason:ImportFailureReason;retry:boolean}
+> {
+  const actor = await requireMemberActor();
   try {
-    const parsed = z.object({challengeId:uuid,leadUsername:z.string().min(1).max(120),stage:stageSchema,manual:z.boolean()}).parse(input);
-    const store = builderStore();
-    await store.rateLimit(user.id,'verify',15);
-    const challenge = await store.challenge(user.id,parsed.challengeId);
-    const edition = await store.hackathon(challenge.hackathonId);
-    if (!edition.externalId || !edition.externalSlug) throw new BuilderError('The Colosseum registry is not configured yet.');
-    let project = await fetchColosseumProject(challenge.projectUrl);
-    assertProjectHackathon(project,{externalId:edition.externalId,slug:edition.externalSlug});
-    let proof = null;
-    if (!parsed.manual) {
-      const verified = await verifyProjectClaim(project,{code:challenge.code,issuedAt:challenge.issuedAt,claimedUsername:challenge.username});
-      project = verified.project;
-      proof = verified.proof;
-      if (project.country?.trim().toLowerCase()!=='netherlands') throw new BuilderError('Set your project country to Netherlands on Colosseum, then try again.');
-      if (!proof) throw new BuilderError('We could not find the code from your selected Colosseum profile yet. Try again, or ask for a manual review.');
-    }
-    const id = await store.importTeam(user,challenge.id,project,parsed.leadUsername,parsed.stage,proof);
+    const value = z.object({projectId:uuid,hackathonId:hackathonIdSchema}).parse(input);
+    const team = await authorizedTeam(actor,{projectId:value.projectId,hackathonId:value.hackathonId,action:'read'});
+    if (!team) throw new BuilderError(TEAM_NOT_AVAILABLE);
+    await builderStore().rateLimit(actor.id,'source',10);
+    const outcome = await refreshColosseumTeam({projectId:team.id,hackathonId:team.hackathonId,projectUrl:team.projectUrl});
     refresh();
-    return {ok:true,data:{url:`/hq/team/${id}`}};
+    if (!outcome.ok) return {ok:false, error: outcome.message, reason: outcome.reason, retry: inviteRetry(outcome.reason)};
+    return {ok:true,data:{submission:outcome.submission}};
   } catch (error) { return fail(error); }
 }
 
@@ -107,47 +103,60 @@ export async function requestBuilderReview(input:{hackathonId:number;url:string;
   } catch (error) { return fail(error); }
 }
 
+/** One join link per unclaimed roster seat, created by the team's own importer. Returns the path; the page makes it absolute. */
 export async function createBuilderInvite(input:{projectId:string;hackathonId:number;memberId:string}): Promise<BuilderResult<{code:string}>> {
   const actor = await requireMemberActor();
   try {
     const {projectId,hackathonId,memberId} = z.object({projectId:uuid,hackathonId:hackathonIdSchema,memberId:uuid}).parse(input);
     const store = builderStore();
     await store.rateLimit(actor.id,'invite',20);
-    // Inviting is a membership change: the verified team lead's alone.
+    // Creating a join link is a membership change: the team lead's alone.
     const team = await authorizedTeam(actor,{projectId,hackathonId,action:'membership.change'});
     if (!team) throw new BuilderError(TEAM_NOT_AVAILABLE);
     const member = team.members.find(m=>m.id===memberId);
-    const project = await fetchColosseumProject(team.projectUrl);
-    const edition = await store.hackathon(team.hackathonId);
-    assertProjectHackathon(project,{externalId:edition.externalId??0,slug:edition.externalSlug??''});
-    if (!member || !project.members.some(m=>m.username===member.username)) throw new BuilderError('This teammate is no longer listed on Colosseum.');
+    if (!member) throw new BuilderError('Choose a teammate from your imported team.');
     return {ok:true,data:{code:await store.createInvite(actor.id,projectId,memberId)}};
   } catch (error) { return fail(error); }
 }
 
-export async function previewBuilderInvite(code:string) {
+/**
+ * What a join link opens, or why it cannot be used. Accepts the whole pasted
+ * link or a bare code (see `parseJoinCode`), and every refusal is its own
+ * message that names nothing about the team.
+ */
+export async function previewBuilderInvite(pasted:string): Promise<
+  BuilderResult<{name:string;username:string;team:string;code:string}> | {ok:false;error:string;reason:JoinLinkRefusal}
+> {
   const user = await requireMember();
   try {
-    const value = inviteSchema.parse(code);
+    const code = parseJoinCode(joinInputSchema.parse(pasted));
+    if (!code) return {ok:false, error: JOIN_LINK_MESSAGES.invalid, reason: 'invalid'};
     const store = builderStore();
     await store.rateLimit(user.id,'join',20);
-    const invite = await store.invitation(value);
-    return {ok:true as const,data:{name:invite.name,username:invite.username,team:invite.projectName}};
+    const invite = await store.invitation(code);
+    if (!invite.ok) return {ok:false, error: JOIN_LINK_MESSAGES[invite.reason], reason: invite.reason};
+    return {ok:true,data:{name:invite.data.name,username:invite.data.username,team:invite.data.projectName,code}};
   } catch (error) { return fail(error); }
 }
 
 export async function acceptBuilderInvite(input:{code:string;confirmed:boolean}): Promise<BuilderResult<{url:string}>> {
   const user = await requireMember();
   try {
-    const {code} = z.object({code:inviteSchema,confirmed:z.literal(true)}).parse(input);
+    const {code:pasted} = z.object({code:joinInputSchema,confirmed:z.literal(true)}).parse(input);
+    const code = parseJoinCode(pasted);
+    if (!code) throw new BuilderError(JOIN_LINK_MESSAGES.invalid);
     const store = builderStore();
     await store.rateLimit(user.id,'redeem',12);
     await syncBuilderAccount(user);
     const invite = await store.invitation(code);
-    const project = await fetchColosseumProject(invite.projectUrl);
-    const edition = await store.hackathon(invite.hackathonId);
+    if (!invite.ok) throw new BuilderError(JOIN_LINK_MESSAGES[invite.reason]);
+    // The roster the seat belongs to is re-read from Colosseum, so a seat
+    // that no longer exists upstream cannot be claimed. A transport failure
+    // here is the adapter's own distinct message, not a generic one.
+    const project = await fetchColosseumProject(invite.data.projectUrl);
+    const edition = await store.hackathon(invite.data.hackathonId);
     assertProjectHackathon(project,{externalId:edition.externalId??0,slug:edition.externalSlug??''});
-    if (!project.members.some(m=>m.username===invite.username)) throw new BuilderError('This profile is no longer listed on the Colosseum team. Ask the team owner for help.');
+    if (!project.members.some(m=>m.username===invite.data.username)) throw new BuilderError('That teammate is no longer listed on the Colosseum team. Ask whoever sent you the link for help.');
     const id = await store.redeemInvite(user,code);
     refresh();
     return {ok:true,data:{url:`/hq/team/${id}`}};

@@ -9,7 +9,7 @@
  * these views and nothing wider, so an operator field cannot reach a public
  * page by accident; it is never loaded and then hidden in the browser.
  */
-import type { BuilderTeam, ProjectStage } from "./builder-types";
+import type { BuilderTeam, BuilderTeamSource, ProjectStage } from "./builder-types";
 import type { Person } from "./types";
 
 /**
@@ -39,8 +39,16 @@ export type MemberTeamView = {
   projectUrl: string;
   stage: ProjectStage;
   lead: { username: string };
+  /**
+   * The normalized Colosseum snapshot, the same shape every later view reads
+   * (the plan's phase 3 handoff: "all later views use normalized project
+   * information and a common submission-status service"). It is public
+   * project information from Colosseum, carries no HQ notes and no account
+   * id, and is safe for the team and its Captain alike.
+   */
+  source: BuilderTeamSource;
   /** The imported roster as the team page shows it. `id` is the roster row a team lead names when inviting; no account id is included. */
-  roster: { id: string; name: string; username: string; joined: boolean }[];
+  roster: { id: string; name: string; username: string; avatarUrl: string | null; joined: boolean }[];
 };
 
 /** What an assigned Captain sees of a team: minimal contact and roster fields, no operator state. */
@@ -51,7 +59,8 @@ export type CaptainAssignmentView = {
   projectUrl: string;
   stage: ProjectStage;
   lead: { username: string };
-  roster: { name: string; username: string; joined: boolean }[];
+  source: BuilderTeamSource;
+  roster: { name: string; username: string; avatarUrl: string | null; joined: boolean }[];
 };
 
 /**
@@ -104,7 +113,8 @@ export function toMemberTeamView(team: BuilderTeam, viewer: { id: string }, capt
     projectUrl: team.projectUrl,
     stage: team.stage,
     lead: { username: team.leadUsername },
-    roster: team.members.map((member) => ({ id: member.id, name: member.name, username: member.username, joined: member.joined })),
+    source: team.source,
+    roster: team.members.map((member) => ({ id: member.id, name: member.name, username: member.username, avatarUrl: member.avatarUrl, joined: member.joined })),
   };
 }
 
@@ -116,7 +126,8 @@ export function toCaptainAssignmentView(team: BuilderTeam): CaptainAssignmentVie
     projectUrl: team.projectUrl,
     stage: team.stage,
     lead: { username: team.leadUsername },
-    roster: team.members.map((member) => ({ name: member.name, username: member.username, joined: member.joined })),
+    source: team.source,
+    roster: team.members.map((member) => ({ name: member.name, username: member.username, avatarUrl: member.avatarUrl, joined: member.joined })),
   };
 }
 

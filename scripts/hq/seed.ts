@@ -27,8 +27,12 @@ const seedDataSchema = z.object({
   ),
   partnerChannels: z.array(z.string().min(1)),
   // The edition everything below is filed under. Further editions are added
-  // in Admin. The id is Colosseum's hackathon id (World's Fair is 6); the
-  // slug keys banner artwork in lib/hq/hackathon-art.ts.
+  // in Admin. `id` is HQ's OWN internal hq_hackathons.id, not Colosseum's —
+  // an earlier comment here read it the other way round, which is what the
+  // standing "never hard-code an external id" rule exists to stop. The
+  // external Colosseum edition id and slug are operator data, typed into
+  // Admin and stored in hq_hackathon_onboarding, never seeded. The slug here
+  // keys banner artwork in lib/hq/hackathon-art.ts.
   hackathon: z.object({
     id: z.number().int().min(1),
     slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
@@ -179,7 +183,7 @@ async function main() {
       ON CONFLICT (slug) DO UPDATE SET label = ${label}, sort = ${i}`;
   }
 
-  // The hackathon upserts by its Colosseum id, so a reseed can correct its
+  // The hackathon upserts by its internal HQ id, so a reseed can correct its
   // name, slug or dates without touching anything filed under it.
   const { hackathon } = data;
   const [{ id: hackathonId }] = await sql`

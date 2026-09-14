@@ -211,7 +211,12 @@ describe("team actions", () => {
     signIn("lead-a");
     const result = await createBuilderInvite({ projectId: PROJECT_A, hackathonId: EDITION_A, memberId });
     expect(result.ok && result.data.code).toMatch(/^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$/);
-    expect(fetcher).toHaveBeenCalledTimes(1);
+    // Phase 3: creating a join link no longer re-reads Colosseum. The seat
+    // is a row on the team's own imported roster, and a refresh is a
+    // separate, explicit action — so the team lead can hand a teammate a
+    // link while Colosseum is down, and one slow upstream request cannot
+    // stand between them and their own team.
+    expect(fetcher).not.toHaveBeenCalled();
     expect(await rows("SELECT member_id::text AS member_id, created_by, consumed_at FROM hq_team_invites")).toEqual([{ member_id: memberId, created_by: "lead-a", consumed_at: null }]);
     expect(await rosterUsernames(PROJECT_A)).toEqual([{ colosseum_username: "lead-a" }, { colosseum_username: "member_a" }, { colosseum_username: "unclaimed" }]);
   });
@@ -229,10 +234,11 @@ describe("the team page", () => {
       projectUrl: "https://colosseum.com/arena/projects/explore/lead-a",
       stage: "mvp",
       lead: { username: "lead-a" },
+      source: expect.objectContaining({ submissionStatus: "not_checked", sourceStatus: "never" }),
       roster: [
-        { id: expect.any(String), name: "lead-a", username: "lead-a", joined: true },
-        { id: expect.any(String), name: "Member A", username: "member_a", joined: true },
-        { id: expect.any(String), name: "Unclaimed", username: "unclaimed", joined: false },
+        { id: expect.any(String), name: "lead-a", username: "lead-a", avatarUrl: null, joined: true },
+        { id: expect.any(String), name: "Member A", username: "member_a", avatarUrl: null, joined: true },
+        { id: expect.any(String), name: "Unclaimed", username: "unclaimed", avatarUrl: null, joined: false },
       ],
     });
     expect(JSON.stringify(view)).not.toMatch(/owner_user_id|ownerId|lead-a@|description|hackathonName/);

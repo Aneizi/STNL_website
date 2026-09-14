@@ -287,7 +287,12 @@ export async function getPeople(hackathonId: number): Promise<Person[]> {
   const sql = getSql();
   const rows = await sql`
     SELECT p.id, p.name, p.role_id, r.label AS role_label, p.org, p.contact, p.partner_id,
-      COALESCE(pa.name, '') AS partner_name, p.notes, p.builder_user_id, p.person_id
+      COALESCE(pa.name, '') AS partner_name, p.notes, p.builder_user_id, p.person_id,
+      (SELECT count(*) FROM hq_scores s WHERE s.judge_id = p.id) AS judge_scores,
+      (SELECT count(*) FROM hq_project_members m WHERE p.person_id IS NOT NULL AND m.person_id = p.person_id) AS roster_rows,
+      (SELECT count(*) FROM hq_people q WHERE p.person_id IS NOT NULL AND q.person_id = p.person_id AND q.id <> p.id) AS other_cards,
+      (SELECT count(*) FROM hq_builder_enrollments e WHERE p.builder_user_id IS NOT NULL
+        AND e.user_id = p.builder_user_id AND e.hackathon_id = p.hackathon_id) AS enrollments
     FROM hq_people p
     JOIN hq_people_roles r ON r.id = p.role_id
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
@@ -310,6 +315,14 @@ export async function getPeople(hackathonId: number): Promise<Person[]> {
     builderUserId: r.builder_user_id ?? null,
     personId: r.person_id ?? null,
     tags: personTags(String(r.role_label), r.builder_user_id ? (capabilities.get(String(r.builder_user_id)) ?? []) : []),
+    // The counts behind the Delete person confirmation, read with the card
+    // rather than one query per row when the operator opens the control.
+    removal: {
+      cardId: String(r.id), name: String(r.name), hackathonId,
+      personId: r.person_id ?? null, hasAccount: r.builder_user_id != null,
+      rosterRows: Number(r.roster_rows ?? 0), otherEditionCards: Number(r.other_cards ?? 0),
+      judgeScores: Number(r.judge_scores ?? 0), enrollments: Number(r.enrollments ?? 0),
+    },
   }));
 }
 

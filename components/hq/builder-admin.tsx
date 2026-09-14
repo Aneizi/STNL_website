@@ -2,8 +2,8 @@
 
 import { useRef, useState, useSyncExternalStore, useTransition, type FormEvent, type ReactNode } from "react";
 import {
-  markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
-  reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
+  deleteBuilderTeam, markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
+  updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import { createCaptainInvitation, revokeCaptainInvitation } from "@/lib/hq/actions/captains";
@@ -11,10 +11,12 @@ import type {
   AccountLogin, ActiveCaptain, BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
 } from "@/lib/hq/builder-admin-queries";
 import type { CaptainInvitationListing, CurrentCaptainAssignment } from "@/lib/hq/captains";
+import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtWithZone } from "@/lib/hq/format";
 import { inviteLink } from "@/lib/hq/member-routes";
 import type { ActionResult } from "@/lib/hq/types";
 import type { CaptainLeaderboardView } from "@/lib/hq/view-models";
+import { BuilderProjectImage } from "./builder-project-image";
 import { CopyButton } from "./ui-client";
 import styles from "./builder-admin.module.css";
 
@@ -389,6 +391,48 @@ function CaptainLeaderboard({ hackathonName, leaderboard, assignments }: {
   );
 }
 
+/**
+ * What deleting this team takes with it, as a sentence the operator reads
+ * before they tick anything. The counts are real, read with the project list
+ * (`teamRemovalImpact`), not guessed from the shape of the schema; the
+ * deletion re-reads them inside its own transaction for the audit trail.
+ */
+function teamRemovalSummary(removal: BuilderProjectReview["removal"]): string {
+  const parts: string[] = [];
+  if (removal.rosterRows) parts.push(`${removal.rosterRows} roster row${removal.rosterRows === 1 ? "" : "s"}`);
+  if (removal.joinLinksTotal) parts.push(`${removal.joinLinksTotal} join link${removal.joinLinksTotal === 1 ? "" : "s"} (${removal.openJoinLinks} still usable)`);
+  if (removal.currentCaptain) parts.push("its current Captain assignment");
+  if (removal.captainHistory > removal.currentCaptain) parts.push(`${removal.captainHistory - removal.currentCaptain} past Captain assignment${removal.captainHistory - removal.currentCaptain === 1 ? "" : "s"}`);
+  if (removal.notes) parts.push(`${removal.notes} internal note${removal.notes === 1 ? "" : "s"}`);
+  if (removal.gates) parts.push(`${removal.gates} submission gate tick${removal.gates === 1 ? "" : "s"}`);
+  if (removal.finalist) parts.push("its finalist place");
+  if (removal.judgeScores) parts.push(`${removal.judgeScores} judge score${removal.judgeScores === 1 ? "" : "s"}`);
+  if (!parts.length) return "Nothing else is attached to it.";
+  return `It also removes ${parts.join(", ")}.`;
+}
+
+/**
+ * Delete team. Behind a <details> like the Captain revocation control, with
+ * the same shape: real counts first, a required confirmation that states
+ * them, then the destructive button. Nothing here is reversible, and the
+ * copy says so.
+ */
+function DeleteTeam({ project }: { project: BuilderProjectReview }) {
+  return (
+    <details className={styles.review}>
+      <summary>Delete team</summary>
+      <ActionForm resetOnSuccess action={() => deleteBuilderTeam({ projectId: project.id, confirmed: true })}>
+        <p>{teamRemovalSummary(project.removal)} The accounts of the people on it are not deleted, and an award this project won keeps its record without a winner. This cannot be undone.</p>
+        <label className={styles.checkbox}>
+          I confirm {project.name} should be removed from this hackathon entirely.
+          <input name="confirm" type="checkbox" required />
+        </label>
+        <div className={styles.actions}><button className={styles.secondary} type="submit">Delete team</button></div>
+      </ActionForm>
+    </details>
+  );
+}
+
 const STAGES: Record<string, string> = { idea: "Idea", mvp: "Prototype / MVP", beta: "Beta / devnet testing", live: "Live product", revenue: "Revenue-generating", growth: "Scaling / growth" };
 
 export function BuilderProjectReviews({ projects, importRequests }: {
@@ -398,52 +442,47 @@ export function BuilderProjectReviews({ projects, importRequests }: {
     <>
       <section className={styles.section} aria-labelledby="imported-teams-title">
         <h2 id="imported-teams-title">Imported teams</h2>
-        <p>Team verification and HQ membership are separate from the submission gates above.</p>
+        <p>Teams import themselves: a Netherlands project registered for this hackathon&apos;s Colosseum edition is in HQ the moment its builder pastes the link. There is no approval step to work through here.</p>
         {projects.length === 0 && <p>No teams have been imported into this hackathon yet.</p>}
         {projects.map((project) => (
           <article className={styles.row} key={project.id}>
             <div className={styles.rowHeader}>
               <h3>{project.name}</h3>
               <div className={styles.actions} style={{ marginTop: 0 }}>
-                <span className={styles.badge}>{project.verification === "pending" ? "Awaiting approval" : project.verification}</span>
+                <span className={styles.badge}>{SUBMISSION_LABELS[project.submissionStatus]}</span>
                 {project.highPotential && <span className={`${styles.badge} ${styles.potential}`}>High potential</span>}
               </div>
             </div>
-            <p>{project.description}</p>
+            <div style={{ display: "flex", gap: 16, alignItems: "flex-start", marginTop: 12 }}>
+              <BuilderProjectImage src={project.imageUrl} name={project.name} size={64} />
+              <p style={{ margin: 0, minWidth: 0 }}>{project.description}</p>
+            </div>
             <p><a href={projectHref(project.projectUrl)} target="_blank" rel="noopener noreferrer">View project on Colosseum</a></p>
-            <p>Country: <strong>{project.country || "Not provided"}</strong><br />Stage: {STAGES[project.stage] ?? project.stage}<br />Lead: {project.leadUsername ? `@${project.leadUsername}` : "Not selected"}</p>
-            <p>Initialized by {project.ownerName} ({loginLabel(project.owner)}).</p>
+            <p>Country: <strong>{project.country || "Not provided"}</strong><br />Stage: {STAGES[project.stage] ?? project.stage}<br />Lead: {project.leadUsername ? `@${project.leadUsername}` : "Not selected"}<br />
+              Category: {project.category || "Not provided"}{project.twitterHandle ? <> · X handle on Colosseum: @{project.twitterHandle}</> : null}</p>
+            <p>
+              {project.submittedAt ? `Submitted to Colosseum on ${project.submittedAt.slice(0, 10)}.` : "No Colosseum submission timestamp recorded."}{" "}
+              {project.sourceCheckedAt ? `Source last read on ${project.sourceCheckedAt.slice(0, 10)}.` : "Source never read."}{" "}
+              {project.sourceStatus === "error" && `Last check failed (${project.sourceErrorCode ?? "unknown"}${project.sourceErrorMessage ? `: ${project.sourceErrorMessage}` : ""}); the status above is the previous known state.`}
+            </p>
+            <p>Imported by {project.ownerName} ({loginLabel(project.owner)}).</p>
             <ul className={styles.roster} aria-label={`${project.name} team members`}>
               {project.members.map((member, index) => <li key={member.username || `${member.name}-${index}`}>
                 <span>{member.name}{member.username ? ` (@${member.username})` : ""}{member.username === project.leadUsername ? " (lead)" : ""}</span>
                 <span className={styles.badge}>{member.joined ? "Joined HQ" : "Not joined"}</span>
               </li>)}
             </ul>
-            {project.members.length === 0 && <p>No Colosseum roster was imported. Review the project before approval.</p>}
+            {project.members.length === 0 && <p>No Colosseum roster was imported for this project.</p>}
             {project.members.some((member) => member.username) && <ActionForm action={(data) => updateBuilderProjectLead(project.id, String(data.get("lead") ?? ""))}>
               <div className={styles.tier}>
                 <label>Team lead<select name="lead" defaultValue={project.leadUsername} required>{project.members.filter((member) => member.username).map((member) => <option key={member.username} value={member.username}>{member.name} (@{member.username})</option>)}</select></label>
                 <button className={styles.secondary} type="submit">Save lead</button>
               </div>
             </ActionForm>}
-            <p>{project.proofCommentId ? `Verification comment #${project.proofCommentId}, author #${project.proofAuthorId ?? "unknown"}.` : "No matching verification comment is recorded."} <a href={`https://api.colosseum.com/api/project/comments?projectId=${project.externalId}&offset=0`} target="_blank" rel="noopener noreferrer">View Colosseum comments</a></p>
             <ActionForm action={() => markBuilderProjectPotential(project.id, !project.highPotential)}>
               <div className={styles.actions}><button className={styles.secondary} type="submit">{project.highPotential ? "Remove high potential flag" : "Mark high potential"}</button></div>
             </ActionForm>
-            <details className={styles.review}>
-              <summary>{project.verification === "pending" ? "Review team verification" : "Change team verification"}</summary>
-              <ActionForm resetOnSuccess action={(data) => reviewBuilderProject({ projectId: project.id,
-                decision: data.get("decision") === "verified" ? "verified" : "rejected",
-                reviewedEvidence: data.has("reviewed") as true, note: String(data.get("note") ?? ""),
-              })}>
-                <label className={styles.checkbox}>I checked the Colosseum project, Netherlands registration, owner and listed team.<input name="reviewed" type="checkbox" required /></label>
-                <label className={styles.field}>Review note<textarea name="note" required minLength={12} maxLength={2000} rows={3} placeholder="Record the evidence for your decision." /></label>
-                <div className={styles.actions}>
-                  <button className={styles.button} name="decision" value="verified" type="submit">Approve team</button>
-                  <button className={styles.secondary} name="decision" value="rejected" type="submit">Reject team</button>
-                </div>
-              </ActionForm>
-            </details>
+            <DeleteTeam project={project} />
           </article>
         ))}
       </section>

@@ -51,8 +51,6 @@ CREATE TABLE IF NOT EXISTS hq_project_onboarding (
   stage text NOT NULL DEFAULT 'idea' CHECK (stage IN ('idea','mvp','beta','live','revenue','growth')),
   lead_username text NOT NULL,
   high_potential boolean NOT NULL DEFAULT false,
-  proof_comment_id bigint,
-  proof_author_id bigint,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (hackathon_id, external_id)
 );
@@ -62,20 +60,6 @@ ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS builder_user_id text REF
 ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS joined_at timestamptz;
 CREATE UNIQUE INDEX IF NOT EXISTS hq_roster_username_idx ON hq_project_members(project_id, lower(colosseum_username));
 CREATE UNIQUE INDEX IF NOT EXISTS hq_roster_builder_idx ON hq_project_members(project_id, builder_user_id);
-
-CREATE TABLE IF NOT EXISTS hq_project_challenges (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
-  hackathon_id int NOT NULL REFERENCES hq_hackathons(id) ON DELETE CASCADE,
-  project_url text NOT NULL,
-  external_id int NOT NULL,
-  claimed_username text NOT NULL,
-  code text NOT NULL,
-  issued_at timestamptz NOT NULL DEFAULT now(),
-  expires_at timestamptz NOT NULL DEFAULT (now() + interval '30 minutes'),
-  consumed_at timestamptz
-);
-CREATE INDEX IF NOT EXISTS hq_challenges_user_idx ON hq_project_challenges(user_id, issued_at);
 
 CREATE TABLE IF NOT EXISTS hq_team_invites (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -281,3 +265,83 @@ CREATE UNIQUE INDEX IF NOT EXISTS hq_captain_assignments_one_current_idx ON hq_c
 -- Captain, joined to hq_projects.hackathon_id to scope the count to the
 -- selected edition's active projects.
 CREATE INDEX IF NOT EXISTS hq_captain_assignments_captain_current_idx ON hq_captain_assignments (captain_user_id) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Phase 3: the Colosseum source snapshot, self-service imports and joining.
+--
+-- The normalized snapshot lives on hq_project_onboarding rather than in a new
+-- table: that row already IS the project's source mapping (external_id,
+-- project_url, slug, description, country, raw), and a second table holding
+-- the same mapping would be the "competing source of truth" the plan's data
+-- contract forbids. Every column below is a queryable projection of the
+-- bounded `raw` snapshot beside it, written only by lib/hq/builder-store.ts.
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS category text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS tracks text[] NOT NULL DEFAULT '{}';
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS twitter_handle text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS website text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS repo_link text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS presentation_link text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS technical_demo_link text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS pitch_video_link text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS demo_video_link text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS image_url text;
+-- The external edition the snapshot actually came from, recorded beside the
+-- admin-entered mapping in hq_hackathon_onboarding rather than instead of it:
+-- the mapping is what an import is checked against, this is what was found.
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS external_hackathon_id int;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS external_hackathon_slug text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS external_hackathon_name text;
+-- Submission and readiness are separate concepts and separate columns.
+-- submitted_at is Colosseum's own signal; completion_* is the readiness
+-- diagnostic that must never drive a Submitted badge.
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS submitted_at timestamptz;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS completion_is_complete boolean;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS completion_missing_count int;
+-- 'not_checked' is the honest default and the value a failed refresh never
+-- overwrites a known status with. Written from
+-- lib/hq/colosseum-snapshot.ts#interpretSubmission and nowhere else, so the
+-- "what does a null submittedAt mean" assumption has exactly one home.
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS submission_status text NOT NULL DEFAULT 'not_checked' CONSTRAINT hq_project_onboarding_submission_status_check CHECK (submission_status IN ('not_checked','submitted','not_submitted'));
+-- Freshness and troubleshooting: when the source was last read successfully,
+-- and what went wrong on the last failure. source_error_code is HQ's own
+-- ColosseumErrorCode; source_error_message is Colosseum's own text, kept for
+-- operators only and never rendered as markup.
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS source_status text NOT NULL DEFAULT 'never' CONSTRAINT hq_project_onboarding_source_status_check CHECK (source_status IN ('never','ok','error'));
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS source_checked_at timestamptz;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS source_error_code text;
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS source_error_message text;
+-- The ownership-proof challenge is gone (owner change, 14 September 2026:
+-- imports are self-service, gated on country plus the configured external
+-- edition id, with no verification step). Its two evidence columns and the
+-- short-lived challenge table have no writer and no reader left, so they are
+-- removed rather than left as vestigial state an operator could misread as a
+-- review step that still happens.
+ALTER TABLE hq_project_onboarding DROP COLUMN IF EXISTS proof_comment_id;
+ALTER TABLE hq_project_onboarding DROP COLUMN IF EXISTS proof_author_id;
+DROP TABLE IF EXISTS hq_project_challenges;
+
+-- Roster avatars come from the imported snapshot. Decorative; never a login.
+ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS avatar_url text;
+
+-- Backfill the normalized fields from the snapshot each row already holds,
+-- matched by the row's own raw payload rather than by name. Every statement
+-- is guarded on the column still being NULL, so each one matches nothing on a
+-- fresh database, nothing on a re-run, and never overwrites a later refresh.
+UPDATE hq_project_onboarding SET category = raw->'project'->>'category' WHERE category IS NULL AND raw->'project'->>'category' IS NOT NULL;
+UPDATE hq_project_onboarding SET twitter_handle = raw->'project'->>'twitterHandle' WHERE twitter_handle IS NULL AND raw->'project'->>'twitterHandle' IS NOT NULL;
+UPDATE hq_project_onboarding SET website = raw->'project'->>'website' WHERE website IS NULL AND raw->'project'->>'website' IS NOT NULL;
+UPDATE hq_project_onboarding SET repo_link = raw->'project'->>'repoLink' WHERE repo_link IS NULL AND raw->'project'->>'repoLink' IS NOT NULL;
+UPDATE hq_project_onboarding SET presentation_link = raw->'project'->>'presentationLink' WHERE presentation_link IS NULL AND raw->'project'->>'presentationLink' IS NOT NULL;
+UPDATE hq_project_onboarding SET technical_demo_link = raw->'project'->>'technicalDemoLink' WHERE technical_demo_link IS NULL AND raw->'project'->>'technicalDemoLink' IS NOT NULL;
+UPDATE hq_project_onboarding SET pitch_video_link = raw->'project'->>'pitchVideoLink' WHERE pitch_video_link IS NULL AND raw->'project'->>'pitchVideoLink' IS NOT NULL;
+UPDATE hq_project_onboarding SET demo_video_link = raw->'project'->>'demoVideoLink' WHERE demo_video_link IS NULL AND raw->'project'->>'demoVideoLink' IS NOT NULL;
+UPDATE hq_project_onboarding SET image_url = raw->'project'->'image'->>'url' WHERE image_url IS NULL AND raw->'project'->'image'->>'url' IS NOT NULL;
+UPDATE hq_project_onboarding SET external_hackathon_id = (raw->'project'->'hackathon'->>'id')::int WHERE external_hackathon_id IS NULL AND (raw->'project'->'hackathon'->>'id') ~ '^[0-9]+$';
+UPDATE hq_project_onboarding SET external_hackathon_slug = raw->'project'->'hackathon'->>'slug' WHERE external_hackathon_slug IS NULL AND raw->'project'->'hackathon'->>'slug' IS NOT NULL;
+UPDATE hq_project_onboarding SET external_hackathon_name = raw->'project'->'hackathon'->>'name' WHERE external_hackathon_name IS NULL AND raw->'project'->'hackathon'->>'name' IS NOT NULL;
+UPDATE hq_project_onboarding SET tracks = ARRAY(SELECT jsonb_array_elements_text(raw->'project'->'tracks')) WHERE tracks = '{}' AND jsonb_typeof(raw->'project'->'tracks') = 'array' AND jsonb_array_length(raw->'project'->'tracks') > 0;
+-- The raw snapshot is proof the source was read successfully once, at import
+-- time. submission_status is deliberately NOT backfilled: no phase 3 status
+-- check has run for these rows, and "Not checked" is the honest answer until
+-- one does.
+UPDATE hq_project_onboarding SET source_status = 'ok', source_checked_at = created_at WHERE source_status = 'never';

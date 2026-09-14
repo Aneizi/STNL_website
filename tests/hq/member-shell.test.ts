@@ -177,7 +177,13 @@ describe("the captain page", () => {
       id: "p1", name: "Solo Project", hackathonId: 41, hackathonName: "Edition A",
       projectUrl: "https://colosseum.com/arena/projects/explore/solo", description: "internal only", stage: "mvp",
       verification: "verified", ownerId: "acct-1", leadUsername: "acct1_handle",
-      members: [{ id: "m1", name: "Fictional Builder", username: "acct1_handle", joined: true }],
+      members: [{ id: "m1", name: "Fictional Builder", username: "acct1_handle", avatarUrl: null, joined: true }],
+      source: {
+        category: null, tracks: [], twitterHandle: null, website: null, repoLink: null,
+        presentationLink: null, technicalDemoLink: null, pitchVideoLink: null, demoVideoLink: null,
+        imageUrl: null, submissionStatus: "not_checked", submittedAt: null, completion: null,
+        sourceStatus: "never", sourceCheckedAt: null, sourceErrorCode: null,
+      },
     });
     // Another Captain's name and count are allowed on the leaderboard; their
     // project id, title or link are not part of this shape at all.

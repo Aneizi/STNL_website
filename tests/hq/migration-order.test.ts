@@ -588,3 +588,86 @@ describe("task T4.1: Captain invitations, redemptions and assignments", () => {
     }
   });
 });
+
+describe("phase 3: the Colosseum source snapshot and the removed challenge", () => {
+  const SNAPSHOT_COLUMNS = [
+    "category", "tracks", "twitter_handle", "website", "repo_link", "presentation_link",
+    "technical_demo_link", "pitch_video_link", "demo_video_link", "image_url",
+    "external_hackathon_id", "external_hackathon_slug", "external_hackathon_name",
+    "submitted_at", "completion_is_complete", "completion_missing_count",
+    "submission_status", "source_status", "source_checked_at", "source_error_code", "source_error_message",
+  ];
+
+  it("adds every normalized column, drops the proof columns and the challenge table, on a fresh database applied twice", async () => {
+    const pg = new PGlite();
+    try {
+      await applyMigrations(pg);
+      await applyMigrations(pg);
+      const columns = await run(pg, `SELECT column_name FROM information_schema.columns WHERE table_name = 'hq_project_onboarding'`);
+      const names = columns.map((row) => String(row.column_name));
+      for (const column of SNAPSHOT_COLUMNS) expect(names, column).toContain(column);
+      // The ownership-proof challenge is gone, not merely unused.
+      expect(names).not.toContain("proof_comment_id");
+      expect(names).not.toContain("proof_author_id");
+      expect(await run(pg, `SELECT to_regclass('hq_project_challenges') AS table_name`)).toEqual([{ table_name: null }]);
+      expect(await run(pg, `SELECT column_name FROM information_schema.columns WHERE table_name='hq_project_members' AND column_name='avatar_url'`))
+        .toEqual([{ column_name: "avatar_url" }]);
+      // The two status columns carry their check constraints and their
+      // honest defaults.
+      await expect(run(pg, `INSERT INTO hq_project_onboarding (project_id, hackathon_id, external_id, project_url, slug, raw, owner_user_id, lead_username, submission_status)
+        VALUES (gen_random_uuid(), 1, 1, 'x', 'x', '{}', 'x', 'x', 'maybe')`)).rejects.toThrow();
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("backfills the normalized fields of a row that predates them, from its own stored snapshot, and never on a re-run", async () => {
+    const pg = new PGlite();
+    try {
+      await applyMigrations(pg);
+      // A row as it looked before this phase: raw snapshot, no normalized
+      // columns filled in. The columns exist by now, so they are nulled
+      // explicitly to stand in for the pre-migration state.
+      await run(pg, `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date) VALUES (91,'edition','Edition','2026-09-14','2026-10-12')`);
+      await run(pg, `INSERT INTO hq_project_statuses (slug,label,color,counts_as_active,sort) VALUES ('s','S','green',true,1)`);
+      await run(pg, `INSERT INTO hq_project_forecasts (slug,label,color,sort) VALUES ('f','F','green',1)`);
+      await run(pg, `INSERT INTO hq_builder_profiles (id,email,name) VALUES ('acct','a@example.test','Acct')`);
+      const [{ id }] = await run(pg, `INSERT INTO hq_projects (hackathon_id,name,status_id,forecast_id,last_check_in)
+        SELECT 91,'Old project',s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f RETURNING id::text AS id`);
+      const raw = JSON.stringify({ projectType: "HACKATHON", project: {
+        id: 90001, hackathonId: 6, slug: "tulip-ledger", category: "Payments & Remittance",
+        twitterHandle: "tulipledger", website: null, repoLink: "https://github.com/example-org/tulip-ledger",
+        presentationLink: "https://www.example.com/deck", tracks: ["Consumer"],
+        image: { url: "https://static.narrative-violation.com/fixtures/projects/tulip-ledger.png" },
+        hackathon: { id: 6, slug: "frontier", name: "Frontier" },
+      } });
+      await run(pg, `INSERT INTO hq_project_onboarding (project_id,hackathon_id,external_id,project_url,slug,raw,owner_user_id,lead_username,verification,category,source_status,source_checked_at)
+        VALUES ('${id}',91,90001,'https://colosseum.com/arena/projects/explore/tulip-ledger','tulip-ledger','${raw}'::jsonb,'acct','fictional_builder_1','verified',NULL,'never',NULL)`);
+
+      await applyMigrations(pg);
+      const [row] = await run(pg, `SELECT category, twitter_handle, repo_link, presentation_link, image_url, tracks,
+        external_hackathon_id, external_hackathon_slug, external_hackathon_name, submission_status, source_status,
+        source_checked_at IS NOT NULL AS checked FROM hq_project_onboarding WHERE project_id='${id}'`);
+      expect(row).toMatchObject({
+        category: "Payments & Remittance", twitter_handle: "tulipledger",
+        repo_link: "https://github.com/example-org/tulip-ledger", presentation_link: "https://www.example.com/deck",
+        image_url: "https://static.narrative-violation.com/fixtures/projects/tulip-ledger.png",
+        tracks: ["Consumer"], external_hackathon_id: 6, external_hackathon_slug: "frontier",
+        external_hackathon_name: "Frontier",
+        // Deliberately NOT backfilled: no phase 3 status check has run for
+        // this row, so "Not checked" is the honest answer.
+        submission_status: "not_checked",
+        source_status: "ok", checked: true,
+      });
+
+      // A later edit survives the next migration: the backfill only ever
+      // fills a NULL.
+      await run(pg, `UPDATE hq_project_onboarding SET category='Operator corrected' WHERE project_id='${id}'`);
+      await applyMigrations(pg);
+      expect(await run(pg, `SELECT category FROM hq_project_onboarding WHERE project_id='${id}'`))
+        .toEqual([{ category: "Operator corrected" }]);
+    } finally {
+      await pg.close();
+    }
+  });
+});

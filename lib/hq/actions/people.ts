@@ -7,6 +7,7 @@ import { BuilderError } from "../builder-types";
 import { correctPersonMatch as correctPersonMatchRecord } from "../crm-identity";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
+import { deletePersonRecord } from "../record-deletion";
 import type { ActionResult } from "../types";
 import { activityStmt, inHackathon, refreshHq } from "./util";
 
@@ -138,6 +139,31 @@ export async function correctPersonMatch(input: z.infer<typeof correctionSchema>
     if (error instanceof BuilderError) return { ok: false, error: error.message };
     throw error;
   }
+  refreshHq();
+  return { ok: true };
+}
+
+const deletePersonSchema = z.object({ personId: id, confirmed: z.literal(true) });
+
+/**
+ * Deletes a People card, and the CRM person behind it when this was that
+ * person's last card anywhere. Operator only, edition scoped (a card from
+ * another edition answers exactly like a missing one), audited as
+ * `person.deleted`, one transaction — see `lib/hq/record-deletion.ts`.
+ *
+ * The HQ **account** is never deleted: a card is CRM, an account is a login.
+ * Roster rows that pointed at the person are detached, not removed, because a
+ * roster row is the imported team's record of who was on it.
+ */
+export async function deletePerson(input: z.infer<typeof deletePersonSchema>): Promise<ActionResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = deletePersonSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Tick the confirmation to delete this person." };
+  const removed = await deletePersonRecord(builderDatabase(), {
+    cardId: parsed.data.personId, hackathonId: hackathon.id, operatorId: user.id,
+  });
+  if (!removed) return { ok: false, error: "Person not found." };
   refreshHq();
   return { ok: true };
 }

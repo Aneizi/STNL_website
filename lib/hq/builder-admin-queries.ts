@@ -8,7 +8,9 @@ import {
 } from "./captains";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
+import type { SubmissionStatus } from "./colosseum-snapshot";
 import { operatorQuery } from "./queries";
+import { teamRemovalImpact, type TeamRemovalImpact } from "./record-deletion";
 import type { CaptainLeaderboardView } from "./view-models";
 
 export type OnboardingConfig = {
@@ -80,9 +82,22 @@ export type BuilderProjectReview = {
   stage: string;
   leadUsername: string;
   highPotential: boolean;
-  proofCommentId: string | null;
-  proofAuthorId: string | null;
+  /** The normalized Colosseum snapshot, the same values the team's own page reads. */
+  category: string | null;
+  twitterHandle: string | null;
+  website: string | null;
+  repoLink: string | null;
+  imageUrl: string | null;
+  submissionStatus: SubmissionStatus;
+  submittedAt: string | null;
+  sourceStatus: "never" | "ok" | "error";
+  sourceCheckedAt: string | null;
+  sourceErrorCode: string | null;
+  /** Colosseum's own error text from the last failure. Operator-only diagnostics, rendered as text. */
+  sourceErrorMessage: string | null;
   members: Array<{ name: string; username: string; joined: boolean; joinedAt: string | null }>;
+  /** What deleting this team would take with it, read before the destructive step. */
+  removal: TeamRemovalImpact;
 };
 
 /** A nullable text column as the type says: null stays null. */
@@ -184,7 +199,9 @@ export async function getBuilderProjectReviews() {
   const [projects, requests] = await Promise.all([
     sql.query(`SELECT p.id, p.name, o.project_url, o.external_id, o.description, o.country,
         b.name AS owner_name, o.verification, o.stage, ${LOGIN_COLUMNS},
-        o.lead_username, o.high_potential, o.proof_comment_id::text, o.proof_author_id::text,
+        o.lead_username, o.high_potential, o.category, o.twitter_handle, o.website, o.repo_link, o.image_url,
+        o.submission_status, o.submitted_at::text, o.source_status, o.source_checked_at::text,
+        o.source_error_code, o.source_error_message,
         COALESCE((SELECT json_agg(json_build_object(
           'name', m.name, 'username', COALESCE(m.colosseum_username, ''),
           'joined', m.builder_user_id IS NOT NULL, 'joinedAt', m.joined_at::text
@@ -199,14 +216,29 @@ export async function getBuilderProjectReviews() {
         WHERE r.hackathon_id = $1
         ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
   ]);
+  // The real counts behind every Delete team confirmation, read here so the
+  // operator sees what disappears before they tick anything. One query per
+  // project, like the Captain revocation flow's own confirmation read.
+  const removals = new Map<string, TeamRemovalImpact>();
+  for (const impact of await Promise.all(projects.map((row) => teamRemovalImpact(operatorQuery(), String(row.id))))) {
+    if (impact) removals.set(impact.projectId, impact);
+  }
   return {
     projects: projects.map((row) => ({
       id: String(row.id), name: String(row.name), projectUrl: String(row.project_url),
       externalId: Number(row.external_id), description: String(row.description ?? ""),
       country: String(row.country ?? ""), ownerName: String(row.owner_name), owner: login(row),
       verification: row.verification as BuilderProjectReview["verification"], stage: String(row.stage), leadUsername: String(row.lead_username ?? ""),
-      highPotential: Boolean(row.high_potential), proofCommentId: optionalText(row.proof_comment_id),
-      proofAuthorId: optionalText(row.proof_author_id), members: row.members as BuilderProjectReview["members"],
+      highPotential: Boolean(row.high_potential),
+      category: optionalText(row.category), twitterHandle: optionalText(row.twitter_handle),
+      website: optionalText(row.website), repoLink: optionalText(row.repo_link), imageUrl: optionalText(row.image_url),
+      submissionStatus: (row.submission_status ?? "not_checked") as SubmissionStatus,
+      submittedAt: optionalText(row.submitted_at),
+      sourceStatus: (row.source_status ?? "never") as BuilderProjectReview["sourceStatus"],
+      sourceCheckedAt: optionalText(row.source_checked_at), sourceErrorCode: optionalText(row.source_error_code),
+      sourceErrorMessage: optionalText(row.source_error_message),
+      members: row.members as BuilderProjectReview["members"],
+      removal: removals.get(String(row.id))!,
     } satisfies BuilderProjectReview)),
     importRequests: requests.map((row) => ({
       id: String(row.id), name: String(row.name), ...login(row),

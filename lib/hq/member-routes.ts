@@ -15,6 +15,14 @@
 const INVITE_PATH_PREFIX = "/hq/invite/";
 
 /**
+ * The team join-link subtree. Distinct from INVITE_PATH_PREFIX above, which
+ * is the admin-generated *Captain* invitation: this one is a team's own join
+ * link, created by the account that imported the team, and it grants roster
+ * membership, never a capability.
+ */
+const JOIN_PATH_PREFIX = "/hq/join/";
+
+/**
  * Every member page. An entry ending in "/" names a subtree whose next and
  * last segment is a single id (a team's project id, an invitation token);
  * every other entry is matched exactly. The invitation continuation path is
@@ -28,6 +36,10 @@ export const MEMBER_PUBLIC_PATHS = [
   "/hq/dashboard",
   "/hq/initialize",
   "/hq/join",
+  // A join link is one code segment under /hq/join/, so a teammate who
+  // clicks the link their importer sent lands on the same screen a pasted
+  // link reaches. See joinLink() and parseJoinCode() below.
+  JOIN_PATH_PREFIX,
   "/hq/team/",
   "/hq/account",
   "/hq/account/connect-telegram",
@@ -46,6 +58,42 @@ export const MEMBER_PUBLIC_PATHS = [
  */
 export function inviteLink(token: string): string {
   return `${INVITE_PATH_PREFIX}${token}`;
+}
+
+/** The path a team join link points at. Assembled here only, like inviteLink above. */
+export function joinLink(code: string): string {
+  return `${JOIN_PATH_PREFIX}${code}`;
+}
+
+/** A join code as the store hashes it: hex in six-character groups, as createInvite formats it. */
+const JOIN_CODE = /^[0-9A-Fa-f-]{20,40}$/;
+
+/**
+ * The code inside whatever the joiner pasted.
+ *
+ * "Accept the full pasted link, and also a bare code, rather than failing on
+ * a trailing slash, surrounding whitespace or a tracking query the messenger
+ * appended." So: trim, drop a fragment and a query, take the last non-empty
+ * path segment of anything that looks like a URL or a path, and accept a bare
+ * code as itself. Returns null when nothing in the input can be a code, which
+ * the caller answers with the "not a link we recognise" message — never with
+ * anything about a team.
+ *
+ * Pure and client-safe, like the rest of this module: the join screen uses it
+ * to decide whether to enable its button, and the action uses it again on the
+ * server, because a client-side normalisation is never the one that counts.
+ */
+export function parseJoinCode(pasted: string): string | null {
+  const trimmed = String(pasted ?? "").trim();
+  if (!trimmed || trimmed.length > 2048) return null;
+  const withoutFragment = trimmed.split("#")[0].split("?")[0];
+  const candidate = withoutFragment.includes("/")
+    ? withoutFragment.split("/").filter(Boolean).pop() ?? ""
+    : withoutFragment;
+  // Internal whitespace goes too: a code copied out of a chat message can
+  // arrive with the display grouping broken across a line.
+  const code = candidate.replace(/\s+/g, "");
+  return JOIN_CODE.test(code) ? code : null;
 }
 
 /**

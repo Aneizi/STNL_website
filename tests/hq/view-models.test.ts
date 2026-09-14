@@ -17,9 +17,17 @@ const TEAM: BuilderTeam = {
   ownerId: "lead-a",
   leadUsername: "fictional_builder_1",
   members: [
-    { id: "m1", name: "Fictional Builder One", username: "fictional_builder_1", joined: true },
-    { id: "m2", name: "Fictional Builder Two", username: "fictional_builder_2", joined: false },
+    { id: "m1", name: "Fictional Builder One", username: "fictional_builder_1", avatarUrl: null, joined: true },
+    { id: "m2", name: "Fictional Builder Two", username: "fictional_builder_2", avatarUrl: "https://static.example.test/two.png", joined: false },
   ],
+  source: {
+    category: "Payments & Remittance", tracks: [], twitterHandle: "tulipledger",
+    website: null, repoLink: "https://github.com/example/project",
+    presentationLink: null, technicalDemoLink: null, pitchVideoLink: null, demoVideoLink: null,
+    imageUrl: null, submissionStatus: "submitted", submittedAt: "2026-05-11T20:00:00.000Z",
+    completion: { isComplete: true, missingCount: 0 },
+    sourceStatus: "ok", sourceCheckedAt: "2026-09-14T10:00:00.000Z", sourceErrorCode: null,
+  },
 };
 
 const PERSON: Person = {
@@ -34,6 +42,7 @@ const PERSON: Person = {
   builderUserId: "lead-a",
   personId: "c1",
   tags: [{ kind: "role", label: "Builder", protected: false }, { kind: "capability", label: "Captain", protected: true }],
+  removal: { cardId: "p1", name: "Fictional Builder One", hackathonId: 6, personId: "c1", hasAccount: true, rosterRows: 1, otherEditionCards: 0, judgeScores: 0, enrollments: 1 },
 };
 
 describe("toMemberTeamView", () => {
@@ -48,13 +57,17 @@ describe("toMemberTeamView", () => {
       projectUrl: TEAM.projectUrl,
       stage: "mvp",
       lead: { username: "fictional_builder_1" },
+      // The normalized Colosseum snapshot, carried whole: it is public
+      // project information, and phase 3's handoff has every later view read
+      // this one shape.
+      source: TEAM.source,
       roster: [
-        { id: "m1", name: "Fictional Builder One", username: "fictional_builder_1", joined: true },
-        { id: "m2", name: "Fictional Builder Two", username: "fictional_builder_2", joined: false },
+        { id: "m1", name: "Fictional Builder One", username: "fictional_builder_1", avatarUrl: null, joined: true },
+        { id: "m2", name: "Fictional Builder Two", username: "fictional_builder_2", avatarUrl: "https://static.example.test/two.png", joined: false },
       ],
     });
-    expect(Object.keys(view).sort()).toEqual(["captain", "edition", "id", "lead", "membership", "name", "projectUrl", "roster", "stage"]);
-    for (const row of view.roster) expect(Object.keys(row).sort()).toEqual(["id", "joined", "name", "username"]);
+    expect(Object.keys(view).sort()).toEqual(["captain", "edition", "id", "lead", "membership", "name", "projectUrl", "roster", "source", "stage"]);
+    for (const row of view.roster) expect(Object.keys(row).sort()).toEqual(["avatarUrl", "id", "joined", "name", "username"]);
     expect(JSON.stringify(view)).not.toMatch(/lead-a|ownerId|description|hackathonName/);
     expect(toMemberTeamView(TEAM, { id: "member-a" }).membership).toEqual({ role: "member", verification: "verified" });
     expect(toMemberTeamView(TEAM, { id: "member-a" }).captain).toBeNull();
@@ -76,13 +89,14 @@ describe("toCaptainAssignmentView", () => {
       projectUrl: TEAM.projectUrl,
       stage: "mvp",
       lead: { username: "fictional_builder_1" },
+      source: TEAM.source,
       roster: [
-        { name: "Fictional Builder One", username: "fictional_builder_1", joined: true },
-        { name: "Fictional Builder Two", username: "fictional_builder_2", joined: false },
+        { name: "Fictional Builder One", username: "fictional_builder_1", avatarUrl: null, joined: true },
+        { name: "Fictional Builder Two", username: "fictional_builder_2", avatarUrl: "https://static.example.test/two.png", joined: false },
       ],
     });
-    expect(Object.keys(view).sort()).toEqual(["edition", "id", "lead", "name", "projectUrl", "roster", "stage"]);
-    for (const row of view.roster) expect(Object.keys(row).sort()).toEqual(["joined", "name", "username"]);
+    expect(Object.keys(view).sort()).toEqual(["edition", "id", "lead", "name", "projectUrl", "roster", "source", "stage"]);
+    for (const row of view.roster) expect(Object.keys(row).sort()).toEqual(["avatarUrl", "joined", "name", "username"]);
   });
 });
 

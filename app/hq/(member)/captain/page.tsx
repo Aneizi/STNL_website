@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { BuilderProjectImage } from "@/components/hq/builder-project-image";
 import { BuilderShell } from "@/components/hq/builder-shell";
 import styles from "@/components/hq/builder-shell.module.css";
 import { requireMemberActor } from "@/lib/hq/actor";
@@ -8,6 +9,7 @@ import { builderDatabase } from "@/lib/hq/builder-db";
 import { builderStore } from "@/lib/hq/builder-store";
 import { PROJECT_STAGES } from "@/lib/hq/builder-types";
 import { leaderboard, listAssignments } from "@/lib/hq/captains";
+import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { toCaptainAssignmentView, type CaptainAssignmentView } from "@/lib/hq/view-models";
 
 export const metadata: Metadata = { title: "Captain" };
@@ -63,7 +65,10 @@ export default async function CaptainPage() {
       {views.map((view) => isTeamView(view) ? (
         <section key={view.id} className={styles.card}>
           <h2>{view.name}</h2>
-          <p>{STAGE_LABELS[view.stage] ?? view.stage}</p>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <BuilderProjectImage src={view.source.imageUrl} name={view.name} size={56} />
+            <p style={{ margin: 0 }}>{STAGE_LABELS[view.stage] ?? view.stage}<br />Colosseum: {SUBMISSION_LABELS[view.source.submissionStatus]}</p>
+          </div>
           <p><a className={styles.inlineLink} href={view.projectUrl} target="_blank" rel="noopener noreferrer">View project on Colosseum</a></p>
           <p>Lead: @{view.lead.username}</p>
           {view.roster.map((member) => (

@@ -759,21 +759,39 @@ describe("assignCaptain", () => {
     // assigned project has no hq_captain_assignments row yet for two
     // concurrent callers to lock against each other on.
     expect(source).toMatch(/ON CONFLICT \(project_id\) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL DO NOTHING/);
+    // Lock order step 3b, added by phase 3: the roster's CRM person rows,
+    // locked in id order, so `correctPersonMatch` cannot re-point a person
+    // onto the candidate's account between this check and the assignment.
+    expect(source).toMatch(/FROM hq_crm_persons WHERE id = ANY\(\$1::uuid\[\]\) ORDER BY id FOR UPDATE/);
   });
 });
 
 describe("the membership-acceptance lock order (lib/hq/builder-store.ts)", () => {
-  it("redeemInvite and importTeam lock the same hq_project_onboarding row assignCaptain locks, and check hq_captain_assignments before admitting a member or a verified owner — a regression guard for the shared lock order", () => {
+  it("redeemInvite locks the same hq_project_onboarding row assignCaptain locks, and checks hq_captain_assignments before admitting a member — a regression guard for the shared lock order", () => {
     const source = readFileSync(join(process.cwd(), "lib/hq/builder-store.ts"), "utf8");
     const redeemInvite = source.slice(source.indexOf("async redeemInvite"), source.indexOf("async dashboard"));
     expect(redeemInvite).toMatch(/FOR UPDATE OF i,o/);
     expect(redeemInvite).toMatch(/FROM hq_captain_assignments WHERE project_id=\$1 AND captain_user_id=\$2 AND unassigned_at IS NULL/);
     expect(redeemInvite.indexOf("FOR UPDATE OF i,o")).toBeLessThan(redeemInvite.indexOf("FROM hq_captain_assignments"));
+  });
 
-    const importTeam = source.slice(source.indexOf("async importTeam"), source.indexOf("async requestReview"));
-    expect(importTeam).toMatch(/FROM hq_project_onboarding WHERE hackathon_id=\$1 AND external_id=\$2 FOR UPDATE/);
-    expect(importTeam).toMatch(/FROM hq_captain_assignments WHERE project_id=\$1 AND captain_user_id=\$2 AND unassigned_at IS NULL/);
-    expect(importTeam.indexOf("FOR UPDATE`")).toBeLessThan(importTeam.indexOf("FROM hq_captain_assignments"));
+  it("importTeam no longer needs that check, because phase 3 removed the path it guarded", () => {
+    // Task T4.4 gave importTeam its own Captain-conflict check, for the
+    // claim-recovery path: an account could take over an existing
+    // hq_project_onboarding row, so a Captain of that project could have
+    // become its owner. Phase 3 deleted that path — an external project
+    // already in HQ cannot be imported again by anyone — so importTeam now
+    // only ever INSERTs a brand new project, which by construction has no
+    // Captain to conflict with. The guard is the unique key, not a lock.
+    const source = readFileSync(join(process.cwd(), "lib/hq/builder-store.ts"), "utf8");
+    const importTeam = source.slice(source.indexOf("async importTeam"), source.indexOf("async refreshTeam"));
+    expect(importTeam).toMatch(/ON CONFLICT \(hackathon_id, external_id\) DO NOTHING RETURNING project_id/);
+    expect(importTeam).toMatch(/already_imported/);
+    expect(importTeam).not.toMatch(/hq_captain_assignments/);
+    // And nothing anywhere in the store re-points an existing onboarding
+    // row's owner, which is what made the old path reachable at all.
+    expect(source).not.toMatch(/SET\s+owner_user_id\s*=/);
+    expect(source).not.toMatch(/owner_user_id\s*=\s*EXCLUDED/);
   });
 });
 

@@ -1,5 +1,6 @@
 // Shared shapes between server queries, server actions, and client screens.
 // Dates are ISO strings: DATE columns as "YYYY-MM-DD", timestamps as full ISO.
+import type { PersonRemovalImpact } from "./record-deletion";
 
 export type Channel = { id: string; label: string };
 export type EventType = { id: string; label: string; supportsEndDate: boolean };
@@ -162,6 +163,12 @@ export type Person = {
   /** The CRM person this card belongs to, or null before one is assigned. */
   personId: string | null;
   tags: PersonTag[];
+  /**
+   * What deleting this card takes with it, read before the destructive step
+   * so the confirmation can name real counts (phase 3). Operator-only, like
+   * the rest of this shape; `PublicPersonView` carries none of it.
+   */
+  removal: PersonRemovalImpact;
 };
 
 export type HqEvent = {

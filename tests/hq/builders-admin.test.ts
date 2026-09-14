@@ -24,8 +24,8 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
-  reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
+  deleteBuilderTeam, markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
+  updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import {
@@ -33,7 +33,7 @@ import {
   createCaptainInvitation as createCaptainInvitationAction, revokeCaptainInvitation as revokeCaptainInvitationAction,
   unassignProjectCaptain,
 } from "@/lib/hq/actions/captains";
-import { correctPersonMatch, createPerson, updatePerson } from "@/lib/hq/actions/people";
+import { correctPersonMatch, createPerson, deletePerson, updatePerson } from "@/lib/hq/actions/people";
 import { getBuilderAdminData, getBuilderProjectReviews } from "@/lib/hq/builder-admin-queries";
 import type { BuilderQuery } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
@@ -54,6 +54,8 @@ const HOST_REQUEST = "00000000-0000-4000-8000-000000000006";
 const OTHER_HOST_REQUEST = "00000000-0000-4000-8000-000000000007";
 /** A project created directly in Admin, never imported: no onboarding row, no roster — nothing for the Captain conflict check's source 2 to see. */
 const BARE_PROJECT = "00000000-0000-4000-8000-000000000008";
+/** The selected edition's People card for the `selected` account. */
+const PERSON_CARD = "00000000-0000-4000-8000-000000000009";
 const config = { externalHackathonId: 42, externalHackathonSlug: "competition-42", projectsOpen: false,
   projectsAvailableAt: "", signupUrl: "https://colosseum.com/signup", hostingEnabled: false };
 let pg: PGlite;
@@ -86,8 +88,9 @@ beforeAll(async () => {
       (12,'other','Other competition','2027-01-01','2027-02-01');
     INSERT INTO hq_builder_profiles(id,email,name) VALUES ('selected','selected@example.test','Selected Builder'),('other','other@example.test','Other Builder');
     INSERT INTO hq_people_roles(label,filter_label,color,bg,is_judge,sort) VALUES('Builder','Builders','accent','accent-fill',false,1);
-    INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id)
-      SELECT 11,'selected','Selected Builder',id FROM hq_people_roles;
+    INSERT INTO hq_builder_enrollments(user_id,hackathon_id) VALUES('selected',11);
+    INSERT INTO hq_people(id,hackathon_id,builder_user_id,name,role_id)
+      SELECT '00000000-0000-4000-8000-000000000009',11,'selected','Selected Builder',id FROM hq_people_roles;
     INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id)
       SELECT 12,'other','Other Builder',id FROM hq_people_roles;
     INSERT INTO hq_project_statuses(slug,label,color,counts_as_active,sort) VALUES('active','Active','green',true,1);
@@ -143,7 +146,8 @@ describe("builder administration authorization and scoping", () => {
   it.each([
     ["configuration", () => updateBuilderOnboardingConfig(config)],
     ["membership", () => updateBuilderTier("selected", "member")],
-    ["verification", () => reviewBuilderProject({ projectId: PROJECT, decision: "verified", reviewedEvidence: true, note: "Confirmed on Colosseum." })],
+    ["deleting a team", () => deleteBuilderTeam({ projectId: PROJECT, confirmed: true })],
+    ["deleting a person", () => deletePerson({ personId: PERSON_CARD, confirmed: true })],
     ["potential", () => markBuilderProjectPotential(PROJECT, true)],
     ["lead selection", () => updateBuilderProjectLead(PROJECT, "notjoined")],
     ["adding a teammate", () => addProjectMember(PROJECT, "Forged", "")],
@@ -193,19 +197,48 @@ describe("builder administration authorization and scoping", () => {
     expect(await rows("SELECT count(*)::int AS n FROM hq_users")).toEqual([{ n: 1 }]);
   });
 
-  it("requires documented evidence and records manual approval in project notes", async () => {
-    const review = { projectId: PROJECT, decision: "verified", reviewedEvidence: true, note: "Checked Netherlands and roster with the project owner." } as const;
-    expect(await reviewBuilderProject({ ...review, reviewedEvidence: false as true })).toMatchObject({ ok: false });
-    expect(await reviewBuilderProject({ ...review, note: "" })).toMatchObject({ ok: false });
-    expect(await reviewBuilderProject({ ...review, projectId: OTHER_PROJECT })).toMatchObject({ ok: false });
-    expect(await reviewBuilderProject(review)).toEqual({ ok: true });
-    expect(await rows("SELECT project_id,verification FROM hq_project_onboarding ORDER BY project_id")).toEqual([
-      { project_id: PROJECT, verification: "verified" }, { project_id: OTHER_PROJECT, verification: "pending" },
-    ]);
-    expect(await rows("SELECT body,author_user_id FROM hq_project_notes")).toEqual([
-      { body: `Team verified by admin: ${review.note}`, author_user_id: OPERATOR },
-    ]);
-    expect(await reviewBuilderProject({ ...review, decision: "rejected" })).toEqual({ ok: true });
+  it("deletes a team with everything attached to it, in the selected hackathon only, and audits what went", async () => {
+    // Phase 4's assignment and a join link both hang off this project.
+    const [{ id: memberId }] = await rows("SELECT id FROM hq_project_members WHERE project_id=$1 AND colosseum_username='notjoined'", [PROJECT]);
+    await rows("INSERT INTO hq_team_invites(project_id,member_id,created_by,token_hash) VALUES($1,$2,'selected','hash-a')", [PROJECT, memberId]);
+    await rows("INSERT INTO hq_project_notes(project_id,body) VALUES($1,'Operator note')", [PROJECT]);
+    await rows("INSERT INTO hq_captain_assignments(project_id,captain_user_id) VALUES($1,'other')", [PROJECT]);
+
+    // A project from another edition answers exactly like a missing one.
+    expect(await deleteBuilderTeam({ projectId: OTHER_PROJECT, confirmed: true })).toMatchObject({ ok: false });
+    expect(await deleteBuilderTeam({ projectId: PROJECT, confirmed: false as true })).toMatchObject({ ok: false });
+    expect(await deleteBuilderTeam({ projectId: PROJECT, confirmed: true })).toEqual({ ok: true });
+
+    for (const table of ["hq_projects", "hq_project_onboarding", "hq_project_members", "hq_team_invites", "hq_project_notes", "hq_captain_assignments"]) {
+      const column = table === "hq_projects" ? "id" : "project_id";
+      expect(await rows(`SELECT count(*)::int AS n FROM ${table} WHERE ${column}=$1`, [PROJECT]), table).toEqual([{ n: 0 }]);
+    }
+    // The accounts behind the team are untouched.
+    expect(await rows("SELECT count(*)::int AS n FROM hq_builder_profiles")).toEqual([{ n: 2 }]);
+    // Still there, and still the other edition's.
+    expect(await rows("SELECT count(*)::int AS n FROM hq_projects WHERE id=$1", [OTHER_PROJECT])).toEqual([{ n: 1 }]);
+    const [audit] = await rows("SELECT kind,actor_kind,actor_id,metadata FROM hq_audit_events WHERE kind='project.deleted'");
+    expect(audit).toMatchObject({ kind: "project.deleted", actor_kind: "operator", actor_id: OPERATOR });
+    expect(audit.metadata).toMatchObject({ projectId: PROJECT, rosterRows: 2, joinLinks: 1, notes: 1, currentCaptain: 1 });
+  });
+
+  it("deletes a person's card without deleting their HQ account, and detaches what pointed at them", async () => {
+    const [{ id: personId }] = await rows("INSERT INTO hq_crm_persons(display_name,builder_user_id) VALUES('Selected Builder','selected') RETURNING id::text AS id");
+    await rows("UPDATE hq_people SET person_id=$1 WHERE id=$2", [personId, PERSON_CARD]);
+    await rows("UPDATE hq_project_members SET person_id=$1 WHERE project_id=$2 AND colosseum_username='selected'", [personId, PROJECT]);
+
+    expect(await deletePerson({ personId: PERSON_CARD, confirmed: false as true })).toMatchObject({ ok: false });
+    expect(await deletePerson({ personId: PERSON_CARD, confirmed: true })).toEqual({ ok: true });
+
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE id=$1", [PERSON_CARD])).toEqual([{ n: 0 }]);
+    // The login survives; the CRM identity does not, and the roster row is detached rather than removed.
+    expect(await rows("SELECT count(*)::int AS n FROM hq_builder_profiles WHERE id='selected'")).toEqual([{ n: 1 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE id=$1", [personId])).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT person_id FROM hq_project_members WHERE project_id=$1 AND colosseum_username='selected'", [PROJECT]))
+      .toEqual([{ person_id: null }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_builder_enrollments WHERE user_id='selected' AND hackathon_id=11")).toEqual([{ n: 0 }]);
+    const [audit] = await rows("SELECT metadata FROM hq_audit_events WHERE kind='person.deleted'");
+    expect(audit.metadata).toMatchObject({ cardId: PERSON_CARD, accountKept: true, crmPersonDeleted: true, detachedRosterRows: 1 });
   });
 
   it("protects imported identities while allowing contact edits and listed lead selection", async () => {
@@ -359,7 +392,7 @@ describe("accounts without a login email in Admin", () => {
     expect(html).toContain("Contact email: reach-me@example.test");
     expect(html).toContain("Telegram account");
     expect(html).toContain("selected@example.test");
-    expect(html).toContain("Initialized by Telegram Builder (Telegram: @tg_handle).");
+    expect(html).toContain("Imported by Telegram Builder (Telegram: @tg_handle).");
     expect(html).toContain("Telegram Builder (Telegram: @tg_handle)");
     expect(html).not.toContain("placeholder.invalid");
     expect(html).not.toContain("()");

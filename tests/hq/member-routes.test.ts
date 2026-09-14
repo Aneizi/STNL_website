@@ -14,12 +14,12 @@ const ORIGIN = "https://hq.invalid";
 const bounce = (pathname: string) => proxy(new NextRequest(`${ORIGIN}${pathname}`)).headers.get("location");
 
 const MEMBER_PAGES = ["/hq/signin", "/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain"];
-const DYNAMIC_MEMBER_PAGES = ["/hq/team/00000000-0000-4000-8000-00000000000a", "/hq/team/1234-abcd", "/hq/invite/abc", "/hq/invite/tok_en-42"];
+const DYNAMIC_MEMBER_PAGES = ["/hq/team/00000000-0000-4000-8000-00000000000a", "/hq/team/1234-abcd", "/hq/invite/abc", "/hq/invite/tok_en-42", "/hq/join/917F94-8CE496-4D2C7A-4C70F1"];
 const OPERATOR_PAGES = ["/hq", "/hq/admin", "/hq/people", "/hq/projects", "/hq/partners", "/hq/partners/abc", "/hq/events", "/hq/links", "/hq/demo", "/hq/select", "/hq/change-password", "/hq/api/search"];
 
 describe("the member route list", () => {
   it("names every member page once, the team and invitation subtrees included, and nothing operator-side", () => {
-    expect([...MEMBER_PUBLIC_PATHS].sort()).toEqual([...MEMBER_PAGES, "/hq/team/", "/hq/invite/"].sort());
+    expect([...MEMBER_PUBLIC_PATHS].sort()).toEqual([...MEMBER_PAGES, "/hq/team/", "/hq/invite/", "/hq/join/"].sort());
     expect(new Set(MEMBER_PUBLIC_PATHS).size).toBe(MEMBER_PUBLIC_PATHS.length);
     for (const path of MEMBER_PUBLIC_PATHS) expect(path.startsWith("/hq/"), path).toBe(true);
     expect(MEMBER_PUBLIC_PATHS).not.toContain("/hq/login");
@@ -30,7 +30,7 @@ describe("the member route list", () => {
     expect(isMemberPath(path)).toBe(true);
   });
 
-  it.each([...OPERATOR_PAGES, "/hq/login", "/hq/signup", "/", "/colosseum/start", "/hq/team", "/hq/team/", "/hq/team/a/b", "/hq/team/a.b", "/hq/team/%2e%2e", "/hq/invite", "/hq/invite/", "/hq/invite/a/b", "/hq/accounts", "/hq/account/", "/hq/account/other", "/hq/captains", "/hq/dashboard/", "/hq/Dashboard"])("rejects %s", (path) => {
+  it.each([...OPERATOR_PAGES, "/hq/login", "/hq/signup", "/", "/colosseum/start", "/hq/team", "/hq/team/", "/hq/team/a/b", "/hq/team/a.b", "/hq/team/%2e%2e", "/hq/invite", "/hq/invite/", "/hq/invite/a/b", "/hq/join/", "/hq/join/a/b", "/hq/accounts", "/hq/account/", "/hq/account/other", "/hq/captains", "/hq/dashboard/", "/hq/Dashboard"])("rejects %s", (path) => {
     expect(isMemberPath(path)).toBe(false);
   });
 });

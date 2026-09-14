@@ -6,7 +6,7 @@ import type { CSSProperties } from "react";
 import { IconLockFill } from "symbols-react";
 import { showToast } from "@/components/hq/toast";
 import { Badge, FormField, card, input, pageTitle, primaryBtn, smallSelect } from "@/components/hq/ui";
-import { correctPersonMatch, createPerson, updatePerson } from "@/lib/hq/actions/people";
+import { correctPersonMatch, createPerson, deletePerson, updatePerson } from "@/lib/hq/actions/people";
 import type { PartnerOption, Person, PersonTag, Role } from "@/lib/hq/types";
 
 const grid: CSSProperties = {
@@ -212,6 +212,28 @@ export function People({
     });
   };
 
+  /**
+   * Deletes a People card, and the CRM person behind it when this is that
+   * person's last card. The confirmation names the real counts the server
+   * read with the row; the HQ account, if there is one, is never deleted.
+   */
+  const removePerson = (person: Person) => {
+    const { removal } = person;
+    const parts: string[] = [];
+    if (removal.hasAccount) parts.push("their HQ account is KEPT; they lose their place in this hackathon");
+    if (removal.enrollments) parts.push("their enrollment in this hackathon");
+    if (removal.judgeScores) parts.push(`${removal.judgeScores} judge score${removal.judgeScores === 1 ? "" : "s"} they gave`);
+    if (removal.otherEditionCards) parts.push(`their cards in ${removal.otherEditionCards} other hackathon${removal.otherEditionCards === 1 ? "" : "s"} are kept`);
+    else if (removal.rosterRows) parts.push(`${removal.rosterRows} imported roster row${removal.rosterRows === 1 ? "" : "s"} stop pointing at them`);
+    const detail = parts.length ? ` This also means: ${parts.join("; ")}.` : "";
+    if (!window.confirm(`Delete ${person.name} from People?${detail} This cannot be undone.`)) return;
+    startTransition(async () => {
+      const result = await deletePerson({ personId: person.id, confirmed: true });
+      showToast(result.ok ? "Person deleted" : (result.error ?? "Could not delete this person"));
+      if (result.ok) { setEditingId(null); router.refresh(); }
+    });
+  };
+
   const create = () => {
     const d = drafts.current;
     if (!d.name) return;
@@ -230,6 +252,9 @@ export function People({
       builderUserId: null,
       personId: null,
       tags: [{ kind: "role", label: roles.find((r) => r.id === roleId)?.label ?? "", protected: false }],
+      // An optimistic row has nothing attached to it yet; the server's own
+      // counts replace this the moment the revalidation lands.
+      removal: { cardId: "", name: d.name, hackathonId: 0, personId: null, hasAccount: false, rosterRows: 0, otherEditionCards: 0, judgeScores: 0, enrollments: 0 },
     };
     startTransition(async () => {
       applyOptimistic({ type: "add", person });
@@ -581,21 +606,30 @@ export function People({
                   }}
                   style={editField}
                 />
-                <button
-                  onClick={() => setEditingId(null)}
-                  style={{
-                    border: "none",
-                    cursor: "pointer",
-                    background: "none",
-                    color: "var(--accent)",
-                    fontSize: 12,
-                    fontWeight: 600,
-                    padding: 2,
-                    justifySelf: "start",
-                  }}
-                >
-                  Done
-                </button>
+                <span style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+                  <button
+                    onClick={() => setEditingId(null)}
+                    style={{
+                      border: "none",
+                      cursor: "pointer",
+                      background: "none",
+                      color: "var(--accent)",
+                      fontSize: 12,
+                      fontWeight: 600,
+                      padding: 2,
+                      justifySelf: "start",
+                    }}
+                  >
+                    Done
+                  </button>
+                  <button
+                    onClick={() => removePerson(p)}
+                    title="Delete this People card. The HQ account behind it, if any, is kept."
+                    style={{ ...smallTextBtn, color: "var(--red)" }}
+                  >
+                    Delete
+                  </button>
+                </span>
               </div>
             );
           })}

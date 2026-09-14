@@ -443,6 +443,13 @@ export async function listCaptainInvitations(db: BuilderQuery = builderDatabase(
  *      lock is a no-op for it — and correctly so, since nothing can ever
  *      race a membership acceptance onto a project that was never opened to
  *      one.
+ *   3b. `hq_crm_persons`, the person rows this project's roster points at,
+ *      locked in id order inside `checkCaptainConflict` (phase 3). It closes
+ *      the race between that check's roster-identity source and
+ *      `correctPersonMatch`, which became reachable the moment phase 3
+ *      started stamping `person_id` onto imported roster rows. The full
+ *      reasoning, and why locking was chosen over accepting the race, is at
+ *      the statement itself.
  *   4. `hq_captain_assignments` — the project's current-assignment row, 0 or
  *      1 match. `unassignCaptain` and `clearCaptainAssignments` only ever
  *      need this table, so they skip 1 through 3 entirely; that is still
@@ -562,6 +569,43 @@ async function checkCaptainConflict(
   if (membership) return { kind: "conflict", conflict: { kind: "verified_member", role: membership.role } };
   if (!input.onboarded) return { kind: "clear" };
   if (input.ownerUserId != null && input.ownerUserId === input.candidateUserId) return { kind: "conflict", conflict: { kind: "claimant" } };
+
+  // Lock order step 3b (phase 3's decision; see the lock-order block above).
+  //
+  // Until phase 3 wired `ensurePersonForRosterMember` into the import path,
+  // every roster row's `person_id` was NULL and this scan's CRM branch was
+  // unreachable. Now that roster rows carry real persons, this check shares
+  // state with `correctPersonMatch` (./crm-identity.ts, an operator action)
+  // with nothing serialising the pair: an admin re-pointing a person onto an
+  // account at the same moment another admin assigns that account as Captain
+  // of a project that person's roster row belongs to could otherwise commit
+  // exactly the state T4.4 closed for its other two sources — a participant
+  // captaining their own team.
+  //
+  // The decision taken in phase 3 is to LOCK rather than accept the race.
+  // Both operations are rare and operator-triggered, but the state they can
+  // land in is a product invariant the plan states unconditionally ("A
+  // Captain cannot be assigned to a team they participate in"), and the lock
+  // costs one extra statement on a path that already holds three locks.
+  //
+  // The lock is taken on the CRM person rows, in id order, in a statement of
+  // their own rather than as `FOR UPDATE` on this outer join (Postgres
+  // refuses `FOR UPDATE` on the nullable side of an outer join). Ordering by
+  // id keeps two concurrent assignments on overlapping rosters deadlock free
+  // between themselves, and `correctPersonMatch` only ever locks one person
+  // row and never reaches for the capability, project or assignment locks
+  // this transaction already holds, so there is no cycle between the two.
+  const { rows: personIds } = await tx.query(
+    `SELECT DISTINCT person_id FROM hq_project_members
+     WHERE project_id = $1::uuid AND person_id IS NOT NULL ORDER BY person_id`,
+    [input.projectId],
+  );
+  if (personIds.length) {
+    await tx.query(
+      "SELECT id FROM hq_crm_persons WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+      [personIds.map((row) => String(row.person_id))],
+    );
+  }
 
   const { rows } = await tx.query(
     `SELECT m.id::text AS id, m.name, m.colosseum_username, m.builder_user_id,

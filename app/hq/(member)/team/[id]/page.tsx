@@ -13,12 +13,17 @@ export default async function TeamPage({params}:{params:Promise<{id:string}>}){
   // The central decision, then the member's view and nothing wider. Every denial is this same not-found page.
   const team=await memberTeamView(actor,id);
   if(!team)notFound();
+  // A successful import is a usable team straight away: there is no pending
+  // or awaiting-approval state to show any more. The only rows that can
+  // still be anything but 'verified' are legacy claims from before the
+  // owner's 14 September 2026 change, which an admin resolves by deleting
+  // them; they are shown honestly rather than hidden.
   const {verification}=team.membership;
-  const status=verification==='verified'?'Verified':verification==='pending'?'Awaiting approval':'Changes needed';
-  return <BuilderShell back='/hq/dashboard'><h1>{team.name}</h1><span className={styles.status}>{status}</span>
-    {verification==='pending'&&<p>Superteam NL will review your team. You can check your details now. Edits and invites open after approval.</p>}
-    {verification==='rejected'&&<p>Superteam NL could not approve this import. Check your Colosseum team and contact us for help.</p>}
-    <p><a className={styles.inlineLink} href={team.projectUrl} target='_blank' rel='noopener noreferrer'>View project on Colosseum</a></p>
+  return <BuilderShell back='/hq/dashboard'><h1>{team.name}</h1>
+    {verification!=='verified'&&<>
+      <span className={styles.status}>Not active</span>
+      <p>This is an old import request that never became a team. Ask Superteam NL to remove it, then import your project again.</p>
+    </>}
     {team.captain&&<p>Captain: {team.captain.displayName}</p>}
     <BuilderTeamControls team={team}/>
   </BuilderShell>;

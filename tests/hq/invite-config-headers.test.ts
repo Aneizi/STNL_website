@@ -52,3 +52,24 @@ describe("next.config.ts headers() for /hq/invite", () => {
     );
   });
 });
+
+// Phase 3's team join link is the second bearer-code-in-the-path route, so
+// it needs the same two headers for the same reason. Separate entry from the
+// Captain invitation one above: they are different subtrees and a single
+// wider pattern would have to cover /hq/join itself, which carries no code.
+describe("next.config.ts headers() for /hq/join", () => {
+  it("covers the join-link subtree and nothing wider, with the same two headers", async () => {
+    const entries = ((await nextConfig.headers!()) ?? []).filter((entry) => entry.source.startsWith("/hq/join"));
+    expect(entries).toHaveLength(1);
+    const [entry] = entries;
+    expect(matchesTrailingWildcard(entry.source, "/hq/join/917F94-8CE496-4D2C7A-4C70F1")).toBe(true);
+    expect(matchesTrailingWildcard(entry.source, "/hq/initialize")).toBe(false);
+    expect(matchesTrailingWildcard(entry.source, "/hq/invite/abc")).toBe(false);
+    expect(entry.headers).toEqual(
+      expect.arrayContaining([
+        { key: "Referrer-Policy", value: "no-referrer" },
+        { key: "X-Robots-Tag", value: "noindex, noarchive" },
+      ]),
+    );
+  });
+});

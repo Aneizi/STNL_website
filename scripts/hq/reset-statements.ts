@@ -78,10 +78,11 @@ export const KEEP_TABLES = [
   "hq_hackathon_onboarding",
   // Builder-side records the reset never touched before they were classified
   // (task T1.1). Kept so that classifying them changes nothing a live reset
-  // does; whether enrollments, challenges and requests should be emptied with
-  // the edition's CRM is an open product ruling.
+  // does; whether enrollments and requests should be emptied with the
+  // edition's CRM is an open product ruling. hq_project_challenges sat in
+  // this list until phase 3 removed the ownership-proof challenge, and its
+  // table with it.
   "hq_builder_enrollments",
-  "hq_project_challenges",
   "hq_project_import_requests",
   "hq_event_host_requests",
   "hq_partner_channels",

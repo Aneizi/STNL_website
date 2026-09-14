@@ -134,8 +134,6 @@ async function seedEverything() {
   const member = await id(`SELECT id FROM hq_project_members LIMIT 1`);
   await run(`INSERT INTO hq_team_invites (project_id, member_id, created_by, token_hash)
              VALUES ('${project}', '${member}', 'builder-1', 'fictional-token-hash')`);
-  await run(`INSERT INTO hq_project_challenges (user_id, hackathon_id, project_url, external_id, claimed_username, code)
-             VALUES ('builder-1', '${hackathon}', 'https://colosseum.com/arena/projects/explore/tulip-ledger', 90001, 'fictional_builder_1', '12345678')`);
   await run(`INSERT INTO hq_project_import_requests (user_id, hackathon_id, project_url)
              VALUES ('builder-1', '${hackathon}', 'https://colosseum.com/arena/projects/explore/unlisted')`);
   await run(`INSERT INTO hq_event_host_requests (user_id, hackathon_id, title, details)

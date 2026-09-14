@@ -135,9 +135,24 @@ describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) =
   });
 
   if (scoped) {
-    it.each(["missing", "archived"])("rejects a %s competition instead of picking another", async (state) => {
+    // Phase 3 removed the hard-coded edition id this module used to carry.
+    // The edition is now the same server-side pick every other surface
+    // without a selector uses, so a missing or archived current edition
+    // moves the submission to the next one rather than dropping it.
+    it.each(["missing", "archived"])("files the submission under the next edition when the current one is %s", async (state) => {
       if (state === "missing") await db.query(`DELETE FROM hq_hackathons WHERE id = 6`);
       else await db.query(`UPDATE hq_hackathons SET archived_at = now() WHERE id = 6`);
+      expect(await saveColosseumInterest(db, INPUT, "127.0.0.1")).toEqual({ ok: true });
+      expect(await db.query(`SELECT hackathon_id FROM hq_people`)).toEqual([{ hackathon_id: 7 }]);
+    });
+
+    it("files the submission under the current edition, never a hard-coded one", async () => {
+      expect(await saveColosseumInterest(db, INPUT, "127.0.0.1")).toEqual({ ok: true });
+      expect(await db.query(`SELECT hackathon_id FROM hq_people`)).toEqual([{ hackathon_id: 6 }]);
+    });
+
+    it("refuses when there is no available edition at all", async () => {
+      await db.query(`UPDATE hq_hackathons SET archived_at = now()`);
       expect((await saveColosseumInterest(db, INPUT, "127.0.0.1")).ok).toBe(false);
       expect(await db.query(`SELECT count(*)::int AS total FROM hq_people`)).toEqual([{ total: 0 }]);
     });
