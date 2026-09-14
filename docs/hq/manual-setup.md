@@ -6,10 +6,12 @@ Colosseum integration, and what is already covered by automated tests.
 This file is tracked and it is the authoritative list. It contains variable
 **names** only. Never paste a key, secret, token or connection string in here.
 
-**Final for phases 0, 1 and 2.** Every item below is either finished in code,
-waiting on the owner, or a live check that only the owner can run. Phases 3 to
-11 will add to this file; nothing in it is removed as phases land, only moved
-between the three groups.
+**Final for phases 0, 1, 2 and 4.** Every item below is either finished in
+code, waiting on the owner, or a live check that only the owner can run.
+Phase 4 (Captain invitations, assignments and the leaderboard) added no new
+environment variable; it added one live check, item L12 below. The remaining
+phases (3 and 5 to 11) will add to this file; nothing in it is removed as
+phases land, only moved between the three groups.
 
 ## How to read this list
 
@@ -89,7 +91,18 @@ is not confused with work that is already done.
 - **Migrations.** Every phase 0 to 2 migration is additive and idempotent, and
   `tests/hq/migration-order.test.ts` applies all of them twice on a fresh
   database and again over a populated fixture, through the statement splitter.
-  You do not need a migration window; `hq:migrate` is safe to re-run.
+  You do not need a migration window; `hq:migrate` is safe to re-run. The
+  phase 4 tables (`hq_captain_invitations`, `hq_captain_invitation_redemptions`,
+  `hq_captain_assignments`) are covered by the same test and the same rule.
+- **Captain invitations, assignments and the leaderboard.** One-use and
+  multi-use invitation links with expiry and capacity, the `/hq/invite/<token>`
+  exchange and acceptance flow, the assignment service with its conflict
+  checks (a participant cannot Captain their own team), the revocation
+  cascade, and a leaderboard visible to Admin and to each Captain that never
+  shows a Captain another Captain's project. No new environment variable.
+  Covered by the tests named in `docs/hq/implementation-log.md`'s phase 4
+  acceptance checklist. **One item in this feature is not code-level
+  verifiable and is listed as a live check below: item L12.**
 
 **One known gap in this group.** The 503 `AUTH_UNAVAILABLE` response in
 `app/api/auth/[...all]/route.ts`, surfaced by
@@ -483,3 +496,17 @@ actually seen the result.
 - **L11.** Confirm the World's Fair external id and slug with Colosseum, and
   check them against Colosseum's own page before saving them in Admin. They
   cannot be corrected after the first import.
+
+## Captain invitation links, no owner setup required
+
+- **L12.** Run `curl -I` against a running `next dev` or `next start` for
+  `/hq/invite/<any token>` and for `/hq/invite/continue`, and confirm the
+  response carries `Referrer-Policy: no-referrer` and `X-Robots-Tag: noindex,
+  noarchive`. `tests/hq/invite-config-headers.test.ts` proves the
+  `next.config.ts` entry itself is correct; it drives the route handler and
+  the page directly, below the layer that actually applies `headers()`, so it
+  cannot prove the header lands on the served response. Not run this session.
+  Needs no credential and blocks nothing else — the invitation flow works
+  without it — but it is the one thing between the code and the plan's
+  privacy requirement for this route, so it should be checked once before
+  invitation links are sent out for real.

@@ -2220,3 +2220,1403 @@ The two `env -u` flags matter for the same reason they did at the baseline: an
 exported `DATABASE_URL` can reach an unmocked `getSql()` during a run.
 `vitest.config.mts` blanks both for every test as well, so the flags are now belt
 and braces rather than the only guard.
+
+## Carried over before phase 4: the navigation fix and the whole-branch review
+
+Two things landed on this branch before phase 4's own tasks. Neither is a phase
+deliverable and neither has its own plan section, so they are recorded here
+rather than left only in the session ledger.
+
+### T-FIX: the member navigation no longer loads every team to count them
+
+The plan's own "fix first, before new work" item, and independently the
+whole-branch review's Important 3 (below). `lib/hq/builder-store.ts` gained a
+shared `OWN_TEAM` predicate constant (the ownership check `teams()` already
+used inline) and a new `hasTeams(userId): Promise<boolean>`
+(`SELECT EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE ${OWN_TEAM})`; no
+team row is selected, no roster aggregated). `app/hq/(member)/layout.tsx#memberNavState()`
+calls it instead of `(await builderStore().teams(actor.id)).length`.
+`getMemberNav`'s `teamCount: number` became `hasTeams: boolean` in
+`lib/hq/member-nav.ts`, because the nav only ever asked "greater than zero"
+and a boolean is the honest shape for that question rather than a count that
+no longer counts anything. `docs/hq/contracts.md` was updated in the same
+commit (the "Shell and navigation" module-map row and the "Shell and routes"
+bullet), so it never carried the stale signature.
+
+**Checks passed:** new `tests/hq/builder-store-has-teams.test.ts` (PGlite,
+real migrated schema) compares `hasTeams(userId)` against `teams(userId)` on
+every membership shape side by side — no relationship at all (`false`/`[]`,
+including when other accounts have teams); owner of a verified claim; owner of
+a pending claim and, separately, a rejected one (`it.each`, both
+`true`/`[project]` — the dashboard shows both, so the menu must say "My
+teams"); an unclaimed roster row (`false`, an invite not yet redeemed), the
+same row once joined (`true`), then once released (`false` again).
+`tests/hq/member-shell.test.ts` extended: the layout test now asserts
+`hasTeams` was called with the actor id **and `teams` was not called at
+all**. `tests/hq/member-nav.test.ts`: every `teamCount: N` became
+`hasTeams: true|false`, rule table otherwise unchanged. Full suite at this
+commit: 760 tests in 34 files, `tsc` clean, lint unchanged (0 errors, 18
+pre-existing warnings, verified against a `git stash` of the change).
+
+**Blocked or deferred:** none. `teams()` was deliberately not wrapped in
+`cache()` (the dashboard is now the only caller left in a member request, so
+there is nothing left to dedupe).
+
+**Changed interfaces:** `BuilderStore.hasTeams(userId)` in
+`lib/hq/builder-store.ts`; `getMemberNav({ capabilities, hasTelegram,
+hasTeams })` in `lib/hq/member-nav.ts` (`MemberNavInput.hasTeams: boolean`,
+replacing `teamCount: number`).
+
+**External configuration:** None added.
+
+Commit `dd361ac`. Review: 0 Critical, 0 Important. The reviewer confirmed the
+agreement between `hasTeams()` and `teams()` is structurally guaranteed by the
+shared `OWN_TEAM` predicate plus the `hq_project_onboarding` foreign keys
+(`ON DELETE CASCADE` from both `hq_projects` and `hq_hackathons`), not merely
+tested. Two accepted minors, neither actioned: the layout's "no longer calls
+`teams()`" assertion is mock-level, paired with the PGlite behavioural test
+rather than duplicating it; two stale `teamCount` mentions remain in the
+untracked plan file's own history and in the historical T2.4 log entry above,
+left as history rather than rewritten.
+
+### Whole-branch review of phases 0-2 (`bcba7df..29203e7`)
+
+Deferred from the previous session for a usage-limit reason, run at the start
+of this one. Full report:
+`.superpowers/sdd/2026-09-13-hq-captains-and-colosseum/final-review-report.md`.
+Reviewed read-only, in three passes (the plan and the docs; the identity,
+authorization, capability, audit, CRM and migration modules; the member and
+operator surfaces, the tests, and the doc-to-code claims), plus one targeted
+static analysis of the import graph and one of the SQL splitter.
+
+**Verdict: 0 Critical, 6 Important, 16 Minor, "ready to merge with fixes".**
+Strengths recorded: the authorization core's non-enumeration property is
+"thought through to an unusual depth"; the two session origins (`operator` and
+`member`) stay genuinely separate with no path between them; the Telegram
+identity model is defended by four independent mechanisms; the migrations are
+"the strongest part of the branch" (idempotent, tested through the real
+splitter, twice fresh and three or four times over a populated fixture); every
+test the reviewer sampled asserts real behaviour rather than a mock, and seven
+of the test names the implementation log cited as acceptance proof were
+spot-checked and found to exist exactly where cited.
+
+The six Important findings, all fixed by task REVFIX below before phase 4
+began:
+
+- **I1.** `confirmEmailChange` had no check for an account that already has a
+  login email. Only the page (`app/hq/(member)/account/add-email/page.tsx`)
+  redirected such an account away; the Server Action itself did not refuse
+  it, so a fresh session (created within the 15-minute recency window) could
+  permanently move an existing email account's login address, then disconnect
+  Telegram, locking the real owner out with only a notice to the old address
+  that deliberately does not name the new one.
+- **I2.** the Telegram placeholder address
+  (`<sub>@telegram.placeholder.invalid`) reached a browser through
+  `/api/auth/get-session`, because no `customSession` transform existed —
+  contradicting the plan's own stated contract that the placeholder "never
+  reaches a browser, a contact field or a mail sender". Not a cross-user leak
+  (it is the account's own subject), but a future `useSession()` call in any
+  client component would have surfaced it.
+- **I3.** the member layout query the T-FIX task above already closed; the
+  reviewer reached the same diagnosis and the same fix (an existence check,
+  the `hasTeams` shape) independently, in the same session, before T-FIX's
+  commit landed.
+- **I4.** `grantCapability`/`revokeCapability` could only attribute a change
+  to an operator (`actorOperatorId: string`), with the audit event
+  hard-coding `actor: { kind: "operator", ... }`. That cannot express a
+  member redeeming their own Captain invitation — phase 4's first new caller
+  — and would have recorded an operator action that never happened.
+- **I5.** `listCapabilityGrants` and `listAuditEvents` were ungated readers
+  carrying the admin's free-text grant reason and both operator ids, with no
+  narrowed view model for a member-visible surface to use instead. Not
+  exploitable at the time (every caller was operator-gated), but phase 4's
+  Captain leaderboard is exactly the first member-facing caller the review
+  anticipated.
+- **I6.** every operator Server Action module transitively imported the whole
+  public member-auth graph (`lib/hq/actions/*.ts → actions/util.ts →
+  authz.ts → actor.ts → member-auth.ts`), pulling `better-auth`,
+  `@better-auth/core`, `resend` and `jose` into operator route bundles that
+  none of them use. Walking the graph from `lib/hq/actions/projects.ts`
+  reached 31 modules; phase 4's `lib/hq/actions/captains.ts` would have
+  inherited the coupling.
+
+Three Minors were promoted alongside the six Importants because phase 4 would
+make each more expensive to fix later: **M1** (`isPlaceholderEmail` credited
+to the wrong module in `docs/hq/contracts.md`'s "Handoff to phase 3" section),
+**M2** (`updateTeam`'s SQL predicate, `verification <> 'rejected'`, looser
+than the `verification = 'verified'` decision that gates it), **M3**
+(`toPublicPersonView` included the Captain capability label by default
+instead of on request — the mapper had no app caller yet, so the signature
+was free to change). The remaining thirteen Minors and the "agreed, can stay
+deferred" list are recorded in the review report; none blocks phase 4 and none
+is repeated here.
+
+### REVFIX: the review's fix wave
+
+Nine commits, `dd361ac..9093467`, one per finding plus a self-review commit
+(`9093467`). 781 tests in 35 files passing, `tsc` clean, lint unchanged (0
+errors, 18 pre-existing warnings), `npm run build` passing. Independently
+re-reviewed afterwards and confirmed: all ten findings addressed at the
+defect rather than worked around, all four implementer concerns judged sound,
+no new Critical or Important issue.
+
+- **I1 fixed.** `lib/hq/actions/telegram.ts#confirmEmailChange` now answers
+  `{ ok: false, code: "EMAIL_ALREADY_SET" }` when `actor.email !== null`,
+  before it looks at the address, the session or the intent — the same rule
+  the page already enforced, now at the boundary. One consequence recorded:
+  the `user.update.after` notice to a previous verified address is now
+  reachable only by writing the change-email intent directly (there is no
+  product flow that can trigger it), which is defence for a feature HQ does
+  not currently offer.
+- **I2 fixed.** `lib/hq/member-auth.ts` gained a `customSession` transform
+  mapping a placeholder `user.email` to `null` and `emailVerified` to
+  `false`, built on the existing `isPlaceholderEmail` rather than a fourth
+  copy of the rule. Because the plugin's `/get-session` endpoint replaces the
+  core one in `auth.api` too, the transform applies to **every** server
+  reader of a member session, not only the HTTP route —
+  `currentMemberSession()` now returns the transformed shape, and
+  `StoredAccount.email` is `string | null` for that reason: a string as
+  Better Auth hands a row to a database hook, `null` once a session reads it
+  back. `isVerifiedAccount`, `verifiedLoginEmail` and
+  `telegramIsLastLoginMethod` all handle both without behaviour change.
+- **I3** already fixed by T-FIX; left untouched here.
+- **I4 fixed.** `CapabilityChange` is now `{ actor: AuditActor; byOperatorId:
+  string | null; userId; capability; reason }`. `actor` goes straight to
+  `recordAuditEvent`; `byOperatorId` binds `granted_by_user_id` (on a grant)
+  or `revoked_by_user_id` (on a revocation), or `null`. `revokeCapability` was
+  widened the same way, symmetrically — an asymmetric pair would have been a
+  trap for phase 4's revocation cascade, which needed exactly this shape.
+- **I5 fixed.** `lib/hq/view-models.ts` gained `CaptainLeaderboardView =
+  { rank, displayName, assignedCount }` (T4.5 later added `isYou`), with a
+  doc comment naming every field the admin-only `CapabilityGrant`/
+  `AuditEvent` shapes carry that this view model deliberately omits.
+  `listCapabilityGrants`/`listAuditEvents` were **not** given an actor
+  parameter — gating `audit.ts` would create the cycle `member-auth.ts →
+  audit.ts → actor.ts → member-auth.ts`, and gating `capabilities.ts` through
+  `authz.ts` or `actor.ts` would partly undo I6 for every caller of
+  `listActiveCapabilities`. The narrowed view model plus the contracts note
+  is the boundary instead, and both function doc comments and
+  `docs/hq/contracts.md` say so.
+- **I6 fixed.** `assertHackathonMatches` moved from `authz.ts` to the
+  already-pure `authz-sql.ts` and is re-exported, so the existing import path
+  (used by `tests/hq/authz.test.ts`) keeps working; `lib/hq/actions/util.ts`
+  now imports it from the leaf module directly. The graph from
+  `lib/hq/actions/projects.ts` went from 29 modules to 17; `better-auth`,
+  `@better-auth/core`, `resend` and `next/headers`'s auth-adjacent imports are
+  gone from every operator action module's reachable set (`jose` remains,
+  through the operator's own `session-token.ts`). New
+  `tests/hq/operator-imports.test.ts` proves it by a static import walk — the
+  mirror of `tests/hq/member-shell.test.ts`'s scan, but transitive rather than
+  direct, since the coupling was three hops deep — and asserts the walk
+  *does* reach `member-auth.ts` from the two member action modules, so the
+  scan cannot pass by finding nothing. This is the test T4.2 and T4.3 had to
+  design their own new action modules around (see their entries below).
+- **M1, M2, M3 fixed.** `lib/hq/identity.ts` now re-exports
+  `isPlaceholderEmail` (defined next to the function that mints the
+  placeholder, in `lib/hq/telegram-provider.ts`, re-exported at the identity
+  boundary), making the contracts claim true as written.
+  `builder-store.ts#updateTeam`'s SQL predicate now requires
+  `verification = 'verified'`, matching the decision. `toPublicPersonView`
+  now drops capability labels unless the caller passes
+  `{ includeCapabilities: true }`.
+- **M6, M7 also fixed**, bundled in because they were cheap and touched the
+  same admin area: `components/hq/builder-admin.tsx`'s account and project
+  rows are now keyed by `account.id`/`project.id` alone (not also
+  `account.captain`/`project.verification`), so a successful save no longer
+  remounts the row and loses `ActionForm`'s own "Saved." confirmation or an
+  open `<details>`; and a comment on `lib/hq/actions/capabilities.ts`
+  explains why Captain grants are deliberately account-global rather than
+  edition-scoped like the neighbouring `updateBuilderTier`.
+
+Full findings, reasoning and the four implementer concerns judged sound are in
+`.superpowers/sdd/2026-09-13-hq-captains-and-colosseum/task-REVFIX-report.md`.
+Two concerns worth a later phase's attention, recorded rather than acted on:
+`customSession`'s wider blast radius means phase 7's bot adapter (and
+anything else reading a member session) must expect `email: null`, never a
+placeholder, from every reader, not only the HTTP endpoint; and the
+login-email-change notice to a previous address is, after I1, reachable only
+by writing the confirmation intent directly, since no product flow can
+trigger it any more — its test does exactly that, and is defending a feature
+HQ does not currently offer.
+
+**Blocked or deferred:** M4 and M5 (the People "Wrong match?" control) were
+explicitly excluded from this fix wave as a phase 3 item, per the ledger; see
+`docs/hq/contracts.md`'s "Handoff to phase 3" for the current state of that
+control. The "agreed, can stay deferred" Minors from the review report are
+unchanged.
+
+**Changed interfaces:** `CapabilityChange = { actor: AuditActor;
+byOperatorId: string | null; userId: string; capability: Capability; reason:
+string }` in `lib/hq/capabilities.ts` (both `grantCapability` and
+`revokeCapability`); `CaptainLeaderboardView` in `lib/hq/view-models.ts`;
+`assertHackathonMatches` now defined in `lib/hq/authz-sql.ts`, re-exported
+from `lib/hq/authz.ts` (no import-path change for existing callers);
+`toPublicPersonView(person, { includeCapabilities? })` in
+`lib/hq/view-models.ts`; `isPlaceholderEmail` re-exported from
+`lib/hq/identity.ts`; `customSession` on the member Better Auth instance
+(`lib/hq/member-auth.ts`), with `StoredAccount.email: string | null`.
+
+**External configuration:** None added.
+
+## Phase 4, Captain invitations, assignments and the Captain leaderboard
+
+Tasks T4.1, T4.2, T4.3, T4.4 and T4.5, each independently reviewed with fix
+rounds until clean. Branch `hq-captains-phases-0-2`, `9093467..e363fbe`.
+
+### What changed, task T4.1
+
+Schema only: `hq_captain_invitations`, `hq_captain_invitation_redemptions` and
+`hq_captain_assignments` in `scripts/hq/builder-schema.sql`, the
+`loadCurrentAssignment` loader swapped from an always-null stub to a real
+read, and the reset classification for the three new tables. No service, no
+route, no UI, per the standing "no stub source files" rule.
+
+`hq_captain_invitations`: `id`, unique `token_hash`, `label`, `capability`
+(`CHECK` restricted to `'captain'`, named
+`hq_captain_invitations_capability_check`), `max_redemptions` (`CHECK > 0`,
+named `hq_captain_invitations_max_redemptions_check`), `expires_at` (`NOT
+NULL`), `created_by_user_id`/`revoked_by_user_id` (→ `hq_users(id)` `ON
+DELETE SET NULL`), `created_at`, `revoked_at`.
+
+`hq_captain_invitation_redemptions`: `id`, `invitation_id` (→
+`hq_captain_invitations(id)` `ON DELETE CASCADE`), `user_id` (→
+`hq_builder_profiles(id)` `ON DELETE SET NULL`, **nullable by design** — see
+below), `redeemed_at`, `UNIQUE (invitation_id, user_id)`.
+
+`hq_captain_assignments`: `id`, `project_id` (→ `hq_projects(id)` `ON DELETE
+CASCADE`), `captain_user_id` (→ `hq_builder_profiles(id)` `ON DELETE SET
+NULL`, nullable), `assigned_at`, `assigned_by_user_id`, `unassigned_at`,
+`unassigned_by_user_id`, `reason`. Two partial indexes, after two fix rounds
+(below): `hq_captain_assignments_one_current_idx` (**unique**, on
+`(project_id)`) and `hq_captain_assignments_captain_current_idx` (on
+`(captain_user_id)`), both `WHERE unassigned_at IS NULL AND captain_user_id IS
+NOT NULL`.
+
+**Redemption row on account deletion (decision).** `user_id` is nullable with
+`ON DELETE SET NULL`, not `ON DELETE CASCADE`. The plan is explicit that
+removing an account does not replenish an old invitation's usage allowance;
+since capacity is counted by rows, the row must outlive the account it names.
+This matches the codebase's existing convention for "who is this row about"
+references into `hq_builder_profiles` from a history table
+(`hq_people.builder_user_id`, `hq_project_members.builder_user_id`,
+`hq_crm_persons.builder_user_id` are all nullable + `SET NULL`).
+
+**CLEAR vs KEEP (decision).** `hq_captain_assignments` → **CLEAR**: it
+answers "who is running this project", which only means something for a
+project that still exists, and cascades from `hq_projects` (itself CLEAR)
+regardless. `hq_captain_invitations` and `hq_captain_invitation_redemptions`
+→ **KEEP**: both are account-level grant history in the same shape
+`hq_account_capabilities` already is. Clearing the redemption rows while
+`hq_builder_profiles` survives a reset (it is KEEP) would let the same
+accounts redeem the same invitations again, silently replenishing every
+invitation's capacity — the opposite of the plan's non-replenishment rule.
+
+**Fix round 1 (commit `aebae7e`).** Review found one Important: the two
+partial indexes' predicate (`unassigned_at IS NULL`) disagreed with
+`loadCurrentAssignment`'s (`unassigned_at IS NULL AND captain_user_id IS NOT
+NULL`). An account deletion leaves exactly that disagreement — `ON DELETE SET
+NULL` clears `captain_user_id` but nothing touches `unassigned_at` — so
+`loadCurrentAssignment` would report "no Captain" for a project whose unique
+index still held that project's one slot, permanently refusing any new
+assignment to it with a raw constraint violation. Fixed by narrowing both
+index predicates to match the loader exactly, using `DROP INDEX IF EXISTS`
+before each `CREATE ... IF NOT EXISTS` so a database that had already run the
+first-round SQL would still pick up the corrected predicate.
+
+**Fix round 2 (commit `d271f7e`).** The drop-then-create pair from round 1
+reused the same index name on both sides, which means both statements would
+run for real on **every** future `hq:migrate`, forever — not only the one
+deploy that needed the correction — briefly dropping the "one current Captain
+per project" invariant on every deploy and paying an index rebuild each time.
+Fixed by retiring the round-1 names (`hq_captain_assignments_current_idx`,
+`hq_captain_assignments_captain_idx`) with a bare `DROP INDEX IF EXISTS` that
+is never recreated, and creating the corrected predicate under new,
+permanent names (`hq_captain_assignments_one_current_idx`,
+`hq_captain_assignments_captain_current_idx`). All four statements converge
+to a no-op after one real run, matching the idiom of the rest of the file.
+Taken while the branch was still unpushed and the table had never carried
+live traffic, so the rename was free; it would not have been after T4.4
+shipped.
+
+### Checks passed, task T4.1
+
+`tests/hq/migration-order.test.ts`'s `expectCaptainSchema` (tables, columns
+via `information_schema.columns`, named `CHECK` constraints, FK
+`confdeltype` per target table, index existence and exact `indexdef`,
+retired-name absence), applied through the real splitter twice fresh and
+three to four times over the populated pre-hackathon-scoping fixture, plus a
+`describe("task T4.1: ...")` block of behaviour tests: "refuses a second
+current assignment for the same project, and allows a historical row plus a
+new current one"; "refuses a duplicate redemption of the same invitation by
+the same account"; "refuses a non-positive max_redemptions"; "refuses a
+capability other than 'captain'"; "keeps a redemption counting toward
+capacity after the redeeming account is deleted"; "lets a project be
+reassigned after its Captain's account is deleted (Important 1 regression)".
+`tests/hq/authz.test.ts` "loadCurrentAssignment reads hq_captain_assignments:
+no row, a current row, an ended row, and a malformed id without a query" (the
+"without a query" case passes a throwing `BuilderQuery` stand-in, so a query
+would fail the test rather than go unasserted). `tests/hq/reset.test.ts`:
+`seedEverything()` now inserts one invitation, one redemption and one
+assignment row, so the existing generic "has every hq_ table classified in
+the reset manifest, and nothing classified that does not exist" and the
+CLEAR/KEEP guard tests actually exercise the three new tables instead of
+passing vacuously on zero rows (two of the generic assertions genuinely
+failed before the seed rows were added — the implementer's own signal that
+the classification tests are wired correctly).
+
+Full suite at `d271f7e`: 788 tests in 35 files, `tsc` clean, lint unchanged
+(0 errors, 18 pre-existing warnings).
+
+### Blocked or deferred, task T4.1
+
+None. The service, route and UI work is T4.2-T4.5's, by design.
+
+### Changed interfaces, task T4.1
+
+`loadCurrentAssignment(db, projectId): Promise<CurrentAssignment | null>` in
+`lib/hq/authz-sql.ts` now reads real rows (`{ captainUserId }` or `null`)
+instead of always returning `null`; its signature and result type are
+unchanged from phase 1. `AUDIT_EVENT_KINDS` in `lib/hq/audit-sql.ts` gained
+`captain.invitation_created`, `captain.invitation_revoked` and
+`captain.invitation_redeemed`, alongside the phase-1-reserved
+`captain.assigned`/`captain.unassigned` — none written yet at this commit.
+New identifiers later tasks reference directly: the two named `CHECK`
+constraints above; `hq_captain_assignments_one_current_idx` (the unique
+index whose violation a service must catch and turn into a typed outcome
+rather than surface as a raw Postgres error); the redemption table's
+Postgres-generated unique-violation name,
+`hq_captain_invitation_redemptions_invitation_id_user_id_key`.
+
+### External configuration still required, task T4.1
+
+None added.
+
+### What changed, task T4.2
+
+The invitation half of the Captain service. New `lib/hq/captains.ts`
+(server-only): `createCaptainInvitation`, `readCaptainInvitationByToken`,
+`acceptCaptainInvitation`, `revokeCaptainInvitation`,
+`listCaptainInvitations`. New `lib/hq/actions/captains.ts` (`"use server"`,
+operator-gated, added to `tests/hq/auth-boundary.test.ts`'s `ACTION_GATES` as
+`"operator"`): `createCaptainInvitation`, `revokeCaptainInvitation`. New
+Admin section in `components/hq/builder-admin.tsx` (`CaptainInvitations`): a
+create form (default 1 account, 7 days), a live expiry preview in the
+edition's timezone, a one-time link panel, and a list of invitations with
+state, capacity, creator, redeemers and a revoke control.
+`lib/hq/format.ts` gained `fmtWithZone(iso, tz)` (an absolute moment with the
+IANA zone name spelled out, not a locale abbreviation).
+
+**`ActionForm` gained a `resetOnSuccess` prop (default `false`).** This is
+the fix for the REVFIX-adjacent hazard the whole-branch review's fix wave
+flagged but did not itself fix (its own "row remount" fix, M6, was a
+different defect in the same component): without a reset, a successful
+Grant/Revoke Captain save left the confirmation checkbox and reason text
+filled in while the control flipped to its opposite label, one click away
+from an accidental reversal. Scoped to only the two controls whose summary
+and button both flip label after a save (Grant/Revoke Captain, Review/Change
+team verification); every other form on the page takes server `defaultValue`
+props and would otherwise flash the pre-save value next to "Saved." until
+revalidation.
+
+**Decision — where the verified-account check sits.** Inside
+`acceptCaptainInvitation` itself, not the caller, so it cannot be bypassed
+regardless of who calls the service and so it is testable as a service-level
+guarantee. The original submission used a **dynamic** `await
+import("./identity")`, scoped inside the one function that needs it, to keep
+the check out of `lib/hq/actions/captains.ts`'s statically-scanned import
+graph (`tests/hq/operator-imports.test.ts`). Review judged this a **false
+fix**: a dynamic `import()` is still a real graph edge for the production
+bundler, so `identity.ts → telegram-provider.ts → @better-auth/core + jose`
+remained in the operator bundle; the dynamic form only evaded the test's
+regex, which cannot see `await import(...)`. Fixed in round 1 the way REVFIX
+fixed I6: `isPlaceholderEmail` extracted to a new leaf module
+`lib/hq/placeholder-email.ts` (re-exported from `telegram-provider.ts` for
+existing callers), with `identity.ts` and `builder-store.ts` both re-pointed
+to import it from the leaf directly rather than through
+`telegram-provider.ts` — either one still pointing at the provider module
+would have kept the forbidden edge alive, since `identity.ts` is itself
+imported by `builder-store.ts`. `lib/hq/captains.ts` now imports
+`isVerifiedAccount` from `./identity` **statically**. Verified with the real
+scan, not just reasoning: `operator-imports.test.ts` passes with the static
+import in place.
+
+**Decision — an account that already holds `captain` consumes no slot on
+first redemption.** `{ outcome: "already-captain" }`, no redemption row, no
+new call to `grantCapability`. Reasoning: "an already authorized Captain
+does not consume a new slot" plus "a use means one account newly *receiving*
+access" — an account that already has the capability receives nothing new
+from this link. This check runs before the revoked/expired/full checks,
+since it applies regardless of the link's own state.
+
+**Decision — `maxRedemptions` capped at 500** (`lib/hq/captains.ts`'s
+`MAX_REDEMPTIONS`). Far beyond any realistic Captain cohort for one edition;
+finite so a typo (an extra zero) fails loudly rather than becoming
+unlimited. A matching `MAX_VALIDITY_DAYS = 365` was added in fix round 1 for
+the same reason applied to a link's lifetime, with a matching `max={365}` on
+the Admin form's "Valid for (days)" input.
+
+**Check order inside `acceptCaptainInvitation`,** after locking the
+invitation row: (1) an existing redemption row for this
+`(invitationId, userId)` wins over everything — including a since-revoked
+invitation or a since-revoked grant, which is what makes a revoked grant
+impossible to resurrect by replaying an already-consumed redemption; (2)
+already-active-captain, as above; (3) only then revoked/expired/full gate a
+genuinely new grant.
+
+### Checks passed, task T4.2
+
+`tests/hq/captains.test.ts` (new): "stores only the hash: no column of any
+table holds the plaintext token"; "defaults capability to captain and
+validates maxRedemptions and expiry"; "returns redeemability only — never
+the token, the creator, or a redeemer list"; "returns null for an unknown
+token, and consumes nothing"; "refuses an unverified account without
+touching anything"; "accepts a Telegram-verified account exactly like an
+email-verified one"; "returns not-found for an unknown invitation id";
+"returns a typed outcome for a verified account whose builder profile has
+not synced yet, instead of an unhandled foreign-key error" (the `no-profile`
+outcome added in fix round 1); "a one-use link: the first acceptance grants,
+a second distinct account is refused as full"; "a multi-use link honours its
+exact capacity"; "overlapping acceptance calls never exceed capacity,
+however many arrive at once" (renamed in fix round 1 from a name that
+overclaimed — see the phase 4 acceptance checklist below for exactly what
+this does and does not prove); "locks the invitation row for the whole
+decision — a regression guard, since PGlite's serialized test pool cannot
+itself prove concurrency safety" (a new source-level test added in fix round
+1, asserting the exact `FOR UPDATE` SQL text is present); "repeat acceptance
+by the same account is idempotent and consumes no second slot"; "a replay
+after an admin revoked that account's grant does not re-grant it"; "an
+account that already holds Captain from elsewhere does not consume a slot";
+"revoked and expired links refuse redemption without touching an existing
+grant"; "commits the redemption row, the grant and the audit event together,
+or none of them" (constraint-kill mid-transaction); "stops future
+redemption, keeps existing grants, and is idempotent" (revoke); "returns
+null for an unknown invitation"; "lists label, capacity, used count, expiry,
+revocation state, creator and redeemers, newest first"; "shows an expired
+invitation as expired, not full or active"; "still counts a redemption
+toward usedCount after its account is deleted, and shows it as deleted".
+
+`tests/hq/builders-admin.test.ts`, `describe("Captain invitations in
+Admin")`: "creates an invitation through the operator action, returning its
+token once and refreshing HQ"; "refuses a bad shape at the zod boundary and
+an unreasonable account limit with the service's own message"; "revokes an
+invitation, stays idempotent on a second call, and reports an unknown id the
+same way"; "renders the invitations section with its one-use default copy,
+an active invitation and its redeemer" (a `renderToStaticMarkup` test
+confirming the token never appears in markup). `tests/hq/auth-boundary.test.ts`:
+`captains.ts` added to `ACTION_GATES`. `tests/hq/operator-imports.test.ts`:
+re-run explicitly to confirm the fix-round static import actually satisfies
+the scan, not merely the reasoning behind it. `tests/hq/format-ago.test.ts`
+extended with `fmtWithZone` cases (fixed instant, two zones with different
+UTC offsets and DST states, empty-string and unparseable-date branches).
+
+Full suite at `8dca3c4` (fix round 1 complete): 821 tests in 36 files, `tsc`
+clean, lint unchanged (0 errors, 18 pre-existing warnings), `npm run build`
+passing.
+
+### Blocked or deferred, task T4.2
+
+Two minors deferred by the coordinator, out of scope: the inline `style={{}}`
+on the Admin link panel; `hasTelegramIdentity` reading the global pool
+rather than the query handle it is passed. Neither affects correctness.
+
+### Changed interfaces, task T4.2
+
+`lib/hq/captains.ts`: `createCaptainInvitation(db, { actorOperatorId, label?,
+maxRedemptions, expiresInDays? | expiresAt? }): Promise<CaptainInvitationCreation>`
+(`{ token, invitation }` — `token` is the one-time plaintext bearer value);
+`readCaptainInvitationByToken(db, token): Promise<CaptainInvitationRedeemability
+| null>` (`{ id, capability, label, expiresAt, expired, revoked, full }` —
+never identity); `acceptCaptainInvitation(db, { invitationId, userId }):
+Promise<AcceptCaptainInvitationResult>`, a nine-member discriminated union on
+`outcome` (`granted`, `already-redeemed`, `already-captain`, `revoked`,
+`expired`, `full`, `unverified`, `not-found`, `no-profile`);
+`revokeCaptainInvitation(db, { actorOperatorId, invitationId, reason? }):
+Promise<CaptainInvitationListing | null>` (idempotent); `listCaptainInvitations(db):
+Promise<CaptainInvitationListing[]>`. `lib/hq/placeholder-email.ts` (new leaf
+module): `PLACEHOLDER_DOMAIN`, `isPlaceholderEmail` (re-exported from
+`lib/hq/telegram-provider.ts` and `lib/hq/identity.ts` for existing callers).
+`lib/hq/member-routes.ts`: `inviteLink(token): string`. `lib/hq/format.ts`:
+`fmtWithZone(iso, tz): string`. `components/hq/builder-admin.tsx`'s
+`ActionForm` gained `resetOnSuccess?: boolean` (default `false`).
+
+### External configuration still required, task T4.2
+
+None added.
+
+### What changed, task T4.3
+
+The `/hq/invite/<token>` flow. `app/hq/(member)/invite/[token]/route.ts`
+(Route Handler, not a page — `cookies().set()` is only legal in a Server
+Function or Route Handler): checks the session without ever gating on it,
+calls `exchangeCaptainInvitationToken` (new `lib/hq/invite-exchange.ts`),
+sets or clears the continuation cookie, and redirects to
+`INVITE_CONTINUE_PATH` — with no token anywhere in the redirect target. New
+`lib/hq/invite-continuation.ts` is the continuation store: writes and reads
+Better Auth's own `hq_auth_verification` table directly (the same table
+`recordTelegramIntent` uses, under a different identifier prefix,
+`hq-invite-continuation:<id>`), keyed by a fresh random 24-byte id rather
+than a user id, 30-minute TTL, holding `{ invitationId, expired, revoked,
+full }` and nothing else. New `app/hq/(member)/invite/continue/page.tsx`:
+no continuation → a generic invalid-link message; a continuation whose
+exchange-time snapshot says revoked/expired/full → that specific dead-end
+message, for anyone; otherwise the explanation plus, for a signed-in
+visitor, the accept control (`accept-form.tsx`, `useActionState` over the
+new action), or for a signed-out visitor a sign-in link back to the same
+page. New `lib/hq/actions/invite.ts` (`"use server"`, **member**-gated, its
+own file — `lib/hq/actions/captains.ts` is scanned as an operator module and
+`requireMemberActor()` would break that scan):
+`acceptCaptainInvitationFromContinuation()`. New
+`app/hq/(member)/invite/copy.ts`: an exhaustive `Record` over every outcome
+value (TypeScript's exhaustiveness check means an outcome added to the
+service without matching copy here fails to build).
+
+**Decision — the continuation's home and lifetime.** An httpOnly cookie
+(`hq_invite_continuation`, `path=/hq/invite`, `sameSite=lax`, secure exactly
+when the member session's own cookies are) holding a random 24-byte id; the
+server-side row lives in `hq_auth_verification`; both expire 30 minutes
+after the exchange. Chosen over a continuation id in the URL because it
+keeps the address free of any bearer value at all (not the token, not the
+continuation id), including through a sign-in round trip to
+`/hq/signin?next=/hq/invite/continue`. 30 minutes rather than the Telegram
+intent's 10, because a first-time invitee taking the email-OTP **sign-up**
+path needs time to read mail and possibly resend a code.
+
+**Decision — a purpose-built store, not a reuse of `recordTelegramIntent`.**
+`recordTelegramIntent` is keyed by user id and consumed by Better Auth's own
+endpoint hooks; the invitation continuation names no user (a visitor may
+have no account yet) and no Better Auth endpoint ever reads it, so writing
+straight through the shared `builderDatabase()` pool under a different
+identifier prefix in the same table is simpler and testable against PGlite
+with no live Better Auth instance.
+
+**Decision — the exchange's rate limit.** 30 requests per 15 minutes, keyed
+on the requesting IP (`x-real-ip` then the first `x-forwarded-for` entry,
+matching `lib/hq/actions/auth.ts`'s own extraction), reusing `hq_login_limits`.
+Explicitly defence in depth, not the primary control: a 32-byte random token
+is not brute-forceable in any plausible window, so the limit exists to blunt
+a naive scan or a broken retry loop, loose enough that a shared office
+address or a repeatedly-refetching preview bot never trips it.
+
+**Decision — a member never sees an invitation's internal label, creator,
+capacity or usage.** The continuation carries only the three redeemability
+flags; nothing in the flow reads or forwards `label`, so there is no code
+path that could render it.
+
+**Fix round 1 (commit `8cbdddb`).** Important: the route only ever called
+`response.cookies.set(...)` on a **successful** exchange; the failure branch
+(unknown token, or rate-limited) left the cookie jar untouched. A visitor who
+had already exchanged invitation A, then followed a different dead link (a
+typo, a revoked link, enough retries to trip the rate limit), kept the stale
+A continuation and was redirected onto its live Accept control — one click
+from a redemption against an invitation they never followed. Fixed by
+clearing the cookie on every non-success branch, not only setting it on
+success; proved by reverting the fix and watching the new assertions fail
+before restoring it. Six bundled minors: an `eslint.config.mjs` rule
+override (`argsIgnorePattern: "^_"`) removing two avoidable
+`no-unused-vars` warnings `useActionState`'s signature forces;
+`INVITE_CONTINUE_PATH` replacing three literal-path repetitions;
+`X-Robots-Tag: noindex, noarchive` added beside `Referrer-Policy` on the
+`/hq/invite/:path*` `next.config.ts` entry; `safeMemberNext` explicitly
+asserted over `/hq/invite/continue`; the redirect built from
+`new URL(INVITE_CONTINUE_PATH, request.nextUrl)` rather than `request.url`;
+a config-level test for the `headers()` entry itself (see the open manual
+item below — this test proves the config, not the served response).
+
+**Ruling recorded, not a defect:** "already accepted by this account" is
+shown only after the Accept submit, never as a pre-click state, because
+showing it beforehand would need a redeemability pre-check the invitation
+design forbids (a read-then-write race and a second copy of the rule
+`acceptCaptainInvitation` already owns).
+
+### Checks passed, task T4.3
+
+`tests/hq/invite-continuation.test.ts`: "is a random, URL-safe id unrelated
+to any invitation id"; "round-trips exactly what was stored"; "is null for
+an id that was never recorded — a forged or guessed cookie value"; "is null
+once the row has expired, and stays null on every later read"; "is read
+repeatedly without being consumed — unlike recordTelegramIntent, a page load
+or a retried accept must not burn it"; "stores the invitation's exchange-time
+flags, not just its id"; "carries no other invitation field: only
+invitationId and the three flags reach the row"; "opportunistically clears
+its own expired rows on the next write, without touching an unrelated
+verification row"; "is httpOnly, scoped to /hq/invite, and expires with the
+continuation's own TTL"; "follows the member session's own secure-cookie
+policy: secure over a configured https origin, not over an unconfigured
+one". `tests/hq/invite-exchange.test.ts`: "consumes nothing for a valid
+token, called twice — a link preview, then a real visit"; "never puts the
+token into the continuation id"; "creates no continuation for an unknown
+token, and writes nothing"; "still records a continuation for a revoked
+token, carrying the revoked flag" (and the equivalent for expired and full);
+"rate-limits an address after repeated exchanges, and a limited request
+creates no continuation either". `tests/hq/invite-route.test.ts`: "checks
+the session (every /hq surface does) without ever gating on it"; "redirects
+to the tokenless continuation page, with no token anywhere in the target";
+"sets an httpOnly continuation cookie scoped to /hq/invite, and the stored
+continuation names the right invitation"; "consumes nothing, exchanged twice
+for the same token — a link preview, then a real visit"; "redirects an
+unknown token the same way, and clears (rather than merely omits) the
+continuation cookie"; `describe("a failed exchange clears a previously-set
+continuation cookie")` → "for an unknown token" and "for a rate-limited
+address" (the Important-1 regression, sending a stale cookie the way a real
+browser would and asserting the response clears it, plus that the original,
+unrelated continuation is untouched server-side); "still redirects to the
+continuation page for a revoked token, with a continuation that says so".
+`tests/hq/invite-accept-action.test.ts`: "refuses a signed-out visitor:
+requireMemberActor's own gate, before any continuation is even read"; "a
+failed sign-up followed by a successful one consumes exactly one slot — the
+acceptance check the plan names directly"; "refuses an unverified account,
+without touching the database"; "grants Captain to a verified, signed-in
+account, then leaves a second acceptance a no-op that consumes no slot";
+"passes every outcome acceptCaptainInvitation can return straight through,
+unmodified"; "is refused for a missing, forged or expired continuation —
+identically, without reaching acceptCaptainInvitation at all"; "still checks
+the account's own verification and profile even when the continuation names
+a real, open invitation". `tests/hq/invite-page.test.ts`: "shows a generic
+invalid-link message when there is no continuation cookie at all, and
+mentions no invitation"; "shows the same invalid-link message for a cookie
+that resolves to nothing — forged, unknown or expired, indistinguishably";
+"shows a signed-out visitor the explanation and a sign-in link that returns
+here, never the accept control"; "shows a signed-in, verified visitor the
+accept control for an open invitation"; an `it.each` over revoked/expired/full
+showing the matching message and no accept control for either session state;
+"never renders the invitation id, a continuation id or anything that looks
+like a bearer token". `tests/hq/invite-accept-form.test.ts`: the initial
+button, the pending/disabled state, "renders the granted outcome with a
+status role, success copy and a link to the Captain page", `it.each` over
+`already-redeemed`/`already-captain` (status role, no link) and over the
+remaining seven outcomes (alert role, no link). `tests/hq/captains.test.ts`
+extended: "changes nothing when read twice in a row — modelling a link
+preview immediately followed by a real visit" (this is the preview/no-slot
+acceptance proof — see the phase 4 checklist below). `tests/hq/invite-config-headers.test.ts`:
+"has exactly one entry, matching both the token exchange route and the
+continuation page"; "sets Referrer-Policy: no-referrer and X-Robots-Tag:
+noindex, noarchive" — this test proves the `next.config.ts` entry itself,
+**not** that the header lands on the served response; see "Blocked or
+deferred" below.
+
+Full suite at `8cbdddb` (fix round 1 complete): 880 tests in 43 files, `tsc`
+clean, lint back to the baseline (0 errors, 18 pre-existing warnings — the
+two `lib/hq/actions/invite.ts` warnings from the original submission are
+gone), `npm run build` passing (`/hq/invite/[token]` and `/hq/invite/continue`
+listed as distinct routes).
+
+### Blocked or deferred, task T4.3
+
+**Open manual item, not run this session.** The `Referrer-Policy:
+no-referrer` and `X-Robots-Tag: noindex, noarchive` headers for
+`/hq/invite/:path*` are asserted at config level only
+(`tests/hq/invite-config-headers.test.ts`). The route tests drive the
+exported `GET`/page functions directly, below the layer that applies
+`next.config.ts`'s `headers()`, so confirming the headers actually land on
+the **redirect** response (and on the continuation page's response) needs a
+manual `curl -I` against a running `next dev` or `next start`. Not run.
+Carried into `docs/hq/manual-setup.md`.
+
+The `identifier LIKE 'hq-invite-continuation:%'` lookup in
+`lib/hq/invite-continuation.ts` is not index-assisted under a non-C
+collation — deferred as harmless at this table's size.
+
+### Changed interfaces, task T4.3
+
+`lib/hq/invite-exchange.ts`: `InviteExchangeResult = { continuationId: string
+| null }`, `exchangeCaptainInvitationToken(db, { token, ip }):
+Promise<InviteExchangeResult>`. `lib/hq/invite-continuation.ts`:
+`INVITE_CONTINUATION_TTL_MS`, `INVITE_CONTINUATION_COOKIE`,
+`InviteContinuation`, `InviteContinuationCookieOptions`,
+`inviteContinuationCookieOptions()`, `newInviteContinuationId()`,
+`recordInviteContinuation(db, id, continuation)`,
+`readInviteContinuation(db, id)`. `lib/hq/actions/invite.ts`:
+`AcceptCaptainInvitationOutcome` (the service's nine outcomes plus
+`"invalid-continuation"`), `AcceptCaptainInvitationActionResult`,
+`acceptCaptainInvitationFromContinuation()`. `lib/hq/member-routes.ts`:
+`INVITE_CONTINUE_PATH` (exported constant; `INVITE_PATH_PREFIX` stays
+module-private, used only by `inviteLink()` and the route list).
+`next.config.ts`: one `headers()` entry for `/hq/invite/:path*`.
+
+### External configuration still required, task T4.3
+
+None added.
+
+### What changed, task T4.4
+
+The assignment half of the Captain service, extending `lib/hq/captains.ts`:
+`assignCaptain`, `unassignCaptain`, `clearCaptainAssignments`,
+`countAssignmentsForCaptain`, `countAssignmentsForUsers`, `listAssignments`.
+The membership-acceptance guard: `redeemInvite` and `importTeam`
+(`lib/hq/builder-store.ts`) each gained a check, right after their existing
+lock on `hq_project_onboarding`, refusing when the joining or claiming
+account is currently the project's Captain. The revocation cascade:
+`lib/hq/actions/capabilities.ts#revokeCaptainCapability` now opens one
+`builderDatabase().transaction(...)`, calls `revokeCapability(tx, ...)` then,
+only if a grant was actually revoked, `clearCaptainAssignments(tx, ...)` —
+`ActionResult` stays the return type; the admin-facing count is a separate
+pre-flight read shown **before** the confirmation, not a post-action return
+value. Admin count-before-confirm: `BuilderAccount.captainAssignmentCount`
+(one batched `countAssignmentsForUsers` call in `getBuilderAdminData`), used
+in the revoke confirmation copy. New operator actions in
+`lib/hq/actions/captains.ts`: `assignProjectCaptain`, `unassignProjectCaptain`,
+`bulkAssignProjectCaptain` — each resolves the edition through
+`requireHackathon()`, never a client-supplied id. New Admin controls in
+`components/hq/projects.tsx`: a Captain field and picker on the project
+detail panel (limited to accounts with an active Captain grant, resolved
+server-side, never every account shipped to the client), an inline
+confirmation banner for `needs_review`, and an "Assign Captains" bulk mode
+(toggle, picker, filter-scoped checkbox list, per-project results).
+`Project` gained `captainUserId`/`captainName` (mirroring `partnerId`/
+`partnerName`); `ProjectPatch` gained a `"captain"` kind.
+
+**Decision — unresolved roster identity blocks by default, proceeds only on
+an explicit second call.** `assignCaptain` returns `needs_review` (writing
+nothing) unless the caller passes an id list naming exactly the unresolved
+rows shown. Rejected a hard, un-overridable block: with phase 3 not run,
+almost every imported roster has at least one unclaimed member with no
+`person_id`, so a hard block would make Captain assignment practically
+unusable rather than merely cautious.
+
+**Decision — the capability check inside `assignCaptain` is a locking `SELECT
+... FOR UPDATE`, not `listActiveCapabilities`.** This is what fully
+serializes a concurrent `assignCaptain` against a concurrent
+`revokeCaptainCapability` for the same account: whichever transaction
+reaches the row first runs to completion before the other proceeds, so the
+loser always sees the real, already-committed outcome.
+`listActiveCapabilities` takes no lock and would leave a window where a
+just-revoked grant could still read as active.
+
+**Decision — the lock order,** documented in `lib/hq/captains.ts`: (1)
+`hq_account_capabilities` (candidate's active grant) — locking read; (2)
+`hq_projects` — plain read (nothing concurrent mutates `hackathon_id`); (3)
+`hq_project_onboarding`, locked **if present** (Postgres refuses `FOR
+UPDATE` on the nullable side of an outer join, discovered when the
+implementer's first draft tried to lock both tables in one statement — the
+same row `redeemInvite`/`importTeam` also lock); (4) `hq_captain_assignments`
+— the project's current-assignment row. `unassignCaptain`/
+`clearCaptainAssignments` only ever need step 4. The one case this order
+does not itself serialize — two concurrent `assignCaptain` calls on a
+never-before-assigned project, where step 4 has no row yet to lock against —
+is closed by the database instead: the insert is `ON CONFLICT (project_id)
+WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL DO NOTHING`, and
+the loser gets a typed `{ outcome: "conflict", conflict: { kind:
+"already_assigned" } }` rather than an unhandled constraint violation.
+
+**Fix round 1 (commits `b1c808c`, `7af462f`), three Important findings.**
+
+- **Important 1.** A project's own claimant, absent from or case-mismatched
+  against the imported roster, could be made Captain of their own team.
+  `importTeam` links a roster row to the claimant only on an exact
+  `member.username === owner.username` match; a claimant who fails that
+  match gets `owner_user_id` set on `hq_project_onboarding` but no linked
+  `hq_project_members` row. On a pending claim, `loadTeamMembership` sees
+  nothing (it requires `verification = 'verified'`), and the old
+  roster-scan-only conflict check saw nothing tying the claimant to the
+  project either — so the assignment surfaced as `needs_review`, and one
+  acknowledged "Assign anyway" made the project's own claimant its Captain.
+  Fixed with a new, earlier-running `CaptainConflictReason` kind,
+  `"claimant"`: `checkCaptainConflict` now compares the onboarding row's own
+  `owner_user_id` against the candidate directly, independent of
+  verification state and independent of any roster link, closing the window
+  `loadTeamMembership` alone cannot see. `unassignProjectCaptain` and
+  `reviewBuilderProject` needed no change — the fix is in the shared
+  conflict machinery, and `assignCaptain` now refuses to create the forbidden
+  state regardless of when verification happens.
+- **Important 2.** A code comment claimed the (deliberately unlocked) step-2
+  `hq_projects` read serializes two concurrent first-ever assignments; it
+  does not. Rewritten to say plainly that the partial unique index plus
+  `ON CONFLICT DO NOTHING` is what actually guarantees that case, load-bearing
+  rather than defensive, with an explicit "do not remove this clause" note.
+- **Important 3.** The acknowledged-override audit trail recorded only a
+  count (`unresolvedRosterAcknowledged: number`), re-deriving the unresolved
+  set in the second transaction — so the event could attest to acknowledging
+  rows the operator never actually saw. Fixed with the stronger option:
+  `acknowledgeUnresolved?: boolean` became `acknowledgedUnresolvedIds?:
+  string[]`, checked against the transaction's own freshly re-derived
+  unresolved set (`acknowledgesExactly`, order-independent, set-size checked
+  so a duplicate id cannot substitute for a distinct one); a mismatch is
+  treated as no acknowledgement and returns `needs_review` again with the
+  current set. The audit event's metadata now carries
+  `acknowledgedUnresolvedMemberIds: string[]`, the actual ids.
+
+Seven bundled minors, all fixed: the concurrent-`assignCaptain` test's name
+renamed to state only what it proves (sequential safety under PGlite's
+serialized queue, not true interleaving), with a new database-level test of
+the exact `ON CONFLICT DO NOTHING` insert proving the guard directly; the
+Admin bulk picker's selection intersected with the current filter at submit
+time, and the displayed count corrected to match; `bulkAssignProjectCaptain`
+returning a typed `{ outcomes, error }` instead of a bare `[]` on a
+whole-batch schema failure; `unassignCaptain`'s "commits a write while
+reporting not_assigned" behaviour documented rather than changed, and
+`assignCaptain`'s step 4 fixed to end every live row it locks (no `LIMIT`)
+rather than only `current[0]`; a new indexed aggregate,
+`countAssignmentsByCaptain`, added for T4.5's leaderboard rather than a
+client-side grouping of `listAssignments`; stale `captainReview` UI state now
+cleared on collapse, row switch, removal and deletion, and the ~60-line
+inline Captain control extracted to `CaptainField`; a new pinned test
+proving the Captain-role refusal wins over `importTeam`'s pre-existing
+"already verified" message for an already-verified team too.
+
+**Deferred, confirmed correctly out of scope.** The CRM-person-link race:
+`correctPersonMatch` (an operator action) and `assignCaptain`'s conflict
+check (source 2, the roster scan) share no lock, but pre-phase-3 every
+roster row's `person_id` is universally `NULL`, so there is nothing for
+either side to race over yet. Recorded explicitly as a phase 3 hand-off:
+once phase 3 wires `ensurePersonForRosterMember` into the import path and
+roster rows carry real `person_id` values, an admin correcting a person
+match at the same moment another admin assigns a Captain to a project that
+match's roster row belongs to could, in principle, land the state this task
+closed for the other two races (membership acceptance, and the claimant's
+own username). Whoever picks this up should decide whether the pair needs a
+shared lock or is rare and operator-triggered enough on both sides to leave
+as is.
+
+### Checks passed, task T4.4
+
+`tests/hq/captains.test.ts`: "refuses an account without an active captain
+grant, writing nothing"; "treats a project from another edition exactly like
+a missing one" (both `assignCaptain` and `unassignCaptain`); "assigns a
+first Captain, recorded in the same transaction as its audit event";
+"reassignment ends the old assignment, starts the new one, and leaves
+exactly one current row plus history"; "a verified team member cannot be
+assigned to their own team — the owner case" and "— the joined-member case";
+"a roster identity linked to the candidate's account blocks assignment even
+without a verified HQ membership"; "a project's own owner is a conflict even
+before verification — the window loadTeamMembership alone misses"; "a
+claimant absent from the imported roster (or case-mismatched against it) is
+still a conflict, never needs_review" (the Important-1 regression); "an
+unresolved roster identity produces the needs-review outcome rather than a
+silent pass, and only proceeds once explicitly acknowledged"; "refuses a
+stale acknowledgement: an id list that no longer matches the current
+unresolved set is treated as no acknowledgement at all"; "refuses a
+duplicate-id substitution: the same real id sent twice never counts as
+acknowledging two distinct rows"; "never compares display names: an
+unclaimed roster row whose name matches the candidate is still only 'needs
+review', never a silent conflict or a silent pass"; "a project with no
+imported roster (created directly in Admin) has nothing for source 2 to
+check, and a bare project assigns cleanly"; "two Promise.all-issued
+assignCaptain calls for the same never-before-assigned project settle to one
+current row — proves sequential safety only, the same thing the reassignment
+test already proves"; "the ON CONFLICT DO NOTHING guard itself: a second
+current-row insert for the same project is silently refused at the database
+level, never a raised constraint violation"; "locks the candidate's active
+grant, the project's onboarding row (if any) and the current assignment row
+for update — a regression guard, since PGlite's serialized test pool cannot
+itself prove concurrency safety"; `describe("the membership-acceptance lock
+order (lib/hq/builder-store.ts)")` → "redeemInvite and importTeam lock the
+same hq_project_onboarding row assignCaptain locks, and check
+hq_captain_assignments before admitting a member or a verified owner — a
+regression guard for the shared lock order"; "ends the current assignment,
+is idempotent, and audits the removal"; "a project with no assignment at all
+is not_assigned, not an error"; "clears every current assignment across
+every edition, auditing each individually, and counting the same set
+beforehand"; "counts current assignments for many accounts in one indexed
+query, 0 for none"; "revoking a grant and clearing its assignments are one
+transaction: forcing the clear's own audit write to fail leaves the grant
+active and the assignment live"; "rolls the clear back if its own
+transaction fails, leaving the assignment live"; "lists every project's
+current Captain in one edition, and narrows to one Captain's own projects
+there"; "never shows an orphaned row (a deleted account's former seat) as a
+current assignment"; "has separate, non-overlapping effects from Captain
+revocation: stops future redemption only, touches neither an existing grant
+nor an existing assignment" and "the reverse: Captain revocation (and its
+cascade) clears the assignment and touches no invitation" (both in the
+`revokeCaptainInvitation` describe block).
+
+`tests/hq/builder-onboarding.test.ts`, `describe("Captain assignment races
+with membership acceptance")`: "ordering 1 (assignment first): a Captain
+already assigned to a project cannot then join it through a team invite";
+"ordering 2 (membership first): a team member who already joined a project
+cannot then be assigned as its Captain"; "the 'claim' path: a Captain
+already assigned to a pending project cannot then claim it as its verified
+owner"; "pins that the Captain-role refusal now wins over the pre-existing
+'already verified' message, for an already-verified team too".
+
+`tests/hq/builders-admin.test.ts`, `describe("Captain assignment in Admin
+(task T4.4)")`: "assigns and unassigns a Captain on a project created
+directly in Admin, refreshing HQ"; "refuses an account without an active
+Captain grant, with an operator-facing message, writing nothing"; "surfaces
+a conflict as a named, operator-facing error rather than assigning";
+"returns needs_review for an unresolved roster identity and only assigns
+once explicitly acknowledged by the exact rows shown"; "treats a project
+from another edition exactly like a missing one"; "reports per-project
+outcomes in bulk — a conflicted or needs-review project is named, not
+silently skipped, and does not stop the rest"; "reports a whole-batch error,
+rather than a silently empty result, when the request itself is invalid";
+"shows the affected project count before a revocation and clears the
+assignment in the same action"; "renders the real assignment count in the
+revoke confirmation copy, and the grant-side copy when there is none to
+lose".
+
+`tests/hq/authz.test.ts`, `describe("assignCaptain feeding real rows into
+authorizeProjectAction (task T4.4)")`: "after assignment the Captain gets
+CAPTAIN_ACTIONS but not membership.change; after unassignment the next call
+denies everything" — one integration test proving `loadCurrentAssignment`
+correctly reads what `assignCaptain`/`unassignCaptain` actually write,
+separate from the phase-1 fixture tests, which stay unchanged and continue
+to inject their own loader.
+
+Full suite at `7af462f` (fix round 1 complete): 930 tests in 43 files, `tsc`
+clean, lint unchanged (0 errors, 18 pre-existing warnings), `npm run build`
+passing.
+
+### Blocked or deferred, task T4.4
+
+The CRM-person-link race (above) — phase 3 hand-off. A project deleted
+concurrently with an assignment to it surfaces a raw foreign-key violation
+rather than a typed outcome (a pre-existing class of gap across the other
+operator project actions too, not newly introduced or closed here). The
+`already_assigned` branch of the `ON CONFLICT DO NOTHING` guard is provably
+unreachable inside the PGlite test harness by construction (step 4's lock
+predicate is a strict superset of the partial index's own predicate, so
+within one transaction step 4 always already sees and ends any row the
+following insert could conflict with) — proven instead by a direct
+raw-SQL test of the exact insert statement.
+
+### Changed interfaces, task T4.4
+
+`lib/hq/captains.ts`: `UnresolvedRosterMember = { memberId, name, username }`;
+`CaptainConflictReason` (a discriminated union: `verified_member`,
+`roster_member`, `claimant`, `already_assigned`); `AssignCaptainResult`
+(`assigned` with `{ assignmentId, replacedCaptainUserId }`, `not_found`,
+`no_grant`, `conflict` with the reason above, `needs_review` with
+`unresolved: UnresolvedRosterMember[]`); `assignCaptain(db, {
+actorOperatorId, projectId, hackathonId, captainUserId, reason?,
+acknowledgedUnresolvedIds? }): Promise<AssignCaptainResult>`;
+`UnassignCaptainResult` (`unassigned` with `{ assignmentId, captainUserId }`,
+`not_assigned`, `not_found`); `unassignCaptain(db, { actorOperatorId,
+projectId, hackathonId, reason? }): Promise<UnassignCaptainResult>`;
+`ClearedCaptainAssignment = { assignmentId, projectId, projectName,
+hackathonId }`; `clearCaptainAssignments(db, { actor, byOperatorId,
+captainUserId, reason? }): Promise<ClearedCaptainAssignment[]>`;
+`CaptainAssignmentSummary = { projectId, projectName, hackathonId }`;
+`countAssignmentsForCaptain(db, userId): Promise<CaptainAssignmentSummary[]>`
+(global across editions); `countAssignmentsForUsers(db, userIds):
+Promise<Map<string, number>>` (batched); `CurrentCaptainAssignment = {
+projectId, projectName, hackathonId, captainUserId, captainName, assignedAt }`;
+`listAssignments(db, { hackathonId, captainUserId? }):
+Promise<CurrentCaptainAssignment[]>` (edition-scoped; `captainUserId` is a
+query filter, not an authorization boundary — every call site must gate
+itself before choosing what to pass); `CaptainAssignmentCount = {
+captainUserId, captainName, assignedCount }`; `countAssignmentsByCaptain(db,
+hackathonId): Promise<CaptainAssignmentCount[]>` (one indexed `GROUP BY`
+query, edition-scoped, ordered by count then name).
+
+`lib/hq/actions/captains.ts`: `AssignCaptainActionResult` (a narrower,
+3-outcome client-facing type: `assigned | needs_review | error`);
+`assignProjectCaptain(input)`, `unassignProjectCaptain(projectId)`,
+`BulkAssignCaptainOutcome`, `BulkAssignCaptainResult = { outcomes, error:
+string | null }`, `bulkAssignProjectCaptain(input)`. `Project` gained
+`captainUserId: string | null`, `captainName: string | null` in
+`lib/hq/types.ts`; `ProjectPatch` gained a `"captain"` kind in
+`lib/hq/queries.ts`.
+
+### External configuration still required, task T4.4
+
+None added.
+
+### What changed, task T4.5
+
+The reads: `leaderboard(db, hackathonId, viewerUserId?)`,
+`currentCaptainOfProject(db, projectId)`, both new in `lib/hq/captains.ts`.
+`/hq/captain` rewritten (`app/hq/(member)/captain/page.tsx`): the Captain's
+own current assignments (`toCaptainAssignmentView` via `teamById()` where a
+`BuilderTeam` exists, or a reduced `{ projectId, projectName }` fallback
+card for an assignment to a CRM-only project with no self-serve team), the
+leaderboard with the viewer's own row marked, then the unchanged Connect
+Telegram notice. The Admin leaderboard: `getBuilderAdminData` gained
+`captainLeaderboard`/`captainAssignments`; `components/hq/builder-admin.tsx`
+gained a `CaptainLeaderboard` section (the ranked list, then the
+unfiltered, admin-only per-project drilldown grouped by Captain, keyed by
+project id). The team's own view of its Captain:
+`lib/hq/member-teams.ts#memberTeamView` now calls `currentCaptainOfProject`
+and feeds the result into `toMemberTeamView`'s existing third parameter, but
+only on the verified-member path (`outcome === "allowed"`), never for an
+account watching its own still-pending or rejected claim.
+`app/hq/(member)/team/[id]/page.tsx` renders `team.captain.displayName` when
+present (fix round 1 — see below).
+
+**Decision — "active HQ projects" = `hq_project_statuses.counts_as_active`.**
+Matches the existing product concept `getEventsWithOutputs`/
+`attributeOutputs` already use to split "active" from "qualified".
+`countAssignmentsByCaptain` (T4.4's) was extended with a join to
+`hq_project_statuses` and `AND s.counts_as_active`: a project marked "red"
+drops out of a Captain's leaderboard count but still appears in the admin
+drilldown, which is unfiltered by status (Admin sees the full truth).
+
+**Decision — zero-assignment Captains: two reads merged in application code,
+not one combined query.** `leaderboard` combines
+`countAssignmentsByCaptain(db, hackathonId)` with
+`listCapabilityGrants({ capability: "captain", activeOnly: true })`, narrowed
+immediately to `userId`/`userName` — `reason`, both operator ids, the grant
+id and the timestamps never leave the function. The merge is driven by the
+grant list: every active-grant account gets a row (`assignedCount` defaults
+to 0), and a count-map entry for an id the grant list does not name is
+silently dropped — which is what makes a revoked Captain disappear even if a
+stray live assignment row outlived the revocation. `listCapabilityGrants` is
+the one documented, operator-only reader of `hq_account_capabilities`;
+writing a second query over that table from a different module was ruled
+out.
+
+**Decision — marking the viewer's own row without carrying an id.**
+`CaptainLeaderboardView` gained `isYou: boolean`, computed by
+`toCaptainLeaderboardView` comparing the row's raw `captainUserId` against a
+`viewerUserId` parameter and keeping only the boolean — the id itself never
+enters the returned object. `leaderboard()` takes `viewerUserId: string |
+null = null` rather than an `Actor`, to avoid pulling `./actor` (and
+therefore `member-auth.ts`) into `lib/hq/actions/captains.ts`'s
+operator-scanned import graph. The Captain's own page passes `actor.id`;
+Admin passes `null` explicitly.
+
+**A fourth, load-bearing judgment call not explicitly asked for: the
+CRM-only-project fallback.** T4.4's assignment service can target any
+`hq_projects` row, including one with no `hq_project_onboarding` row (an
+admin-created CRM entry). `CaptainAssignmentView`/`toCaptainAssignmentView`
+require a `BuilderTeam`, which only exists for a project with an onboarding
+row. Forcing every assignment through `teamById()` would have silently
+dropped every CRM-only assignment from "your assignments" — a materially
+misleading empty state for exactly the Captains assigned to such a project.
+The page instead falls back to a minimal card naming just the project. This
+is a genuine, named UX gap (no roster, no lead, no link for that assignment)
+recorded as a phase 5 hand-off, not fixed here.
+
+**Fix round 1 (commits `56fa7da`, `40458ad`, `2ee115c`, `e363fbe`), from a
+privacy-lens review whose verdict was: no leak.** The reviewer traced the
+rendered HTML, the RSC payload and every `href`/`key`/`title`/`aria-label`
+and confirmed a Captain's browser receives other Captains' display names and
+counts and nothing else. Two Important gaps, both in what was shipped rather
+than in the design:
+
+- **Important 1.** `MemberTeamView.captain` was populated but never
+  rendered — neither the team page nor `BuilderTeamControls` read it, so
+  the Captain's name reached the RSC payload as an unused prop and was shown
+  to nobody. Fixed by rendering `team.captain.displayName` on the team page.
+- **Important 2.** `tests/hq/captain-page.test.ts` (the real-database
+  acceptance test) seeded both fixture projects with a bare
+  `hq_projects` row and no `hq_project_onboarding`, so every assertion ran
+  through the reduced fallback card and the "no rival Colosseum link" regex
+  was vacuous — no fixture project had a `projectUrl` at all. Fixed by
+  giving both fixture projects real onboarding rows (roster member, lead
+  username, a Colosseum URL) under separate owner accounts, so the no-leak
+  assertions became genuinely falsifiable, plus a third, deliberately bare
+  project to keep the fallback branch explicitly covered on its own.
+
+Four bundled minors: the "no Server Action exposes these reads" scan widened
+from `lib/hq/actions` to the whole repo (`app/` and `lib/`, plus every
+`app/**/route.ts`, which needs no `"use server"` directive to be reachable) —
+22 such files confirmed, none referencing the new reads; the Admin
+drilldown's lead-in sentence now explains why its count can differ from the
+ranked leaderboard above it (the drilldown is unfiltered by
+`counts_as_active`, the leaderboard is not); drilldown project rows keyed by
+project id rather than name; a comment documenting the deliberate duplicate
+`listCapabilityGrants` read (once directly for `BuilderAccount.captain`,
+again inside `leaderboard()` for the zero-assignment merge) rather than
+threading a shared parameter, since `leaderboard()`'s own narrowing of the
+grant row is what makes it safe to hand to a Captain's own page unchanged.
+
+**Deferred, per the reviewer's own instruction.** `app/hq/(member)/captain/page.tsx`'s
+one `teamById()` call per assignment (no batched multi-id lookup) — outside
+the plan's indexed-aggregate constraint, which governs counts, not this
+per-assignment read; left for phase 5 to batch if a Captain's list grows.
+
+### Checks passed, task T4.5
+
+`tests/hq/captains.test.ts`, `describe("leaderboard")`: "carries only rank,
+display name, assigned count and the isYou marker — no id, project name or
+link"; "orders by assigned count descending, then display name ascending
+for ties, with a zero-assignment Captain falling to the bottom on its own —
+no second rule needed"; "does not count an ended assignment or another
+edition's assignment"; "drops a revoked Captain entirely, even one whose
+live assignment row a bare revokeCapability call (without
+clearCaptainAssignments) left standing"; "includes an eligible Captain with
+no current assignment"; "marks only the viewer's own row, and marks none
+when there is no viewer". `describe("currentCaptainOfProject")`: "returns
+the current Captain's id and name, or null while none is assigned".
+`describe("the T4.5 reads are not exposed as a Server Action or a route
+handler")`: "finds no reference to leaderboard, listAssignments or
+currentCaptainOfProject in any Server Action module or app/**/route.ts".
+`describe("countAssignmentsByCaptain")` gained "excludes a project whose
+status does not count as active (plan section 3's 'active HQ projects')".
+
+`tests/hq/view-models.test.ts`, `describe("toCaptainLeaderboardView")`:
+"carries rank, display name, assigned count and isYou — never the raw
+captain id it was given"; "marks isYou false for a different viewer, and for
+every row when there is no viewer at all".
+
+`tests/hq/member-actions-authz.test.ts`, `describe("the team page")`: "shows
+the team its assigned Captain's display name with no contact (task T4.5),
+and no Captain again once unassigned"; "shows no Captain to the account
+watching its own still-unverified claim: only a verified team's own view is
+populated".
+
+`tests/hq/member-shell.test.ts`, `describe("the captain page")`: "is not
+found without the capability, whatever else the account holds"; "sends a
+signed-out visitor to sign in with the captain URL as the destination";
+"shows the empty state and the Connect Telegram hint for a captain without a
+Telegram identity"; "drops the hint once Telegram is linked"; "reads the
+current edition once, and asks its two data reads for exactly the signed-in
+Captain's own id"; "renders the Captain's own assignment and the
+leaderboard, marking their own row, with no other project's name".
+
+`tests/hq/captain-page.test.ts` (new, real-PGlite integration, not mocked):
+"renders for a Captain, showing only that Captain's own assignments — both
+the full team card and the CRM-only fallback card"; "leaks no other
+Captain's project name, roster, lead or Colosseum link — names and counts
+only on the leaderboard" (this is the acceptance check's own wording — the
+regex is anchored to a Colosseum URL the seeded fixture actually carries,
+after fix round 1); "is not found for a member without the Captain
+capability, even one the leaderboard names"; "shows the other Captain at
+zero once their own assignment ends, and drops them entirely once revoked".
+
+`tests/hq/builders-admin.test.ts`, `describe("Captain leaderboard in Admin
+(task T4.5)")`: "adds the edition-scoped leaderboard and the admin-only
+project drilldown, and never leaks another edition's Captain or project
+into them"; "excludes a not-active-status project from the count (but not
+from the drilldown), includes an eligible zero-assignment Captain in stable
+name order, and drops a revoked Captain entirely".
+
+Full suite at `e363fbe` (fix round 1 complete, phase 4's final commit): 953
+tests in 44 files, `tsc` clean, lint unchanged (0 errors, 18 pre-existing
+warnings), `npm run build` passing (`/hq/captain`, `/hq/team/[id]` and
+`/hq/admin` all listed as dynamic routes).
+
+### Blocked or deferred, task T4.5
+
+The CRM-only-project fallback (above) — a real, minor UX gap flagged for
+phase 5 to decide deliberately rather than rediscover. The un-batched
+`teamById()` loop on `/hq/captain` — deferred by the reviewer explicitly.
+
+### Changed interfaces, task T4.5
+
+`lib/hq/captains.ts`: `leaderboard(db, hackathonId, viewerUserId?: string |
+null): Promise<CaptainLeaderboardView[]>`; `ProjectCaptain = {
+captainUserId, captainName }`; `currentCaptainOfProject(db, projectId):
+Promise<ProjectCaptain | null>`. `lib/hq/view-models.ts`:
+`CaptainLeaderboardView` gained `isYou: boolean`;
+`toCaptainLeaderboardView(row, rank, viewerUserId)`. `lib/hq/member-teams.ts#memberTeamView`
+now populates `MemberTeamView.captain` on the verified-member path (`contact`
+stays permanently `null` — no mechanism exists yet for a Captain to approve
+one; a future phase adding that is a new `TeamCaptainView.contact` writer,
+not a T4.5 concern). `lib/hq/builder-store.ts` gained
+`selectCurrentHackathonId` (a shared helper `BuilderStore#currentHackathonId`
+and `syncAccount` both now call, replacing a duplicated inline copy in the
+latter).
+
+### External configuration still required, task T4.5
+
+None added.
+
+### Phase 4 summary and acceptance checklist
+
+**What changed and which migrations apply.** A Captain invitation service
+(bearer-token links, one-use or multi-use, with expiry and capacity), the
+`/hq/invite/<token>` exchange-and-continuation flow that spends no slot on a
+preview, a failed signup or a repeat visit, an assignment service with a
+documented lock order and conflict checks (a participant can never be made
+Captain of their own team, whether through the acceptance race, the claim
+race, or a mismatched-username roster), a revocation cascade that clears a
+revoked Captain's assignments inside the same transaction as the grant's own
+revocation, and a private leaderboard (Admin and each Captain see it,
+scoped so a Captain never learns another Captain's project identities).
+Migrations, both additive and applied by `hq:migrate` in the usual order:
+`hq_captain_invitations`, `hq_captain_invitation_redemptions` and
+`hq_captain_assignments` in `scripts/hq/builder-schema.sql` (T4.1), reset
+classification for all three, and two index-predicate corrections (T4.1 fix
+rounds 1 and 2 — both converge to permanent no-ops after the first real
+`hq:migrate` run; see "What changed, task T4.1" above for why the second
+round exists). T4.2 through T4.5 added no schema.
+
+**Acceptance checklist.** The plan's five phase 4 acceptance bullets, quoted
+verbatim, each with the test that proves it or the honest limit of what is
+proven.
+
+1. "One-use and multi-use links obey expiry and capacity under simultaneous
+   redemption." **Passed for expiry and capacity arithmetic; "under
+   simultaneous redemption" is proven by arithmetic and a source-level lock
+   guard, not by true concurrent interleaving.**
+   - Expiry and capacity: `tests/hq/captains.test.ts` "a one-use link: the
+     first acceptance grants, a second distinct account is refused as full"
+     and "a multi-use link honours its exact capacity"; "revoked and expired
+     links refuse redemption without touching an existing grant"; the bounds
+     themselves: `tests/hq/migration-order.test.ts` "refuses a non-positive
+     max_redemptions" (the schema `CHECK`) and `tests/hq/captains.test.ts`
+     "defaults capability to captain and validates maxRedemptions and
+     expiry" (the service's own `MAX_REDEMPTIONS`/`MAX_VALIDITY_DAYS`
+     bounds).
+   - "Under simultaneous redemption": `tests/hq/captains.test.ts` "overlapping
+     acceptance calls never exceed capacity, however many arrive at once"
+     (five `Promise.all`-issued acceptances against a two-seat invitation,
+     asserting exactly 2 granted and 3 full). **Stated honestly, as the
+     test's own name and comment now say after fix round 1: PGlite's
+     single-connection promise queue serializes every call the moment each
+     transaction opens, so this proves the capacity arithmetic is correct
+     for some commit order, not that two truly concurrent callers cannot
+     interleave before either commits.** The actual safety guard — the row
+     lock — is proven present, not merely reasoned about, by a separate
+     source-level regression test in the same file, "locks the invitation
+     row for the whole decision — a regression guard, since PGlite's
+     serialized test pool cannot itself prove concurrency safety", which
+     asserts the exact `FOR UPDATE` SQL text is still in
+     `lib/hq/captains.ts`. The equivalent pair exists for assignment
+     capacity: "two Promise.all-issued assignCaptain calls for the same
+     never-before-assigned project settle to one current row" (arithmetic)
+     plus "the ON CONFLICT DO NOTHING guard itself: a second current-row
+     insert for the same project is silently refused at the database level,
+     never a raised constraint violation" (a direct database-level proof of
+     the actual guarantee for the one case no lock covers) and "locks the
+     candidate's active grant, the project's onboarding row (if any) and the
+     current assignment row for update" (the source-level lock guard for
+     every other case).
+2. "Link previews, failed signup and repeat acceptance do not spend slots."
+   **Passed.**
+   - A preview (a GET, or a token read with no acceptance): `tests/hq/captains.test.ts`
+     "changes nothing when read twice in a row — modelling a link preview
+     immediately followed by a real visit" (`readCaptainInvitationByToken`);
+     `tests/hq/invite-exchange.test.ts` "consumes nothing for a valid token,
+     called twice — a link preview, then a real visit" and `tests/hq/invite-route.test.ts`
+     "consumes nothing, exchanged twice for the same token — a link preview,
+     then a real visit" (the same property through the real route handler).
+   - A failed signup: `tests/hq/invite-accept-action.test.ts` "a failed
+     sign-up followed by a successful one consumes exactly one slot — the
+     acceptance check the plan names directly" — this is the plan's own
+     named check, driven through the real member-gated action, not just the
+     bare service call.
+   - Repeat acceptance: `tests/hq/captains.test.ts` "repeat acceptance by the
+     same account is idempotent and consumes no second slot" and "a replay
+     after an admin revoked that account's grant does not re-grant it" (the
+     resurrection-prevention case — a revoked grant cannot be reinstated by
+     replaying an already-consumed redemption); `tests/hq/invite-accept-action.test.ts`
+     "grants Captain to a verified, signed-in account, then leaves a second
+     acceptance a no-op that consumes no slot" (through the action).
+3. "Link revocation and Captain revocation have their documented separate
+   effects." **Passed.** `tests/hq/captains.test.ts` "has separate,
+   non-overlapping effects from Captain revocation: stops future redemption
+   only, touches neither an existing grant nor an existing assignment" and
+   "the reverse: Captain revocation (and its cascade) clears the assignment
+   and touches no invitation" — both directions, in the same file. The
+   cascade itself: "revoking a grant and clearing its assignments are one
+   transaction: forcing the clear's own audit write to fail leaves the grant
+   active and the assignment live" (service-level atomicity, over
+   `pgliteBuilderDatabase`, the same composition the action uses) and
+   `tests/hq/builders-admin.test.ts` "shows the affected project count
+   before a revocation and clears the assignment in the same action" and
+   "renders the real assignment count in the revoke confirmation copy, and
+   the grant-side copy when there is none to lose" (the action-level count
+   and cascade, through the real `revokeCaptainCapability`). **Split
+   deliberately across two levels** because the Admin test harness's nested
+   savepoints (both named `"action"`) cannot correctly model a
+   `builderDatabase().transaction()` call nested inside another one the way
+   production's real `pg` client does; the service-level test uses the
+   production-shaped composition instead, and the action-level test is kept
+   to the successful, count-matching case rather than claimed to prove
+   atomicity it cannot.
+4. "A participant cannot Captain their own team, including under concurrent
+   requests." **Passed for every static ordering the tests can construct;
+   "under concurrent requests" carries the same PGlite-serialization caveat
+   as bullet 1.**
+   - Static conflict: `tests/hq/captains.test.ts` "a verified team member
+     cannot be assigned to their own team — the owner case" and "— the
+     joined-member case"; "a roster identity linked to the candidate's
+     account blocks assignment even without a verified HQ membership"; "a
+     project's own owner is a conflict even before verification — the window
+     loadTeamMembership alone misses"; "a claimant absent from the imported
+     roster (or case-mismatched against it) is still a conflict, never
+     needs_review" (the fix-round-1 gap closure — this is the case the
+     original submission missed); "never compares display names: an
+     unclaimed roster row whose name matches the candidate is still only
+     'needs review', never a silent conflict or a silent pass" (the negative
+     case the plan warns against separately).
+   - The two race directions, both through commit ordering rather than true
+     interleaving (stated in the test file's own header comment):
+     `tests/hq/builder-onboarding.test.ts` "ordering 1 (assignment first): a
+     Captain already assigned to a project cannot then join it through a
+     team invite", "ordering 2 (membership first): a team member who already
+     joined a project cannot then be assigned as its Captain" and "the
+     'claim' path: a Captain already assigned to a pending project cannot
+     then claim it as its verified owner". The lock actually being held,
+     rather than only the outcome, is proven by
+     `tests/hq/captains.test.ts`'s `describe("the membership-acceptance lock
+     order (lib/hq/builder-store.ts)")` → "redeemInvite and importTeam lock
+     the same hq_project_onboarding row assignCaptain locks, and check
+     hq_captain_assignments before admitting a member or a verified owner —
+     a regression guard for the shared lock order" (a source-level
+     assertion, the same technique used for bullet 1's `FOR UPDATE` guards).
+5. "Captains cannot inspect other Captains' teams through leaderboard APIs
+   or direct links." **Passed.**
+   - Through the leaderboard API: `tests/hq/captains.test.ts` "carries only
+     rank, display name, assigned count and the isYou marker — no id,
+     project name or link" and `tests/hq/view-models.test.ts` "carries rank,
+     display name, assigned count and isYou — never the raw captain id it
+     was given" (the mapper itself never emits an id, at the type and the
+     serialized-JSON level).
+   - Through the rendered page and its RSC payload: `tests/hq/captain-page.test.ts`
+     "leaks no other Captain's project name, roster, lead or Colosseum link —
+     names and counts only on the leaderboard" — the real, unmocked acceptance
+     test, against a real assigned project with a real roster and a real
+     Colosseum URL under a *different* owner account, so the negative
+     assertion is genuinely falsifiable (fix round 1 closed the gap where
+     the original version of this test seeded no `projectUrl` at all and
+     therefore could not have caught a leak); "is not found for a member
+     without the Captain capability, even one the leaderboard names" (the
+     gate holds independently of what the leaderboard shows about them).
+   - Through a direct link: no route accepts a `captainUserId` or a project
+     id scoped to another Captain — `tests/hq/captains.test.ts` "finds no
+     reference to leaderboard, listAssignments or currentCaptainOfProject in
+     any Server Action module or app/**/route.ts" (a repo-wide static scan,
+     widened in fix round 1 from `lib/hq/actions` alone to every
+     `"use server"` module and every `app/**/route.ts`). The Admin drilldown,
+     which does carry every project's Captain, has its own operator gate,
+     independent of the Captain path: `tests/hq/builders-admin.test.ts`
+     "adds the edition-scoped leaderboard and the admin-only project
+     drilldown, and never leaks another edition's Captain or project into
+     them".
+
+**Two limits that apply across the checklist above, stated once rather than
+repeated at each bullet.** PGlite (`tests/hq/helpers/db.ts`) serializes
+whole transactions on one connection, so nowhere in phase 4 is "simultaneous"
+or "concurrent" proven by true interleaving; every such claim is proven by a
+combination of (a) capacity or outcome arithmetic under PGlite's forced
+sequential ordering, (b) source-level assertions that the actual lock
+(`FOR UPDATE`) or database guarantee (`ON CONFLICT DO NOTHING`, a partial
+unique index) is genuinely present in the code, and (c) both possible commit
+orderings tested separately where a race has two sides. And **nothing in
+phase 4 is browser-verified**: every check above runs at the route-handler,
+Server Action, service or database level. The one item this leaves
+genuinely open is recorded under "Blocked or deferred, task T4.3" above and
+repeated in `docs/hq/manual-setup.md`: the `Referrer-Policy`/`X-Robots-Tag`
+headers for `/hq/invite/:path*` are asserted at config level only, and
+confirming they land on the served redirect response needs a manual
+`curl -I` against a running dev server.
+
+**Blocked or deferred out of phase 4, with the phase that owns each.**
+
+- The CRM-person-link race between `correctPersonMatch` and `assignCaptain`'s
+  conflict check: **phase 3** (unreachable before phase 3 populates real
+  `person_id` values on roster rows).
+- The CRM-only-project fallback on `/hq/captain` (a Captain assigned to a
+  bare CRM project sees a name only, no roster, no contact, no link), and
+  the un-batched `teamById()` loop: **phase 5**, named explicitly rather than
+  left to be rediscovered.
+- `TeamCaptainView.contact` stays permanently `null`: no phase owns this
+  until a future phase gives a Captain a mechanism to approve a contact for
+  their team.
+- A project deleted concurrently with an assignment to it surfaces a raw
+  foreign-key violation rather than a typed outcome — a pre-existing gap
+  across operator project actions generally, not newly introduced.
+- The `Referrer-Policy`/`X-Robots-Tag` manual `curl -I` check: an owner
+  action, in `docs/hq/manual-setup.md`.
+
+**Changed interfaces and external configuration.** See the five per-task
+"Changed interfaces" sections above; the phase-3-and-phase-5 shortlist is in
+`docs/hq/contracts.md` under "Handoff to phase 3". Phase 4 added no
+environment variable.
+
+### Verification run for phase 4, task T4.6
+
+Run at commit `e363fbe`, before this documentation commit.
+
+- `npm run lint`: 0 errors, 18 warnings, all pre-existing and all in
+  `public/deck/deck-stage.js`. Unchanged from the phase 0 baseline and from
+  every task this session.
+- `npx tsc --noEmit`: clean, no output.
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test`: 953 tests in 44
+  files, all passing. Phase 2 closed at 754; phase 4 added 199.
+- `env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm run build`: passes. Every
+  `/hq` route compiles; `/hq/invite/[token]` (Route Handler) and
+  `/hq/invite/continue`, `/hq/captain` are listed as distinct dynamic routes.
