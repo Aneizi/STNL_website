@@ -83,7 +83,7 @@ exists yet and none should be created before that phase.
 | CRM person identity | stable person id, account link, edition People references, explicit correction | `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch(db, { personId, toUserId, reason, actor })` (detach, link, or merge into the account's own person; never by display name) and the operator action `correctPersonMatch({ personId, toUserId, reason })` | 1, used from 3 |
 | Audit | append only metadata events | `lib/hq/audit.ts`, `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata? })`, `listAuditEvents(filter, { limit, cursor })`; nothing else | 1 |
 | Actor aware response types | the smallest DTO per audience | new `lib/hq/view-models.ts` | `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView` | 1 |
-| Shell and navigation | capability driven member menu, one member route list | new `lib/hq/member-routes.ts`, new `lib/hq/member-nav.ts` (both pure and client-safe), new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `app/hq/(member)/layout.tsx` (a provider, **not** the auth boundary) | `MEMBER_PUBLIC_PATHS`, `isMemberPath(pathname)`, `safeMemberNext(value)` in `member-routes.ts`; `NavItem`, `MemberNavInput`, `getMemberNav({ capabilities, hasTelegram, teamCount })`, `isNavItemCurrent(item, pathname)` in `member-nav.ts`; `MemberNavProvider`, `BuilderNav`, `BuilderAccount` in `builder-nav.tsx`. The menu is derived from the request-cached `currentActor()` plus the account's team count; the layout passes it to the provider and every page composes `BuilderShell` itself | 2 |
+| Shell and navigation | capability driven member menu, one member route list | new `lib/hq/member-routes.ts`, new `lib/hq/member-nav.ts` (both pure and client-safe), new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `app/hq/(member)/layout.tsx` (a provider, **not** the auth boundary) | `MEMBER_PUBLIC_PATHS`, `isMemberPath(pathname)`, `safeMemberNext(value)` in `member-routes.ts`; `NavItem`, `MemberNavInput`, `getMemberNav({ capabilities, hasTelegram, hasTeams })`, `isNavItemCurrent(item, pathname)` in `member-nav.ts`; `MemberNavProvider`, `BuilderNav`, `BuilderAccount` in `builder-nav.tsx`. The menu is derived from the request-cached `currentActor()` plus the store's `hasTeams(userId)` existence check, never the team rows; the layout passes it to the provider and every page composes `BuilderShell` itself | 2 |
 | Colosseum integration | validated snapshots, normalized fields, source status | `lib/colosseum-api.ts` extended, `lib/hq/colosseum-snapshot.ts` named only | `claimProject`, `refreshProject`, `listCountryProjects` | 3 |
 | Captain service | invitations, assignment changes | `lib/hq/captains.ts`, `lib/hq/actions/captains.ts`, named only | `acceptCaptainInvitation`, `assignCaptain`, `unassignCaptain`, `leaderboard` | 4 |
 | Reporting service | periods, entries, revisions, completion | `lib/hq/reporting.ts`, named only | `createUpdate`, `editUpdate`, `readAuthorizedUpdates`, `reportingStatus`, `closePeriod` | 5 |
@@ -322,7 +322,7 @@ without re-reading the whole log. The per-task detail is in
   `lib/hq/identity.ts`; `getBotConsent`, `setBotConsent`, `revokeBotConsent` in
   `lib/hq/telegram-consent.ts`.
 - **Store and view models.** `BuilderStore.profile(userId)`,
-  `BuilderStore.teamById(projectId)`, `BuilderStore.ownClaim(userId,
+  `BuilderStore.hasTeams(userId)`, `BuilderStore.teamById(projectId)`, `BuilderStore.ownClaim(userId,
   projectId)`, `realEmail` in `lib/hq/builder-store.ts`; `builderDatabase()`,
   `BuilderQuery`, `BuilderDatabase`, `atomically()` in `lib/hq/builder-db.ts`;
   `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView` and their
@@ -330,7 +330,7 @@ without re-reading the whole log. The per-task detail is in
   model so it cannot carry an operator field.
 - **Shell and routes.** `MEMBER_PUBLIC_PATHS`, `isMemberPath`, `safeMemberNext`
   in `lib/hq/member-routes.ts`; `getMemberNav({ capabilities, hasTelegram,
-  teamCount })` and `isNavItemCurrent` in `lib/hq/member-nav.ts`. A new phase 3
+  hasTeams })` and `isNavItemCurrent` in `lib/hq/member-nav.ts`. A new phase 3
   member page is one entry in `MEMBER_PUBLIC_PATHS` and, if it needs a menu
   item, one item in `getMemberNav`.
 - **Test helpers.** `applyMigrations(pg)` and `pgliteBuilderDatabase(pg)` in

@@ -28,7 +28,7 @@ const href = (items: NavItem[], label: string) => items.find((item) => item.labe
 
 describe("getMemberNav", () => {
   it("email-only account with no teams: Home, Register team, Connect Telegram, Account", () => {
-    const items = getMemberNav({ capabilities: caps(), hasTelegram: false, teamCount: 0 });
+    const items = getMemberNav({ capabilities: caps(), hasTelegram: false, hasTeams: false });
     expect(labels(items)).toEqual(["Home", "Register team", "Connect Telegram", "Account"]);
     expect(href(items, "Home")).toBe("/hq/dashboard");
     expect(href(items, "Register team")).toBe("/hq/initialize");
@@ -37,33 +37,33 @@ describe("getMemberNav", () => {
   });
 
   it("Telegram-only account with teams: Home, My teams, Account", () => {
-    const items = getMemberNav({ capabilities: caps(), hasTelegram: true, teamCount: 2 });
+    const items = getMemberNav({ capabilities: caps(), hasTelegram: true, hasTeams: true });
     expect(labels(items)).toEqual(["Home", "My teams", "Account"]);
     expect(href(items, "My teams")).toBe("/hq/dashboard");
   });
 
   it("captain who is also a team member sees both modules together", () => {
-    const items = getMemberNav({ capabilities: caps("captain"), hasTelegram: true, teamCount: 1 });
+    const items = getMemberNav({ capabilities: caps("captain"), hasTelegram: true, hasTeams: true });
     expect(labels(items)).toEqual(["Home", "My teams", "Captain", "Account"]);
     expect(href(items, "Captain")).toBe("/hq/captain");
   });
 
   it("captain without Telegram or a team sees Register team, Captain and Connect Telegram", () => {
-    expect(labels(getMemberNav({ capabilities: caps("captain"), hasTelegram: false, teamCount: 0 }))).toEqual(["Home", "Register team", "Captain", "Connect Telegram", "Account"]);
+    expect(labels(getMemberNav({ capabilities: caps("captain"), hasTelegram: false, hasTeams: false }))).toEqual(["Home", "Register team", "Captain", "Connect Telegram", "Account"]);
   });
 
   it("Captain appears with the capability only, never from a team or a Telegram link", () => {
-    expect(labels(getMemberNav({ capabilities: caps(), hasTelegram: true, teamCount: 5 }))).not.toContain("Captain");
+    expect(labels(getMemberNav({ capabilities: caps(), hasTelegram: true, hasTeams: true }))).not.toContain("Captain");
     // A set of unknown strings grants nothing either.
-    expect(labels(getMemberNav({ capabilities: new Set(["admin", "operator"]) as unknown as ReadonlySet<Capability>, hasTelegram: false, teamCount: 0 }))).not.toContain("Captain");
+    expect(labels(getMemberNav({ capabilities: new Set(["admin", "operator"]) as unknown as ReadonlySet<Capability>, hasTelegram: false, hasTeams: false }))).not.toContain("Captain");
   });
 
   it("never links anywhere operator-side, and every target is a member route", () => {
     const navs = [
-      getMemberNav({ capabilities: caps(), hasTelegram: false, teamCount: 0 }),
-      getMemberNav({ capabilities: caps(), hasTelegram: true, teamCount: 3 }),
-      getMemberNav({ capabilities: caps("captain"), hasTelegram: false, teamCount: 1 }),
-      getMemberNav({ capabilities: caps("captain"), hasTelegram: true, teamCount: 0 }),
+      getMemberNav({ capabilities: caps(), hasTelegram: false, hasTeams: false }),
+      getMemberNav({ capabilities: caps(), hasTelegram: true, hasTeams: true }),
+      getMemberNav({ capabilities: caps("captain"), hasTelegram: false, hasTeams: true }),
+      getMemberNav({ capabilities: caps("captain"), hasTelegram: true, hasTeams: false }),
     ];
     for (const item of navs.flat()) {
       expect(isMemberPath(item.href), item.href).toBe(true);
@@ -76,7 +76,7 @@ describe("getMemberNav", () => {
   });
 
   it("returns a fresh array each time", () => {
-    const input = { capabilities: caps(), hasTelegram: true, teamCount: 1 };
+    const input = { capabilities: caps(), hasTelegram: true, hasTeams: true };
     expect(getMemberNav(input)).not.toBe(getMemberNav(input));
   });
 });
@@ -99,7 +99,7 @@ describe("isNavItemCurrent", () => {
   });
 
   it("marks exactly one derived item current on each member page", () => {
-    const items = getMemberNav({ capabilities: caps("captain"), hasTelegram: false, teamCount: 1 });
+    const items = getMemberNav({ capabilities: caps("captain"), hasTelegram: false, hasTeams: true });
     const currentOn = (pathname: string) => items.filter((it) => isNavItemCurrent(it, pathname)).map((it) => it.label);
     expect(currentOn("/hq/dashboard")).toEqual(["Home"]);
     expect(currentOn("/hq/team/00000000-0000-4000-8000-00000000000a")).toEqual(["My teams"]);
@@ -110,14 +110,14 @@ describe("isNavItemCurrent", () => {
     expect(currentOn("/hq/welcome")).toEqual([]);
     expect(currentOn("/hq/join")).toEqual([]);
     expect(currentOn("/hq/initialize")).toEqual([]);
-    const registering = getMemberNav({ capabilities: caps(), hasTelegram: false, teamCount: 0 });
+    const registering = getMemberNav({ capabilities: caps(), hasTelegram: false, hasTeams: false });
     expect(registering.filter((it) => isNavItemCurrent(it, "/hq/initialize")).map((it) => it.label)).toEqual(["Register team"]);
     expect(registering.filter((it) => isNavItemCurrent(it, "/hq/dashboard")).map((it) => it.label)).toEqual(["Home"]);
   });
 });
 
 describe("BuilderNav and BuilderAccount", () => {
-  const state: MemberNavState = { items: getMemberNav({ capabilities: caps("captain"), hasTelegram: false, teamCount: 0 }), account: { name: "Fictional Builder" } };
+  const state: MemberNavState = { items: getMemberNav({ capabilities: caps("captain"), hasTelegram: false, hasTeams: false }), account: { name: "Fictional Builder" } };
   const render = (node: React.ReactElement, value: MemberNavState = state) => renderToStaticMarkup(withChildren(MemberNavProvider, { value }, node));
 
   it("renders every item as a link and marks only the current one", () => {

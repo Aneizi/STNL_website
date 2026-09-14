@@ -19,9 +19,10 @@ async function memberNavState(): Promise<MemberNavState> {
   const actor = await currentActor();
   if (actor?.kind !== "member") return null;
   // actor.telegram is the linked identity row, the same read getLoginMethods() makes for the account page.
-  const teamCount = (await builderStore().teams(actor.id)).length;
+  // hasTeams() is an existence check: the menu must not load the teams the dashboard loads anyway.
+  const hasTeams = await builderStore().hasTeams(actor.id);
   return {
-    items: getMemberNav({ capabilities: actor.capabilities, hasTelegram: actor.telegram !== null, teamCount }),
+    items: getMemberNav({ capabilities: actor.capabilities, hasTelegram: actor.telegram !== null, hasTeams }),
     account: { name: actor.name },
   };
 }

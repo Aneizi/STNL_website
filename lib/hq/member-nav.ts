@@ -22,7 +22,8 @@ export type NavItem = {
 export type MemberNavInput = {
   capabilities: ReadonlySet<Capability>;
   hasTelegram: boolean;
-  teamCount: number;
+  /** Whether the account owns a claim or has joined a roster, whatever the verification state; the store's hasTeams(). */
+  hasTeams: boolean;
 };
 
 /**
@@ -31,10 +32,10 @@ export type MemberNavInput = {
  * Telegram identity is linked, and Account. An account that holds several
  * roles sees the relevant items together.
  */
-export function getMemberNav({ capabilities, hasTelegram, teamCount }: MemberNavInput): NavItem[] {
+export function getMemberNav({ capabilities, hasTelegram, hasTeams }: MemberNavInput): NavItem[] {
   const items: NavItem[] = [{ key: "home", label: "Home", href: "/hq/dashboard", activeUnder: "/hq/dashboard" }];
   items.push(
-    teamCount > 0
+    hasTeams
       ? { key: "teams", label: "My teams", href: "/hq/dashboard", activeUnder: "/hq/team/" }
       : { key: "teams", label: "Register team", href: "/hq/initialize", activeUnder: "/hq/initialize" },
   );

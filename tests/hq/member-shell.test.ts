@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   currentActor: vi.fn(),
   requireMemberActor: vi.fn(),
   teams: vi.fn(),
+  hasTeams: vi.fn(),
   pathname: "/hq/dashboard",
 }));
 vi.mock("server-only", () => ({}));
@@ -29,6 +30,7 @@ vi.mock("@/lib/hq/member-auth", () => ({ currentMember: vi.fn(), requireMember: 
 vi.mock("@/lib/hq/builder-store", () => ({
   builderStore: () => ({
     teams: mocks.teams,
+    hasTeams: mocks.hasTeams,
     dashboard: async () => ({ tier: "regular", requests: [], enrollments: [], events: [] }),
     hackathons: async () => [],
   }),
@@ -154,9 +156,9 @@ describe("the member layout", () => {
   const shell = createElement(BuilderShell, null, createElement("p", null, "content"));
   const render = async () => renderToStaticMarkup(await HqMemberLayout({ children: shell }));
 
-  it("derives the menu and the account corner from the actor and the team count, for the shell a page renders", async () => {
+  it("derives the menu and the account corner from the actor and the team existence check, for the shell a page renders", async () => {
     mocks.currentActor.mockResolvedValue(member({ capabilities: new Set(["captain"]) }));
-    mocks.teams.mockResolvedValue([{ id: "a" }, { id: "b" }]);
+    mocks.hasTeams.mockResolvedValue(true);
     mocks.pathname = "/hq/captain";
     const html = await render();
     for (const label of ["Home", "My teams", "Captain", "Connect Telegram", "Account"]) expect(html).toContain(`>${label}</a>`);
@@ -164,7 +166,17 @@ describe("the member layout", () => {
     expect(html).toMatch(/<button[^>]*>Sign out<\/button>/);
     expect(html).toContain("<p>content</p>");
     expect(html.match(/aria-current="page"/g)).toHaveLength(1);
-    expect(mocks.teams).toHaveBeenCalledWith("acct-1");
+    expect(mocks.hasTeams).toHaveBeenCalledWith("acct-1");
+    // The dashboard loads the teams it renders; the menu never loads them to count them.
+    expect(mocks.teams).not.toHaveBeenCalled();
+  });
+
+  it("offers Register team while the existence check is false", async () => {
+    mocks.currentActor.mockResolvedValue(member());
+    mocks.hasTeams.mockResolvedValue(false);
+    const html = await render();
+    expect(html).toContain(">Register team</a>");
+    expect(html).not.toContain(">My teams</a>");
   });
 
   it("renders no menu for a visitor, and none for an operator session, which is not a member", async () => {
@@ -175,6 +187,6 @@ describe("the member layout", () => {
     expect(html).not.toContain("HQ navigation");
     expect(html).not.toContain("Operator");
     expect(html).not.toContain("Sign out");
-    expect(mocks.teams).not.toHaveBeenCalled();
+    expect(mocks.hasTeams).not.toHaveBeenCalled();
   });
 });

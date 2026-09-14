@@ -20,6 +20,9 @@ const TEAM_SELECT = `SELECT o.*,p.name,h.name AS hackathon_name,
       (SELECT json_agg(json_build_object('id',m.id,'name',m.name,'username',m.colosseum_username,'joined',m.builder_user_id IS NOT NULL) ORDER BY m.sort)
        FROM hq_project_members m WHERE m.project_id=p.id) AS members
       FROM hq_project_onboarding o JOIN hq_projects p ON p.id=o.project_id JOIN hq_hackathons h ON h.id=o.hackathon_id`;
+// The one relationship that makes a team the account's own, shared by
+// teams() and hasTeams() so the menu and the dashboard cannot disagree.
+const OWN_TEAM = `(o.owner_user_id=$1 OR EXISTS(SELECT 1 FROM hq_project_members m WHERE m.project_id=o.project_id AND m.builder_user_id=$1))`;
 const toTeam = (r: Record<string, unknown>): BuilderTeam => ({ id: String(r.project_id), name: String(r.name), hackathonId: Number(r.hackathon_id), hackathonName: String(r.hackathon_name),
   projectUrl: String(r.project_url), description: String(r.description), stage: r.stage as ProjectStage, verification: r.verification as BuilderTeam['verification'],
   ownerId: String(r.owner_user_id), leadUsername: String(r.lead_username), members: (r.members ?? []) as BuilderTeam['members'] });
@@ -187,10 +190,14 @@ export class BuilderStore {
 
   /** The account's own teams for its dashboard: every claim it owns and every roster row it has joined, whatever the verification state. */
   async teams(userId: string): Promise<BuilderTeam[]> {
-    const { rows } = await this.db.query(`${TEAM_SELECT}
-      WHERE o.owner_user_id=$1 OR EXISTS(SELECT 1 FROM hq_project_members m WHERE m.project_id=o.project_id AND m.builder_user_id=$1)
-      ORDER BY o.created_at DESC`, [userId]);
+    const { rows } = await this.db.query(`${TEAM_SELECT} WHERE ${OWN_TEAM} ORDER BY o.created_at DESC`, [userId]);
     return rows.map(toTeam);
+  }
+
+  /** Whether teams() would return anything, without loading a team or its roster: the menu asks only this, on every member request. */
+  async hasTeams(userId: string): Promise<boolean> {
+    const { rows } = await this.db.query(`SELECT EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE ${OWN_TEAM}) AS found`, [userId]);
+    return Boolean(rows[0].found);
   }
 
   async team(userId: string, id: string) {
