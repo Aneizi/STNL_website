@@ -1,15 +1,19 @@
 "use client";
 
-import { useState, useTransition, type FormEvent, type ReactNode } from "react";
+import { useRef, useState, useSyncExternalStore, useTransition, type FormEvent, type ReactNode } from "react";
 import {
   markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
   reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
+import { createCaptainInvitation, revokeCaptainInvitation } from "@/lib/hq/actions/captains";
 import type {
   AccountLogin, ActiveCaptain, BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
 } from "@/lib/hq/builder-admin-queries";
+import type { CaptainInvitationListing } from "@/lib/hq/captains";
+import { fmtWithZone } from "@/lib/hq/format";
 import type { ActionResult } from "@/lib/hq/types";
+import { CopyButton } from "./ui-client";
 import styles from "./builder-admin.module.css";
 
 /**
@@ -28,13 +32,22 @@ export function loginLabel({ email, telegram }: AccountLogin): string {
 // key that also carried the state the row's own form changes (a grant, a
 // verification) remounted the row on the very save that changed it, closing
 // the <details> and taking the "Saved." line with it.
+//
+// Because the row no longer remounts, a successful save must reset the form
+// itself: without it, a summary/button pair that flips its own label after a
+// grant (Grant -> Revoke) would leave the just-typed reason and a
+// pre-checked "required" confirm box sitting behind the new label, so one
+// further stray click would revoke with a stale confirmation. form.reset()
+// clears every input back to its defaultValue, which is exactly what a
+// fresh instance of the same control should show next.
 function ActionForm({ action, children }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode }) {
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget, (event.nativeEvent as SubmitEvent).submitter);
+    const form = event.currentTarget;
+    const data = new FormData(form, (event.nativeEvent as SubmitEvent).submitter);
     setMessage("");
     setError(false);
     startTransition(async () => {
@@ -42,6 +55,7 @@ function ActionForm({ action, children }: { action: (data: FormData) => Promise<
         const result = await action(data);
         setError(!result.ok);
         setMessage(result.ok ? "Saved." : result.error ?? "Could not save. Try again.");
+        if (result.ok) form.reset();
       } catch {
         setError(true);
         setMessage("Could not save. Try again.");
@@ -72,8 +86,9 @@ function projectHref(value: string): string | undefined {
   return undefined;
 }
 
-export function BuilderAdmin({ config, hackathonName, accounts, captains, hostRequests }: {
+export function BuilderAdmin({ config, hackathonName, accounts, captains, hostRequests, captainInvitations, timezone }: {
   config: OnboardingConfig; hackathonName: string; accounts: BuilderAccount[]; captains: ActiveCaptain[]; hostRequests: BuilderHostRequest[];
+  captainInvitations: CaptainInvitationListing[]; timezone: string;
 }) {
   return (
     <>
@@ -100,6 +115,7 @@ export function BuilderAdmin({ config, hackathonName, accounts, captains, hostRe
         </ActionForm>
       </section>
       <BuilderAccounts accounts={accounts} captains={captains} />
+      <CaptainInvitations invitations={captainInvitations} timezone={timezone} />
       <section className={styles.section} aria-labelledby="hosting-requests-title">
         <h2 id="hosting-requests-title">Event hosting requests</h2>
         <p>{config.hostingEnabled ? "Members can apply to host an event." : "Applications are disabled. Enable them in onboarding settings when ready."}</p>
@@ -164,6 +180,140 @@ export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccou
               </div>
             </ActionForm>
           </details>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+const INVITATION_STATE_LABELS: Record<CaptainInvitationListing["state"], string> = {
+  active: "Active", expired: "Expired", revoked: "Revoked", full: "Full",
+};
+
+/**
+ * The moment this form hydrated on the client, or null on the server and on
+ * the client's own first (hydrating) render. Date.now() is impure — calling
+ * it directly in a component body is against the rules of React (it would
+ * also disagree with the server's render, a hydration mismatch) — so the one
+ * read lives inside useSyncExternalStore's getSnapshot, its documented seam
+ * for reading an external, non-React value, cached in a ref so repeated
+ * calls agree with themselves instead of drifting with the clock. No
+ * subscription is needed since this never changes again after mount, hence
+ * the no-op subscribe.
+ */
+function useClientNow(): number | null {
+  const cached = useRef<number | null>(null);
+  return useSyncExternalStore(
+    () => () => {},
+    () => (cached.current ??= Date.now()),
+    () => null,
+  );
+}
+
+/**
+ * Days from now, formatted with its zone, for the create form's expiry
+ * preview. Null on the server and on the client's first render (see
+ * useClientNow), so the first client render still matches the server's —
+ * the same hydration problem localDateTime above solves a different way, by
+ * only ever formatting a fixed UTC value instead of "now".
+ */
+function useExpiryPreview(days: number, timezone: string): string {
+  const now = useClientNow();
+  if (now == null || !Number.isFinite(days) || days <= 0) return "";
+  return fmtWithZone(new Date(now + days * 86_400_000).toISOString(), timezone);
+}
+
+/**
+ * Captain invitations: admin-generated links that grant the Captain
+ * capability only, never operator access and never a project assignment.
+ * Rendered near BuilderAccounts' own Captain copy, since both surfaces touch
+ * the same hq_account_capabilities grant, just by two different routes.
+ *
+ * The create form is not an ActionForm: createCaptainInvitation returns a
+ * distinct { token, invitation } shape (never ActionResult) so the plaintext
+ * link can be returned once, and ActionForm's contract is ActionResult only.
+ * The one-time link is kept in its own `created` state instead of the form's
+ * fields, so resetting the form on success (clearing label / limit / days
+ * for the next invitation) never touches the link still on screen.
+ */
+function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInvitationListing[]; timezone: string }) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState<{ token: string; label: string | null } | null>(null);
+  const [days, setDays] = useState(7);
+  const preview = useExpiryPreview(days, timezone);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setError("");
+    startTransition(async () => {
+      const result = await createCaptainInvitation({
+        label: String(data.get("label") ?? "").trim() || undefined,
+        maxRedemptions: Number(data.get("maxRedemptions")),
+        expiresInDays: Number(data.get("validForDays")),
+      });
+      if (!result.ok) { setError(result.error); return; }
+      setCreated({ token: result.token, label: result.invitation.label });
+      form.reset();
+      setDays(7);
+    });
+  }
+
+  const link = created ? `${window.location.origin}/hq/invite/${created.token}` : "";
+
+  return (
+    <section className={styles.section} aria-labelledby="captain-invitations-title">
+      <h2 id="captain-invitations-title">Captain invitations</h2>
+      <p>A link grants Captain access only — never operator access and never a project assignment. Assigning a Captain to a project is a separate step.</p>
+      <p>A multi-use link authorizes several verified accounts at once. Keep Maximum connected accounts at 1 unless several people genuinely share this link — the default is deliberately one-use.</p>
+      <form onSubmit={submit} aria-busy={pending}>
+        <fieldset disabled={pending} className={styles.fieldset}>
+          <div className={styles.grid}>
+            <label className={styles.field}>Internal label (optional)<input name="label" maxLength={200} placeholder="e.g. Rotterdam meetup" /></label>
+            <label className={styles.field}>Maximum connected accounts<input name="maxRedemptions" type="number" inputMode="numeric" min={1} max={500} defaultValue={1} required /></label>
+            <label className={styles.field}>Valid for (days)<input name="validForDays" type="number" inputMode="numeric" min={1} defaultValue={7} required onChange={(event) => setDays(Number(event.currentTarget.value))} /></label>
+          </div>
+          <p className={styles.muted}>{preview ? `Expires ${preview}, unless revoked sooner.` : "Choose a duration to see the expiry."}</p>
+          <div className={styles.actions}><button className={styles.button} type="submit">Create invitation link</button></div>
+        </fieldset>
+        {(pending || error) && <div className={`${styles.feedback} ${error ? styles.error : ""}`} role={error ? "alert" : "status"}>{pending ? "Creating…" : error}</div>}
+      </form>
+      {created && (
+        <div className={styles.row} role="status">
+          <p><strong>Copy this link now — it will not be shown again.</strong></p>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <span style={{ fontFamily: "var(--mono)", fontSize: 12, overflowWrap: "anywhere" }}>{link}</span>
+            <CopyButton value={link} />
+          </div>
+        </div>
+      )}
+      {invitations.length === 0 && <p>No Captain invitations yet.</p>}
+      {invitations.map((invitation) => (
+        <article className={styles.row} key={invitation.id}>
+          <div className={styles.rowHeader}>
+            <h3>{invitation.label || "Untitled invitation"}</h3>
+            <span className={styles.badge}>{INVITATION_STATE_LABELS[invitation.state]}</span>
+          </div>
+          <p>{invitation.usedCount} of {invitation.maxRedemptions} accounts used. Expires {fmtWithZone(invitation.expiresAt, timezone)}.</p>
+          <p>Created by {invitation.createdByName ?? "a since-removed operator"} on {invitation.createdAt.slice(0, 10)}.</p>
+          {invitation.redeemers.length > 0 && (
+            <ul className={styles.roster} aria-label={`${invitation.label || "Untitled invitation"} redeemers`}>
+              {invitation.redeemers.map((redeemer, index) => (
+                <li key={redeemer.userId ?? `deleted-${index}`}>
+                  <span>{redeemer.name ?? "Deleted account"}</span>
+                  <span className={styles.badge}>{redeemer.redeemedAt.slice(0, 10)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {invitation.state !== "revoked" && (
+            <ActionForm action={() => revokeCaptainInvitation(invitation.id)}>
+              <div className={styles.actions}><button className={styles.secondary} type="submit">Revoke invitation</button></div>
+            </ActionForm>
+          )}
+          <p className={styles.muted}>Revoking stops future redemptions only. Accounts that already used this link keep Captain access until it is revoked for that account above.</p>
         </article>
       ))}
     </section>

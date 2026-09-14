@@ -79,6 +79,29 @@ export function isStale(lastCheckIn: string, staleDays: number, nowMs: number): 
 }
 
 /**
+ * An absolute moment with its zone spelled out, e.g. "14 Sep 2026, 18:05
+ * Europe/Amsterdam" — for a value the reader must not have to guess the zone
+ * of (a Captain invitation's expiry). The IANA name itself, not a locale
+ * abbreviation like "CEST": unambiguous and stable across environments.
+ */
+export function fmtWithZone(iso: string, tz: string): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("day")} ${get("month")} ${get("year")}, ${get("hour")}:${get("minute")} ${tz}`;
+}
+
+/**
  * Coarse elapsed time for freshness labels: "4m ago", "3h ago", "2d ago".
  * `now` is passed in rather than read, so a server-rendered label and its
  * hydration agree.

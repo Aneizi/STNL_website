@@ -28,10 +28,12 @@ import {
   reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
+import { createCaptainInvitation as createCaptainInvitationAction, revokeCaptainInvitation as revokeCaptainInvitationAction } from "@/lib/hq/actions/captains";
 import { correctPersonMatch, createPerson, updatePerson } from "@/lib/hq/actions/people";
 import { getBuilderAdminData, getBuilderProjectReviews } from "@/lib/hq/builder-admin-queries";
 import type { BuilderQuery } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
+import { createCaptainInvitation as createCaptainInvitationRecord } from "@/lib/hq/captains";
 import { getPeople } from "@/lib/hq/queries";
 import {
   addProjectMember, addProjectNote, deleteProject, editProjectNote, logMondayReview, removeProjectMember, saveProjectBlocker,
@@ -146,6 +148,8 @@ describe("builder administration authorization and scoping", () => {
     ["project queries", () => getBuilderProjectReviews()],
     ["granting Captain", () => grantCaptainCapability("selected", "Leads the cohort")],
     ["revoking Captain", () => revokeCaptainCapability("selected", "Stepped down")],
+    ["creating a Captain invitation", () => createCaptainInvitationAction({ maxRedemptions: 1, expiresInDays: 7 })],
+    ["revoking a Captain invitation", () => revokeCaptainInvitationAction("00000000-0000-4000-8000-000000000099")],
     ["correcting a person match", () => correctPersonMatch({ personId: PROJECT, toUserId: null, reason: "Wrong person" })],
   ] as const)("requires an operator session for %s", async (_, action) => {
     mocks.requireUser.mockRejectedValue(new Error("Not an operator"));
@@ -336,7 +340,7 @@ describe("accounts without a login email in Admin", () => {
   it("renders a Telegram-only account as its handle, the contact email labelled apart, and an email account as before", async () => {
     const admin = await getBuilderAdminData();
     const reviews = await getBuilderProjectReviews();
-    const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, hostRequests: admin.hostRequests }))
+    const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, hostRequests: admin.hostRequests, timezone: "Europe/Amsterdam" }))
       + renderToStaticMarkup(createElement(BuilderProjectReviews, reviews));
     expect(html).toContain("Telegram: @tg_handle");
     expect(html).toContain("Contact email: reach-me@example.test");
@@ -464,5 +468,52 @@ describe("People tags, Captain grants and person-match correction", () => {
     })]);
     expect(await grants()).toEqual([]);
     expect(mocks.refreshHq).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Captain invitations in Admin", () => {
+  it("creates an invitation through the operator action, returning its token once and refreshing HQ", async () => {
+    const result = await createCaptainInvitationAction({ label: "Rotterdam meetup", maxRedemptions: 2, expiresInDays: 3 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected success");
+    expect(result.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(result.invitation).toMatchObject({ label: "Rotterdam meetup", maxRedemptions: 2, usedCount: 0, state: "active", createdByUserId: OPERATOR, createdByName: "Operator" });
+    expect(mocks.refreshHq).toHaveBeenCalledTimes(1);
+    expect((await getBuilderAdminData()).captainInvitations.map((i) => i.label)).toEqual(["Rotterdam meetup"]);
+  });
+
+  it("refuses a bad shape at the zod boundary and an unreasonable account limit with the service's own message", async () => {
+    // A non-positive duration never reaches the service: zod's .positive() on
+    // expiresInDays refuses it first, with the generic shape message.
+    expect(await createCaptainInvitationAction({ maxRedemptions: 0, expiresInDays: 7 })).toEqual({ ok: false, error: "Give a valid label, account limit and duration." });
+    expect(await createCaptainInvitationAction({ maxRedemptions: 1, expiresInDays: -1 })).toEqual({ ok: false, error: "Give a valid label, account limit and duration." });
+    // A shape-valid but unreasonable limit reaches createCaptainInvitation,
+    // which throws its own BuilderError — surfaced verbatim, not replaced.
+    expect(await createCaptainInvitationAction({ maxRedemptions: 5_000, expiresInDays: 7 })).toMatchObject({ ok: false, error: expect.stringContaining("whole number") });
+  });
+
+  it("revokes an invitation, stays idempotent on a second call, and reports an unknown id the same way", async () => {
+    const created = await createCaptainInvitationAction({ maxRedemptions: 1, expiresInDays: 7 });
+    if (!created.ok) throw new Error("setup failed");
+    expect(await revokeCaptainInvitationAction(created.invitation.id)).toEqual({ ok: true });
+    expect((await getBuilderAdminData()).captainInvitations[0]).toMatchObject({ state: "revoked" });
+    expect(await revokeCaptainInvitationAction(created.invitation.id)).toEqual({ ok: false, error: "This invitation was already revoked or does not exist." });
+    expect(await revokeCaptainInvitationAction("00000000-0000-4000-8000-000000000099")).toEqual({ ok: false, error: "This invitation was already revoked or does not exist." });
+  });
+
+  it("renders the invitations section with its one-use default copy, an active invitation and its redeemer", async () => {
+    const created = await createCaptainInvitationRecord(builderDb, { actorOperatorId: OPERATOR, label: "Utrecht cohort", maxRedemptions: 1, expiresInDays: 7 });
+    await rows("INSERT INTO hq_captain_invitation_redemptions(invitation_id,user_id) VALUES($1::uuid,'selected')", [created.invitation.id]);
+    const admin = await getBuilderAdminData();
+    const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, timezone: "Europe/Amsterdam" }));
+    expect(html).toContain("Captain invitations");
+    expect(html).toContain("grants Captain access only");
+    expect(html).toContain("Utrecht cohort");
+    expect(html).toContain("1 of 1 accounts used");
+    expect(html).toContain("Selected Builder"); // the redeemer's name
+    expect(html).not.toContain(created.token);
+    // The create form's own default is the one-use, effortless choice.
+    expect(html).toMatch(/name="maxRedemptions"[^>]*value="1"/);
+    expect(html).toMatch(/name="validForDays"[^>]*value="7"/);
   });
 });

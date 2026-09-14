@@ -37,7 +37,7 @@ export default async function AdminPage() {
       milestones={milestones}
       gates={classifiers.gates}
       />
-      <BuilderAdmin {...onboarding} />
+      <BuilderAdmin {...onboarding} timezone={settings.timezone} />
     </>
   );
 }

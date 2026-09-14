@@ -2,6 +2,7 @@ import "server-only";
 import { requireUser } from "./auth";
 import { realEmail } from "./builder-store";
 import { listActiveCapabilitiesForUsers, listCapabilityGrants } from "./capabilities";
+import { listCaptainInvitations, type CaptainInvitationListing } from "./captains";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
 import { operatorQuery } from "./queries";
@@ -97,7 +98,7 @@ export async function getBuilderAdminData() {
   await requireUser();
   const hackathon = await requireHackathon();
   const sql = getSql();
-  const [configs, accounts, requests, captains] = await Promise.all([
+  const [configs, accounts, requests, captains, invitations] = await Promise.all([
     sql`SELECT external_hackathon_id, external_hackathon_slug, projects_open,
         projects_available_at::text, signup_url, hosting_enabled
         FROM hq_hackathon_onboarding WHERE hackathon_id = ${hackathon.id}`,
@@ -111,6 +112,9 @@ export async function getBuilderAdminData() {
         WHERE r.hackathon_id = $1
         ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
     listCapabilityGrants({ capability: "captain", activeOnly: true }, operatorQuery()),
+    // Invitations are account-global like the grants above, never scoped to
+    // this hackathon's People list.
+    listCaptainInvitations(operatorQuery()),
   ]);
   const capabilities = await listActiveCapabilitiesForUsers(accounts.map((row) => String(row.id)), operatorQuery());
   const config = configs[0];
@@ -136,6 +140,7 @@ export async function getBuilderAdminData() {
       id: String(row.id), name: String(row.name), ...login(row),
       title: String(row.title), details: String(row.details), status: row.status as BuilderHostRequest["status"],
     } satisfies BuilderHostRequest)),
+    captainInvitations: invitations satisfies CaptainInvitationListing[],
   };
 }
 
