@@ -109,6 +109,16 @@ describe("readCaptainInvitationByToken", () => {
     expect(await readCaptainInvitationByToken(db, "unknown-token")).toBeNull();
     expect(await redemptions()).toEqual([]);
   });
+
+  it("changes nothing when read twice in a row — modelling a link preview immediately followed by a real visit", async () => {
+    const { token, invitation } = await createInvitation({ maxRedemptions: 2 });
+    const first = await readCaptainInvitationByToken(db, token);
+    const second = await readCaptainInvitationByToken(db, token);
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({ id: invitation.id, full: false });
+    expect(await redemptions()).toEqual([]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_captain_invitations")).toEqual([{ n: 1 }]);
+  });
 });
 
 describe("acceptCaptainInvitation", () => {
