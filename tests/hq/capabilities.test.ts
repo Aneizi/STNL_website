@@ -94,7 +94,7 @@ describe("grantCapability and revokeCapability", () => {
     expect((await listCapabilityGrants({ capability: "captain", activeOnly: true })).map((g) => g.id)).toEqual([regrant.id]);
   });
 
-  it("records the member as the actor when a member initiates the grant, with the inviting operator as granted_by", async () => {
+  it("records the acting member or job on the event and keeps the row's operator attribution separate", async () => {
     // Phase 4's invitation redemption: the member accepts, so the trail must
     // say member; the operator who created the invitation is only granted_by.
     const grant = await grantCapability(db, {

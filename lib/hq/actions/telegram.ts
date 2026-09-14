@@ -86,6 +86,8 @@ export async function confirmEmailChange(newEmail: string): Promise<EmailChangeC
   if (address.length > 254 || !EMAIL_SHAPE.test(address) || isPlaceholderEmail(address)) return { ok: false, code: "INVALID_EMAIL" };
   const session = await currentMemberSession();
   if (!session || !isRecentSession(session.session)) return { ok: false, code: "SESSION_NOT_FRESH" };
+  // Only an unverified stored address reaches this: a verified one was refused
+  // above, and the placeholder is null on the session and invalid as input.
   if (address === normalizeEmailAddress(session.user.email)) return { ok: false, code: "EMAIL_UNCHANGED" };
   await recordTelegramIntent(await intentStore(), actor.id, "change-email", address);
   return { ok: true, newEmail: address };

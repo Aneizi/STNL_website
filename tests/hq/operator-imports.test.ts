@@ -17,7 +17,7 @@ const MEMBER_ACTIONS = new Set(["builders.ts", "telegram.ts"]);
 const FORBIDDEN_MODULES = ["lib/hq/member-auth.ts", "lib/hq/telegram-identity-plugin.ts", "lib/hq/telegram-provider.ts"];
 
 /** Packages only the public member auth graph uses. They inflate every operator route bundle that reaches them. */
-const FORBIDDEN_PACKAGES = /^(better-auth|@better-auth\/|resend$)/;
+const FORBIDDEN_PACKAGES = /^(better-auth(\/|$)|@better-auth\/|resend$)/;
 
 function actionModules(): string[] {
   return readdirSync(join(ROOT, "lib/hq/actions"))

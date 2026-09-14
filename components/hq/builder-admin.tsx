@@ -23,10 +23,11 @@ export function loginLabel({ email, telegram }: AccountLogin): string {
   return "No login email";
 }
 
-// Every row below is keyed by its record id alone. A key that also carried the
-// state the row's own form changes (a grant, a verification) remounted the row
-// on the very save that changed it, closing the open <details> and taking the
-// "Saved." feedback with it.
+// This form's outcome message is local state, as is the open state of the
+// <details> around it, so every row below is keyed by its record id alone. A
+// key that also carried the state the row's own form changes (a grant, a
+// verification) remounted the row on the very save that changed it, closing
+// the <details> and taking the "Saved." line with it.
 function ActionForm({ action, children }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode }) {
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState("");

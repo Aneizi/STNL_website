@@ -1087,7 +1087,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(await currentMember()).toEqual({ id: userId, email: "recover@example.com", name: NAME });
   });
 
-  it("refuses to move the login email of an account that already has one, whatever the session", async () => {
+  it("refuses to move the login email of an account that already signs in with one", async () => {
     const emailUser = await signInWithEmail("holder@example.com", "Settled Builder");
     state.cookie = emailUser.cookie;
     state.sent.length = 0;
