@@ -6,13 +6,12 @@ import styles from "@/components/hq/builder-shell.module.css";
 import { builderDatabase } from "@/lib/hq/builder-db";
 import { INVITE_CONTINUATION_COOKIE, readInviteContinuation } from "@/lib/hq/invite-continuation";
 import { currentMember } from "@/lib/hq/member-auth";
+import { INVITE_CONTINUE_PATH } from "@/lib/hq/member-routes";
 import { inviteOutcomeCopy, type InviteOutcome } from "../copy";
 import { AcceptInvitationForm } from "./accept-form";
 
 export const metadata: Metadata = { title: "Captain invitation" };
 export const dynamic = "force-dynamic";
-
-const HERE = "/hq/invite/continue";
 
 /** The shared shape for every dead-end outcome this page can show before anyone has clicked Accept: not-found, revoked, expired or full. */
 function DeadEnd({ outcome }: { outcome: InviteOutcome }) {
@@ -66,7 +65,7 @@ export default async function InviteContinuePage() {
         <AcceptInvitationForm />
       ) : (
         <div className={styles.actions}>
-          <Link className={styles.button} href={`/hq/signin?next=${encodeURIComponent(HERE)}`}>
+          <Link className={styles.button} href={`/hq/signin?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`}>
             Sign in to continue
           </Link>
         </div>

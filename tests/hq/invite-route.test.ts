@@ -32,9 +32,18 @@ async function createInvitation(overrides: Partial<{ maxRedemptions: number; exp
   return createCaptainInvitation(db, { actorOperatorId: OPERATOR, maxRedemptions: 1, expiresInDays: 7, ...overrides });
 }
 
-function exchange(token: string) {
-  const request = new NextRequest(`${ORIGIN}/hq/invite/${encodeURIComponent(token)}`);
+function exchange(token: string, incomingCookie?: string) {
+  const request = new NextRequest(`${ORIGIN}/hq/invite/${encodeURIComponent(token)}`, {
+    headers: incomingCookie ? { cookie: `${INVITE_CONTINUATION_COOKIE}=${incomingCookie}` } : undefined,
+  });
   return GET(request, { params: Promise.resolve({ token }) });
+}
+
+/** True once the response's cookie jar holds a directive that clears the continuation cookie (an empty value, expired in the past). */
+function clearsContinuationCookie(response: Awaited<ReturnType<typeof exchange>>): boolean {
+  const cookie = response.cookies.get(INVITE_CONTINUATION_COOKIE);
+  if (!cookie || cookie.value !== "" || cookie.expires === undefined) return false;
+  return new Date(cookie.expires).getTime() <= Date.now();
 }
 
 beforeAll(async () => {
@@ -90,10 +99,52 @@ describe("GET /hq/invite/[token]", () => {
     expect(await rows("SELECT count(*)::int AS n FROM hq_captain_invitations")).toEqual([{ n: 1 }]);
   });
 
-  it("redirects an unknown token the same way, but sets no continuation cookie", async () => {
+  it("redirects an unknown token the same way, and clears (rather than merely omits) the continuation cookie", async () => {
     const response = await exchange("no-such-token");
     expect(response.headers.get("location")).toBe(`${ORIGIN}/hq/invite/continue`);
-    expect(response.cookies.get(INVITE_CONTINUATION_COOKIE)).toBeUndefined();
+    expect(clearsContinuationCookie(response)).toBe(true);
+  });
+
+  // A regression test for the review's Important finding: a failed exchange
+  // must not leave a *previous* continuation cookie in place, or a visitor
+  // who already exchanged one invitation and then follows a dead link (an
+  // unknown token, or a rate-limited retry) would have the continuation page
+  // silently act on the old invitation instead of landing on the invalid-link
+  // outcome the new, dead token deserves. This proves the response actually
+  // clears the cookie (a real browser then sends none on the next request);
+  // tests/hq/invite-page.test.ts's "shows a generic invalid-link message
+  // when there is no continuation cookie at all" is the other half — what
+  // the continuation page renders once that clear has taken effect.
+  describe("a failed exchange clears a previously-set continuation cookie", () => {
+    it("for an unknown token", async () => {
+      const { token: validToken, invitation } = await createInvitation();
+      const first = await exchange(validToken);
+      const staleCookie = first.cookies.get(INVITE_CONTINUATION_COOKIE)!.value;
+      expect(await readInviteContinuation(db, staleCookie)).toMatchObject({ invitationId: invitation.id });
+
+      const second = await exchange("no-such-token", staleCookie);
+      expect(clearsContinuationCookie(second)).toBe(true);
+      // The stale continuation itself is untouched server-side — a genuinely
+      // held continuation is never invalidated by an unrelated bad token —
+      // but the browser is told to stop sending its cookie.
+      expect(await readInviteContinuation(db, staleCookie)).toMatchObject({ invitationId: invitation.id });
+    });
+
+    it("for a rate-limited address", async () => {
+      const { token: validToken, invitation } = await createInvitation();
+      const first = await exchange(validToken);
+      const staleCookie = first.cookies.get(INVITE_CONTINUATION_COOKIE)!.value;
+
+      const { token: otherToken } = await createInvitation();
+      let limited: Awaited<ReturnType<typeof exchange>> | null = null;
+      for (let i = 0; i < 35 && !limited; i++) {
+        const response = await exchange(otherToken, staleCookie);
+        if (!response.cookies.get(INVITE_CONTINUATION_COOKIE) || response.cookies.get(INVITE_CONTINUATION_COOKIE)!.value === "") limited = response;
+      }
+      expect(limited).not.toBeNull();
+      expect(clearsContinuationCookie(limited!)).toBe(true);
+      expect(await readInviteContinuation(db, staleCookie)).toMatchObject({ invitationId: invitation.id });
+    });
   });
 
   it("still redirects to the continuation page for a revoked token, with a continuation that says so", async () => {

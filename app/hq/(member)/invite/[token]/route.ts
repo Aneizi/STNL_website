@@ -4,6 +4,7 @@ import { builderDatabase } from "@/lib/hq/builder-db";
 import { inviteContinuationCookieOptions, INVITE_CONTINUATION_COOKIE } from "@/lib/hq/invite-continuation";
 import { exchangeCaptainInvitationToken } from "@/lib/hq/invite-exchange";
 import { currentMember } from "@/lib/hq/member-auth";
+import { INVITE_CONTINUE_PATH } from "@/lib/hq/member-routes";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +28,18 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // shares one rate-limit bucket.
   const ip = headerList.get("x-real-ip") ?? headerList.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
   const { continuationId } = await exchangeCaptainInvitationToken(builderDatabase(), { token, ip });
-  const response = NextResponse.redirect(new URL("/hq/invite/continue", request.url));
-  if (continuationId) response.cookies.set(INVITE_CONTINUATION_COOKIE, continuationId, inviteContinuationCookieOptions());
+  const response = NextResponse.redirect(new URL(INVITE_CONTINUE_PATH, request.nextUrl));
+  if (continuationId) {
+    response.cookies.set(INVITE_CONTINUATION_COOKIE, continuationId, inviteContinuationCookieOptions());
+  } else {
+    // A failed exchange (unknown token, or a rate-limited address) must not
+    // leave a *previous* continuation in place: without this, a stale
+    // continuation cookie from an earlier, successful visit would survive
+    // and the continuation page would silently act on that old invitation
+    // instead of landing on the invalid-link outcome this token deserves.
+    // Same path as the set above, or the browser treats it as a different
+    // cookie and the original is never actually cleared.
+    response.cookies.delete({ name: INVITE_CONTINUATION_COOKIE, path: inviteContinuationCookieOptions().path });
+  }
   return response;
 }

@@ -6,6 +6,7 @@ import { requireMemberActor } from "../actor";
 import { builderDatabase } from "../builder-db";
 import { acceptCaptainInvitation, type AcceptCaptainInvitationResult } from "../captains";
 import { INVITE_CONTINUATION_COOKIE, readInviteContinuation } from "../invite-continuation";
+import { INVITE_CONTINUE_PATH } from "../member-routes";
 
 // The member half of the Captain invitation flow; lib/hq/actions/captains.ts
 // is the operator half (creating and revoking links) and stays
@@ -38,7 +39,7 @@ export async function acceptCaptainInvitationFromContinuation(
   _previous: AcceptCaptainInvitationActionResult | null,
   _formData: FormData,
 ): Promise<AcceptCaptainInvitationActionResult> {
-  const actor = await requireMemberActor("/hq/invite/continue");
+  const actor = await requireMemberActor(INVITE_CONTINUE_PATH);
   const continuationId = (await cookies()).get(INVITE_CONTINUATION_COOKIE)?.value;
   const continuation = continuationId ? await readInviteContinuation(builderDatabase(), continuationId) : null;
   if (!continuation) return { outcome: "invalid-continuation" };

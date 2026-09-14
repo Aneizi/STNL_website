@@ -48,6 +48,16 @@ export function inviteLink(token: string): string {
   return `${INVITE_PATH_PREFIX}${token}`;
 }
 
+/**
+ * The invitation continuation page (task T4.3's step 2), the one other path
+ * under the invitation subtree: the exchange route, the accept action and
+ * the page itself all import this rather than repeating the literal, so
+ * none of the three can drift from the others or from MEMBER_PUBLIC_PATHS.
+ * "continue" is itself just an ID_SEGMENT match, so no change to that list
+ * is needed for it to be accepted here or by safeMemberNext().
+ */
+export const INVITE_CONTINUE_PATH = `${INVITE_PATH_PREFIX}continue`;
+
 /** The one id segment a subtree entry accepts: a UUID, an invite token, nothing with a slash, a dot or an escape in it. */
 const ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
 

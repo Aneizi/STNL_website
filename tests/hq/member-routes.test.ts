@@ -68,7 +68,7 @@ describe("the proxy and the destination allowlist agree", () => {
 });
 
 describe("safeMemberNext", () => {
-  it.each(["/hq/captain", "/hq/account", "/hq/invite/abc", "/hq/dashboard", "/hq/welcome?hackathon=6", "/hq/join?code=abc123", "/hq/initialize", "/hq/team/1234-abcd", "/hq/account?connected=telegram", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain?from=nav"])("preserves %s", (value) => {
+  it.each(["/hq/captain", "/hq/account", "/hq/invite/abc", "/hq/invite/continue", "/hq/dashboard", "/hq/welcome?hackathon=6", "/hq/join?code=abc123", "/hq/initialize", "/hq/team/1234-abcd", "/hq/account?connected=telegram", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain?from=nav"])("preserves %s", (value) => {
     expect(safeMemberNext(value)).toBe(value);
   });
 
