@@ -2449,8 +2449,11 @@ deleted when the plan finishes):
 
 - **`lib/hq/member-auth-client.ts` is built without `customSessionClient`**,
   so the inferred client session type still says `user.email: string` while
-  `lib/hq/member-auth.ts`'s `customSession` transform returns `null` for
-  every reader (including this one, once a client actually calls it).
+  the real type is `string | null`: `lib/hq/member-auth.ts`'s `customSession`
+  transform returns `email: null` only for a Telegram-only account carrying
+  the placeholder address, and the account's real address unchanged for a
+  verified email account — not `null` for every reader. A client component
+  cannot tell the two apart from the inferred type alone once one exists.
   Nothing calls `useSession()` today, so nothing is wrong yet — but this is
   exactly the future client component the transform was chosen over
   `disabledPaths` to protect (see "I2 fixed" above), and its type will lie
@@ -2458,10 +2461,13 @@ deleted when the plan finishes):
   writes the first client component that calls `useSession()` must add the
   `customSessionClient` plugin at that point, not assume the inferred type
   is already correct.
-- **`customSession` swallows a `getSession()` failure into a sign-out.** The
-  transform wraps the core `getSession()` call in `.catch(() => null)`, so
-  an adapter or database failure during a member session read now presents
-  to the member as an ordinary sign-out rather than an error. Fail-closed,
+- **`customSession` swallows a `getSession()` failure into a sign-out.**
+  Better Auth's own `custom-session` plugin (not `lib/hq/member-auth.ts`'s
+  callback) wraps the core `getSession()` call in a `.catch` that resolves
+  to `null` rather than rejecting — using the plugin adopts that behaviour,
+  it is not written in this codebase — so an adapter or database failure
+  during a member session read now presents to the member as an ordinary
+  sign-out rather than an error. Fail-closed,
   which is the right default, but undocumented until now. **Phase 7
   hand-off**: the bot adapter and anything else built on top of a member
   session read should expect this and not treat "no session" as proof the
