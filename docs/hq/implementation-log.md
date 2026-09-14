@@ -3659,10 +3659,14 @@ environment variable.
 First run at commit `e363fbe` (the last commit to touch source, before this
 documentation task's own commits). Re-run and confirmed byte-for-byte
 identical at `9d7009a` (task T4.6's first documentation commit) and again at
-`fce1a9c` (the fix round below, this section's own final edit) — no source,
-schema or test file was touched by either documentation commit, so the
-numbers hold at every commit from `e363fbe` onward, including the branch's
-current head.
+`eebf1f6` (this task's fix round 1). Both re-runs matter because a
+documentation task can still break `tsc`/lint/build indirectly (a broken
+code fence, a file moved into the wrong place) even though it should not —
+this is that check having actually been done, not assumed. No source, schema
+or test file was touched by either documentation commit (`git show --stat`
+on both shows only the three `docs/hq/*.md` files), so the numbers hold at
+every commit from `e363fbe` onward, including any further documentation-only
+commit on this branch after `eebf1f6`.
 
 - `npm run lint`: 0 errors, 18 warnings, all pre-existing and all in
   `public/deck/deck-stage.js`. Unchanged from the phase 0 baseline and from
