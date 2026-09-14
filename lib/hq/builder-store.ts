@@ -150,6 +150,19 @@ export class BuilderStore {
         throw new BuilderError('Project imports are not open. Your account is ready; try again when imports open.');
       }
       const { rows: prior } = await db.query(`SELECT project_id,verification FROM hq_project_onboarding WHERE hackathon_id=$1 AND external_id=$2 FOR UPDATE`, [challenge.hackathon_id,project.externalId]);
+      // Same lock order as lib/hq/captains.ts#assignCaptain (see its header
+      // comment): this FOR UPDATE is the row that service also locks before
+      // deciding whether to assign, so by the time we read
+      // hq_captain_assignments below it is real, committed state, not a
+      // pre-race snapshot. A brand new project (no prior row) can never have
+      // an existing Captain, so the check only applies to recovering one.
+      if (prior.length) {
+        const { rows: captaining } = await db.query(
+          `SELECT 1 FROM hq_captain_assignments WHERE project_id=$1 AND captain_user_id=$2 AND unassigned_at IS NULL`,
+          [prior[0].project_id, user.id],
+        );
+        if (captaining.length) throw new BuilderError('You currently hold the Captain role for this project. Ask an admin to reassign the Captain before claiming it as a team member.');
+      }
       if (prior.length && (prior[0].verification === 'verified' || !proof)) {
         throw new BuilderError(prior[0].verification === 'verified' ? 'This team is already verified. Ask its owner for an invite.' : 'This team is awaiting review. Verify your Colosseum comment to claim it, or contact Superteam NL.');
       }
@@ -262,6 +275,20 @@ export class BuilderStore {
           AND h.archived_at IS NULL FOR UPDATE OF i,o`, [hashCode(code)]);
       if (!rows.length) throw new BuilderError('This invite has expired or has already been used.');
       const invite = rows[0];
+      // Same lock order as lib/hq/captains.ts#assignCaptain (see its header
+      // comment): this FOR UPDATE OF i,o is the same hq_project_onboarding
+      // row that service also locks before deciding whether to assign, so by
+      // the time we read hq_captain_assignments below it is real, committed
+      // state, not a pre-race snapshot. "If a Captain would become a member
+      // of their assigned project, require reassignment first" — this is
+      // that refusal. The message is shown to the member joining, who is
+      // themself the Captain here, so naming their own role is accurate and
+      // names no one else.
+      const { rows: captaining } = await db.query(
+        `SELECT 1 FROM hq_captain_assignments WHERE project_id=$1 AND captain_user_id=$2 AND unassigned_at IS NULL`,
+        [invite.project_id, user.id],
+      );
+      if (captaining.length) throw new BuilderError('You currently hold the Captain role for this project. Ask an admin to reassign the Captain before joining as a team member.');
       const { rows: claimed } = await db.query(`UPDATE hq_project_members SET builder_user_id=$1,joined_at=now()
         WHERE id=$2 AND project_id=$3 AND builder_user_id IS NULL RETURNING id`, [user.id,invite.member_id,invite.project_id]);
       if (!claimed.length) throw new BuilderError('This teammate has already joined.');

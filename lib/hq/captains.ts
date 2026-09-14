@@ -1,25 +1,28 @@
 import "server-only";
 import { createHash, randomBytes } from "node:crypto";
-import { recordAuditEvent } from "./audit";
+import { recordAuditEvent, type AuditActor } from "./audit";
+import { loadTeamMembership } from "./authz-sql";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { BuilderError } from "./builder-types";
 import { grantCapability, listActiveCapabilitiesForUsers } from "./capabilities";
 import { isVerifiedAccount } from "./identity";
 
 /**
- * The Captain invitation half of the Captain service (contracts.md's
- * "Captain service" row). T4.4 (assignment: `assignCaptain`, `unassignCaptain`)
- * and T4.5 (`leaderboard`) extend this same file; everything below is scoped
- * to invitations only and is written to leave room rather than anticipate
- * either.
+ * The Captain service (contracts.md's "Captain service" row): invitations
+ * (T4.2) above, assignment (T4.4, this section) below. T4.5 (`leaderboard`)
+ * extends this same file next.
  *
- * Two tables, both from T4.1 (scripts/hq/builder-schema.sql, read the comment
- * blocks above them before touching this file): `hq_captain_invitations` and
- * `hq_captain_invitation_redemptions`. A redemption row's `user_id` is
- * nullable at the schema level (ON DELETE SET NULL, so a deleted account's
- * seat is never replenished) but this module must never itself *insert* one
- * without a real user_id — a NULL one would consume a seat, grant nobody, and
- * (NULL never equalling NULL) be repeatable past the UNIQUE constraint.
+ * The invitation tables are both from T4.1 (scripts/hq/builder-schema.sql,
+ * read the comment blocks above them before touching this file):
+ * `hq_captain_invitations` and `hq_captain_invitation_redemptions`. A
+ * redemption row's `user_id` is nullable at the schema level (ON DELETE SET
+ * NULL, so a deleted account's seat is never replenished) but this module
+ * must never itself *insert* one without a real user_id — a NULL one would
+ * consume a seat, grant nobody, and (NULL never equalling NULL) be
+ * repeatable past the UNIQUE constraint.
+ *
+ * The assignment table, `hq_captain_assignments` (also T4.1), is documented
+ * where the assignment functions below use it.
  */
 
 /** Far beyond any realistic Captain cohort for one edition; finite so a typo (an extra zero) fails loudly instead of becoming unlimited. */
@@ -384,4 +387,426 @@ export async function listCaptainInvitations(db: BuilderQuery = builderDatabase(
     ORDER BY i.created_at DESC
   `);
   return rows.map(toListing);
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Assignment (task T4.4)
+ * ---------------------------------------------------------------------------
+ *
+ * `hq_captain_assignments` (T4.1, scripts/hq/builder-schema.sql — read the
+ * comment block above its CREATE TABLE before touching this section) holds
+ * one nullable current Captain per project plus its full history:
+ * `unassigned_at IS NULL` marks a row current, ending an assignment sets that
+ * column rather than deleting the row, `captain_user_id` is nullable with ON
+ * DELETE SET NULL so a deleted account's history survives it, and both
+ * partial indexes additionally require `captain_user_id IS NOT NULL` so an
+ * orphaned row (a deleted account's former seat) is never read back as live
+ * — `loadCurrentAssignment` in ./authz-sql already reads with that exact
+ * predicate; every write below agrees with it.
+ *
+ * LOCK ORDER, applied consistently by every function below and by the two
+ * membership-acceptance paths in ./builder-store.ts (`redeemInvite`,
+ * `importTeam`) that must not race an assignment into existing alongside a
+ * membership on the same project. A transaction that needs fewer of these
+ * may skip the later ones, but nothing below ever acquires them out of
+ * order, which is what makes the set deadlock free:
+ *
+ *   1. `hq_account_capabilities` — the candidate's active `captain` grant,
+ *      a locking read. This is what fully serializes a concurrent
+ *      `assignCaptain` against a concurrent revocation of that same
+ *      account's grant (lib/hq/actions/capabilities.ts#revokeCaptainCapability
+ *      -> ./capabilities#revokeCapability, which updates this same row):
+ *      whichever transaction reaches the row first runs to completion before
+ *      the other proceeds, so the loser always acts on the real, already
+ *      committed outcome instead of a stale "still active" snapshot.
+ *   2. `hq_projects` — a plain, unlocked read: the project must exist in the
+ *      given edition. Nothing in this transaction, or in any transaction it
+ *      might race, ever mutates a project's `hackathon_id`, so there is
+ *      nothing to serialize against here and no lock is taken.
+ *   3. `hq_project_onboarding`, locked *if* the project has a row there
+ *      (`SELECT ... FOR UPDATE` on that table alone — Postgres refuses `FOR
+ *      UPDATE` on the nullable side of an outer join, so this cannot be
+ *      folded into one statement with step 2). This is the same row
+ *      `redeemInvite` and `importTeam` already lock with their own `FOR
+ *      UPDATE` before deciding whether to admit a member or a verified
+ *      owner, and locking it here too is what closes the membership race the
+ *      plan calls out: "assignment committing while a membership acceptance
+ *      is in flight, and the reverse". Whichever transaction gets here first
+ *      fully commits or rolls back before the other proceeds past this
+ *      point, so the second transaction's own checks run over real,
+ *      already-committed state rather than a pre-race snapshot. Neither side
+ *      polls or retries; the lock itself is the wait. A project created
+ *      directly in Admin (never imported) has no onboarding row, so this
+ *      lock is a no-op for it — and correctly so, since nothing can ever
+ *      race a membership acceptance onto a project that was never opened to
+ *      one.
+ *   4. `hq_captain_assignments` — the project's current-assignment row, 0 or
+ *      1 match. `unassignCaptain` and `clearCaptainAssignments` only ever
+ *      need this table, so they skip 1 through 3 entirely; that is still
+ *      safe under the same order, because neither of them ever goes on to
+ *      need an earlier step afterward.
+ *
+ * A *never-before-assigned* project (no `hq_captain_assignments` row at all
+ * yet) has nothing at step 4 for two concurrent `assignCaptain` calls to
+ * lock against each other on — this lock order does not, by itself, force
+ * them to serialize. What still makes "one project cannot hold two current
+ * Captains" hold under that exact race is the partial unique index itself
+ * (`hq_captain_assignments_one_current_idx`): the insert below is an
+ * `ON CONFLICT ... DO NOTHING`, and the loser gets a typed `already_assigned`
+ * conflict back instead of an unhandled constraint violation. This is
+ * deliberately a database-level, not an application-level, guarantee for
+ * that one case, since nothing upstream of the index can be locked to
+ * prevent it.
+ *
+ * THE CONFLICT CHECK, `checkCaptainConflict` below, is deliberately not a
+ * display-name comparison anywhere (the plan is explicit, and Phase 1's CRM
+ * person identity exists precisely so it never has to be). Two independent
+ * sources, checked in this order:
+ *
+ *   1. Verified HQ team membership — `loadTeamMembership` (./authz-sql),
+ *      reused rather than re-implemented: the project's verified owner, or a
+ *      joined roster row.
+ *   2. Linked imported roster identity — every `hq_project_members` row of
+ *      an *imported* project (one with an `hq_project_onboarding` row; a
+ *      hand-added Admin project has no imported roster to check, so this
+ *      source is simply inapplicable to it and the check ends at source 1),
+ *      resolved either directly (`builder_user_id`, which also catches a
+ *      project's owner before its claim is verified — source 1 requires
+ *      `verification = 'verified'` and so misses that window on its own) or
+ *      through its linked CRM person (`person_id` -> `hq_crm_persons
+ *      .builder_user_id`).
+ *
+ * A roster row that source 2 cannot resolve either way — no `person_id` at
+ * all (today's common case: Phase 3 has not run, so nothing calls
+ * `ensurePersonForRosterMember` yet and every imported roster row starts with
+ * `person_id NULL`), or a `person_id` whose person has never been linked to
+ * an account — is **not** silently passed. It is collected as "needs
+ * review" and the assignment stops *unless* the caller explicitly
+ * acknowledges it (`acknowledgeUnresolved: true`, recorded in the
+ * `captain.assigned` audit event's metadata so the override itself leaves a
+ * trail). This is the "warning the operator must acknowledge" reading of the
+ * plan's "surface it for admin review rather than claiming the conflict
+ * check is complete": it blocks by default (nothing is assigned on the first
+ * call), and only proceeds on a second, explicit call that names the risk it
+ * is accepting. See the task report for why a hard, un-overridable block was
+ * rejected: today it would make Captain assignment practically unusable,
+ * since nearly every imported roster has an unclaimed member with no
+ * resolvable identity.
+ */
+
+/** One row of an "imported roster identity" conflict, or of a "needs review" list — never a display-name match, always this project's own `hq_project_members` row. */
+export type UnresolvedRosterMember = { memberId: string; name: string; username: string | null };
+
+export type CaptainConflictReason =
+  | { kind: "verified_member"; role: "owner" | "member" }
+  | { kind: "roster_member"; memberName: string; memberUsername: string | null }
+  /**
+   * Defensive only: `hq_projects` is locked (lock order step 2) before this
+   * would ever be reached, so two concurrent `assignCaptain` calls for the
+   * same never-before-assigned project should already fully serialize
+   * through that lock. This outcome exists so that if a future change ever
+   * weakens that lock, the partial unique index's own violation still fails
+   * as a typed outcome instead of an unhandled Postgres error.
+   */
+  | { kind: "already_assigned" };
+
+export type AssignCaptainResult =
+  | { outcome: "assigned"; assignmentId: string; replacedCaptainUserId: string | null }
+  /** Missing, or real but in a different edition than `hackathonId` — answered identically, so neither reveals the other. */
+  | { outcome: "not_found" }
+  | { outcome: "no_grant" }
+  | { outcome: "conflict"; conflict: CaptainConflictReason }
+  | { outcome: "needs_review"; unresolved: UnresolvedRosterMember[] };
+
+type ConflictCheck =
+  | { kind: "clear" }
+  | { kind: "conflict"; conflict: CaptainConflictReason }
+  | { kind: "needs_review"; unresolved: UnresolvedRosterMember[] };
+
+/** The conflict check described above. `onboarded` decides whether source 2 (the imported roster) applies at all. */
+async function checkCaptainConflict(tx: BuilderQuery, input: { candidateUserId: string; projectId: string; onboarded: boolean }): Promise<ConflictCheck> {
+  const membership = await loadTeamMembership(tx, { userId: input.candidateUserId, projectId: input.projectId });
+  if (membership) return { kind: "conflict", conflict: { kind: "verified_member", role: membership.role } };
+  if (!input.onboarded) return { kind: "clear" };
+
+  const { rows } = await tx.query(
+    `SELECT m.id::text AS id, m.name, m.colosseum_username, m.builder_user_id,
+            m.person_id::text AS person_id, p.builder_user_id::text AS person_account_id
+     FROM hq_project_members m LEFT JOIN hq_crm_persons p ON p.id = m.person_id
+     WHERE m.project_id = $1::uuid`,
+    [input.projectId],
+  );
+  const unresolved: UnresolvedRosterMember[] = [];
+  for (const row of rows) {
+    const username = row.colosseum_username == null ? null : String(row.colosseum_username);
+    const direct = row.builder_user_id == null ? null : String(row.builder_user_id);
+    if (direct != null) {
+      // A joined-or-owning account is fully resolved either way: the
+      // candidate's own account (a conflict, including the pre-verification
+      // owner window source 1 misses) or, definitively, someone else's.
+      if (direct === input.candidateUserId) return { kind: "conflict", conflict: { kind: "roster_member", memberName: String(row.name), memberUsername: username } };
+      continue;
+    }
+    if (row.person_id != null) {
+      const viaPerson = row.person_account_id == null ? null : String(row.person_account_id);
+      if (viaPerson != null) {
+        if (viaPerson === input.candidateUserId) return { kind: "conflict", conflict: { kind: "roster_member", memberName: String(row.name), memberUsername: username } };
+        continue; // Linked to a different account: resolved, not the candidate.
+      }
+      // A provisional person (matched by Colosseum username) with no linked
+      // account yet: cannot be cleared or condemned. Falls through to unresolved.
+    }
+    unresolved.push({ memberId: String(row.id), name: String(row.name), username });
+  }
+  return unresolved.length ? { kind: "needs_review", unresolved } : { kind: "clear" };
+}
+
+/**
+ * Assigns (or reassigns) the current Captain of a project, in one
+ * transaction under the lock order documented above. Choosing to insert the
+ * same account already current is a no-op (no history churn, no audit
+ * event): `acknowledgeUnresolved` only matters on a real change.
+ *
+ * Replacing a different current Captain ends their row (`unassigned_at`,
+ * `unassigned_by_user_id`) and audits `captain.unassigned` for them before
+ * the new `captain.assigned` — so the partial unique index is never
+ * violated and a reassignment is one atomic operation, not two. An orphaned
+ * current row (`captain_user_id IS NULL`, the account was deleted) is ended
+ * the same way but audits nothing for it: `loadCurrentAssignment` never
+ * treated it as a live assignment, so nothing is being "unassigned" from
+ * that account's perspective, but it still must not be left sitting there —
+ * schema comment on `hq_captain_assignments`.
+ */
+export async function assignCaptain(
+  db: BuilderQuery | BuilderDatabase,
+  input: { actorOperatorId: string; projectId: string; hackathonId: number; captainUserId: string; reason?: string; acknowledgeUnresolved?: boolean },
+): Promise<AssignCaptainResult> {
+  return atomically(db, async (tx) => {
+    // Lock order step 1.
+    const { rows: grants } = await tx.query(
+      `SELECT 1 FROM hq_account_capabilities WHERE user_id = $1 AND capability = 'captain' AND revoked_at IS NULL FOR UPDATE`,
+      [input.captainUserId],
+    );
+    if (!grants.length) return { outcome: "no_grant" };
+
+    // Lock order step 2: the project must exist in the given edition.
+    const { rows: projects } = await tx.query(`SELECT hackathon_id FROM hq_projects WHERE id = $1::uuid`, [input.projectId]);
+    if (!projects.length || Number(projects[0].hackathon_id) !== input.hackathonId) return { outcome: "not_found" };
+
+    // Lock order step 3: the project's onboarding row, if it has one.
+    const { rows: onboarding } = await tx.query(`SELECT 1 FROM hq_project_onboarding WHERE project_id = $1::uuid FOR UPDATE`, [input.projectId]);
+    const onboarded = onboarding.length > 0;
+
+    const conflict = await checkCaptainConflict(tx, { candidateUserId: input.captainUserId, projectId: input.projectId, onboarded });
+    if (conflict.kind === "conflict") return { outcome: "conflict", conflict: conflict.conflict };
+    if (conflict.kind === "needs_review" && !input.acknowledgeUnresolved) return { outcome: "needs_review", unresolved: conflict.unresolved };
+
+    // Lock order step 4.
+    const { rows: current } = await tx.query(
+      `SELECT id::text AS id, captain_user_id::text AS captain_user_id FROM hq_captain_assignments
+       WHERE project_id = $1::uuid AND unassigned_at IS NULL FOR UPDATE`,
+      [input.projectId],
+    );
+    const currentRow = current[0] as { id: string; captain_user_id: string | null } | undefined;
+    if (currentRow?.captain_user_id === input.captainUserId) {
+      return { outcome: "assigned", assignmentId: currentRow.id, replacedCaptainUserId: null };
+    }
+    if (currentRow) {
+      await tx.query(`UPDATE hq_captain_assignments SET unassigned_at = now(), unassigned_by_user_id = $2::uuid WHERE id = $1::uuid`, [currentRow.id, input.actorOperatorId]);
+    }
+
+    const { rows: inserted } = await tx.query(
+      `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id, reason)
+       VALUES ($1::uuid, $2, $3::uuid, $4)
+       ON CONFLICT (project_id) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL DO NOTHING
+       RETURNING id::text AS id`,
+      [input.projectId, input.captainUserId, input.actorOperatorId, input.reason ?? null],
+    );
+    if (!inserted.length) return { outcome: "conflict", conflict: { kind: "already_assigned" } };
+
+    if (currentRow?.captain_user_id) {
+      await recordAuditEvent(tx, {
+        kind: "captain.unassigned",
+        actor: { kind: "operator", id: input.actorOperatorId },
+        subjectUserId: currentRow.captain_user_id,
+        hackathonId: input.hackathonId,
+        projectId: input.projectId,
+        metadata: { assignmentId: currentRow.id, reassignedToUserId: input.captainUserId },
+      });
+    }
+    await recordAuditEvent(tx, {
+      kind: "captain.assigned",
+      actor: { kind: "operator", id: input.actorOperatorId },
+      subjectUserId: input.captainUserId,
+      hackathonId: input.hackathonId,
+      projectId: input.projectId,
+      metadata: {
+        assignmentId: inserted[0].id,
+        reason: input.reason ?? null,
+        replacedCaptainUserId: currentRow?.captain_user_id ?? null,
+        unresolvedRosterAcknowledged: conflict.kind === "needs_review" ? conflict.unresolved.length : 0,
+      },
+    });
+    return { outcome: "assigned", assignmentId: String(inserted[0].id), replacedCaptainUserId: currentRow?.captain_user_id ?? null };
+  });
+}
+
+export type UnassignCaptainResult =
+  | { outcome: "unassigned"; assignmentId: string; captainUserId: string }
+  /** Idempotent: no live current assignment to end, whether none ever existed or the project's Captain is already unassigned. */
+  | { outcome: "not_assigned" }
+  | { outcome: "not_found" };
+
+/**
+ * Ends the project's current assignment, idempotent and audited. Only ever
+ * needs lock order step 4 (see above): removing a Captain can never create
+ * the membership conflict step 2's onboarding lock exists to prevent, so
+ * there is nothing else to serialize against here.
+ */
+export async function unassignCaptain(
+  db: BuilderQuery | BuilderDatabase,
+  input: { actorOperatorId: string; projectId: string; hackathonId: number; reason?: string },
+): Promise<UnassignCaptainResult> {
+  return atomically(db, async (tx) => {
+    const { rows: projects } = await tx.query(`SELECT hackathon_id FROM hq_projects WHERE id = $1::uuid`, [input.projectId]);
+    if (!projects.length || Number(projects[0].hackathon_id) !== input.hackathonId) return { outcome: "not_found" };
+
+    const { rows } = await tx.query(
+      `UPDATE hq_captain_assignments SET unassigned_at = now(), unassigned_by_user_id = $2::uuid
+       WHERE project_id = $1::uuid AND unassigned_at IS NULL
+       RETURNING id::text AS id, captain_user_id::text AS captain_user_id`,
+      [input.projectId, input.actorOperatorId],
+    );
+    const captainUserId = rows[0]?.captain_user_id == null ? null : String(rows[0].captain_user_id);
+    if (!rows.length || !captainUserId) return { outcome: "not_assigned" };
+
+    await recordAuditEvent(tx, {
+      kind: "captain.unassigned",
+      actor: { kind: "operator", id: input.actorOperatorId },
+      subjectUserId: captainUserId,
+      hackathonId: input.hackathonId,
+      projectId: input.projectId,
+      metadata: { assignmentId: rows[0].id, reason: input.reason ?? null },
+    });
+    return { outcome: "unassigned", assignmentId: String(rows[0].id), captainUserId };
+  });
+}
+
+export type ClearedCaptainAssignment = { assignmentId: string; projectId: string; projectName: string; hackathonId: number };
+
+/**
+ * Ends every current assignment an account holds, across every edition (a
+ * Captain grant is account-global, so revoking it must clear all of them,
+ * not just the selected edition's), auditing each `captain.unassigned`
+ * individually. Called from lib/hq/actions/capabilities.ts#revokeCaptainCapability
+ * inside the *same* transaction as the grant's own revocation — pass it the
+ * transaction client so `atomically` joins that transaction instead of
+ * opening a second one, which is what makes the grant and the clear commit
+ * or roll back together.
+ *
+ * Phase 7 (not yet built; the bot does not exist and
+ * `hq_telegram_bot_consent` holds no drafts yet — the plan's "invalidate
+ * pending bot actions") must invalidate any pending bot action addressed to
+ * this `captainUserId` for one of the projects returned here, in this same
+ * transaction, so a revoked Captain's stale draft can never be delivered or
+ * actioned after this commits.
+ */
+export async function clearCaptainAssignments(
+  db: BuilderQuery | BuilderDatabase,
+  input: { actor: AuditActor; byOperatorId: string | null; captainUserId: string; reason?: string },
+): Promise<ClearedCaptainAssignment[]> {
+  return atomically(db, async (tx) => {
+    const { rows } = await tx.query(
+      `UPDATE hq_captain_assignments a SET unassigned_at = now(), unassigned_by_user_id = $2::uuid
+       FROM hq_projects p
+       WHERE a.captain_user_id = $1 AND a.unassigned_at IS NULL AND a.project_id = p.id
+       RETURNING a.id::text AS id, a.project_id::text AS project_id, p.name AS project_name, p.hackathon_id`,
+      [input.captainUserId, input.byOperatorId],
+    );
+    for (const row of rows) {
+      await recordAuditEvent(tx, {
+        kind: "captain.unassigned",
+        actor: input.actor,
+        subjectUserId: input.captainUserId,
+        hackathonId: Number(row.hackathon_id),
+        projectId: String(row.project_id),
+        metadata: { assignmentId: row.id, reason: input.reason ?? null, cause: "captain_capability_revoked" },
+      });
+    }
+    return rows.map((row) => ({ assignmentId: String(row.id), projectId: String(row.project_id), projectName: String(row.project_name), hackathonId: Number(row.hackathon_id) }));
+  });
+}
+
+export type CaptainAssignmentSummary = { projectId: string; projectName: string; hackathonId: number };
+
+/**
+ * The current assignments one account holds, across every edition — what
+ * revoking its Captain grant would clear. A pre-flight read for the Admin
+ * confirmation copy ("Confirm the affected project count to the admin"):
+ * `clearCaptainAssignments` re-derives this itself inside its own
+ * transaction rather than trusting whatever this returned a moment earlier.
+ */
+export async function countAssignmentsForCaptain(db: BuilderQuery, userId: string): Promise<CaptainAssignmentSummary[]> {
+  const { rows } = await db.query(
+    `SELECT a.project_id::text AS project_id, p.name AS project_name, p.hackathon_id
+     FROM hq_captain_assignments a JOIN hq_projects p ON p.id = a.project_id
+     WHERE a.captain_user_id = $1 AND a.unassigned_at IS NULL
+     ORDER BY p.name`,
+    [userId],
+  );
+  return rows.map((row) => ({ projectId: String(row.project_id), projectName: String(row.project_name), hackathonId: Number(row.hackathon_id) }));
+}
+
+/** The same count as `countAssignmentsForCaptain`, batched for many accounts in one indexed query — the People/Admin account list's read, mirroring `listActiveCapabilitiesForUsers`'s shape. Every requested id is present, 0 for none. */
+export async function countAssignmentsForUsers(db: BuilderQuery, userIds: readonly string[]): Promise<Map<string, number>> {
+  const ids = [...new Set(userIds)];
+  const result = new Map<string, number>(ids.map((id) => [id, 0]));
+  if (!ids.length) return result;
+  const { rows } = await db.query(
+    `SELECT captain_user_id AS user_id, count(*)::int AS n FROM hq_captain_assignments
+     WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL AND captain_user_id = ANY($1::text[])
+     GROUP BY captain_user_id`,
+    [ids],
+  );
+  for (const row of rows) result.set(String(row.user_id), Number(row.n));
+  return result;
+}
+
+export type CurrentCaptainAssignment = {
+  projectId: string; projectName: string; hackathonId: number; captainUserId: string; captainName: string; assignedAt: string;
+};
+
+/**
+ * The operator drilldown, always scoped to one edition (a Captain's projects
+ * span editions, but this reads only the one the admin is looking at — T4.5
+ * uses this for the leaderboard drilldown, itself edition-scoped): every
+ * project's current Captain in the edition, or — with `captainUserId` — just
+ * that Captain's current projects there.
+ */
+export async function listAssignments(db: BuilderQuery, input: { hackathonId: number; captainUserId?: string }): Promise<CurrentCaptainAssignment[]> {
+  const values: unknown[] = [input.hackathonId];
+  let filter = "";
+  if (input.captainUserId) {
+    values.push(input.captainUserId);
+    filter = ` AND a.captain_user_id = $${values.length}`;
+  }
+  const { rows } = await db.query(
+    `SELECT a.project_id::text AS project_id, p.name AS project_name, p.hackathon_id,
+            a.captain_user_id AS captain_user_id, b.name AS captain_name, a.assigned_at
+     FROM hq_captain_assignments a
+     JOIN hq_projects p ON p.id = a.project_id
+     JOIN hq_builder_profiles b ON b.id = a.captain_user_id
+     WHERE p.hackathon_id = $1 AND a.unassigned_at IS NULL AND a.captain_user_id IS NOT NULL${filter}
+     ORDER BY p.name`,
+    values,
+  );
+  return rows.map((row) => ({
+    projectId: String(row.project_id),
+    projectName: String(row.project_name),
+    hackathonId: Number(row.hackathon_id),
+    captainUserId: String(row.captain_user_id),
+    captainName: String(row.captain_name),
+    assignedAt: toIso(row.assigned_at),
+  }));
 }

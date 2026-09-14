@@ -16,29 +16,107 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  acceptCaptainInvitation, createCaptainInvitation, listCaptainInvitations,
-  readCaptainInvitationByToken, revokeCaptainInvitation,
+  acceptCaptainInvitation, assignCaptain, clearCaptainAssignments, countAssignmentsForCaptain, countAssignmentsForUsers,
+  createCaptainInvitation, listAssignments, listCaptainInvitations, readCaptainInvitationByToken, revokeCaptainInvitation,
+  unassignCaptain,
 } from "@/lib/hq/captains";
+import { loadTeamMembership } from "@/lib/hq/authz-sql";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
+import { grantCapability, revokeCapability } from "@/lib/hq/capabilities";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const OPERATOR = "00000000-0000-4000-8000-000000000001";
 const SECOND_OPERATOR = "00000000-0000-4000-8000-000000000002";
+const EDITION_A = 41;
+const EDITION_B = 42;
 let pg: PGlite;
 let db: BuilderDatabase;
 let telegramCounter = 1_000_000;
+let projectCounter = 0;
 
 async function rows(text: string, values: unknown[] = []) { return (await pg.query(text, values)).rows as Record<string, unknown>[]; }
 
-/** A verified-by-email, verified-by-Telegram, or deliberately unverified HQ account, plus its hq_builder_profiles row (every service call needs one). */
+/**
+ * A verified-by-email, verified-by-Telegram, or deliberately unverified HQ
+ * account, plus its hq_builder_profiles row (every service call needs one).
+ * `ON CONFLICT DO NOTHING` so a test that both names an account as an
+ * assignment's roster owner (seedImportedProject) and separately grants it
+ * Captain (seedCaptain) can seed it either way, or both, without a duplicate
+ * key error.
+ */
 async function seedAccount(id: string, verified: "email" | "telegram" | "none" = "email") {
   const email = verified === "email" ? `${id}@example.test` : `${id}@telegram.placeholder.invalid`;
-  await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES($1,$2,$3,$4)`, [id, id, email, verified === "email"]);
-  await rows(`INSERT INTO hq_builder_profiles(id,email,name) VALUES($1,$2,$3)`, [id, verified === "email" ? email : null, id]);
+  await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES($1,$2,$3,$4) ON CONFLICT (id) DO NOTHING`, [id, id, email, verified === "email"]);
+  await rows(`INSERT INTO hq_builder_profiles(id,email,name) VALUES($1,$2,$3) ON CONFLICT (id) DO NOTHING`, [id, verified === "email" ? email : null, id]);
   if (verified === "telegram") {
     telegramCounter += 1;
     await rows(`INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES($1,$2,$3,$4)`, [id, `subject-${id}`, telegramCounter, id]);
   }
+}
+
+/** An account with an active `captain` grant, seeded plus granted in one call. */
+async function seedCaptain(id: string) {
+  await seedAccount(id);
+  await grantCapability(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: id, capability: "captain", reason: "test" });
+}
+
+/** A bare hq_projects row in the given edition — no roster, no onboarding: what an Admin-created project (never imported) looks like. */
+async function seedProject(id: string, hackathonId: number = EDITION_A, name = "Project") {
+  await rows(
+    `INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+     SELECT $1,$2,$3,s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f LIMIT 1`,
+    [id, hackathonId, name],
+  );
+}
+
+/**
+ * A project imported from Colosseum: the onboarding row plus a roster whose
+ * owner is already a linked, verified account. `verification` defaults to
+ * 'verified' so `loadTeamMembership` sees the owner; pass 'pending' to test
+ * the pre-verification window loadTeamMembership misses on its own.
+ */
+async function seedImportedProject(input: { id: string; hackathonId?: number; ownerUserId: string; verification?: "pending" | "verified" | "rejected" }) {
+  const hackathonId = input.hackathonId ?? EDITION_A;
+  await seedAccount(input.ownerUserId);
+  await seedProject(input.id, hackathonId, `Imported ${input.ownerUserId}`);
+  projectCounter += 1;
+  await rows(
+    `INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,project_url,slug,country,raw,owner_user_id,verification,lead_username)
+     VALUES($1,$2,$3,$4,$5,'Netherlands','{}',$6,$7,$6)`,
+    [input.id, hackathonId, 90_000 + projectCounter, `https://colosseum.com/arena/projects/explore/${input.ownerUserId}`, `slug-${projectCounter}`, input.ownerUserId, input.verification ?? "verified"],
+  );
+  await rows(
+    `INSERT INTO hq_project_members(project_id,name,colosseum_username,builder_user_id,joined_at) VALUES($1,$2,$2,$3,now())`,
+    [input.id, input.ownerUserId, input.ownerUserId],
+  );
+}
+
+/** A joined-and-verified (not owner) roster member on an already-imported project. */
+async function joinRoster(projectId: string, memberUserId: string) {
+  await rows(
+    `INSERT INTO hq_project_members(project_id,name,colosseum_username,builder_user_id,joined_at) VALUES($1,$2,$2,$3,now())`,
+    [projectId, memberUserId, memberUserId],
+  );
+}
+
+/** An unclaimed roster row with no person at all — today's common case (Phase 3 has not run). */
+async function unclaimedRosterRow(projectId: string, name: string, username: string) {
+  await rows(`INSERT INTO hq_project_members(project_id,name,colosseum_username) VALUES($1,$2,$3)`, [projectId, name, username]);
+}
+
+/** An unclaimed roster row whose CRM person is linked to `candidateUserId` — the "linked imported roster identity" conflict source, independent of verified membership. */
+async function rosterLinkedToAccount(projectId: string, name: string, username: string, candidateUserId: string) {
+  const [person] = await rows(
+    `INSERT INTO hq_crm_persons(display_name,normalized_colosseum_username,builder_user_id) VALUES($1,$2,$3) RETURNING id::text AS id`,
+    [name, username, candidateUserId],
+  );
+  await rows(`INSERT INTO hq_project_members(project_id,name,colosseum_username,person_id) VALUES($1,$2,$3,$4::uuid)`, [projectId, name, username, person.id]);
+}
+
+/** An unclaimed roster row with a provisional person (matched by username) that has never been linked to any account. */
+async function rosterWithProvisionalPerson(projectId: string, name: string, username: string) {
+  const [person] = await rows(`INSERT INTO hq_crm_persons(display_name,normalized_colosseum_username) VALUES($1,$2) RETURNING id::text AS id`, [name, username]);
+  await rows(`INSERT INTO hq_project_members(project_id,name,colosseum_username,person_id) VALUES($1,$2,$3,$4::uuid)`, [projectId, name, username, person.id]);
 }
 
 async function createInvitation(overrides: Partial<{ actorOperatorId: string; label: string | null; maxRedemptions: number; expiresInDays: number }> = {}) {
@@ -48,6 +126,9 @@ async function createInvitation(overrides: Partial<{ actorOperatorId: string; la
 const grants = () => rows("SELECT user_id,capability,revoked_at IS NULL AS active FROM hq_account_capabilities ORDER BY granted_at,id");
 const redemptions = () => rows("SELECT invitation_id::text AS invitation_id,user_id FROM hq_captain_invitation_redemptions ORDER BY redeemed_at,id");
 const events = () => rows("SELECT kind,actor_kind,actor_id,subject_user_id,metadata FROM hq_audit_events ORDER BY id");
+/** Just the assignment events, ignoring the capability.granted events seedCaptain's own grantCapability calls also leave behind. */
+const assignmentEvents = () => rows("SELECT kind,actor_kind,actor_id,subject_user_id,metadata FROM hq_audit_events WHERE kind IN ('captain.assigned','captain.unassigned') ORDER BY id");
+const currentAssignments = () => rows("SELECT project_id::text AS project_id, captain_user_id FROM hq_captain_assignments WHERE unassigned_at IS NULL ORDER BY project_id");
 
 beforeAll(async () => {
   pg = await createMigratedDatabase();
@@ -57,9 +138,18 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await pg.exec(
-    "TRUNCATE hq_users, hq_builder_profiles, hq_audit_events, hq_auth_user, hq_auth_telegram_identity, hq_account_capabilities, hq_captain_invitations, hq_captain_invitation_redemptions RESTART IDENTITY CASCADE",
+    `TRUNCATE hq_users, hq_builder_profiles, hq_audit_events, hq_auth_user, hq_auth_telegram_identity, hq_account_capabilities,
+       hq_captain_invitations, hq_captain_invitation_redemptions, hq_hackathons, hq_project_statuses, hq_project_forecasts,
+       hq_crm_persons
+     RESTART IDENTITY CASCADE`,
   );
   await rows("INSERT INTO hq_users(id,username,display_name,password_hash) VALUES($1,'operator','Operator','unused'),($2,'second','Second','unused')", [OPERATOR, SECOND_OPERATOR]);
+  await rows(
+    "INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES($1,'edition-a','Edition A','2026-09-14','2026-10-12'),($2,'edition-b','Edition B','2027-01-01','2027-02-01')",
+    [EDITION_A, EDITION_B],
+  );
+  await rows("INSERT INTO hq_project_statuses(slug,label,color,counts_as_active,sort) VALUES('onboarding','Onboarding','accent',true,100)");
+  await rows("INSERT INTO hq_project_forecasts(slug,label,color,sort) VALUES('unassessed','Not assessed','muted',100)");
 });
 
 afterAll(async () => { await pg.close(); });
@@ -323,5 +413,375 @@ describe("listCaptainInvitations", () => {
     const listed = (await listCaptainInvitations(db)).find((i) => i.id === invitation.id)!;
     expect(listed).toMatchObject({ usedCount: 1, state: "full" });
     expect(listed.redeemers).toEqual([{ userId: null, name: null, redeemedAt: expect.any(String) }]);
+  });
+
+  it("has separate, non-overlapping effects from Captain revocation: stops future redemption only, touches neither an existing grant nor an existing assignment", async () => {
+    await seedAccount("cap-sep");
+    const { invitation } = await createInvitation();
+    expect(await acceptCaptainInvitation(db, { invitationId: invitation.id, userId: "cap-sep" })).toEqual({ outcome: "granted" });
+    const project = "00000000-0000-4000-8000-0000000000c1";
+    await seedProject(project);
+    expect((await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-sep" })).outcome).toBe("assigned");
+
+    await revokeCaptainInvitation(db, { actorOperatorId: OPERATOR, invitationId: invitation.id });
+    expect(await grants()).toEqual([{ user_id: "cap-sep", capability: "captain", active: true }]);
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-sep" }]);
+  });
+
+  it("the reverse: Captain revocation (and its cascade) clears the assignment and touches no invitation", async () => {
+    await seedAccount("cap-sep2");
+    const { invitation } = await createInvitation();
+    await acceptCaptainInvitation(db, { invitationId: invitation.id, userId: "cap-sep2" });
+    const project = "00000000-0000-4000-8000-0000000000c2";
+    await seedProject(project);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-sep2" });
+    const before = (await listCaptainInvitations(db)).find((i) => i.id === invitation.id)!;
+
+    await revokeCapability(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "cap-sep2", capability: "captain", reason: "done" });
+    await clearCaptainAssignments(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, captainUserId: "cap-sep2", reason: "done" });
+
+    expect(await grants()).toEqual([{ user_id: "cap-sep2", capability: "captain", active: false }]);
+    expect(await currentAssignments()).toEqual([]);
+    const after = (await listCaptainInvitations(db)).find((i) => i.id === invitation.id)!;
+    expect(after).toEqual(before);
+  });
+});
+
+describe("assignCaptain", () => {
+  it("refuses an account without an active captain grant, writing nothing", async () => {
+    await seedAccount("plain-1");
+    const project = "00000000-0000-4000-8000-000000000101";
+    await seedProject(project);
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "plain-1" })).toEqual({ outcome: "no_grant" });
+    expect(await currentAssignments()).toEqual([]);
+    expect(await events()).toEqual([]);
+  });
+
+  it("treats a project from another edition exactly like a missing one", async () => {
+    await seedCaptain("cap-edition");
+    const project = "00000000-0000-4000-8000-000000000102";
+    await seedProject(project, EDITION_A);
+    const wrongEdition = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_B, captainUserId: "cap-edition" });
+    const missing = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: "00000000-0000-4000-8000-0000000000ff", hackathonId: EDITION_B, captainUserId: "cap-edition" });
+    expect(wrongEdition).toEqual({ outcome: "not_found" });
+    expect(wrongEdition).toEqual(missing);
+    expect(await currentAssignments()).toEqual([]);
+  });
+
+  it("assigns a first Captain, recorded in the same transaction as its audit event", async () => {
+    await seedCaptain("cap-first");
+    const project = "00000000-0000-4000-8000-000000000103";
+    await seedProject(project);
+    const result = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-first", reason: "First assignment" });
+    expect(result).toMatchObject({ outcome: "assigned", replacedCaptainUserId: null });
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-first" }]);
+    expect(await assignmentEvents()).toEqual([
+      { kind: "captain.assigned", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "cap-first",
+        metadata: { assignmentId: expect.any(String), reason: "First assignment", replacedCaptainUserId: null, unresolvedRosterAcknowledged: 0 } },
+    ]);
+  });
+
+  it("reassignment ends the old assignment, starts the new one, and leaves exactly one current row plus history", async () => {
+    await seedCaptain("cap-1a");
+    await seedCaptain("cap-2a");
+    const project = "00000000-0000-4000-8000-000000000104";
+    await seedProject(project);
+    const first = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-1a" });
+    if (first.outcome !== "assigned") throw new Error("setup failed");
+    const second = await assignCaptain(db, { actorOperatorId: SECOND_OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-2a" });
+    expect(second).toMatchObject({ outcome: "assigned", replacedCaptainUserId: "cap-1a" });
+    if (second.outcome !== "assigned") throw new Error("setup failed");
+
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-2a" }]);
+    const history = await rows("SELECT captain_user_id, unassigned_at IS NOT NULL AS ended FROM hq_captain_assignments WHERE project_id = $1 ORDER BY assigned_at", [project]);
+    expect(history).toEqual([{ captain_user_id: "cap-1a", ended: true }, { captain_user_id: "cap-2a", ended: false }]);
+    expect((await assignmentEvents()).map((e) => [e.kind, e.subject_user_id])).toEqual([
+      ["captain.assigned", "cap-1a"],
+      ["captain.unassigned", "cap-1a"],
+      ["captain.assigned", "cap-2a"],
+    ]);
+
+    // Reassigning to the same account already current is a no-op: no new
+    // history row, no new audit event, the same assignment id comes back.
+    const repeat = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-2a" });
+    expect(repeat).toEqual({ outcome: "assigned", assignmentId: second.assignmentId, replacedCaptainUserId: null });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_captain_assignments WHERE project_id = $1", [project])).toEqual([{ n: 2 }]);
+    expect(await assignmentEvents()).toHaveLength(3);
+  });
+
+  it("a verified team member cannot be assigned to their own team — the owner case", async () => {
+    await seedCaptain("owner-conflict");
+    const project = "00000000-0000-4000-8000-000000000105";
+    await seedImportedProject({ id: project, ownerUserId: "owner-conflict" });
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "owner-conflict" }))
+      .toEqual({ outcome: "conflict", conflict: { kind: "verified_member", role: "owner" } });
+    expect(await currentAssignments()).toEqual([]);
+  });
+
+  it("a verified team member cannot be assigned to their own team — the joined-member case", async () => {
+    await seedCaptain("member-conflict");
+    const project = "00000000-0000-4000-8000-000000000106";
+    await seedImportedProject({ id: project, ownerUserId: "owner-other-1" });
+    await joinRoster(project, "member-conflict");
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "member-conflict" }))
+      .toEqual({ outcome: "conflict", conflict: { kind: "verified_member", role: "member" } });
+    expect(await currentAssignments()).toEqual([]);
+  });
+
+  it("a roster identity linked to the candidate's account blocks assignment even without a verified HQ membership", async () => {
+    await seedCaptain("linked-conflict");
+    const project = "00000000-0000-4000-8000-000000000107";
+    await seedImportedProject({ id: project, ownerUserId: "owner-other-2" });
+    await rosterLinkedToAccount(project, "Roster Twin", "roster_twin", "linked-conflict");
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "linked-conflict" }))
+      .toEqual({ outcome: "conflict", conflict: { kind: "roster_member", memberName: "Roster Twin", memberUsername: "roster_twin" } });
+    expect(await currentAssignments()).toEqual([]);
+  });
+
+  it("a project's own owner is a conflict even before verification — the window loadTeamMembership alone misses", async () => {
+    await seedCaptain("pending-owner");
+    const project = "00000000-0000-4000-8000-000000000108";
+    await seedImportedProject({ id: project, ownerUserId: "pending-owner", verification: "pending" });
+    // loadTeamMembership requires verification='verified' and would see nothing here on its own.
+    expect(await loadTeamMembership(db, { userId: "pending-owner", projectId: project })).toBeNull();
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "pending-owner" }))
+      .toEqual({ outcome: "conflict", conflict: { kind: "roster_member", memberName: "pending-owner", memberUsername: "pending-owner" } });
+  });
+
+  it("an unresolved roster identity produces the needs-review outcome rather than a silent pass, and only proceeds once explicitly acknowledged", async () => {
+    await seedCaptain("cap-review");
+    const project = "00000000-0000-4000-8000-000000000109";
+    await seedImportedProject({ id: project, ownerUserId: "owner-other-3" });
+    await unclaimedRosterRow(project, "Unclaimed One", "unclaimed_one");
+    await rosterWithProvisionalPerson(project, "Provisional Two", "provisional_two");
+
+    const first = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-review" });
+    expect(first.outcome).toBe("needs_review");
+    if (first.outcome !== "needs_review") throw new Error("expected needs_review");
+    expect(first.unresolved.map((m) => m.username).sort()).toEqual(["provisional_two", "unclaimed_one"]);
+    // Nothing was written on the silent, unacknowledged pass.
+    expect(await currentAssignments()).toEqual([]);
+    expect(await assignmentEvents()).toEqual([]);
+
+    const second = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-review", acknowledgeUnresolved: true });
+    expect(second.outcome).toBe("assigned");
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-review" }]);
+    expect((await assignmentEvents())[0]).toMatchObject({ kind: "captain.assigned", metadata: expect.objectContaining({ unresolvedRosterAcknowledged: 2 }) });
+  });
+
+  it("never compares display names: an unclaimed roster row whose name matches the candidate is still only 'needs review', never a silent conflict or a silent pass", async () => {
+    await seedCaptain("Same Display Name");
+    const project = "00000000-0000-4000-8000-000000001010";
+    await seedImportedProject({ id: project, ownerUserId: "owner-other-4" });
+    // The roster row's *name* matches the candidate's display name exactly,
+    // but carries no person_id at all: a name match must never stand in for
+    // an identity match, in either direction.
+    await unclaimedRosterRow(project, "Same Display Name", "unrelated_handle");
+    const result = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "Same Display Name" });
+    expect(result.outcome).toBe("needs_review");
+  });
+
+  it("a project with no imported roster (created directly in Admin) has nothing for source 2 to check, and a bare project assigns cleanly", async () => {
+    await seedCaptain("cap-bare");
+    const project = "00000000-0000-4000-8000-000000001011";
+    await seedProject(project);
+    expect((await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-bare" })).outcome).toBe("assigned");
+  });
+
+  it("one project cannot hold two current Captains, including under two concurrent assignCaptain calls", async () => {
+    await seedCaptain("cap-race-x");
+    await seedCaptain("cap-race-y");
+    const project = "00000000-0000-4000-8000-000000001012";
+    await seedProject(project);
+    // pgliteBuilderDatabase (tests/hq/helpers/db.ts) funnels every
+    // transaction through one promise queue on PGlite's single connection,
+    // so these two Promise.all calls run as two strictly sequential
+    // transactions in call order, never truly interleaved. This proves the
+    // partial unique index is never violated and exactly one current row
+    // survives however these are interleaved in real Postgres — it does NOT
+    // prove the FOR UPDATE locks are what keeps two truly concurrent callers
+    // from racing the index directly; that is guarded separately below, by
+    // the source-level test, since this harness cannot exercise real
+    // concurrency to prove it.
+    const results = await Promise.all([
+      assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-race-x" }),
+      assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-race-y" }),
+    ]);
+    expect(results.map((r) => r.outcome)).toEqual(["assigned", "assigned"]);
+    const current = await currentAssignments();
+    expect(current).toHaveLength(1);
+    expect(["cap-race-x", "cap-race-y"]).toContain(current[0].captain_user_id);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_captain_assignments WHERE project_id = $1", [project])).toEqual([{ n: 2 }]);
+  });
+
+  it("locks the candidate's active grant, the project's onboarding row (if any) and the current assignment row for update — a regression guard, since PGlite's serialized test pool cannot itself prove concurrency safety", () => {
+    const source = readFileSync(join(process.cwd(), "lib/hq/captains.ts"), "utf8");
+    expect(source).toMatch(/FROM hq_account_capabilities WHERE user_id = \$1 AND capability = 'captain' AND revoked_at IS NULL FOR UPDATE/);
+    expect(source).toMatch(/FROM hq_project_onboarding WHERE project_id = \$1::uuid FOR UPDATE/);
+    expect(source).toMatch(/WHERE project_id = \$1::uuid AND unassigned_at IS NULL FOR UPDATE/);
+    // The database-level backstop for the one case the lock order above
+    // cannot itself serialize (see the header comment): a never-before-
+    // assigned project has no hq_captain_assignments row yet for two
+    // concurrent callers to lock against each other on.
+    expect(source).toMatch(/ON CONFLICT \(project_id\) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL DO NOTHING/);
+  });
+});
+
+describe("the membership-acceptance lock order (lib/hq/builder-store.ts)", () => {
+  it("redeemInvite and importTeam lock the same hq_project_onboarding row assignCaptain locks, and check hq_captain_assignments before admitting a member or a verified owner — a regression guard for the shared lock order", () => {
+    const source = readFileSync(join(process.cwd(), "lib/hq/builder-store.ts"), "utf8");
+    const redeemInvite = source.slice(source.indexOf("async redeemInvite"), source.indexOf("async dashboard"));
+    expect(redeemInvite).toMatch(/FOR UPDATE OF i,o/);
+    expect(redeemInvite).toMatch(/FROM hq_captain_assignments WHERE project_id=\$1 AND captain_user_id=\$2 AND unassigned_at IS NULL/);
+    expect(redeemInvite.indexOf("FOR UPDATE OF i,o")).toBeLessThan(redeemInvite.indexOf("FROM hq_captain_assignments"));
+
+    const importTeam = source.slice(source.indexOf("async importTeam"), source.indexOf("async requestReview"));
+    expect(importTeam).toMatch(/FROM hq_project_onboarding WHERE hackathon_id=\$1 AND external_id=\$2 FOR UPDATE/);
+    expect(importTeam).toMatch(/FROM hq_captain_assignments WHERE project_id=\$1 AND captain_user_id=\$2 AND unassigned_at IS NULL/);
+    expect(importTeam.indexOf("FOR UPDATE`")).toBeLessThan(importTeam.indexOf("FROM hq_captain_assignments"));
+  });
+});
+
+describe("unassignCaptain", () => {
+  it("ends the current assignment, is idempotent, and audits the removal", async () => {
+    await seedCaptain("cap-unassign");
+    const project = "00000000-0000-4000-8000-000000001013";
+    await seedProject(project);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-unassign" });
+
+    const result = await unassignCaptain(db, { actorOperatorId: SECOND_OPERATOR, projectId: project, hackathonId: EDITION_A, reason: "Stepping back" });
+    expect(result).toMatchObject({ outcome: "unassigned", captainUserId: "cap-unassign" });
+    expect(await currentAssignments()).toEqual([]);
+    expect((await assignmentEvents()).map((e) => e.kind)).toEqual(["captain.assigned", "captain.unassigned"]);
+    expect((await assignmentEvents())[1]).toMatchObject({ actor_id: SECOND_OPERATOR, subject_user_id: "cap-unassign", metadata: expect.objectContaining({ reason: "Stepping back" }) });
+
+    // Idempotent: nothing live to end a second time.
+    expect(await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A })).toEqual({ outcome: "not_assigned" });
+    expect(await assignmentEvents()).toHaveLength(2);
+  });
+
+  it("treats a project from another edition exactly like a missing one", async () => {
+    await seedCaptain("cap-unassign-edition");
+    const project = "00000000-0000-4000-8000-000000001014";
+    await seedProject(project, EDITION_A);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-unassign-edition" });
+    expect(await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_B })).toEqual({ outcome: "not_found" });
+    // Unaffected: the assignment is still there for the correct edition.
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-unassign-edition" }]);
+  });
+
+  it("a project with no assignment at all is not_assigned, not an error", async () => {
+    const project = "00000000-0000-4000-8000-000000001015";
+    await seedProject(project);
+    expect(await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A })).toEqual({ outcome: "not_assigned" });
+  });
+});
+
+describe("clearCaptainAssignments and countAssignmentsForCaptain", () => {
+  it("clears every current assignment across every edition, auditing each individually, and counting the same set beforehand", async () => {
+    await seedCaptain("cap-multi");
+    const p1 = "00000000-0000-4000-8000-000000001016";
+    const p2 = "00000000-0000-4000-8000-000000001017";
+    await seedProject(p1, EDITION_A, "Project One");
+    await seedProject(p2, EDITION_B, "Project Two");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "cap-multi" });
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p2, hackathonId: EDITION_B, captainUserId: "cap-multi" });
+
+    const preflight = await countAssignmentsForCaptain(db, "cap-multi");
+    expect(preflight.map((a) => a.projectId).sort()).toEqual([p1, p2].sort());
+    expect(preflight.every((a) => a.projectName)).toBe(true);
+
+    const cleared = await clearCaptainAssignments(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, captainUserId: "cap-multi", reason: "Revoked" });
+    expect(cleared.map((c) => c.projectId).sort()).toEqual([p1, p2].sort());
+    expect(await currentAssignments()).toEqual([]);
+    expect(await countAssignmentsForCaptain(db, "cap-multi")).toEqual([]);
+    const clearEvents = (await events()).filter((e) => e.kind === "captain.unassigned");
+    expect(clearEvents).toHaveLength(2);
+    expect(clearEvents.every((e) => e.subject_user_id === "cap-multi")).toBe(true);
+
+    // Idempotent: nothing left to clear a second time.
+    expect(await clearCaptainAssignments(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, captainUserId: "cap-multi" })).toEqual([]);
+  });
+
+  it("counts current assignments for many accounts in one indexed query, 0 for none", async () => {
+    await seedCaptain("cap-batch-1");
+    await seedCaptain("cap-batch-2");
+    const p1 = "00000000-0000-4000-8000-000000001018";
+    await seedProject(p1);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "cap-batch-1" });
+    const queries: string[] = [];
+    const counting = { query: (text: string, values?: unknown[]) => { queries.push(text); return db.query(text, values); } };
+    const counts = await countAssignmentsForUsers(counting, ["cap-batch-1", "cap-batch-2", "cap-batch-1", "ghost"]);
+    expect([...counts.entries()]).toEqual([["cap-batch-1", 1], ["cap-batch-2", 0], ["ghost", 0]]);
+    expect(queries).toHaveLength(1);
+  });
+
+  it("revoking a grant and clearing its assignments are one transaction: forcing the clear's own audit write to fail leaves the grant active and the assignment live", async () => {
+    // The exact composition lib/hq/actions/capabilities.ts#revokeCaptainCapability
+    // uses: one builderDatabase().transaction() wrapping both revokeCapability
+    // and clearCaptainAssignments, so a failure partway through rolls both back.
+    await seedCaptain("cap-combined");
+    const project = "00000000-0000-4000-8000-000000001024";
+    await seedProject(project);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-combined" });
+
+    await rows("ALTER TABLE hq_audit_events ADD CONSTRAINT test_combined_failure CHECK (kind <> 'captain.unassigned')");
+    try {
+      await expect(db.transaction(async (tx) => {
+        await revokeCapability(tx, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "cap-combined", capability: "captain", reason: "done" });
+        await clearCaptainAssignments(tx, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, captainUserId: "cap-combined" });
+      })).rejects.toThrow(/test_combined_failure/);
+    } finally {
+      await rows("ALTER TABLE hq_audit_events DROP CONSTRAINT test_combined_failure");
+    }
+    expect(await grants()).toEqual([{ user_id: "cap-combined", capability: "captain", active: true }]);
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-combined" }]);
+  });
+
+  it("rolls the clear back if its own transaction fails, leaving the assignment live", async () => {
+    await seedCaptain("cap-rollback");
+    const project = "00000000-0000-4000-8000-000000001019";
+    await seedProject(project);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-rollback" });
+    await rows("ALTER TABLE hq_audit_events ADD CONSTRAINT test_clear_failure CHECK (kind <> 'captain.unassigned')");
+    try {
+      await expect(clearCaptainAssignments(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, captainUserId: "cap-rollback" })).rejects.toThrow(/test_clear_failure/);
+    } finally {
+      await rows("ALTER TABLE hq_audit_events DROP CONSTRAINT test_clear_failure");
+    }
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-rollback" }]);
+  });
+});
+
+describe("listAssignments", () => {
+  it("lists every project's current Captain in one edition, and narrows to one Captain's own projects there", async () => {
+    await seedCaptain("cap-list-1");
+    await seedCaptain("cap-list-2");
+    const p1 = "00000000-0000-4000-8000-000000001020";
+    const p2 = "00000000-0000-4000-8000-000000001021";
+    const p3 = "00000000-0000-4000-8000-000000001022";
+    await seedProject(p1, EDITION_A, "Alpha");
+    await seedProject(p2, EDITION_A, "Beta");
+    await seedProject(p3, EDITION_B, "Gamma");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "cap-list-1" });
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p2, hackathonId: EDITION_A, captainUserId: "cap-list-2" });
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p3, hackathonId: EDITION_B, captainUserId: "cap-list-1" });
+
+    const editionA = await listAssignments(db, { hackathonId: EDITION_A });
+    expect(editionA.map((a) => [a.projectName, a.captainName])).toEqual([["Alpha", "cap-list-1"], ["Beta", "cap-list-2"]]);
+
+    const justCap1 = await listAssignments(db, { hackathonId: EDITION_A, captainUserId: "cap-list-1" });
+    expect(justCap1.map((a) => a.projectName)).toEqual(["Alpha"]);
+    // Edition B's assignment for cap-list-1 is invisible from edition A's drilldown.
+    expect(await listAssignments(db, { hackathonId: EDITION_B, captainUserId: "cap-list-1" })).toHaveLength(1);
+  });
+
+  it("never shows an orphaned row (a deleted account's former seat) as a current assignment", async () => {
+    await seedCaptain("cap-orphan");
+    const project = "00000000-0000-4000-8000-000000001023";
+    await seedProject(project);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-orphan" });
+    await rows("DELETE FROM hq_builder_profiles WHERE id = 'cap-orphan'");
+    expect(await listAssignments(db, { hackathonId: EDITION_A })).toEqual([]);
   });
 });

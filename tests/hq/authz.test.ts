@@ -44,6 +44,7 @@ import { loadCurrentAssignment, loadEntry, loadProjectEdition, loadTeamMembershi
 import type { BuilderDatabase, BuilderQuery } from "@/lib/hq/builder-db";
 import { BuilderError } from "@/lib/hq/builder-types";
 import { grantCapability, revokeCapability } from "@/lib/hq/capabilities";
+import { assignCaptain, unassignCaptain } from "@/lib/hq/captains";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const OPERATOR_ID = "00000000-0000-4000-8000-000000000001";
@@ -406,6 +407,34 @@ describe("assertHackathonMatches", () => {
     expect(mismatch).toBe(missing);
     expect(mismatch).not.toBe("");
     expect(() => assertHackathonMatches(undefined, EDITION_A)).toThrow(BuilderError);
+  });
+});
+
+describe("assignCaptain feeding real rows into authorizeProjectAction (task T4.4)", () => {
+  // Phase 1's fixture tests above inject loadCurrentAssignment; this is the
+  // one integration test that runs the same decision logic over a real
+  // hq_captain_assignments row assignCaptain/unassignCaptain (lib/hq/captains.ts)
+  // actually write, not a re-run of those fixture cases.
+  it("after assignment the Captain gets CAPTAIN_ACTIONS but not membership.change; after unassignment the next call denies everything", async () => {
+    await grant("cap2");
+    const actor = member("cap2", ["captain"]);
+    // Holds the capability, assigned to nothing yet: not_assigned, not not_found.
+    expect(await authorizeProjectAction(actor, { projectId: PROJECT_C, hackathonId: EDITION_B, action: "read" })).toEqual({ allowed: false, reason: "not_assigned" });
+
+    const assigned = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_C, hackathonId: EDITION_B, captainUserId: "cap2" });
+    expect(assigned.outcome).toBe("assigned");
+
+    for (const action of ["read", "update.create", "update.edit", "assignment.read"] as const) {
+      expect(await authorizeProjectAction(actor, { projectId: PROJECT_C, hackathonId: EDITION_B, action })).toEqual({ allowed: true, via: "captain" });
+    }
+    expect(await authorizeProjectAction(actor, { projectId: PROJECT_C, hackathonId: EDITION_B, action: "membership.change" })).toEqual({ allowed: false, reason: "not_member" });
+
+    const unassigned = await unassignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_C, hackathonId: EDITION_B });
+    expect(unassigned.outcome).toBe("unassigned");
+
+    for (const action of ACTIONS) {
+      expect(await authorizeProjectAction(actor, { projectId: PROJECT_C, hackathonId: EDITION_B, action })).toEqual({ allowed: false, reason: "not_assigned" });
+    }
   });
 });
 

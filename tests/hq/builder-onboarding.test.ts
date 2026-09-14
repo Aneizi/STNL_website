@@ -6,6 +6,8 @@ import type { ImportedProject } from "@/lib/colosseum-api";
 import { BuilderStore, type BuilderDatabase } from "@/lib/hq/builder-store";
 import * as builderModule from "@/lib/hq/builder-store";
 import type { BuilderIdentity } from "@/lib/hq/builder-types";
+import { grantCapability } from "@/lib/hq/capabilities";
+import { assignCaptain } from "@/lib/hq/captains";
 import { correctPersonMatch, ensurePersonForRosterMember, linkPersonToAccount, normalizeColosseumUsername } from "@/lib/hq/crm-identity";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
 import { pgliteBuilderDatabase } from "./helpers/db";
@@ -663,6 +665,75 @@ describe("roster invitations and team access", () => {
     await db.query("UPDATE hq_project_onboarding SET verification=$1 WHERE project_id=$2", [state, item.projectId]);
     await expect(store.updateTeam(OWNER.id, item.projectId, "beta", "fictional_builder_1")).rejects.toThrow("imported team");
     expect(await rows("SELECT stage FROM hq_project_onboarding WHERE project_id=$1", [item.projectId])).toEqual([{ stage: "mvp" }]);
+  });
+});
+
+// Task T4.4's lock order: assignCaptain (lib/hq/captains.ts) locks the same
+// hq_project_onboarding row redeemInvite and importTeam already lock, so
+// whichever of an assignment and a membership acceptance for the same
+// account and project commits first is what the other's own check sees —
+// never both. pgliteBuilderDatabase (tests/hq/helpers/db.ts) serializes
+// every transaction on PGlite's one connection, so what follows proves the
+// outcome is correct in *either* commit order, not that two truly
+// concurrent callers cannot interleave their reads before either commits;
+// the lock's own presence is guarded separately, by the source-level tests
+// in tests/hq/captains.test.ts, since this harness cannot exercise real
+// concurrency to prove it.
+describe("Captain assignment races with membership acceptance", () => {
+  const OPERATOR_ID = "00000000-0000-4000-8000-000000000001";
+  async function seedOperator() {
+    await db.query("INSERT INTO hq_users(id,username,display_name,password_hash) VALUES($1,'operator','Operator','unused') ON CONFLICT (id) DO NOTHING", [OPERATOR_ID]);
+  }
+  async function grantCaptain(userId: string) {
+    await grantCapability(db, { actor: { kind: "system", id: null }, byOperatorId: null, userId, capability: "captain", reason: "test" });
+  }
+
+  it("ordering 1 (assignment first): a Captain already assigned to a project cannot then join it through a team invite", async () => {
+    await seedOperator();
+    const item = await invite();
+    await grantCaptain(TEAMMATE.id);
+    // TEAMMATE's own unclaimed roster row is exactly the unresolved identity
+    // the conflict check cannot yet clear on its own — the admin acknowledges it here.
+    const assigned = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: item.projectId, hackathonId: 41, captainUserId: TEAMMATE.id, acknowledgeUnresolved: true });
+    expect(assigned.outcome).toBe("assigned");
+
+    await expect(store.redeemInvite(TEAMMATE, item.code)).rejects.toThrow("You currently hold the Captain role for this project");
+    // Refused, not silently dropped: the seat is still open and the invite still redeemable once the Captain is reassigned.
+    expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE id=$1", [item.memberId])).toEqual([{ builder_user_id: null }]);
+    expect(await rows("SELECT consumed_at FROM hq_team_invites WHERE member_id=$1", [item.memberId])).toEqual([{ consumed_at: null }]);
+  });
+
+  it("ordering 2 (membership first): a team member who already joined a project cannot then be assigned as its Captain", async () => {
+    await seedOperator();
+    const item = await invite();
+    await grantCaptain(TEAMMATE.id);
+    expect(await store.redeemInvite(TEAMMATE, item.code)).toBe(item.projectId);
+
+    const result = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: item.projectId, hackathonId: 41, captainUserId: TEAMMATE.id });
+    expect(result).toEqual({ outcome: "conflict", conflict: { kind: "verified_member", role: "member" } });
+  });
+
+  it("the 'claim' path: a Captain already assigned to a pending project cannot then claim it as its verified owner", async () => {
+    await seedOperator();
+    // A pending claim on an external project by OWNER (unverified: no
+    // proof). OWNER's own roster row is already linked (builder_user_id set)
+    // as soon as the pending claim exists, so assignCaptain already refuses
+    // OWNER as its Captain through the ordinary conflict check — this guard
+    // is for OUTSIDER, who has no relationship with the project yet at
+    // assignment time, and only later attempts to claim a roster identity
+    // on it through the verification flow.
+    const { id } = await importProject(false);
+    await grantCaptain(OUTSIDER.id);
+    // One unresolved roster row (the unclaimed second teammate) on this
+    // project; OUTSIDER is unrelated to it, so this is the acknowledged path.
+    const assigned = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: id, hackathonId: 41, captainUserId: OUTSIDER.id, acknowledgeUnresolved: true });
+    expect(assigned.outcome).toBe("assigned");
+
+    const challenge = await store.issueChallenge(OUTSIDER, 41, PROJECT, "fictional_builder_1");
+    await expect(store.importTeam(OUTSIDER, challenge.id, PROJECT, "fictional_builder_2", "mvp", PROOF))
+      .rejects.toThrow("You currently hold the Captain role for this project");
+    // Refused, not silently dropped: the claim is still pending under OWNER.
+    expect(await rows("SELECT owner_user_id FROM hq_project_onboarding WHERE project_id=$1", [id])).toEqual([{ owner_user_id: OWNER.id }]);
   });
 });
 
