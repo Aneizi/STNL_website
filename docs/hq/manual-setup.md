@@ -76,6 +76,13 @@ same file asserts a 503 rather than a silent success.
 2. Create an API key restricted to that domain.
 3. Send one real code to a Superteam mailbox and sign in with it.
 4. Confirm the five minute expiry wording in the email matches the product copy.
+5. Since task T2.3 the same key also sends the code for Add a recovery email
+   (to the new address only) and the notice to the previous address when a
+   login email changes. Add a recovery email to a Telegram-only account and
+   confirm exactly one code arrives; then change an email account's address
+   and confirm the old mailbox gets the notice. Nothing is ever sent to the
+   internal placeholder address, and `tests/hq/member-auth-telegram.test.ts`
+   asserts both counts.
 
 ## Telegram login (OIDC)
 
@@ -131,7 +138,12 @@ yet" and the account page shows the same in place of Connect Telegram.
    notice. Try it again from a second HQ account with the same Telegram
    account and check it is refused with the "already connected to another HQ
    account" message and nothing moves.
-8. Once a year, or after any Telegram announcement, re-check that Telegram's
+8. The partial unique index `hq_auth_account_telegram_user_idx` (one Telegram
+   account row per user) assumes no account already holds two Telegram rows.
+   That is true while Telegram login is unconfigured; if Telegram login was
+   ever live on a database before this index existed, check for duplicates
+   before running the migration, because `CREATE UNIQUE INDEX` fails on them.
+9. Once a year, or after any Telegram announcement, re-check that Telegram's
    discovery document still lists the endpoints hard coded in
    `lib/hq/telegram-provider.ts` (`/auth`, `/token`,
    `/.well-known/jwks.json` under `https://oauth.telegram.org`). The code
@@ -144,7 +156,13 @@ yet" and the account page shows the same in place of Connect Telegram.
 **Variables:** `TELEGRAM_BOT_TOKEN`, plus the webhook URL you register with
 Telegram.
 
-**Code-level checks:** none in phases 0 to 2.
+**Code-level checks:** since task T2.3 the account page collects the decision
+(the Bot messages section on `/hq/account`, stored in `hq_telegram_bot_consent`
+by `lib/hq/telegram-consent.ts`) and `tests/hq/member-auth-telegram.test.ts`
+asserts that it is separate from the connection, that declining keeps website
+access and that disconnecting Telegram revokes it. There is still no delivery:
+nothing reads the row to send a message, and no test claims otherwise. Bot
+messaging still requires phase 7.
 
 **Live checks (you):** later, in phase 7. Permission to message someone is
 collected separately from Telegram sign-in, and one never implies the other.

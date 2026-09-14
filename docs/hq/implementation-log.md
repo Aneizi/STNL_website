@@ -1198,3 +1198,162 @@ lists the three token endpoints. Migration: the additive
 the button to be live), `TELEGRAM_BOT_USERNAME` (copy only). The redirect URL
 to register is `<BETTER_AUTH_URL>/api/auth/callback/telegram`; see
 `docs/hq/manual-setup.md`.
+
+### What changed, task T2.3
+
+A Telegram-first account can add a verified recovery email, and bot
+messaging is a separate, revocable decision. One additive table.
+
+`lib/hq/member-auth.ts` enables the emailOTP change-email flow
+(`changeEmail: { enabled: true, verifyCurrentEmail: false }`, verified in
+`node_modules/better-auth/dist/plugins/email-otp/routes.mjs`): the code goes
+to the new address only, and the current address is never asked for one, so
+a placeholder is never mailed. A `databaseHooks.user.update.after` hook reads
+the previous address from the endpoint context's session (the cookie is
+refreshed only after `updateUser` returns, and `setSessionCookie` does not
+mutate `ctx.context.session`); when it was a verified real address it is sent
+a plain notice through the one `deliver()` helper (which refuses placeholders
+and returns false when email is unconfigured or Resend fails), an
+`identity.email_changed` event is recorded with `{ hadPreviousEmail }` and
+nothing else, and the builder profile is re-synced. A Telegram-first account
+had only the placeholder, so nothing is sent and `hadPreviousEmail` is false.
+The sign-in and change-email codes now share `deliver()`; the change-email
+message says what the code is for.
+
+`lib/hq/telegram-identity-plugin.ts`: `TelegramIntent` gained
+`"change-email"`, recorded with the confirmed address
+(`recordTelegramIntent(store, userId, "change-email", address)`), and the
+recency hook consumes it on `/email-otp/request-email-change`, refusing a
+request for any other address with 403 `CONFIRMATION_REQUIRED`. The core
+`/change-email` joined both `RECENT_SESSION_ENDPOINTS` and
+`PLACEHOLDER_GUARDED_ENDPOINTS` although it stays disabled (a test pins
+`CHANGE_EMAIL_DISABLED`). The `user.update.before` placeholder guard is
+tighter: a placeholder passes only on `/callback/:id` with `params.id`
+`telegram` and only when a user already holds exactly that address, which by
+email uniqueness means the update is a rewrite of the holder's own
+placeholder (the core's `overrideUserInfoOnSignIn` path); any other
+placeholder, another provider's callback and both change-email routes are
+refused. `account.delete.after` revokes bot consent in the same builder-pool
+transaction as the identity row removal. `normalizeEmailAddress(value)` is
+the one spelling of an address on its way to the endpoints.
+
+New `lib/hq/telegram-consent.ts` (server-only): `getBotConsent(userId)`,
+`setBotConsent(actor, enabled)` (re-reads the Telegram identity, throws
+`TelegramNotConnectedError` without one, idempotent, writes the row and a
+`bot.consent_changed` event with `{ enabled }` in one transaction) and
+`revokeBotConsent(userId, db)` (turns messaging off through the caller's
+handle and records `{ enabled: false, cause: "telegram_disconnected" }` only
+when an enabled consent was revoked). `bot.consent_changed` joined
+`AUDIT_EVENT_KINDS`.
+
+`scripts/hq/builder-schema.sql`: `hq_telegram_bot_consent(user_id text PRIMARY
+KEY REFERENCES hq_builder_profiles(id) ON DELETE CASCADE, telegram_user_id
+bigint NOT NULL, messaging_enabled boolean NOT NULL DEFAULT false,
+consented_at timestamptz, revoked_at timestamptz, updated_at timestamptz NOT
+NULL DEFAULT now())`, one `CREATE TABLE IF NOT EXISTS`; classified KEEP in
+`scripts/hq/reset-statements.ts`. `hq_users` untouched.
+
+`lib/hq/actions/telegram.ts`: `confirmEmailChange(newEmail)` (member gate,
+email availability, shape and placeholder check, recency, not the current
+address, then the bound intent; whether the address is taken is never
+revealed) and `setBotMessaging(enabled)` (member gate, then
+`setBotConsent`). `app/hq/(member)/account/page.tsx` shows Add a recovery
+email for a Telegram-only account (the honest unavailable line when email is
+unconfigured), the `?email=added` notice, and a Bot messages section only
+when Telegram is connected: Enabled or Disabled from the stored row, copy
+saying HQ can send Wednesday reminders only when enabled and that website
+access is the same either way, and the `BotMessagingToggle` control. New
+`/hq/account/add-email` (server-rendered confirmation step; an account that
+already has a verified email is sent back) with `AddEmailForm`: the address
+step runs `confirmEmailChange` then `emailOtp.requestEmailChange`, the
+verify step runs `emailOtp.changeEmail`, with resend (each send is its own
+confirmation), Use a different address and the Sign in again affordance for
+a stale session. Copy for the endpoint outcomes lives in
+`app/hq/(member)/account/email-copy.ts`; `telegram-copy.ts` now looks codes
+up with `Object.hasOwn` and knows `EMAIL_UNAVAILABLE`, `INVALID_EMAIL` and
+`EMAIL_UNCHANGED`. The route joined the proxy allowlist and `safeMemberNext`
+(both lists become one in task T2.4).
+
+### Checks passed, task T2.3
+
+- Synthesis §2.6 step 14 in `tests/hq/member-auth-telegram.test.ts` (31
+  tests, 8 new): a Telegram-first account refused without confirmation, a
+  confirmation spent on a request for another address, one code to the new
+  address and no other message, a wrong code refused, the change to a
+  verified real address with the same id, `hadPreviousEmail: false`, the
+  profile email populated, the account page showing the address and the
+  disconnect link, email OTP sign-in resolving to the same account, and
+  Telegram then disconnected with the identity row gone.
+- The previous verified address notified exactly once (two messages: the
+  code to the new address, the notice without a code to the old), with
+  `hadPreviousEmail: true`.
+- A request for an address another account holds answers exactly like one
+  for a free address, sends nothing to it and stores no code (the library's
+  non-enumerating branch).
+- A 16 minute old session refused on `/email-otp/request-email-change`,
+  `/email-otp/change-email` and `/change-email` even with an intent written
+  directly, `confirmEmailChange` answering `SESSION_NOT_FRESH`, and the
+  unlink rule still holding afterwards (`LAST_LOGIN_METHOD` from the action
+  and the endpoint).
+- The core `/change-email` answers 400 `CHANGE_EMAIL_DISABLED` for a fresh
+  session and sits in both guard lists (`tests/hq/telegram-identity-plugin.test.ts`).
+- The placeholder refused as `newEmail` by the confirmation (three
+  spellings), by both change-email routes, and by `updateUser` on every
+  route; on the Telegram callback a held placeholder may be rewritten, a new
+  one may not, another provider's callback may not, and an account with a
+  real address keeps it (hook refusal, then the unique index).
+- Consent separate from the connection: no row after connecting, the page
+  saying Disabled, enable and disable through the action with the audit
+  events, a repeat recording nothing, `currentMember()` and `requireMember()`
+  unchanged after declining, an email-only account refused with
+  `TELEGRAM_NOT_CONNECTED` and no Bot messages section; disconnecting
+  Telegram revokes consent in the same operation with the
+  `telegram_disconnected` cause, and reconnecting does not restore it.
+- The add-email page renders for a Telegram-only account and redirects an
+  account with a verified email; markup free of the placeholder, em dashes
+  and middots.
+- `tests/hq/account-form.test.ts`: `__proto__`, `constructor`, `toString`
+  and `hasOwnProperty` are unknown codes, and `["telegram", "__proto__"]`
+  renders the generic failure. `tests/hq/migration-order.test.ts`: the
+  consent table's columns and the cascading foreign key, applied twice
+  through the splitter, and the KEEP classification.
+  `tests/hq/capabilities.test.ts` pins the extended vocabulary;
+  `tests/hq/member-auth-config.test.ts` preserves the new route.
+
+### Blocked or deferred, task T2.3
+
+- No message is delivered to anyone on Telegram: `hq_telegram_bot_consent`
+  is read by the account page only. Delivery, chat ids and the webhook are
+  phase 7, and `docs/hq/manual-setup.md` says so.
+- The recovery-email page is offered to Telegram-only accounts only.
+  `confirmEmailChange` and the endpoints also let an email account change
+  its login address (with the notice to the old one), which is what the
+  notification rule exists for, but no page links to that; whether to offer
+  Change email to email accounts is a product decision.
+- The library's non-enumerating branch means a person who asks for an
+  address that belongs to another account sees Code sent and never receives
+  one. The copy does not explain that, by design.
+- Not verified in a browser: the client flow (`requestEmailChange`,
+  `changeEmail`, the refreshed cookie, `router.refresh()`) is exercised
+  through the endpoints and actions only.
+
+### Changed interfaces, task T2.3
+
+`lib/hq/telegram-identity-plugin.ts`: `TelegramIntent` is `"link" | "unlink"
+| "change-email"`; `recordTelegramIntent(store, userId, intent, subject?)`;
+new `normalizeEmailAddress(value)`; `/change-email` in both guard lists.
+`lib/hq/actions/telegram.ts` exports `confirmEmailChange(newEmail)`,
+`setBotMessaging(enabled)` and the types `EmailChangeConfirmationCode`,
+`EmailChangeConfirmation`, `BotMessagingResult`. New
+`lib/hq/telegram-consent.ts` exports `getBotConsent`, `setBotConsent`,
+`revokeBotConsent`, `BotConsent`, `TelegramNotConnectedError`.
+`lib/hq/audit-sql.ts`: `bot.consent_changed`. `app/hq/(member)/telegram-copy.ts`
+knows three more codes; new `app/hq/(member)/account/email-copy.ts` exports
+`emailChangeErrorMessage(error, fallback)` and `EndpointError`. Routes:
+`/hq/account/add-email`. Migration: the additive `hq_telegram_bot_consent`
+in `builder-schema.sql`.
+
+### External configuration still required, task T2.3
+
+Nothing new. `RESEND_API_KEY` and `EMAIL_FROM` now also carry the
+recovery-email code and the change notice; see `docs/hq/manual-setup.md`.
