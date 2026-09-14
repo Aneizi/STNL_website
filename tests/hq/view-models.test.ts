@@ -87,8 +87,16 @@ describe("toCaptainAssignmentView", () => {
 });
 
 describe("toPublicPersonView", () => {
-  it("is the name and the tag labels, nothing else", () => {
-    expect(toPublicPersonView(PERSON)).toEqual({ name: "Fictional Builder One", tags: ["Builder", "Captain"] });
+  it("is the name and the role tag labels, and leaves the capability labels out by default", () => {
+    expect(toPublicPersonView(PERSON)).toEqual({ name: "Fictional Builder One", tags: ["Builder"] });
     expect(Object.keys(toPublicPersonView(PERSON)).sort()).toEqual(["name", "tags"]);
+    // A surface that renders to members who are not Captains cannot leak the
+    // Captain label by forgetting to filter: it has to ask for it.
+    expect(toPublicPersonView(PERSON, {}).tags).not.toContain("Captain");
+    expect(toPublicPersonView(PERSON, { includeCapabilities: false }).tags).not.toContain("Captain");
+  });
+
+  it("includes the capability labels for a Captain or operator surface that opts in", () => {
+    expect(toPublicPersonView(PERSON, { includeCapabilities: true })).toEqual({ name: "Fictional Builder One", tags: ["Builder", "Captain"] });
   });
 });

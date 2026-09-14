@@ -63,11 +63,9 @@ export type CaptainLeaderboardView = { rank: number; displayName: string; assign
 export type PublicPersonView = {
   name: string;
   /**
-   * Every tag label on the card, the role tag and the capability tags
-   * ("Captain") alike. A surface rendering to members who are not Captains
-   * must filter the source tags to `kind !== "capability"` before mapping,
-   * because the permission contract shows Captain names only to Captains and
-   * operators.
+   * The card's role tag, and the capability tags ("Captain") only on a
+   * surface that asked for them. The permission contract shows Captain names
+   * to Captains and operators alone, so they are left out by default.
    */
   tags: string[];
 };
@@ -105,6 +103,13 @@ export function toCaptainAssignmentView(team: BuilderTeam): CaptainAssignmentVie
   };
 }
 
-export function toPublicPersonView(person: Pick<Person, "name" | "tags">): PublicPersonView {
-  return { name: person.name, tags: person.tags.map((tag) => tag.label) };
+/**
+ * Capability tags are dropped unless the caller opts in, so a surface that
+ * forgets to think about its audience gets the safe shape. Pass
+ * `{ includeCapabilities: true }` only where the permission contract allows
+ * it: a Captain-only or operator page. Nothing else about the card changes.
+ */
+export function toPublicPersonView(person: Pick<Person, "name" | "tags">, options: { includeCapabilities?: boolean } = {}): PublicPersonView {
+  const tags = options.includeCapabilities ? person.tags : person.tags.filter((tag) => tag.kind !== "capability");
+  return { name: person.name, tags: tags.map((tag) => tag.label) };
 }
