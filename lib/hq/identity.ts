@@ -1,12 +1,13 @@
 import "server-only";
 import type { BuilderQuery } from "./builder-db";
 import { builderDatabase, builderStore } from "./builder-store";
-import { isPlaceholderEmail } from "./telegram-provider";
+import { isPlaceholderEmail } from "./placeholder-email";
 
-// The rule for the internal placeholder address is defined in
-// ./telegram-provider, next to the one function that mints it, and re-exported
-// here because this module is the identity boundary every other module reads.
-export { isPlaceholderEmail } from "./telegram-provider";
+// The rule for the internal placeholder address lives in ./placeholder-email
+// (not ./telegram-provider, which is reserved for the public member auth
+// graph — tests/hq/operator-imports.test.ts) and is re-exported here because
+// this module is the identity boundary every other module reads.
+export { isPlaceholderEmail } from "./placeholder-email";
 
 /**
  * A verified Telegram identity attached to a public HQ account. The numeric

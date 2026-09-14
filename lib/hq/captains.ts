@@ -4,6 +4,7 @@ import { recordAuditEvent } from "./audit";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { BuilderError } from "./builder-types";
 import { grantCapability, listActiveCapabilitiesForUsers } from "./capabilities";
+import { isVerifiedAccount } from "./identity";
 
 /**
  * The Captain invitation half of the Captain service (contracts.md's
@@ -23,6 +24,8 @@ import { grantCapability, listActiveCapabilitiesForUsers } from "./capabilities"
 
 /** Far beyond any realistic Captain cohort for one edition; finite so a typo (an extra zero) fails loudly instead of becoming unlimited. */
 const MAX_REDEMPTIONS = 500;
+/** Far beyond one edition's timeline; the same reasoning as MAX_REDEMPTIONS applies at least as strongly to a bearer token's lifetime — an uncapped "valid for" turns a typo into an effectively permanent Captain link. */
+const MAX_VALIDITY_DAYS = 365;
 const MAX_LABEL_LENGTH = 200;
 
 /** The hashCode pattern from builder-store.ts, without its human-typed-code normalization: a base64url token is already exact and case-sensitive, so upper-casing or stripping characters would corrupt it. */
@@ -120,6 +123,7 @@ function resolveExpiry(input: { expiresInDays?: number; expiresAt?: string }): D
         : null;
   if (!raw || !Number.isFinite(raw.getTime())) throw new BuilderError("Give a valid expiry.");
   if (raw.getTime() <= Date.now()) throw new BuilderError("Expiry must be in the future.");
+  if (raw.getTime() - Date.now() > MAX_VALIDITY_DAYS * 86_400_000) throw new BuilderError(`Expiry must be within ${MAX_VALIDITY_DAYS} days.`);
   return raw;
 }
 
@@ -185,7 +189,7 @@ export type CaptainInvitationRedeemability = {
 
 export async function readCaptainInvitationByToken(db: BuilderQuery, token: string): Promise<CaptainInvitationRedeemability | null> {
   const { rows } = await db.query(
-    `SELECT i.id::text AS id, i.capability, i.label, i.max_redemptions, i.expires_at, i.revoked_at,
+    `SELECT i.id::text AS id, i.label, i.max_redemptions, i.expires_at, i.revoked_at,
        (SELECT count(*) FROM hq_captain_invitation_redemptions r WHERE r.invitation_id = i.id) AS redemptions
      FROM hq_captain_invitations i WHERE i.token_hash = $1`,
     [hashToken(token)],
@@ -205,27 +209,14 @@ export async function readCaptainInvitationByToken(db: BuilderQuery, token: stri
 }
 
 /**
- * `StoredAccount`'s two fields, read without importing ./identity: this keeps
- * the read on the caller's own db handle (see isVerifiedForRedemption below).
- */
-async function loadStoredAccount(db: BuilderQuery, userId: string): Promise<{ id: string; email: string | null; emailVerified: boolean } | null> {
-  const { rows } = await db.query(`SELECT email, "emailVerified" AS verified FROM hq_auth_user WHERE id = $1`, [userId]);
-  if (!rows.length) return null;
-  return { id: userId, email: rows[0].email == null ? null : String(rows[0].email), emailVerified: Boolean(rows[0].verified) };
-}
-
-/**
  * "An authenticated, verified HQ account" — the one rule in
  * lib/hq/identity.ts#isVerifiedAccount, called here so acceptCaptainInvitation
- * enforces it itself rather than trusting whatever called it.
- *
- * The import is dynamic, not static, on purpose. lib/hq/actions/captains.ts
- * (the *operator* actions: create/revoke/list) imports this file too, and
- * tests/hq/operator-imports.test.ts fails if an operator action module
- * statically reaches ./identity -> ./telegram-provider, part of the public
- * member auth graph. Only this member-facing function ever needs that graph;
- * a dynamic import keeps it out of the operator action's module graph
- * entirely instead of merely being unused at runtime.
+ * enforces it itself rather than trusting whatever called it. Only a userId
+ * is in hand here (not a session's already-loaded user row), so this reads
+ * `hq_auth_user` itself; the object below is passed straight into
+ * isVerifiedAccount's own parameter type without a separate helper or a
+ * hand-copied type, so if StoredAccount ever gains a required field, this
+ * call site fails to type-check instead of silently answering the old rule.
  *
  * Called *before* opening the redemption transaction below, not from inside
  * it: isVerifiedAccount reads hq_auth_telegram_identity through the default
@@ -236,10 +227,9 @@ async function loadStoredAccount(db: BuilderQuery, userId: string): Promise<{ id
  * before the transaction exists, does not.
  */
 async function isVerifiedForRedemption(db: BuilderQuery, userId: string): Promise<boolean> {
-  const account = await loadStoredAccount(db, userId);
-  if (!account) return false;
-  const { isVerifiedAccount } = await import("./identity");
-  return isVerifiedAccount(account);
+  const { rows } = await db.query(`SELECT email, "emailVerified" AS verified FROM hq_auth_user WHERE id = $1`, [userId]);
+  if (!rows.length) return false;
+  return isVerifiedAccount({ id: userId, email: rows[0].email == null ? null : String(rows[0].email), emailVerified: Boolean(rows[0].verified) });
 }
 
 export type AcceptCaptainInvitationResult =
@@ -252,20 +242,26 @@ export type AcceptCaptainInvitationResult =
   | { outcome: "expired" }
   | { outcome: "full" }
   | { outcome: "unverified" }
-  | { outcome: "not-found" };
+  | { outcome: "not-found" }
+  /** Verified in hq_auth_user, but its hq_builder_profiles row (which the redemption's FK and grantCapability both require) has not been created yet — a genuine, if narrow, window rather than an account that can never redeem. */
+  | { outcome: "no-profile" };
 
 /**
  * The one redemption transaction the plan describes, and the only writer of
  * hq_captain_invitation_redemptions. Locks the invitation row, then decides
  * in this order:
  *
- *  1. An existing redemption row for (invitationId, userId) wins over
+ *  1. The account must have an hq_builder_profiles row — the redemption
+ *     insert's foreign key and grantCapability both require one — checked
+ *     up front so a narrow pre-sync window fails as a typed outcome instead
+ *     of an unhandled foreign-key error.
+ *  2. An existing redemption row for (invitationId, userId) wins over
  *     everything else below, including a since-revoked invitation or a
  *     since-revoked grant — "a revoked grant cannot be resurrected by
  *     replaying an already consumed redemption; a new admin grant/invitation
  *     is required" means this function must never re-run the grant for a
  *     replay, no matter what state anything else is in.
- *  2. An account that already holds an active Captain grant, from anywhere,
+ *  3. An account that already holds an active Captain grant, from anywhere,
  *     is not blocked by this invitation's revocation, expiry or capacity: it
  *     has nothing to receive from this link, so those checks do not apply to
  *     it either. (The reading: "an invitation use means one distinct HQ
@@ -273,7 +269,7 @@ export type AcceptCaptainInvitationResult =
  *     account cannot newly receive it, so redeeming for the first time is
  *     not a "use" and consumes no slot; see the task report for the full
  *     reasoning.)
- *  3. Only then do revoked / expired / full gate a genuinely new grant.
+ *  4. Only then do revoked / expired / full gate a genuinely new grant.
  *
  * grantCapability (the sole writer of hq_account_capabilities) is called with
  * a *member* actor — the account redeemed this itself — and byOperatorId set
@@ -292,6 +288,10 @@ export async function acceptCaptainInvitation(
       [input.invitationId],
     );
     if (!invitations.length) return { outcome: "not-found" };
+
+    const { rows: profiles } = await tx.query(`SELECT 1 FROM hq_builder_profiles WHERE id = $1`, [input.userId]);
+    if (!profiles.length) return { outcome: "no-profile" };
+
     const row = invitations[0];
     const invitation = {
       label: row.label == null ? null : String(row.label),

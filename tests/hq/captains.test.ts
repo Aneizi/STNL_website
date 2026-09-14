@@ -3,6 +3,8 @@
 // idempotence and "no resurrection on replay" rules hold, revocation stops
 // only future redemption, and a redemption's capability grant and audit
 // event commit or roll back together with its redemption row.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -131,6 +133,17 @@ describe("acceptCaptainInvitation", () => {
     expect(await acceptCaptainInvitation(db, { invitationId: "00000000-0000-4000-8000-0000000000aa", userId: "acct-a" })).toEqual({ outcome: "not-found" });
   });
 
+  it("returns a typed outcome for a verified account whose builder profile has not synced yet, instead of an unhandled foreign-key error", async () => {
+    // Verified in hq_auth_user (isVerifiedForRedemption passes) but no
+    // hq_builder_profiles row: the narrow pre-sync window the redemption
+    // insert's foreign key and grantCapability both depend on.
+    await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES('acct-no-profile','No Profile','acct-no-profile@example.test',true)`);
+    const { invitation } = await createInvitation();
+    expect(await acceptCaptainInvitation(db, { invitationId: invitation.id, userId: "acct-no-profile" })).toEqual({ outcome: "no-profile" });
+    expect(await redemptions()).toEqual([]);
+    expect(await grants()).toEqual([]);
+  });
+
   it("a one-use link: the first acceptance grants, a second distinct account is refused as full", async () => {
     await seedAccount("acct-a");
     await seedAccount("acct-b");
@@ -152,7 +165,18 @@ describe("acceptCaptainInvitation", () => {
     expect(await redemptions()).toHaveLength(3);
   });
 
-  it("concurrent acceptance cannot exceed the limit: PGlite serializes the overlapping transactions, so the row lock's effect is provable even without true interleaving", async () => {
+  it("overlapping acceptance calls never exceed capacity, however many arrive at once", async () => {
+    // What this actually proves: the capacity arithmetic is correct across
+    // several simultaneous callers, however many "granted" outcomes land.
+    // It does NOT prove the FOR UPDATE lock is what keeps that true.
+    // pgliteBuilderDatabase (tests/hq/helpers/db.ts) funnels every query and
+    // every transaction through one promise queue on PGlite's single
+    // connection, so these five Promise.all calls run as five strictly
+    // sequential transactions, never truly interleaved — the same
+    // { granted: 2, full: 3 } result would come back even with FOR UPDATE
+    // deleted from the query. The row lock's own presence is guarded
+    // separately, by the source-level test right below, since this harness
+    // cannot exercise real concurrency to prove it.
     for (const id of ["acct-a", "acct-b", "acct-c", "acct-d", "acct-e"]) await seedAccount(id);
     const { invitation } = await createInvitation({ maxRedemptions: 2 });
     const results = await Promise.all(
@@ -162,6 +186,11 @@ describe("acceptCaptainInvitation", () => {
     expect(outcomeCounts).toEqual({ granted: 2, full: 3 });
     expect(await redemptions()).toHaveLength(2);
     expect((await grants()).filter((g) => g.active)).toHaveLength(2);
+  });
+
+  it("locks the invitation row for the whole decision — a regression guard, since PGlite's serialized test pool cannot itself prove concurrency safety", () => {
+    const source = readFileSync(join(process.cwd(), "lib/hq/captains.ts"), "utf8");
+    expect(source).toMatch(/FROM hq_captain_invitations WHERE id = \$1::uuid FOR UPDATE/);
   });
 
   it("repeat acceptance by the same account is idempotent and consumes no second slot", async () => {

@@ -4,7 +4,7 @@ import type { ImportedProject, ProjectProof } from '@/lib/colosseum-api';
 import { builderDatabase, type BuilderDatabase, type BuilderQuery } from './builder-db';
 import { BuilderError, type BuilderHackathon, type BuilderIdentity, type BuilderTeam, type BuilderUser, type ProjectStage } from './builder-types';
 import { ensurePersonForAccount } from './crm-identity';
-import { isPlaceholderEmail } from './telegram-provider';
+import { isPlaceholderEmail } from './placeholder-email';
 
 // The pool and its handle types live in builder-db.ts; they are re-exported
 // here so every existing import path keeps working.

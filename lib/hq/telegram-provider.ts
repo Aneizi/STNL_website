@@ -4,6 +4,13 @@ import { createAuthorizationURL, validateAuthorizationCode } from "@better-auth/
 import type { OAuthProvider, ProviderOptions } from "@better-auth/core/oauth2";
 import { createPlaceholderEmail } from "@better-auth/core/utils/email";
 import { createRemoteJWKSet, customFetch, decodeJwt, jwtVerify, type JWTPayload } from "jose";
+import { isPlaceholderEmail, PLACEHOLDER_DOMAIN } from "./placeholder-email";
+
+// isPlaceholderEmail and PLACEHOLDER_DOMAIN live in ./placeholder-email now
+// (a leaf module identity.ts can depend on without reaching Better Auth or
+// jose); re-exported here so every existing `from "./telegram-provider"`
+// import keeps working unchanged.
+export { isPlaceholderEmail, PLACEHOLDER_DOMAIN };
 
 /**
  * Telegram's OpenID Connect endpoints, fixed on purpose. The discovery
@@ -25,7 +32,6 @@ const TELEGRAM_ALGORITHMS = ["RS256"];
 /** An id_token is exchanged within seconds of being minted; older ones are replays or clock trouble. */
 const ID_TOKEN_MAX_AGE = "10 minutes";
 const PLACEHOLDER_NAMESPACE = "telegram";
-const PLACEHOLDER_DOMAIN = "placeholder.invalid";
 
 /** Claims Telegram puts in an id_token for the `openid profile` scopes. */
 export type TelegramIdTokenClaims = {
@@ -59,20 +65,6 @@ function describeError(error: unknown): string {
   if (!(error instanceof Error)) return "unknown error";
   const code = "code" in error && typeof error.code === "string" ? ` (${error.code})` : "";
   return `${error.name}${code}: ${error.message}`;
-}
-
-/**
- * True for the internal non-deliverable identifier that stands in for an
- * email on Telegram-only accounts (`<sub>@telegram.placeholder.invalid`), and
- * for anything else on the library's reserved `placeholder.invalid` domain.
- * Such an address is never mailed, never displayed and never synced as a contact.
- */
-export function isPlaceholderEmail(email: string | null | undefined): boolean {
-  if (!email) return false;
-  const at = email.lastIndexOf("@");
-  if (at < 0) return false;
-  const domain = email.slice(at + 1).toLowerCase();
-  return domain === PLACEHOLDER_DOMAIN || domain.endsWith(`.${PLACEHOLDER_DOMAIN}`);
 }
 
 /**
