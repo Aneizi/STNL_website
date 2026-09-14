@@ -42,7 +42,7 @@ describe("public HQ post-auth destinations", () => {
     expect(safeMemberNext(value)).toBe("/hq/welcome");
   });
 
-  it.each(["/hq/dashboard", "/hq/welcome?hackathon=6", "/hq/join?code=abc123", "/hq/initialize", "/hq/team/1234-abcd", "/hq/account", "/hq/account?connected=telegram", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram"]) ("preserves public destinations: %s", (value) => {
+  it.each(["/hq/dashboard", "/hq/welcome?hackathon=6", "/hq/join?code=abc123", "/hq/initialize", "/hq/team/1234-abcd", "/hq/account", "/hq/account?connected=telegram", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email"]) ("preserves public destinations: %s", (value) => {
     expect(safeMemberNext(value)).toBe(value);
   });
 });

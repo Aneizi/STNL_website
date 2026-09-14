@@ -13,6 +13,7 @@ import {
   type StoredAccount,
   type TelegramIdentityInput,
 } from "./identity";
+import { revokeBotConsent } from "./telegram-consent";
 import { isPlaceholderEmail, readTelegramClaims, TELEGRAM_PROVIDER_ID, telegramProvider, type TelegramProviderEnv } from "./telegram-provider";
 
 /**
@@ -44,6 +45,7 @@ export const PLACEHOLDER_GUARDED_ENDPOINTS: ReadonlySet<string> = new Set([
   "/email-otp/reset-password",
   "/email-otp/request-email-change",
   "/email-otp/change-email",
+  "/change-email",
   "/send-verification-email",
   "/request-password-reset",
   "/verify-email",
@@ -55,13 +57,16 @@ export const ID_TOKEN_ENDPOINTS: ReadonlySet<string> = new Set(["/sign-in/social
 /**
  * Endpoints that add or remove a way to sign in. Adding one is as sensitive
  * as removing one (a recovery email later satisfies the unlink rule), so all
- * four sit behind the same recency window.
+ * of them sit behind the same recency window. The core `/change-email` stays
+ * disabled (`user.changeEmail` is unset); it is listed so that enabling it
+ * one day cannot open a path around the window or the placeholder guard.
  */
 export const RECENT_SESSION_ENDPOINTS: ReadonlySet<string> = new Set([
   "/link-social",
   "/unlink-account",
   "/email-otp/request-email-change",
   "/email-otp/change-email",
+  "/change-email",
 ]);
 
 type DatabaseHooks = NonNullable<BetterAuthOptions["databaseHooks"]>;
@@ -70,7 +75,8 @@ type Logger = { error: (message: string, ...args: unknown[]) => void; warn: (mes
 type InternalAdapter = GenericEndpointContext["context"]["internalAdapter"];
 /** The slice of Better Auth's internal adapter the confirmation intent needs. */
 export type TelegramIntentStore = Pick<InternalAdapter, "createVerificationValue" | "deleteVerificationByIdentifier" | "consumeVerificationValue">;
-export type TelegramIntent = "link" | "unlink";
+/** The three confirmed changes to the ways of signing in; `change-email` is bound to the address it was confirmed for. */
+export type TelegramIntent = "link" | "unlink" | "change-email";
 
 const isTelegram = (account: AccountRow | null | undefined): account is AccountRow & { userId: string } =>
   Boolean(account && account.providerId === TELEGRAM_PROVIDER_ID && typeof account.userId === "string");
@@ -93,22 +99,38 @@ export function telegramIsLastLoginMethod(user: Pick<StoredAccount, "email" | "e
 
 const intentIdentifier = (userId: string) => `hq-telegram-intent:${userId}`;
 
+/** The stored form of an intent: the action, and for change-email the address it was confirmed for. */
+const intentValue = (intent: TelegramIntent, subject?: string) => (subject === undefined ? intent : `${intent}:${subject}`);
+
 /**
- * Records that the member confirmed a link or unlink on the account page.
- * Stored as a single-use `hq_auth_verification` row keyed by user id, so a
- * `/link-social` or `/unlink-account` request that did not come through the
- * confirmation step finds nothing and is refused. One intent per user: a
- * new confirmation replaces the previous one.
+ * The one spelling of an address on its way to the change-email endpoints,
+ * used by the confirmation action when it records the intent and by the hook
+ * when it compares the request against it. The library lowercases too; the
+ * trim is ours, so that a pasted address with a stray space still matches.
+ * Non-strings become the empty string, which never matches anything.
  */
-export async function recordTelegramIntent(store: TelegramIntentStore, userId: string, intent: TelegramIntent): Promise<void> {
-  await store.deleteVerificationByIdentifier(intentIdentifier(userId));
-  await store.createVerificationValue({ identifier: intentIdentifier(userId), value: intent, expiresAt: new Date(Date.now() + TELEGRAM_INTENT_MS) });
+export function normalizeEmailAddress(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
-/** Consumes the recorded confirmation. False when there is none, it expired, or it was for the other action; the row is gone either way. */
-async function consumeTelegramIntent(store: TelegramIntentStore, userId: string, intent: TelegramIntent): Promise<boolean> {
+/**
+ * Records that the member confirmed a link, an unlink or a change of email
+ * on the account page. Stored as a single-use `hq_auth_verification` row
+ * keyed by user id, so a `/link-social`, `/unlink-account` or
+ * `/email-otp/request-email-change` request that did not come through the
+ * confirmation step finds nothing and is refused. One intent per user: a
+ * new confirmation replaces the previous one. A change-email intent carries
+ * the confirmed address, so the endpoint cannot be pointed at another one.
+ */
+export async function recordTelegramIntent(store: TelegramIntentStore, userId: string, intent: TelegramIntent, subject?: string): Promise<void> {
+  await store.deleteVerificationByIdentifier(intentIdentifier(userId));
+  await store.createVerificationValue({ identifier: intentIdentifier(userId), value: intentValue(intent, subject), expiresAt: new Date(Date.now() + TELEGRAM_INTENT_MS) });
+}
+
+/** Consumes the recorded confirmation. False when there is none, it expired, or it was for another action or address; the row is gone either way. */
+async function consumeTelegramIntent(store: TelegramIntentStore, userId: string, intent: TelegramIntent, subject?: string): Promise<boolean> {
   const row = await store.consumeVerificationValue(intentIdentifier(userId));
-  return row?.value === intent;
+  return row?.value === intentValue(intent, subject);
 }
 
 /**
@@ -210,14 +232,18 @@ function databaseHooks(): DatabaseHooks {
          * deleteWithHooks hands the fetched row (providerId, userId) to this
          * hook, and internalAdapter.deleteAccount is what /unlink-account
          * calls (db/with-hooks.mjs, db/internal-adapter.mjs). The audit event
-         * is written only when a row was actually removed.
+         * is written only when a row was actually removed. Bot-messaging
+         * consent goes in the same transaction: with the identity gone there
+         * is nobody to message, whether or not the identity row was there.
          */
         after: async (account, context) => {
           if (!isTelegram(account)) return;
           try {
             await builderDatabase().transaction(async (db) => {
-              if (!(await deleteTelegramIdentity(account.userId, db))) return;
-              await recordAuditEvent(db, { kind: "identity.unlinked", actor: { kind: "member", id: account.userId }, subjectUserId: account.userId, metadata: identityAuditMetadata });
+              if (await deleteTelegramIdentity(account.userId, db)) {
+                await recordAuditEvent(db, { kind: "identity.unlinked", actor: { kind: "member", id: account.userId }, subjectUserId: account.userId, metadata: identityAuditMetadata });
+              }
+              await revokeBotConsent(account.userId, db);
             });
           } catch (error) {
             log(context).error("hq-telegram-identity: identity delete failed", error);
@@ -229,13 +255,22 @@ function databaseHooks(): DatabaseHooks {
       update: {
         /**
          * updateUser never runs validateUserInfo, so this is what stops a
-         * placeholder from being written as an email anywhere but on the
-         * OAuth callback route (route template, not request path).
+         * placeholder from being written as an email. The one place it may
+         * be is the Telegram callback (route template `/callback/:id` with
+         * `params.id` telegram, never another provider), and there only as
+         * a rewrite of a placeholder the user already has: the core's
+         * `overrideUserInfoOnSignIn` path (oauth2/link-account.mjs) writes
+         * the provider's email back on every sign-in, which for a linked
+         * account would replace its real address. The hook sees no user id,
+         * but email is unique, so a user holding exactly this placeholder
+         * is the only user the update can land on without violating it.
+         * The change-email routes can never set one.
          */
         before: async (user, context) => {
-          if (isPlaceholderEmail(typeof user.email === "string" ? user.email : undefined) && context?.path !== "/callback/:id") {
-            throw placeholderRefused();
-          }
+          const email = typeof user.email === "string" ? user.email : undefined;
+          if (!isPlaceholderEmail(email)) return;
+          const telegramCallback = context?.path === "/callback/:id" && context.params?.id === TELEGRAM_PROVIDER_ID;
+          if (!telegramCallback || !(await context.context.internalAdapter.findUserByEmail(email!))) throw placeholderRefused();
         },
       },
     },
@@ -295,6 +330,13 @@ export function hqTelegramIdentity(opts: HqTelegramIdentityOptions = { provider:
                 throw new APIError("CONFLICT", { code: "TELEGRAM_ALREADY_CONNECTED", message: "This account already has a Telegram connection." });
               }
               if (!(await consumeTelegramIntent(store, session.user.id, "link"))) throw notConfirmed();
+            }
+            // The confirmation names the address; a request for any other
+            // address, or without one, is not the confirmed change. The OTP
+            // that /email-otp/change-email then needs exists only for a
+            // request that passed here, so the intent is consumed once.
+            if (context.path === "/email-otp/request-email-change") {
+              if (!(await consumeTelegramIntent(store, session.user.id, "change-email", normalizeEmailAddress(context.body?.newEmail)))) throw notConfirmed();
             }
             if (context.path === "/unlink-account") {
               const accounts = await store.findAccounts(session.user.id);

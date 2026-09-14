@@ -22,6 +22,7 @@ const sorted = (set: ReadonlySet<string>) => [...set].sort();
 describe("Telegram identity plugin guard lists", () => {
   it("guards every endpoint that would mail, look up or verify an address from the body", () => {
     expect(sorted(PLACEHOLDER_GUARDED_ENDPOINTS)).toEqual([
+      "/change-email",
       "/email-otp/change-email",
       "/email-otp/check-verification-otp",
       "/email-otp/request-email-change",
@@ -37,9 +38,9 @@ describe("Telegram identity plugin guard lists", () => {
     ]);
   });
 
-  it("closes both client id_token branches and puts all four login-method endpoints behind the recency window", () => {
+  it("closes both client id_token branches and puts every login-method endpoint, the disabled core one included, behind the recency window", () => {
     expect(sorted(ID_TOKEN_ENDPOINTS)).toEqual(["/link-social", "/sign-in/social"]);
-    expect(sorted(RECENT_SESSION_ENDPOINTS)).toEqual(["/email-otp/change-email", "/email-otp/request-email-change", "/link-social", "/unlink-account"]);
+    expect(sorted(RECENT_SESSION_ENDPOINTS)).toEqual(["/change-email", "/email-otp/change-email", "/email-otp/request-email-change", "/link-social", "/unlink-account"]);
     expect(RECENT_SESSION_MS).toBe(15 * 60 * 1000);
   });
 
@@ -54,6 +55,7 @@ describe("Telegram identity plugin guard lists", () => {
     for (const path of ["/callback/:id", "/callback/telegram", "/get-session", "/sign-out", "/update-user", "/list-accounts", ""]) expect(matching(path), path).toEqual([]);
     expect(matching("/link-social")).toEqual([1, 2]);
     expect(matching("/email-otp/change-email")).toEqual([0, 2]);
+    expect(matching("/change-email")).toEqual([0, 2]);
   });
 });
 

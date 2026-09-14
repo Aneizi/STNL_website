@@ -6,7 +6,7 @@ import { NextResponse, type NextRequest } from "next/server";
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   // Let the retired signup URL reach Next's 404 instead of redirecting to login.
-  const publicHq = ["/hq/login", "/hq/signup", "/hq/signin", "/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram"];
+  const publicHq = ["/hq/login", "/hq/signup", "/hq/signin", "/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email"];
   // Member pages use their own database-backed session and never hq_session.
   if (publicHq.includes(pathname) || /^\/hq\/team\/[^/]+$/.test(pathname)) return NextResponse.next();
   if (!request.cookies.get("hq_session")?.value) {

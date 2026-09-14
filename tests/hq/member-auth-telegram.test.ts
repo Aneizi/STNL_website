@@ -10,14 +10,16 @@ import { SignJWT, exportJWK, generateKeyPair } from "jose";
 import { Pool } from "pg";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { runWithEndpointContext } from "@better-auth/core/context";
 import { applyMigrations } from "./helpers/db";
 import { getTelegramIdentity } from "@/lib/hq/identity";
+import { getBotConsent } from "@/lib/hq/telegram-consent";
 import { hqTelegramIdentity, PLACEHOLDER_GUARDED_ENDPOINTS, RECENT_SESSION_ENDPOINTS, recordTelegramIntent } from "@/lib/hq/telegram-identity-plugin";
 import { TELEGRAM_ISSUER, TELEGRAM_REJECTION_LOG_PREFIX, telegramProvider } from "@/lib/hq/telegram-provider";
 
 const state = vi.hoisted(() => ({
   pg: null as PGlite | null,
-  sent: [] as Array<{ to: string; text: string }>,
+  sent: [] as Array<{ to: string; subject: string; text: string }>,
   synced: vi.fn(),
   cookie: "",
   fetches: [] as string[],
@@ -37,7 +39,11 @@ vi.mock("symbols-react", async () => {
   return { IconArrowLeft: icon, IconArrowRight: icon, IconPaperplaneFill: icon };
 });
 vi.mock("next/headers", () => ({ headers: async () => new Headers({ Origin: "https://hq-test.example", Cookie: state.cookie }) }));
-vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); } }));
+vi.mock("next/navigation", () => ({
+  redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); },
+  // The account page carries a client control; static markup needs the hook to exist, not to navigate.
+  useRouter: () => ({ replace() {}, refresh() {} }),
+}));
 vi.mock("@/lib/hq/builder-store", async (importOriginal) => {
   const store = await importOriginal<typeof import("@/lib/hq/builder-store")>();
   return { ...store, syncBuilderAccount: async (user: { id: string; email: string | null; name: string }) => {
@@ -64,7 +70,7 @@ vi.mock("pg", () => ({
 vi.mock("resend", () => ({
   Resend: class {
     emails = {
-      send: async (message: { to: string; text: string }) => {
+      send: async (message: { to: string; subject: string; text: string }) => {
         state.sent.push(message);
         return { error: null, data: { id: "test-email" } };
       },
@@ -194,6 +200,33 @@ async function auditEvents() {
 
 const identityEvent = (kind: "identity.linked" | "identity.unlinked", userId: string) =>
   ({ kind, actor_kind: "member", actor_id: userId, subject_user_id: userId, metadata: { provider: "telegram" } });
+const memberEvent = (kind: "identity.email_changed" | "bot.consent_changed", userId: string, metadata: Record<string, unknown>) =>
+  ({ kind, actor_kind: "member", actor_id: userId, subject_user_id: userId, metadata });
+
+/** The recorded confirmation intents for a user, if any. */
+async function intents(userId: string) {
+  return (await state.pg!.query<{ value: string }>("SELECT value FROM hq_auth_verification WHERE identifier = $1", [`hq-telegram-intent:${userId}`])).rows;
+}
+
+/** The pending change-email codes, which must never exist for a placeholder or a stale session. */
+async function changeEmailRows() {
+  return (await state.pg!.query<{ identifier: string }>("SELECT identifier FROM hq_auth_verification WHERE identifier ILIKE 'change-email%'")).rows;
+}
+
+/**
+ * The whole Add a recovery email flow for the session behind `cookie`:
+ * confirmation step, request, the code from the one message sent, change.
+ * Returns the change-email response; the caller asserts the outcome.
+ */
+async function addRecoveryEmail(cookie: string, newEmail: string) {
+  state.cookie = cookie;
+  const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
+  expect(await confirmEmailChange(newEmail)).toEqual({ ok: true, newEmail });
+  const requested = await request("/email-otp/request-email-change", { newEmail }, cookie);
+  expect(requested.status).toBe(200);
+  const otp = state.sent.at(-1)!.text.match(/\b\d{6}\b/)![0];
+  return request("/email-otp/change-email", { newEmail, otp }, cookie);
+}
 
 /** What linking must never touch: the account id, its profile, enrollments, capability grants and team rows. */
 async function accountSnapshot(userId: string) {
@@ -504,17 +537,50 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(change.status).toBe(400);
     expect((await change.json()).code).toBe("placeholder_email_not_allowed");
 
+    // Nor is a placeholder ever a new address: the confirmation refuses it before any intent exists, and both change-email routes refuse it before any row does.
+    state.cookie = cookie;
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
+    for (const email of [PLACEHOLDER, "someone@anonymous.placeholder.invalid", " Someone@Anonymous.Placeholder.Invalid "]) {
+      expect(await confirmEmailChange(email), email).toEqual({ ok: false, code: "INVALID_EMAIL" });
+    }
+    expect(await intents(userId)).toEqual([]);
+    for (const [path, body] of [["/email-otp/change-email", { newEmail: PLACEHOLDER, otp: "000000" }], ["/change-email", { newEmail: PLACEHOLDER }]] as const) {
+      const response = await request(path, body, cookie);
+      expect(response.status, path).toBe(400);
+      expect((await response.json()).code, path).toBe("placeholder_email_not_allowed");
+    }
+
     expect(state.sent).toEqual([]);
     expect(await verifications()).toEqual([]);
+    expect(await changeEmailRows()).toEqual([]);
     expect(await count("hq_auth_account")).toBe(accounts);
     expect(await count("hq_auth_session")).toBe(1);
 
     // The database hook closes updateUser as well, which never runs validateUserInfo.
     const { getAuth } = await import("@/lib/hq/member-auth");
     const context = await getAuth().$context;
-    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
     await expect(context.internalAdapter.updateUser(userId, { email: "another@telegram.placeholder.invalid" })).rejects.toMatchObject({ body: { code: "placeholder_email_not_allowed" } });
     expect((await context.internalAdapter.updateUser(userId, { name: "Renamed Builder" }))?.name).toBe("Renamed Builder");
+
+    // The one exemption is the Telegram callback rewriting a placeholder the user already holds (the
+    // core's override-on-sign-in path). A placeholder nobody holds would replace a real address, so it is
+    // refused there too, as is any placeholder on another provider's callback or on the change-email route.
+    const refused = { body: { code: "placeholder_email_not_allowed" } };
+    const within = (path: string, id: string | undefined, run: () => Promise<unknown>) =>
+      runWithEndpointContext({ path, params: id === undefined ? {} : { id }, context } as unknown as Parameters<typeof runWithEndpointContext>[0], run);
+    expect(await within("/callback/:id", "telegram", () => context.internalAdapter.updateUser(userId, { email: PLACEHOLDER }))).toMatchObject({ id: userId, email: PLACEHOLDER });
+    await expect(within("/callback/:id", "telegram", () => context.internalAdapter.updateUser(userId, { email: "another@telegram.placeholder.invalid" }))).rejects.toMatchObject(refused);
+    await expect(within("/callback/:id", "github", () => context.internalAdapter.updateUser(userId, { email: PLACEHOLDER }))).rejects.toMatchObject(refused);
+    await expect(within("/callback/:id", undefined, () => context.internalAdapter.updateUser(userId, { email: PLACEHOLDER }))).rejects.toMatchObject(refused);
+    await expect(within("/email-otp/change-email", undefined, () => context.internalAdapter.updateUser(userId, { email: PLACEHOLDER }))).rejects.toMatchObject(refused);
+    await expect(within("/change-email", undefined, () => context.internalAdapter.updateUser(userId, { email: PLACEHOLDER }))).rejects.toMatchObject(refused);
+    // An account with a real address keeps it even on the Telegram callback: a placeholder nobody holds is
+    // refused by the hook, and one somebody else holds passes the hook only to hit the unique email index.
+    const linked = await signInWithEmail("linked@example.com", "Linked Builder");
+    await expect(within("/callback/:id", "telegram", () => context.internalAdapter.updateUser(linked.user.id, { email: "another@telegram.placeholder.invalid" }))).rejects.toMatchObject(refused);
+    await expect(within("/callback/:id", "telegram", () => context.internalAdapter.updateUser(linked.user.id, { email: PLACEHOLDER }))).rejects.toThrow(/hq_auth_user_email_key|unique/i);
+    expect((await state.pg!.query("SELECT email FROM hq_auth_user ORDER BY email")).rows).toEqual([{ email: PLACEHOLDER }, { email: "linked@example.com" }]);
   });
 
   it("refuses a Telegram identity another account already holds, before any row is committed", async () => {
@@ -709,17 +775,19 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
       ["/unlink-account", { accountId: "any" }],
       ["/email-otp/request-email-change", { newEmail: "recover@example.com" }],
       ["/email-otp/change-email", { newEmail: "recover@example.com", otp: "000000" }],
+      ["/change-email", { newEmail: "recover@example.com" }],
     ];
     for (const [path, body] of attempts) {
       const response = await request(path, body, emailUser.cookie);
       expect(response.status, path).toBe(403);
       expect((await response.json()).code, path).toBe("SESSION_NOT_FRESH");
     }
-    const { confirmLinkTelegram, confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
+    const { confirmEmailChange, confirmLinkTelegram, confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
     expect(await confirmLinkTelegram()).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
     expect(await confirmUnlinkTelegram()).toEqual({ ok: false, code: "TELEGRAM_NOT_CONNECTED" });
+    expect(await confirmEmailChange("recover@example.com")).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
     expect(state.sent).toHaveLength(sent);
-    expect((await state.pg!.query("SELECT identifier FROM hq_auth_verification WHERE identifier ILIKE 'change-email%'")).rows).toEqual([]);
+    expect(await changeEmailRows()).toEqual([]);
     expect((await state.pg!.query('SELECT email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ email: "stale@example.com", emailVerified: true }]);
     expect(await count("hq_auth_account")).toBe(0);
 
@@ -906,6 +974,269 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     }
     // The endpoints the flow needs are still there.
     expect((await request("/list-accounts", undefined, cookie)).status).toBe(200);
+  });
+
+  it("adds a verified recovery email to a Telegram-first account, mailing the new address once and nobody else", async () => {
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    state.cookie = cookie;
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    const { confirmEmailChange, confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
+
+    // Without the confirmation step the endpoint refuses, mails nothing and stores nothing.
+    const unconfirmed = await request("/email-otp/request-email-change", { newEmail: "recover@example.com" }, cookie);
+    expect(unconfirmed.status).toBe(403);
+    expect((await unconfirmed.json()).code).toBe("CONFIRMATION_REQUIRED");
+    expect(state.sent).toEqual([]);
+    expect(await changeEmailRows()).toEqual([]);
+
+    // A confirmation names one address and is spent on the first request, matching or not.
+    expect(await confirmEmailChange(" Recover@Example.com ")).toEqual({ ok: true, newEmail: "recover@example.com" });
+    expect(await intents(userId)).toEqual([{ value: "change-email:recover@example.com" }]);
+    const other = await request("/email-otp/request-email-change", { newEmail: "someone-else@example.com" }, cookie);
+    expect(other.status).toBe(403);
+    expect((await other.json()).code).toBe("CONFIRMATION_REQUIRED");
+    expect(await intents(userId)).toEqual([]);
+    expect(state.sent).toEqual([]);
+
+    expect(await confirmEmailChange("recover@example.com")).toEqual({ ok: true, newEmail: "recover@example.com" });
+    const requested = await request("/email-otp/request-email-change", { newEmail: "recover@example.com" }, cookie);
+    expect(requested.status).toBe(200);
+    expect(await requested.json()).toEqual({ success: true });
+    expect(state.sent).toHaveLength(1);
+    expect(state.sent[0].to).toBe("recover@example.com");
+    expect(state.sent[0].text).toContain("confirm this address");
+    const otp = state.sent[0].text.match(/\b\d{6}\b/)![0];
+    const again = await request("/email-otp/request-email-change", { newEmail: "recover@example.com" }, cookie);
+    expect(again.status).toBe(403);
+
+    // The code is checked with the plugin's attempt budget; the right one flips the account to a verified real address, same id.
+    const wrong = await request("/email-otp/change-email", { newEmail: "recover@example.com", otp: otp === "000000" ? "111111" : "000000" }, cookie);
+    expect(wrong.status).toBe(400);
+    expect((await wrong.json()).code).toBe("INVALID_OTP");
+    const changed = await request("/email-otp/change-email", { newEmail: "recover@example.com", otp }, cookie);
+    expect(changed.status).toBe(200);
+    expect((await state.pg!.query('SELECT id, email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ id: userId, email: "recover@example.com", emailVerified: true }]);
+    // There was no previous real address, so nothing else was sent, and the audit says so.
+    expect(state.sent).toHaveLength(1);
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId), memberEvent("identity.email_changed", userId, { hadPreviousEmail: false })]);
+    expect((await state.pg!.query("SELECT email FROM hq_builder_profiles")).rows).toEqual([{ email: "recover@example.com" }]);
+    expect(await changeEmailRows()).toEqual([]);
+
+    const { currentMember } = await import("@/lib/hq/member-auth");
+    expect(await currentMember()).toEqual({ id: userId, email: "recover@example.com", name: NAME });
+    const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
+    const html = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({ email: "added" }) }));
+    expect(html).toContain("recover@example.com");
+    expect(html).toContain("Email added.");
+    expect(html).toContain('href="/hq/account/disconnect-telegram"');
+    expect(html).not.toContain('href="/hq/account/add-email"');
+    expect(html).not.toContain("placeholder.invalid");
+
+    // The new address signs in to the very same account.
+    const byEmail = await signInWithEmail("recover@example.com", NAME);
+    expect(byEmail.user.id).toBe(userId);
+    expect(await count("hq_auth_user")).toBe(1);
+
+    // With a verified email in place Telegram may go, and the identity row goes with it.
+    state.cookie = cookie;
+    const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: true, accountId });
+    expect((await request("/unlink-account", { accountId }, cookie)).status).toBe(200);
+    expect(await count("hq_auth_account")).toBe(0);
+    expect(await count("hq_auth_telegram_identity")).toBe(0);
+    expect(await currentMember()).toEqual({ id: userId, email: "recover@example.com", name: NAME });
+  });
+
+  it("tells the previous verified address, once, when the login email changes", async () => {
+    const emailUser = await signInWithEmail("before@example.com", "Moving Builder");
+    const userId = emailUser.user.id;
+    state.sent.length = 0;
+    const changed = await addRecoveryEmail(emailUser.cookie, "after@example.com");
+    expect(changed.status).toBe(200);
+    // Exactly two messages: the code to the new address, then the notice to the old one, which carries no code.
+    expect(state.sent.map((message) => message.to)).toEqual(["after@example.com", "before@example.com"]);
+    expect(state.sent[1].subject).toContain("email changed");
+    expect(state.sent[1].text).toContain("after@example.com");
+    expect(state.sent[1].text).not.toMatch(/\b\d{6}\b/);
+    expect((await state.pg!.query('SELECT id, email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ id: userId, email: "after@example.com", emailVerified: true }]);
+    expect(await auditEvents()).toEqual([memberEvent("identity.email_changed", userId, { hadPreviousEmail: true })]);
+    expect((await state.pg!.query("SELECT email FROM hq_builder_profiles")).rows).toEqual([{ email: "after@example.com" }]);
+    const { currentMember } = await import("@/lib/hq/member-auth");
+    expect(await currentMember()).toEqual({ id: userId, email: "after@example.com", name: "Moving Builder" });
+  });
+
+  it("answers a request for an address another account holds exactly like one for a free address, sending nothing to it", async () => {
+    await signInWithEmail("taken@example.com", "Holder");
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    state.cookie = cookie;
+    const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
+    state.sent.length = 0;
+
+    expect(await confirmEmailChange("taken@example.com")).toEqual({ ok: true, newEmail: "taken@example.com" });
+    const taken = await request("/email-otp/request-email-change", { newEmail: "taken@example.com" }, cookie);
+    expect(await confirmEmailChange("free@example.com")).toEqual({ ok: true, newEmail: "free@example.com" });
+    const free = await request("/email-otp/request-email-change", { newEmail: "free@example.com" }, cookie);
+    expect([taken.status, free.status]).toEqual([200, 200]);
+    expect(await taken.json()).toEqual(await free.json());
+    expect(state.sent.map((message) => message.to)).toEqual(["free@example.com"]);
+    expect((await state.pg!.query("SELECT identifier FROM hq_auth_verification WHERE identifier ILIKE '%taken@example.com%'")).rows).toEqual([]);
+    // Nothing to guess: no code exists for the taken address, and the holder's account is untouched.
+    const guess = await request("/email-otp/change-email", { newEmail: "taken@example.com", otp: "000000" }, cookie);
+    expect(guess.status).toBe(400);
+    expect((await state.pg!.query("SELECT email FROM hq_auth_user ORDER BY email")).rows).toEqual([{ email: PLACEHOLDER }, { email: "taken@example.com" }]);
+  });
+
+  it("lets a stale session neither add an email nor use one to disconnect Telegram", async () => {
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    state.cookie = cookie;
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
+    const store = await intentStore();
+    const { confirmEmailChange, confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
+    await state.pg!.query(`UPDATE hq_auth_session SET "createdAt" = now() - interval '16 minutes'`);
+
+    expect(await confirmEmailChange("recover@example.com")).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
+    // Even a confirmation written directly opens nothing for a stale session, on any of the three routes.
+    await recordTelegramIntent(store, userId, "change-email", "recover@example.com");
+    const attempts: Array<[string, object]> = [
+      ["/email-otp/request-email-change", { newEmail: "recover@example.com" }],
+      ["/email-otp/change-email", { newEmail: "recover@example.com", otp: "000000" }],
+      ["/change-email", { newEmail: "recover@example.com" }],
+    ];
+    for (const [path, body] of attempts) {
+      const response = await request(path, body, cookie);
+      expect(response.status, path).toBe(403);
+      expect((await response.json()).code, path).toBe("SESSION_NOT_FRESH");
+    }
+    expect(state.sent).toEqual([]);
+    expect(await changeEmailRows()).toEqual([]);
+    expect((await state.pg!.query('SELECT email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ email: PLACEHOLDER, emailVerified: false }]);
+
+    // So Telegram is still the only way in and stays: the action says stale, then last method; the endpoint refuses even with an unlink intent written directly.
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
+    await state.pg!.query(`UPDATE hq_auth_session SET "createdAt" = now() - interval '14 minutes'`);
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: false, code: "LAST_LOGIN_METHOD" });
+    await recordTelegramIntent(store, userId, "unlink");
+    const unlink = await request("/unlink-account", { accountId }, cookie);
+    expect(unlink.status).toBe(400);
+    expect((await unlink.json()).code).toBe("LAST_LOGIN_METHOD");
+    expect(await count("hq_auth_account")).toBe(1);
+    expect(await count("hq_auth_telegram_identity")).toBe(1);
+  });
+
+  it("keeps the core change-email route disabled", async () => {
+    const emailUser = await signInWithEmail("core@example.com");
+    const response = await request("/change-email", { newEmail: "other@example.com" }, emailUser.cookie);
+    expect(response.status).toBe(400);
+    expect((await response.json()).code).toBe("CHANGE_EMAIL_DISABLED");
+    expect(state.sent).toHaveLength(1);
+    expect((await state.pg!.query("SELECT email FROM hq_auth_user")).rows).toEqual([{ email: "core@example.com" }]);
+  });
+
+  it("keeps bot messages a separate decision from the Telegram connection, and declining changes nothing about access", async () => {
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    state.cookie = cookie;
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    const { setBotMessaging } = await import("@/lib/hq/actions/telegram");
+    const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
+    const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
+    const render = async () => renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
+    const consentRows = () => state.pg!.query(
+      "SELECT user_id, telegram_user_id::text AS telegram_user_id, messaging_enabled, consented_at IS NOT NULL AS consented, revoked_at IS NOT NULL AS revoked FROM hq_telegram_bot_consent",
+    ).then((r) => r.rows);
+
+    // Connected is not consent: no row, and the page says so next to the connection.
+    expect(await getBotConsent(userId)).toBeNull();
+    let html = await render();
+    expect(html).toContain("Bot messages");
+    expect(html).toMatch(/>Disabled<\/span>/);
+    expect(html).toContain("Enable bot messages");
+    expect(html).toContain("only when this is enabled");
+    expect(html).toContain("website access is the same either way");
+    expect(html).not.toMatch(/[—·]/);
+
+    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
+    expect(await consentRows()).toEqual([{ user_id: userId, telegram_user_id: String(TELEGRAM_ID), messaging_enabled: true, consented: true, revoked: false }]);
+    expect(await getBotConsent(userId)).toMatchObject({ userId, telegramUserId: String(TELEGRAM_ID), messagingEnabled: true, revokedAt: null });
+    html = await render();
+    expect(html).toMatch(/>Enabled<\/span>/);
+    expect(html).toContain("Disable bot messages");
+    // Saying it again records nothing; declining records once and keeps the website.
+    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
+    expect(await setBotMessaging(false)).toEqual({ ok: true, enabled: false });
+    expect(await consentRows()).toEqual([{ user_id: userId, telegram_user_id: String(TELEGRAM_ID), messaging_enabled: false, consented: true, revoked: true }]);
+    expect(await setBotMessaging(false)).toEqual({ ok: true, enabled: false });
+    expect(await auditEvents()).toEqual([
+      identityEvent("identity.linked", userId),
+      memberEvent("bot.consent_changed", userId, { enabled: true }),
+      memberEvent("bot.consent_changed", userId, { enabled: false }),
+    ]);
+    expect(await currentMember()).toEqual({ id: userId, email: null, name: NAME });
+    expect((await requireMember("/hq/account")).id).toBe(userId);
+    expect(await count("hq_auth_telegram_identity")).toBe(1);
+    expect(await count("hq_auth_session")).toBe(1);
+    expect(await render()).toMatch(/>Disabled<\/span>/);
+
+    // No Telegram, nobody to message: the action refuses, nothing is written, and the page has no such section.
+    const emailUser = await signInWithEmail("no-telegram@example.com", "Email Only");
+    state.cookie = emailUser.cookie;
+    expect(await setBotMessaging(true)).toEqual({ ok: false, code: "TELEGRAM_NOT_CONNECTED" });
+    expect(await getBotConsent(emailUser.user.id)).toBeNull();
+    expect(await count("hq_telegram_bot_consent")).toBe(1);
+    expect(await render()).not.toContain("Bot messages");
+  });
+
+  it("revokes bot messages when Telegram is disconnected, in the same operation", async () => {
+    const emailUser = await signInWithEmail("keeps-email-too@example.com", "Keeps Email");
+    const userId = emailUser.user.id;
+    expect((await linkTelegramTo(emailUser.cookie)).status).toBe(302);
+    state.cookie = emailUser.cookie;
+    const { confirmUnlinkTelegram, setBotMessaging } = await import("@/lib/hq/actions/telegram");
+    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
+    const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
+
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: true, accountId });
+    expect((await request("/unlink-account", { accountId }, emailUser.cookie)).status).toBe(200);
+    expect(await count("hq_auth_telegram_identity")).toBe(0);
+    expect(await getBotConsent(userId)).toMatchObject({ messagingEnabled: false, revokedAt: expect.any(String) });
+    expect(await auditEvents()).toEqual([
+      identityEvent("identity.linked", userId),
+      memberEvent("bot.consent_changed", userId, { enabled: true }),
+      identityEvent("identity.unlinked", userId),
+      memberEvent("bot.consent_changed", userId, { enabled: false, cause: "telegram_disconnected" }),
+    ]);
+    const { currentMember } = await import("@/lib/hq/member-auth");
+    expect(await currentMember()).toEqual({ id: userId, email: "keeps-email-too@example.com", name: "Keeps Email" });
+
+    // Connecting again does not bring it back.
+    expect((await linkTelegramTo(emailUser.cookie)).status).toBe(302);
+    expect(await getBotConsent(userId)).toMatchObject({ messagingEnabled: false });
+    expect((await auditEvents()).slice(4)).toEqual([identityEvent("identity.linked", userId)]);
+  });
+
+  it("renders the recovery-email step for a Telegram-only account and sends an account with an email back", async () => {
+    const { session } = await signInWithTelegram();
+    state.cookie = session!.split(";")[0];
+    const { default: AddEmailPage } = await import("@/app/hq/(member)/account/add-email/page");
+    const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
+    const html = renderToStaticMarkup(await AddEmailPage());
+    expect(html).toContain("Add a recovery");
+    expect(html).toContain('name="email"');
+    expect(html).toContain("Send code");
+    expect(html).toContain("within 15 minutes");
+    expect(html).not.toContain("placeholder.invalid");
+    expect(html).not.toMatch(/[—·]/);
+    const account = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
+    expect(account).toContain('href="/hq/account/add-email"');
+    expect(account).toContain("Add a recovery email");
+
+    const emailUser = await signInWithEmail("has-email@example.com", "Has Email");
+    state.cookie = emailUser.cookie;
+    await expect(AddEmailPage()).rejects.toThrow("REDIRECT:/hq/account");
   });
 
   it("lets the database refuse a second Telegram account row even when the identity backstop cannot see it", async () => {

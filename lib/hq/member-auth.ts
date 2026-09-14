@@ -3,12 +3,13 @@ import { cache } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { betterAuth } from "better-auth";
-import { APIError } from "better-auth/api";
 import { emailOTP } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
 import { Pool } from "pg";
 import { Resend } from "resend";
 import { getMemberAuthAvailability, memberAuthOrigin, safeMemberNext } from "./member-auth-config";
+import { recordAuditEvent } from "./audit";
+import { builderDatabase } from "./builder-db";
 import { syncBuilderAccount } from "./builder-store";
 import { isVerifiedAccount, verifiedLoginEmail } from "./identity";
 import { memberEmailDeliveryFailed } from "./member-auth-delivery";
@@ -30,10 +31,30 @@ export class MemberAuthUnavailableError extends Error {
 // below and the account-creation hook both import them; neither restates the
 // rule. The placeholder checks that remain here guard endpoints, not access.
 
+/** What the one sender takes: a plain message to one address. */
+type MemberEmail = { to: string; subject: string; text: string };
+
 function createMemberAuth() {
   const available = getMemberAuthAvailability();
   const baseURL = memberAuthOrigin();
   if (!available.configured || !baseURL) throw new MemberAuthUnavailableError();
+
+  /**
+   * The one way member email leaves this module. False when nothing was
+   * sent: the address is a placeholder (the last line of defence; the
+   * identity plugin refuses those before any row exists), email is not
+   * configured, or Resend reported a failure. Never throws.
+   */
+  async function deliver(message: MemberEmail): Promise<boolean> {
+    if (isPlaceholderEmail(message.to) || !available.email) return false;
+    try {
+      const resend = new Resend(process.env.RESEND_API_KEY);
+      const { error } = await resend.emails.send({ from: process.env.EMAIL_FROM!, ...message });
+      return !error;
+    } catch {
+      return false;
+    }
+  }
 
   return betterAuth({
     appName: "Superteam NL HQ",
@@ -110,6 +131,37 @@ function createMemberAuth() {
             await syncBuilderAccount({ id: user.id, email: verifiedLoginEmail(user), name: user.name.trim() });
           },
         },
+        update: {
+          /**
+           * The login email changed. Only /email-otp/change-email does that,
+           * and it updates the session's own user, so the session on the
+           * endpoint context still carries the previous address (the cookie
+           * is refreshed after updateUser returns). When that address was a
+           * verified real one, it is told; a Telegram-first account had only
+           * the placeholder, and nothing is ever sent to that. The audit
+           * event records which case it was and nothing else. Post-commit:
+           * a failure here is logged, never surfaced as a failed change.
+           */
+          after: async (user, context) => {
+            const previous = context?.context.session?.user;
+            if (!previous || previous.id !== user.id || typeof user.email !== "string" || user.email === previous.email) return;
+            const previousEmail = verifiedLoginEmail(previous);
+            try {
+              if (previousEmail !== null) {
+                const delivered = await deliver({
+                  to: previousEmail,
+                  subject: "Your Superteam NL HQ sign-in email changed",
+                  text: `The email address for signing in to your Superteam NL HQ account was changed to ${user.email}.\n\nIf this was you, there is nothing to do. If it was not, contact Superteam NL right away.`,
+                });
+                if (!delivered) context.context.logger.error("hq-member-auth: the previous address was not notified of the email change", { userId: user.id });
+              }
+              await recordAuditEvent(builderDatabase(), { kind: "identity.email_changed", actor: { kind: "member", id: user.id }, subjectUserId: user.id, metadata: { hadPreviousEmail: previousEmail !== null } });
+              if (user.name.trim() && (await isVerifiedAccount(user))) await syncBuilderAccount({ id: user.id, email: verifiedLoginEmail(user), name: user.name.trim() });
+            } catch (error) {
+              context.context.logger.error("hq-member-auth: email change follow-up failed", error);
+            }
+          },
+        },
       },
     },
     plugins: [
@@ -118,27 +170,24 @@ function createMemberAuth() {
         expiresIn: 300,
         allowedAttempts: 3,
         storeOTP: "hashed",
-        async sendVerificationOTP({ email, otp }) {
-          // Last line of defence: the identity plugin refuses placeholder
-          // addresses before an OTP row exists. Should one still get here,
-          // never hand it to the sender and report the send as failed.
-          if (isPlaceholderEmail(email)) {
-            memberEmailDeliveryFailed();
-            return;
-          }
-          try {
-            if (!available.email) throw new APIError("SERVICE_UNAVAILABLE", { message: "Email sign-in is not available yet." });
-            const resend = new Resend(process.env.RESEND_API_KEY);
-            const { error } = await resend.emails.send({
-              from: process.env.EMAIL_FROM!,
-              to: email,
-              subject: "Your Superteam NL HQ sign-in code",
-              text: `Your Superteam NL HQ code is ${otp}.\n\nIt expires in 5 minutes. If you did not request this code, you can ignore this email.`,
-            });
-            if (error) memberEmailDeliveryFailed();
-          } catch {
-            memberEmailDeliveryFailed();
-          }
+        // The recovery-email flow for Telegram-first accounts, and the only
+        // way a login email changes: the code goes to the new address alone.
+        // The current address is never asked for a code, so a placeholder
+        // there is never mailed (routes.mjs sends only to newEmail).
+        changeEmail: { enabled: true, verifyCurrentEmail: false },
+        async sendVerificationOTP({ email, otp, type }) {
+          const message = type === "change-email"
+            ? {
+                subject: "Confirm your Superteam NL HQ email",
+                text: `Your Superteam NL HQ code is ${otp}.\n\nEnter it to confirm this address for your HQ account. It expires in 5 minutes. If you did not ask to add this address, you can ignore this email.`,
+              }
+            : {
+                subject: "Your Superteam NL HQ sign-in code",
+                text: `Your Superteam NL HQ code is ${otp}.\n\nIt expires in 5 minutes. If you did not request this code, you can ignore this email.`,
+              };
+          // Better Auth absorbs sender errors; the delivery module turns
+          // this flag into an honest 503 for the request.
+          if (!(await deliver({ to: email, ...message }))) memberEmailDeliveryFailed();
         },
       }),
       hqTelegramIdentity({

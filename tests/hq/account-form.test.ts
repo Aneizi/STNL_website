@@ -114,4 +114,12 @@ describe("telegram copy helpers", () => {
     expect(telegramErrorMessage("something_else")).toBeNull();
     expect(telegramErrorMessage(["something_else", "another"])).toBeNull();
   });
+
+  it("looks codes up as own keys only, so Object.prototype names in the URL are just another unknown code", () => {
+    for (const value of ["__proto__", "constructor", "toString", "hasOwnProperty"]) {
+      expect(telegramErrorMessage(value), value).toBeNull();
+      expect(telegramErrorMessage(["telegram", value]), value).toBe(telegramFailure("signin"));
+    }
+    expect(alertText(render({ error: ["telegram", "__proto__"] }))).toBe(telegramFailure("signin"));
+  });
 });

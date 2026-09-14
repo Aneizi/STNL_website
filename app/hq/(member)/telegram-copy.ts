@@ -27,7 +27,13 @@ const MESSAGES: Record<string, string> = {
   LAST_LOGIN_METHOD: LAST_LOGIN_METHOD_COPY,
   CONFIRMATION_REQUIRED: "Please confirm this change again.",
   TELEGRAM_UNAVAILABLE: "Telegram sign-in is not available yet.",
+  EMAIL_UNAVAILABLE: "Email is not available yet.",
+  INVALID_EMAIL: "Enter a valid email address.",
+  EMAIL_UNCHANGED: "That is already the email on this account.",
 };
+
+/** Own keys only: `in` would also find `__proto__`, `constructor` and the rest of Object.prototype, and a URL can carry any of those. */
+const knownCode = (value: string): boolean => Object.hasOwn(MESSAGES, value);
 
 /** The line for a Telegram attempt that did not work for a reason the person cannot act on. */
 export function telegramFailure(action: TelegramAction): string {
@@ -45,7 +51,7 @@ export function telegramFailure(action: TelegramAction): string {
  */
 export function telegramErrorMessage(error: string | string[] | undefined, action: TelegramAction = "signin"): string | null {
   const values = error === undefined ? [] : Array.isArray(error) ? error : [error];
-  const mapped = values.filter((value) => value in MESSAGES);
+  const mapped = values.filter(knownCode);
   if (mapped.length) return MESSAGES[mapped[mapped.length - 1]];
   return values.includes("telegram") ? telegramFailure(action) : null;
 }
