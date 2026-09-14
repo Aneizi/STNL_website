@@ -4,7 +4,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware, isAPIError } from "better-auth/api";
-import { emailOTP } from "better-auth/plugins";
+import { customSession, emailOTP } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
 import { Pool } from "pg";
 import { Resend } from "resend";
@@ -277,6 +277,18 @@ function createMemberAuth() {
         provider: available.telegram
           ? { clientId: process.env.TELEGRAM_LOGIN_CLIENT_ID!, clientSecret: process.env.TELEGRAM_LOGIN_CLIENT_SECRET! }
           : null,
+      }),
+      // /get-session hands the stored hq_auth_user row to whoever holds the
+      // cookie, so a Telegram-only account's own browser would otherwise be
+      // told its internal placeholder address. This plugin replaces that
+      // endpoint, and with it api.getSession(), so every reader of a member
+      // session sees null instead: the invariant holds in the code rather
+      // than depending on each caller remembering it. Disabling the path
+      // instead would 404 the library's own session endpoint, which the auth
+      // client refetches after a sign-in or a link.
+      customSession(async ({ user, session }) => {
+        const placeholder = isPlaceholderEmail(user.email);
+        return { session, user: { ...user, email: placeholder ? null : user.email, emailVerified: placeholder ? false : user.emailVerified } };
       }),
       nextCookies(),
     ],

@@ -235,14 +235,6 @@ async function changeEmailWithCode(cookie: string, newEmail: string) {
   return request("/email-otp/change-email", { newEmail, otp }, cookie);
 }
 
-/** The whole Add a recovery email flow: the confirmation step the page runs, then the endpoints. */
-async function addRecoveryEmail(cookie: string, newEmail: string) {
-  state.cookie = cookie;
-  const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
-  expect(await confirmEmailChange(newEmail)).toEqual({ ok: true, newEmail });
-  return changeEmailWithCode(cookie, newEmail);
-}
-
 /** What linking must never touch: the account id, its profile, enrollments, capability grants and team rows. */
 async function accountSnapshot(userId: string) {
   const one = async (sql: string) => (await state.pg!.query<{ n: number }>(sql, [userId])).rows[0].n;
@@ -995,6 +987,29 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     }
     // The endpoints the flow needs are still there.
     expect((await request("/list-accounts", undefined, cookie)).status).toBe(200);
+  });
+
+  it("never hands the placeholder address to a browser through /get-session", async () => {
+    const telegram = await signInWithTelegram();
+    const cookie = telegram.session!.split(";")[0];
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+
+    const response = await request("/get-session", undefined, cookie);
+    const body = await response.text();
+    expect(body).not.toContain("placeholder.invalid");
+    expect(body).not.toContain(SUB);
+    const payload = JSON.parse(body) as { user: { id: string; email: string | null; emailVerified: boolean; name: string }; session: { token: string; userId: string } };
+    expect(payload.user).toMatchObject({ id: userId, email: null, emailVerified: false, name: NAME });
+    // The row itself is untouched: Better Auth still needs a string email.
+    expect((await state.pg!.query('SELECT email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ email: PLACEHOLDER, emailVerified: false }]);
+    // And the session half is still whole, so the transform breaks no caller.
+    expect(payload.session).toMatchObject({ userId });
+    expect(payload.session.token).toEqual(expect.any(String));
+
+    // A real verified address still comes back as itself.
+    const emailUser = await signInWithEmail("visible@example.com", "Email Builder");
+    const shown = await (await request("/get-session", undefined, emailUser.cookie)).json();
+    expect(shown.user).toMatchObject({ id: emailUser.user.id, email: "visible@example.com", emailVerified: true });
   });
 
   it("adds a verified recovery email to a Telegram-first account, mailing the new address once and nobody else", async () => {

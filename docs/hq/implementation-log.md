@@ -1361,9 +1361,13 @@ to the same Telegram line, not to the email-code copy.
   account page is reachable by URL and from the confirmation steps only.
 - The rate limit and cookie review is task T2.5. `/link-social` and
   `/unlink-account` fall under the repo's 60 per minute default.
-- A `customSession` transform was not added: no client code reads
+- A `customSession` transform was not added at the time: no client code read
   `session.user` (grep over `app`, `components` and the auth client), and the
-  placeholder guard is the markup test plus the server-only readers.
+  placeholder guard was the markup test plus the server-only readers. The
+  whole-branch review promoted this to an Important finding and it is fixed:
+  `lib/hq/member-auth.ts` now carries a `customSession` transform that maps a
+  placeholder `user.email` to null and `emailVerified` to false, so
+  `/get-session` and `api.getSession()` alike hand out no placeholder.
 - The `account.create.before` backstop for a second Telegram fires inside the
   link callback outside any redirect wrapper, so a race that reaches it (or
   the unique index behind it) answers a JSON error instead of an error

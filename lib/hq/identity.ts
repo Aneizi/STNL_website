@@ -53,8 +53,13 @@ export async function hasTelegramIdentity(userId: string): Promise<boolean> {
   return rows.length > 0;
 }
 
-/** The stored account fields the verified-account rule reads, as Better Auth hands them to hooks and sessions. */
-export type StoredAccount = { id: string; email: string; emailVerified: boolean };
+/**
+ * The stored account fields the verified-account rule reads. `email` is a
+ * string as Better Auth hands the row to a database hook, and null on a
+ * session, where the customSession transform in ./member-auth has already
+ * replaced the internal placeholder. Both answer this rule the same way.
+ */
+export type StoredAccount = { id: string; email: string | null; emailVerified: boolean };
 
 /**
  * The login email as pages and the CRM see it: only a verified real address.
@@ -64,7 +69,7 @@ export type StoredAccount = { id: string; email: string; emailVerified: boolean 
  * profile, which is never derived from this.
  */
 export function verifiedLoginEmail(user: Pick<StoredAccount, "email" | "emailVerified">): string | null {
-  return user.emailVerified && !isPlaceholderEmail(user.email) ? user.email : null;
+  return user.email && user.emailVerified && !isPlaceholderEmail(user.email) ? user.email : null;
 }
 
 /**
