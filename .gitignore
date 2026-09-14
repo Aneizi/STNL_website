@@ -50,3 +50,10 @@ next-env.d.ts
 # Local HQ activation guide and provider setup files
 /docs/hq-auth-setup.md
 /setup/hq/
+
+# Scratch that lives in the working tree and is never committed: the plan
+# documents and their assets, temporary perf-test routes, and build output.
+# Listed here because a `git add -A` swept all three into a branch once.
+/docs/plans/
+/app/perftest-tmp/
+/output/

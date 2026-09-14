@@ -597,6 +597,52 @@ apart. `detail.json`'s `unsubmitted` entry remains a structural assumption,
 unverified against a live draft — which is exactly what
 `DRAFT_SIGNAL_CONFIRMED` refuses to build a red badge on.
 
+### Building a surface, for the phases that render one
+
+Phases 0 to 5 built services and two thin member pages. Phase 6 is the first
+phase whose main output is interface, so the conventions it would otherwise
+have to reverse-engineer are written down here.
+
+**A member page** lives under `app/hq/(member)/`, is `export const dynamic =
+"force-dynamic"`, and **carries its own gate**: `requireMemberActor(next)`,
+plus a capability or authorization check where the route needs one, exactly
+as `app/hq/(member)/captain/page.tsx` does. The group layout is **not** the
+auth boundary — layouts do not re-render on soft navigation, so it only
+provides the nav state — and its own comment says so. The page composes
+`<BuilderShell>` itself (`components/hq/builder-shell.tsx`, props
+`{ children, wide?, back? }`) and styles with
+`components/hq/builder-shell.module.css`, whose classes are exactly `page header nav navList brand account
+accountName signOut main wide card row status notice form field actions
+button secondary textButton choices choice check code details error success`. Add the
+route to `MEMBER_PUBLIC_PATHS` in `lib/hq/member-routes.ts` (the one list,
+enforced by `tests/hq/member-routes.test.ts`) and, if it needs a menu item,
+one item in `getMemberNav`.
+
+**An operator screen** extends the existing boards rather than adding a
+system of its own: `components/hq/projects.tsx`, `people.tsx` and
+`builder-admin.tsx`, with `components/hq/builder-admin.module.css` and the
+file-local `ActionForm` in `components/hq/builder-admin.tsx` (a form whose
+submit runs a Server Action and renders its `ActionResult`; it is not
+exported, so a new operator panel either lives in that file or lifts it). Operator data loads
+through `lib/hq/queries.ts` or `lib/hq/builder-admin-queries.ts` and every
+record action resolves its id through `inHackathon`.
+
+**Every new `"use server"` module under `lib/hq/actions/` must be added to
+`ACTION_GATES` in `tests/hq/auth-boundary.test.ts`**, which names the gate
+each file is expected to carry; the test fails on an unlisted module.
+Operator action modules are additionally scanned by
+`tests/hq/operator-imports.test.ts`: they must not reach the public member
+auth graph, which is why `assertHackathonMatches` and `isPlaceholderEmail`
+live in leaf modules. A member-gated action that would otherwise sit in an
+operator-scanned file gets its own module, as `lib/hq/actions/invite.ts` did.
+
+**Copy rules**, from the plan's phase 6 acceptance: no em dashes and no
+middots in interface text, and no unnecessary technical terminology. Member
+denials are identical whatever the reason (`TEAM_NOT_AVAILABLE`), and a
+refusal from a service is shown as the specific, actionable message the
+service distinguishes — never collapsed into a generic error, the rule phase
+3 established for imports.
+
 ### What phase 5 settled, and what phase 6 owes it
 
 Phase 5 built the reporting model and deliberately built **no screen and no
