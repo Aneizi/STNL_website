@@ -187,3 +187,69 @@ CREATE TABLE IF NOT EXISTS hq_telegram_bot_consent (
   revoked_at timestamptz,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- A Captain invitation: an admin-generated bearer token that grants the
+-- 'captain' capability to whoever redeems it. Only the token's hash is ever
+-- stored, never the bearer value itself. Written only by the invitation
+-- service (task T4.2). max_redemptions and expires_at are always finite: the
+-- admin form supplies a default of one account and seven days, the schema
+-- only requires a positive count and a real timestamp. Revoking an
+-- invitation stops future redemptions without touching the rows already
+-- granted.
+CREATE TABLE IF NOT EXISTS hq_captain_invitations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  token_hash text NOT NULL UNIQUE,
+  label text,
+  capability text NOT NULL CONSTRAINT hq_captain_invitations_capability_check CHECK (capability IN ('captain')),
+  max_redemptions int NOT NULL CONSTRAINT hq_captain_invitations_max_redemptions_check CHECK (max_redemptions > 0),
+  expires_at timestamptz NOT NULL,
+  created_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  revoked_at timestamptz,
+  revoked_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL
+);
+
+-- One row per distinct HQ account that redeemed an invitation, so capacity
+-- counts unique accounts rather than clicks, Telegram connections or repeat
+-- logins. The UNIQUE constraint below is what a redeeming transaction relies
+-- on to refuse a second grant to the same account under the same invitation.
+-- user_id is nullable with ON DELETE SET NULL, unlike the ON DELETE CASCADE
+-- on hq_account_capabilities.user_id: the plan requires that removing an
+-- account never replenishes an old invitation's usage allowance, so this row
+-- (and the redemption seat it used) must outlive the account it names rather
+-- than disappear with it.
+CREATE TABLE IF NOT EXISTS hq_captain_invitation_redemptions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  invitation_id uuid NOT NULL REFERENCES hq_captain_invitations(id) ON DELETE CASCADE,
+  user_id text REFERENCES hq_builder_profiles(id) ON DELETE SET NULL,
+  redeemed_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (invitation_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS hq_captain_invitation_redemptions_invitation_idx ON hq_captain_invitation_redemptions (invitation_id);
+
+-- The current Captain of a project, plus its history in one table.
+-- unassigned_at IS NULL marks a row as current; the partial unique index
+-- below is what refuses a second current row for the same project at the
+-- database rather than the application. Ending an assignment sets
+-- unassigned_at instead of deleting the row, so the history stays queryable
+-- after a reassignment. captain_user_id is nullable with ON DELETE SET NULL,
+-- the same convention as hq_project_members.builder_user_id, so a deleted
+-- account does not erase who held the seat; loadCurrentAssignment in
+-- lib/hq/authz-sql.ts additionally requires captain_user_id IS NOT NULL so
+-- an orphaned row from that rare case is never read back as a live
+-- assignment. Written only by the assignment service (task T4.4).
+CREATE TABLE IF NOT EXISTS hq_captain_assignments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES hq_projects(id) ON DELETE CASCADE,
+  captain_user_id text REFERENCES hq_builder_profiles(id) ON DELETE SET NULL,
+  assigned_at timestamptz NOT NULL DEFAULT now(),
+  assigned_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  unassigned_at timestamptz,
+  unassigned_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  reason text
+);
+CREATE UNIQUE INDEX IF NOT EXISTS hq_captain_assignments_current_idx ON hq_captain_assignments (project_id) WHERE unassigned_at IS NULL;
+-- The leaderboard's indexed aggregate: current assignments grouped by
+-- Captain, joined to hq_projects.hackathon_id to scope the count to the
+-- selected edition's active projects.
+CREATE INDEX IF NOT EXISTS hq_captain_assignments_captain_idx ON hq_captain_assignments (captain_user_id) WHERE unassigned_at IS NULL;

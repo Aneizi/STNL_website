@@ -41,7 +41,7 @@ import {
   type ProjectAction,
 } from "@/lib/hq/authz";
 import { loadCurrentAssignment, loadEntry, loadProjectEdition, loadTeamMembership } from "@/lib/hq/authz-sql";
-import type { BuilderDatabase } from "@/lib/hq/builder-db";
+import type { BuilderDatabase, BuilderQuery } from "@/lib/hq/builder-db";
 import { BuilderError } from "@/lib/hq/builder-types";
 import { grantCapability, revokeCapability } from "@/lib/hq/capabilities";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
@@ -138,8 +138,25 @@ describe("loaders", () => {
     expect(await loadTeamMembership(db, { userId: "lead-a", projectId: "not-a-uuid" })).toBeNull();
   });
 
-  it("the phase 4 and phase 5 hooks are typed and return null until their tables exist", async () => {
+  it("loadCurrentAssignment reads hq_captain_assignments: no row, a current row, an ended row, and a malformed id without a query", async () => {
     expect(await loadCurrentAssignment(db, PROJECT_A)).toBeNull();
+    await rows(
+      "INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, $2, $3)",
+      [PROJECT_A, "cap", OPERATOR_ID],
+    );
+    expect(await loadCurrentAssignment(db, PROJECT_A)).toEqual({ captainUserId: "cap" });
+    // A project with no assignment of its own stays null even once another project has one.
+    expect(await loadCurrentAssignment(db, PROJECT_B)).toBeNull();
+    await rows(
+      "UPDATE hq_captain_assignments SET unassigned_at = now(), unassigned_by_user_id = $2 WHERE project_id = $1 AND unassigned_at IS NULL",
+      [PROJECT_A, OPERATOR_ID],
+    );
+    expect(await loadCurrentAssignment(db, PROJECT_A)).toBeNull();
+    const refuseQuery: BuilderQuery = { query: async () => { throw new Error("loadCurrentAssignment queried the database for a malformed id"); } };
+    expect(await loadCurrentAssignment(refuseQuery, "not-a-uuid")).toBeNull();
+  });
+
+  it("the phase 5 hook is typed and returns null until its table exists", async () => {
     expect(await loadEntry(db, "any-entry")).toBeNull();
   });
 });

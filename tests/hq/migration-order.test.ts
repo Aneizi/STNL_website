@@ -111,6 +111,73 @@ async function expectIdentitySchema(pg: PGlite) {
   ).toEqual([{ confdeltype: "c" }]);
 }
 
+/** Task T4.1: Captain invitations, redemptions and assignments. */
+async function expectCaptainSchema(pg: PGlite) {
+  for (const table of ["hq_captain_invitations", "hq_captain_invitation_redemptions", "hq_captain_assignments"]) {
+    expect(await exists(pg, table), table).toBe(true);
+  }
+  expect(await column(pg, "hq_captain_invitations", "token_hash")).toEqual({ data_type: "text", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_invitations", "label")).toEqual({ data_type: "text", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_invitations", "capability")).toEqual({ data_type: "text", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_invitations", "max_redemptions")).toEqual({ data_type: "integer", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_invitations", "expires_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_invitations", "created_by_user_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_invitations", "revoked_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  // Named, so a later change is a DROP CONSTRAINT IF EXISTS plus ADD, the same style as hq_account_capabilities.
+  expect(
+    await run(pg, `SELECT conname FROM pg_constraint WHERE conrelid = 'hq_captain_invitations'::regclass AND contype = 'c' ORDER BY conname`),
+  ).toEqual([{ conname: "hq_captain_invitations_capability_check" }, { conname: "hq_captain_invitations_max_redemptions_check" }]);
+  expect(
+    await run(pg, `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_invitations'::regclass AND contype = 'f' ORDER BY confdeltype`),
+  ).toEqual([{ confdeltype: "n" }, { confdeltype: "n" }]);
+
+  expect(await column(pg, "hq_captain_invitation_redemptions", "invitation_id")).toEqual({ data_type: "uuid", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_invitation_redemptions", "user_id")).toEqual({ data_type: "text", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_invitation_redemptions", "redeemed_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "NO" });
+  expect(
+    await run(
+      pg,
+      `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_invitation_redemptions'::regclass AND contype = 'f' AND confrelid = 'hq_captain_invitations'::regclass`,
+    ),
+  ).toEqual([{ confdeltype: "c" }]);
+  expect(
+    await run(
+      pg,
+      `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_invitation_redemptions'::regclass AND contype = 'f' AND confrelid = 'hq_builder_profiles'::regclass`,
+    ),
+  ).toEqual([{ confdeltype: "n" }]);
+
+  expect(await column(pg, "hq_captain_assignments", "project_id")).toEqual({ data_type: "uuid", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_assignments", "captain_user_id")).toEqual({ data_type: "text", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_assignments", "assigned_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_assignments", "unassigned_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_assignments", "reason")).toEqual({ data_type: "text", is_nullable: "YES" });
+  expect(
+    await run(
+      pg,
+      `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_assignments'::regclass AND contype = 'f' AND confrelid = 'hq_projects'::regclass`,
+    ),
+  ).toEqual([{ confdeltype: "c" }]);
+  expect(
+    await run(
+      pg,
+      `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_assignments'::regclass AND contype = 'f' AND confrelid = 'hq_builder_profiles'::regclass`,
+    ),
+  ).toEqual([{ confdeltype: "n" }]);
+
+  for (const index of [
+    "hq_captain_assignments_current_idx",
+    "hq_captain_assignments_captain_idx",
+    "hq_captain_invitation_redemptions_invitation_idx",
+  ]) {
+    expect(await exists(pg, index), index).toBe(true);
+  }
+  // The partial unique index is what enforces at most one current Captain per project.
+  expect(
+    await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_captain_assignments_current_idx'`),
+  ).toEqual([{ indexdef: expect.stringMatching(/UNIQUE INDEX hq_captain_assignments_current_idx ON public\.hq_captain_assignments USING btree \(project_id\) WHERE \(unassigned_at IS NULL\)$/) }]);
+}
+
 describe("the migration files", () => {
   it("contain nothing the one-statement-per-call runner cannot send", () => {
     for (const file of SQL_FILES) {
@@ -136,6 +203,7 @@ describe("a fresh database", () => {
       await applyMigrations(pg);
       expect(await shape(pg)).toEqual(first);
       await expectIdentitySchema(pg);
+      await expectCaptainSchema(pg);
       // Nullable email means an account without one can exist at all.
       await run(pg, `INSERT INTO hq_builder_profiles (id, email, name) VALUES ('telegram-only', NULL, 'No Email')`);
       expect(await run(pg, `SELECT email, contact_email FROM hq_builder_profiles`)).toEqual([{ email: null, contact_email: null }]);
@@ -245,6 +313,7 @@ describe("a populated database from before hackathon scoping", () => {
       // Second pass, over populated tables.
       await applyMigrations(pg);
       await expectIdentitySchema(pg);
+      await expectCaptainSchema(pg);
       expect(await run(pg, `SELECT id, username, password_hash, password_version, must_change_password FROM hq_users ORDER BY username`)).toEqual(users);
       expect(await run(pg, `SELECT id, name, builder_user_id, contact, role_id FROM hq_people ORDER BY name`)).toEqual(people);
 
@@ -293,4 +362,124 @@ describe("a populated database from before hackathon scoping", () => {
       await pg.close();
     }
   }, 30_000);
+});
+
+describe("task T4.1: Captain invitations, redemptions and assignments", () => {
+  const HACKATHON = 6;
+
+  /** A minimal edition, project, operator and two candidate Captain accounts. */
+  async function seed(pg: PGlite) {
+    await run(pg, `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date) VALUES (${HACKATHON}, 'edition', 'Edition', '2026-09-14', '2026-10-12')`);
+    await run(pg, `INSERT INTO hq_project_statuses (slug, label, color, counts_as_active, sort) VALUES ('green', 'Green', 'green', true, 0)`);
+    await run(pg, `INSERT INTO hq_project_forecasts (slug, label, color, sort) VALUES ('committed', 'Committed', 'green', 0)`);
+    const [project] = await run(
+      pg,
+      `INSERT INTO hq_projects (hackathon_id, name, status_id, forecast_id, last_check_in)
+       SELECT ${HACKATHON}, 'Project', s.id, f.id, current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f
+       RETURNING id::text AS id`,
+    );
+    const [operator] = await run(pg, `INSERT INTO hq_users (username, display_name, password_hash) VALUES ('op', 'Operator', 'x') RETURNING id::text AS id`);
+    await run(pg, `INSERT INTO hq_builder_profiles (id, email, name) VALUES ('cap-1', 'cap1@example.test', 'Cap One'), ('cap-2', 'cap2@example.test', 'Cap Two')`);
+    return { projectId: String(project.id), operatorId: String(operator.id) };
+  }
+
+  it("refuses a second current assignment for the same project, and allows a historical row plus a new current one", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, operatorId } = await seed(pg);
+      await run(
+        pg,
+        `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, 'cap-1', $2)`,
+        [projectId, operatorId],
+      );
+      await expect(
+        run(pg, `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, 'cap-2', $2)`, [projectId, operatorId]),
+      ).rejects.toThrow(/hq_captain_assignments_current_idx/);
+
+      // Unassign, then reassign: the partial unique index only guards the current row.
+      await run(
+        pg,
+        `UPDATE hq_captain_assignments SET unassigned_at = now(), unassigned_by_user_id = $2 WHERE project_id = $1 AND unassigned_at IS NULL`,
+        [projectId, operatorId],
+      );
+      await run(
+        pg,
+        `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, 'cap-2', $2)`,
+        [projectId, operatorId],
+      );
+      expect(
+        await run(pg, `SELECT captain_user_id, unassigned_at IS NULL AS current FROM hq_captain_assignments WHERE project_id = $1 ORDER BY assigned_at`, [projectId]),
+      ).toEqual([
+        { captain_user_id: "cap-1", current: false },
+        { captain_user_id: "cap-2", current: true },
+      ]);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses a duplicate redemption of the same invitation by the same account", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { operatorId } = await seed(pg);
+      const [invitation] = await run(
+        pg,
+        `INSERT INTO hq_captain_invitations (token_hash, capability, max_redemptions, expires_at, created_by_user_id)
+         VALUES ('hash-1', 'captain', 1, now() + interval '7 days', $1) RETURNING id::text AS id`,
+        [operatorId],
+      );
+      const invitationId = String(invitation.id);
+      await run(pg, `INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ($1, 'cap-1')`, [invitationId]);
+      await expect(
+        run(pg, `INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ($1, 'cap-1')`, [invitationId]),
+      ).rejects.toThrow(/hq_captain_invitation_redemptions_invitation_id_user_id_key/);
+      // A different account redeeming the same invitation is a second, distinct row.
+      await run(pg, `INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ($1, 'cap-2')`, [invitationId]);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_captain_invitation_redemptions WHERE invitation_id = $1`, [invitationId])).toEqual([{ n: 2 }]);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses a non-positive max_redemptions", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { operatorId } = await seed(pg);
+      await expect(
+        run(
+          pg,
+          `INSERT INTO hq_captain_invitations (token_hash, capability, max_redemptions, expires_at, created_by_user_id)
+           VALUES ('hash-zero', 'captain', 0, now() + interval '7 days', $1)`,
+          [operatorId],
+        ),
+      ).rejects.toThrow(/hq_captain_invitations_max_redemptions_check/);
+      await expect(
+        run(
+          pg,
+          `INSERT INTO hq_captain_invitations (token_hash, capability, max_redemptions, expires_at, created_by_user_id)
+           VALUES ('hash-negative', 'captain', -1, now() + interval '7 days', $1)`,
+          [operatorId],
+        ),
+      ).rejects.toThrow(/hq_captain_invitations_max_redemptions_check/);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses a capability other than 'captain'", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { operatorId } = await seed(pg);
+      await expect(
+        run(
+          pg,
+          `INSERT INTO hq_captain_invitations (token_hash, capability, max_redemptions, expires_at, created_by_user_id)
+           VALUES ('hash-bad-capability', 'admin', 1, now() + interval '7 days', $1)`,
+          [operatorId],
+        ),
+      ).rejects.toThrow(/hq_captain_invitations_capability_check/);
+    } finally {
+      await pg.close();
+    }
+  });
 });

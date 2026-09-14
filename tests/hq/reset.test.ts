@@ -148,6 +148,14 @@ async function seedEverything() {
   // The account's bot-messaging decision (task T2.3), which survives like the login it belongs to.
   await run(`INSERT INTO hq_telegram_bot_consent (user_id, telegram_user_id, messaging_enabled, consented_at)
              VALUES ('builder-1', 7000000000123, true, now())`);
+  // A Captain invitation, its redemption, and the resulting project assignment (task T4.1).
+  const invitation = await id(
+    `INSERT INTO hq_captain_invitations (token_hash, capability, max_redemptions, expires_at, created_by_user_id)
+     VALUES ('fictional-invitation-hash', 'captain', 1, now() + interval '7 days', '${user}') RETURNING id`,
+  );
+  await run(`INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ('${invitation}', 'builder-1')`);
+  await run(`INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id)
+             VALUES ('${project}', 'builder-1', '${user}')`);
 }
 
 beforeEach(async () => {

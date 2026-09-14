@@ -17,6 +17,11 @@ export const CLEAR_TABLES = [
   "hq_finalists",
   "hq_project_gates",
   "hq_project_notes",
+  // Captain assignment history belongs to the project rows below, the same
+  // way People and notes do: it names who ran a project in an edition, not a
+  // standing grant. The cascade from hq_projects already emptied it before
+  // it was named here (task T4.1).
+  "hq_captain_assignments",
   // Imported Colosseum teams and their invite codes belong to the project
   // rows below; the cascade from hq_projects already emptied them before they
   // were named here.
@@ -60,6 +65,11 @@ export const KEEP_TABLES = [
   // way it keeps logins and persons (ruling Q10, task T1.2).
   "hq_account_capabilities",
   "hq_audit_events",
+  // Captain invitations and who redeemed them: account-level grant history
+  // like hq_account_capabilities above, not an edition's CRM, so a reset
+  // keeps them the same way it keeps the grant itself (task T4.1).
+  "hq_captain_invitations",
+  "hq_captain_invitation_redemptions",
   // Whether the account agreed to bot messages: a standing decision by the
   // person, not an edition's CRM, so it survives like a login (task T2.3).
   "hq_telegram_bot_consent",

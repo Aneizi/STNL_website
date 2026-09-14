@@ -10,8 +10,10 @@
 
 /**
  * The one vocabulary of audit event kinds. Later phases extend this union
- * instead of inventing their own. `captain.assigned` and
- * `captain.unassigned` are reserved for phase 4.
+ * instead of inventing their own. `captain.assigned`, `captain.unassigned`,
+ * `captain.invitation_created`, `captain.invitation_revoked` and
+ * `captain.invitation_redeemed` are reserved for phase 4; nothing writes any
+ * of them yet (task T4.1 creates the records, T4.2-T4.4 write the events).
  */
 export const AUDIT_EVENT_KINDS = [
   "capability.granted",
@@ -24,6 +26,9 @@ export const AUDIT_EVENT_KINDS = [
   "person.match_corrected",
   "captain.assigned",
   "captain.unassigned",
+  "captain.invitation_created",
+  "captain.invitation_revoked",
+  "captain.invitation_redeemed",
 ] as const;
 
 export type AuditEventKind = (typeof AUDIT_EVENT_KINDS)[number];

@@ -5,11 +5,12 @@
  * them against a throwaway Postgres and a revocation is visible on the very
  * next call.
  *
- * Two of the loaders are typed hooks for records that later phases create:
- * `loadCurrentAssignment` (Captain assignment, phase 4) and `loadEntry`
- * (reporting entry, phase 5). Their signatures and result types are fixed
- * here, the decision logic over them in ./authz is tested now with injected
- * fixtures, and each later phase only replaces the body.
+ * Two of the loaders are typed hooks for records a later phase creates:
+ * `loadCurrentAssignment` (Captain assignment, phase 4, reads
+ * hq_captain_assignments as of task T4.1) and `loadEntry` (reporting entry,
+ * phase 5, still a stub). Their signatures and result types were fixed
+ * before either table existed, the decision logic over them in ./authz is
+ * tested with injected fixtures, and each phase only replaces the body.
  *
  * `assertHackathonMatches` lives here rather than in ./authz because it reads
  * no session: every operator action module reaches it through
@@ -93,10 +94,21 @@ export async function loadTeamMembership(db: BuilderQuery, input: { userId: stri
 export type AssignmentLoader = (db: BuilderQuery, projectId: string) => Promise<CurrentAssignment | null>;
 export type EntryLoader = (db: BuilderQuery, entryId: string) => Promise<Entry | null>;
 
-// TODO(phase 4): read the project's current row from the Captain assignment
-// table once phase 4 creates it. Until then no project has a Captain, so a
-// `captain` grant on its own opens nothing.
-export const loadCurrentAssignment: AssignmentLoader = async () => null;
+/**
+ * The project's current Captain from hq_captain_assignments, or null.
+ * `unassigned_at IS NULL` is what "current" means; `captain_user_id IS NOT
+ * NULL` guards the rare case where the assignment's account was deleted
+ * (that column is ON DELETE SET NULL so the row survives as history), so an
+ * orphaned row is never read back as a live assignment.
+ */
+export const loadCurrentAssignment: AssignmentLoader = async (db, projectId) => {
+  if (!isProjectId(projectId)) return null;
+  const { rows } = await db.query(
+    "SELECT captain_user_id FROM hq_captain_assignments WHERE project_id = $1::uuid AND unassigned_at IS NULL AND captain_user_id IS NOT NULL",
+    [projectId],
+  );
+  return rows.length ? { captainUserId: String(rows[0].captain_user_id) } : null;
+};
 
 // TODO(phase 5): read the entry from the reporting entry table once phase 5
 // creates it. Until then there are no entries to authorize.
