@@ -6,6 +6,7 @@ import { builderDatabase } from "./builder-db";
 import { builderStore } from "./builder-store";
 import type { BuilderTeam } from "./builder-types";
 import { currentCaptainOfProject } from "./captains";
+import { readCaptainContact } from "./reporting-contacts";
 import { toMemberTeamView, type MemberTeamView } from "./view-models";
 
 /**
@@ -68,5 +69,9 @@ export async function memberTeamView(actor: MemberActor, projectId: string): Pro
   // own still-pending or rejected claim: it is not confirmed as this
   // project's team yet, so there is nothing for it to be "its own Captain".
   const captain = outcome === "allowed" ? await currentCaptainOfProject(builderDatabase(), projectId) : null;
-  return toMemberTeamView(team, actor, captain ? { displayName: captain.captainName, contact: null } : null);
+  // The contact the Captain approved for the teams they hold, or null when
+  // they have not set one. Phase 6 gave that field its writer (/hq/captain);
+  // before it there was none, which is why it read null for everyone.
+  const contact = captain ? await readCaptainContact(builderDatabase(), captain.captainUserId) : null;
+  return toMemberTeamView(team, actor, captain ? { displayName: captain.captainName, contact } : null);
 }

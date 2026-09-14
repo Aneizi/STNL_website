@@ -2,9 +2,12 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { BuilderShell } from '@/components/hq/builder-shell';
 import { BuilderTeamControls } from '@/components/hq/builder-onboarding';
+import { TeamReporting } from '@/components/hq/reporting-member';
 import styles from '@/components/hq/builder-shell.module.css';
 import { requireMemberActor } from '@/lib/hq/actor';
+import { nowMs } from '@/lib/hq/format';
 import { memberTeamView } from '@/lib/hq/member-teams';
+import { teamReportingPanel } from '@/lib/hq/reporting-surface';
 export const metadata:Metadata={title:'Your team'};
 export const dynamic='force-dynamic';
 export default async function TeamPage({params}:{params:Promise<{id:string}>}){
@@ -19,12 +22,21 @@ export default async function TeamPage({params}:{params:Promise<{id:string}>}){
   // owner's 14 September 2026 change, which an admin resolves by deleting
   // them; they are shown honestly rather than hidden.
   const {verification}=team.membership;
+  // Weekly reporting is read only for a team this account really belongs to:
+  // an unverified claim is not a team yet, so it has no week of its own.
+  const panel=verification==='verified'?await teamReportingPanel(actor,{projectId:team.id,hackathonId:team.edition.id}):null;
   return <BuilderShell back='/hq/dashboard'><h1>{team.name}</h1>
     {verification!=='verified'&&<>
       <span className={styles.status}>Not active</span>
       <p>This is an old import request that never became a team. Ask Superteam NL to remove it, then import your project again.</p>
     </>}
-    {team.captain&&<p>Captain: {team.captain.displayName}</p>}
+    {/* A team has a Captain whether or not weekly updates have started for
+        it, so the Captain line sits here rather than inside the week. The
+        contact is only ever what that Captain typed in themselves. */}
+    {verification==='verified'&&<p>{team.captain
+      ?<>Your Captain is {team.captain.displayName}.{team.captain.contact?` Reach them at ${team.captain.contact}.`:' They have not shared a way to reach them yet.'}</>
+      :'No Captain assigned yet. You can still add your updates.'}</p>}
+    {panel&&<TeamReporting panel={panel} teamName={team.name} isLead={team.membership.role==='owner'} nowMs={nowMs()}/>}
     <BuilderTeamControls team={team}/>
   </BuilderShell>;
 }

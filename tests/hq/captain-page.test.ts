@@ -9,7 +9,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-vi.mock("next/navigation", () => ({ notFound: () => { throw new Error("NOT_FOUND"); } }));
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+vi.mock("next/navigation", () => ({
+  notFound: () => { throw new Error("NOT_FOUND"); },
+  // Phase 6's reporting cards are client components, and useRouter() runs
+  // when this file renders the page to markup.
+  useRouter: () => ({ replace() {}, refresh() {}, push() {} }),
+}));
 const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn(), requireMemberActor: vi.fn() }));
 vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/hq/builder-db")>()),
@@ -114,9 +120,13 @@ describe("/hq/captain against the real database", () => {
     expect(html).toContain("My Secret Project");
     expect(html).toContain("Mine Owner");
     expect(html).toMatch(/colosseum\.com[^"]*owner-mine/i);
-    // The reduced BareAssignment branch: a CRM-only project with no onboarding row.
+    // The CRM-only project: no onboarding row, so no roster, lead or
+    // Colosseum link. Phase 6 makes this no longer a *reduced* card, because
+    // reporting is keyed on hq_projects: the week, the status and the
+    // composer are identical on both cards, and only the Colosseum detail
+    // differs.
     expect(html).toContain("My Bare CRM Project");
-    expect(html).toContain("No further team details are available for this project yet.");
+    expect(html).toContain("No Colosseum team is linked to this project.");
   });
 
   it("leaks no other Captain's project name, roster, lead or Colosseum link — names and counts only on the leaderboard", async () => {

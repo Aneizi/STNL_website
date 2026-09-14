@@ -65,6 +65,13 @@ describe("every server action authenticates", () => {
     "partners.ts": "operator",
     "people.ts": "operator",
     "projects.ts": "operator",
+    // Weekly reporting, phase 6: the member writes (team and Captain
+    // composers, the two contacts) and the admin ones (moderation, outcome
+    // corrections, eligibility, the schedule and the Projects panel reads).
+    // Two modules because the gates differ, the same split as
+    // captains.ts / invite.ts.
+    "reporting.ts": "member",
+    "reporting-admin.ts": "operator",
     "telegram.ts": "member",
   };
 

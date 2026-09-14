@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   teamById: vi.fn(),
   leaderboard: vi.fn(),
   listAssignments: vi.fn(),
+  captainReportingBoard: vi.fn(),
   builderDatabase: vi.fn(),
   pathname: "/hq/dashboard",
 }));
@@ -47,6 +48,10 @@ vi.mock("@/lib/hq/builder-store", () => ({
 // are stubbed below so nothing here touches a real connection.
 vi.mock("@/lib/hq/builder-db", () => ({ builderDatabase: mocks.builderDatabase }));
 vi.mock("@/lib/hq/captains", () => ({ leaderboard: mocks.leaderboard, listAssignments: mocks.listAssignments }));
+// The captain page's reporting half (phase 6). tests/hq/captain-page.test.ts
+// drives the same page against real rows; here it is stubbed, like the two
+// reads above, so this file stays a unit test of the shell and the gate.
+vi.mock("@/lib/hq/reporting-surface", () => ({ captainReportingBoard: mocks.captainReportingBoard }));
 // The icon package ships its source; the pages here render markup, not icons.
 vi.mock("symbols-react", () => ({ IconArrowRight: (props: Record<string, unknown>) => createElement("svg", props) }));
 
@@ -67,11 +72,14 @@ describe("the member shell imports nothing operator-side", () => {
     "app/hq/(member)/layout.tsx",
     "lib/hq/member-nav.ts",
     "lib/hq/member-routes.ts",
+    // Phase 6's member reporting interface: a client component of the member
+    // shell like the builder-* ones below, and held to the same rule.
+    "components/hq/reporting-member.tsx",
     ...readdirSync(join(ROOT, "components/hq")).filter((name) => name.startsWith("builder-") && name.endsWith(".tsx") && !name.startsWith("builder-admin")).map((name) => `components/hq/${name}`),
   ];
   // Operator-side modules: data, session, chrome, the admin builder panel, and every operator-gated action module (tests/hq/auth-boundary.test.ts holds the gate map).
   const FORBIDDEN = new Set(["lib/hq/queries", "lib/hq/builder-admin-queries", "lib/hq/auth", "lib/hq/session", "lib/hq/hackathon", "lib/hq/db", "lib/hq/authz", "components/hq/chrome", "components/hq/toast", "components/hq/ui", "components/hq/ui-client", "components/hq/admin", "components/hq/builder-admin", "components/hq/dashboard", "components/hq/people", "components/hq/projects", "components/hq/search-modal", "components/hq/activity-drawer", "components/hq/hackathon-switcher"]);
-  const MEMBER_ACTIONS = new Set(["lib/hq/actions/builders", "lib/hq/actions/telegram"]);
+  const MEMBER_ACTIONS = new Set(["lib/hq/actions/builders", "lib/hq/actions/invite", "lib/hq/actions/reporting", "lib/hq/actions/telegram"]);
 
   /** Every runtime import specifier, resolved to a repo-relative module path; type-only imports are erased and skipped. */
   function runtimeImports(file: string): string[] {
@@ -85,7 +93,8 @@ describe("the member shell imports nothing operator-side", () => {
   }
 
   it("scans the layout, the two pure modules and every builder component", () => {
-    expect(scanned.length).toBeGreaterThanOrEqual(7);
+    expect(scanned.length).toBeGreaterThanOrEqual(8);
+    expect(scanned).toContain("components/hq/reporting-member.tsx");
     expect(scanned).toContain("components/hq/builder-nav.tsx");
     expect(scanned).toContain("components/hq/builder-shell.tsx");
   });
@@ -123,6 +132,7 @@ describe("the captain page", () => {
     // that need real assignment or leaderboard data override these.
     mocks.currentHackathonId.mockResolvedValue(41);
     mocks.listAssignments.mockResolvedValue([]);
+    mocks.captainReportingBoard.mockResolvedValue({ hackathonId: 41, timezone: "Europe/Amsterdam", cards: [], captainContact: null });
     mocks.leaderboard.mockResolvedValue([]);
     mocks.teamById.mockResolvedValue(null);
     mocks.builderDatabase.mockReturnValue({});
@@ -159,20 +169,34 @@ describe("the captain page", () => {
   });
 
   it("reads the current edition once, and asks its two data reads for exactly the signed-in Captain's own id", async () => {
-    mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } }));
+    const actor = member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } });
+    mocks.requireMemberActor.mockResolvedValue(actor);
     const db = { marker: "builder-pool" };
     mocks.builderDatabase.mockReturnValue(db);
     await CaptainPage();
     expect(mocks.currentHackathonId).toHaveBeenCalledTimes(1);
-    expect(mocks.listAssignments).toHaveBeenCalledWith(db, { hackathonId: 41, captainUserId: "acct-1" });
+    // Phase 6: the assignments are read inside captainReportingBoard, which
+    // narrows them to this actor's own id the same way the page used to.
+    expect(mocks.captainReportingBoard).toHaveBeenCalledWith(actor, 41, db);
     expect(mocks.leaderboard).toHaveBeenCalledWith(db, 41, "acct-1");
   });
 
   it("renders the Captain's own assignment and the leaderboard, marking their own row, with no other project's name", async () => {
     mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } }));
-    mocks.listAssignments.mockResolvedValue([
-      { projectId: "p1", projectName: "Solo Project", hackathonId: 41, captainUserId: "acct-1", captainName: "Fictional Builder", assignedAt: "2026-01-01T00:00:00.000Z" },
-    ]);
+    mocks.captainReportingBoard.mockResolvedValue({
+      hackathonId: 41,
+      timezone: "Europe/Amsterdam",
+      captainContact: null,
+      cards: [{
+        status: {
+          projectId: "p1", projectName: "Solo Project", hackathonId: 41, imported: true,
+          eligibleFrom: "2026-01-01T00:00:00.000Z", paused: false, captainUserId: "acct-1",
+          submissionStatus: "not_checked", current: null, missedPeriods: 0, history: [],
+        },
+        teamContact: null,
+        latest: null,
+      }],
+    });
     mocks.teamById.mockResolvedValue({
       id: "p1", name: "Solo Project", hackathonId: 41, hackathonName: "Edition A",
       projectUrl: "https://colosseum.com/arena/projects/explore/solo", description: "internal only", stage: "mvp",

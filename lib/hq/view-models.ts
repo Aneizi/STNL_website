@@ -14,11 +14,11 @@ import type { Person } from "./types";
 
 /**
  * The assigned Captain as a team may see them: a display name, and the
- * contact the Captain has approved for the team. `contact` is always null as
- * of phase 4: nothing in the plan gives a Captain a way to approve one for a
- * team, so this field has no writer yet. It stays on the type because the
- * plan names it as part of what a team may eventually see, not because
- * anything populates it today.
+ * contact the Captain has approved for the teams they hold. Phase 6 gave
+ * `contact` its writer: a Captain sets it on /hq/captain, and setting it is
+ * itself the approval, which is why nothing else can fill this field and why
+ * a login email or a profile address never does. Null while they have not
+ * set one, and the team page then simply does not offer a way to reach them.
  */
 export type TeamCaptainView = { displayName: string; contact: string | null };
 
@@ -34,7 +34,7 @@ export type MemberTeamView = {
   edition: { id: number; name: string };
   /** The viewer's own relationship with the team; no other account's identity is included. */
   membership: { role: "owner" | "member"; verification: BuilderTeam["verification"] };
-  /** The team's current Captain, or null while none is assigned. See TeamCaptainView for why `contact` is always null. */
+  /** The team's current Captain, or null while none is assigned. */
   captain: TeamCaptainView | null;
   projectUrl: string;
   stage: ProjectStage;

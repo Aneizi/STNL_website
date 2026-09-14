@@ -508,3 +508,28 @@ CREATE TABLE IF NOT EXISTS hq_reporting_outcomes (
   UNIQUE (period_id, project_id)
 );
 CREATE INDEX IF NOT EXISTS hq_reporting_outcomes_project_idx ON hq_reporting_outcomes (project_id);
+
+-- ---------------------------------------------------------------------------
+-- Phase 6: the two contacts the reporting dashboards show.
+--
+-- Both are one nullable column and both are opt-in. Neither is derived from a
+-- login, a profile email or a Colosseum field: a contact only exists here
+-- because the person whose contact it is typed it in and, by typing it in,
+-- approved the audience named beside the field.
+--
+-- `hq_project_onboarding.team_contact` is the plan's "preferred team contact,
+-- including a Telegram contact when available": set by the team lead on the
+-- team page, read by the team's assigned Captain and by admins, never by
+-- another team and never by a Captain who is not assigned. It lives on the
+-- onboarding row rather than on hq_projects because it belongs to the
+-- self-imported team, and a CRM-only project already has hq_projects.lead_*
+-- for the operator's own contact.
+--
+-- `hq_builder_profiles.captain_contact` is the other direction: the contact a
+-- Captain approves for the teams they are assigned to, shown on those teams'
+-- pages ("the assigned Captain and their approved contact when available")
+-- and in Admin. Account-global like the Captain grant itself, because a
+-- Captain who wants to be reached differently per team would be a second
+-- audience rule with no product behind it.
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS team_contact text;
+ALTER TABLE hq_builder_profiles ADD COLUMN IF NOT EXISTS captain_contact text;
