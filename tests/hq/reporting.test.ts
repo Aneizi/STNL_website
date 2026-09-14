@@ -912,3 +912,129 @@ describe("record deletion, extended for the reporting tables", () => {
     expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_entry_revisions`)).toEqual([{ n: 2 }]);
   });
 });
+
+describe("what completes a week, per author and per visibility", () => {
+  const WEEK_ONE = Date.parse("2026-09-16T09:00:00Z");
+
+  beforeEach(async () => {
+    await seedImportedProject(PROJECT_A, "lead-a", { members: ["member-a"] });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+    await seedAssignedCaptain("cap", PROJECT_A);
+  });
+
+  const completed = async () =>
+    (await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT_A], atMs: WEEK_ONE }))[0].current?.completed;
+
+  it.each([
+    ["the team lead", () => member("lead-a"), "shared" as const],
+    ["a joined teammate", () => member("member-a"), "shared" as const],
+    ["the assigned Captain", () => member("cap", ["captain"] as const), "shared" as const],
+    ["the assigned Captain, privately", () => member("cap", ["captain"] as const), "sensitive" as const],
+    ["an admin", () => OPERATOR, "shared" as const],
+    ["an admin, privately", () => OPERATOR, "sensitive" as const],
+  ])("an update from %s completes the week", async (_who, actorOf, visibility) => {
+    expect(await completed()).toBe(false);
+    const saved = await createUpdate(actorOf() as Actor, { projectId: PROJECT_A, hackathonId: EDITION, body: "Progress", visibility, atMs: WEEK_ONE });
+    expect(saved).toMatchObject({ ok: true, completesPeriod: true });
+    expect(await completed()).toBe(true);
+  });
+
+  it("completes the week from a sensitive note without the team learning anything about it", async () => {
+    await createUpdate(member("cap", ["captain"]), { projectId: PROJECT_A, hackathonId: EDITION, body: "SENSITIVE-BODY", visibility: "sensitive", atMs: WEEK_ONE });
+    const status = await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT_A], atMs: WEEK_ONE });
+    expect(status[0].current).toMatchObject({ completed: true, basis: "entry", entries: 1 });
+    // The team sees Updated, and nothing else: no body, no preview, no
+    // author, no count that invites a click.
+    expect(JSON.stringify(status)).not.toContain("SENSITIVE");
+    expect(JSON.stringify(await readAuthorizedUpdates(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION }))).not.toContain("SENSITIVE");
+  });
+
+  it("does not complete the week from a save that failed", async () => {
+    await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "   ", atMs: WEEK_ONE });
+    await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "x".repeat(4001), atMs: WEEK_ONE });
+    await seedAccount("stranger");
+    await createUpdate(member("stranger"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Hello", atMs: WEEK_ONE });
+    expect(await completed()).toBe(false);
+  });
+});
+
+describe("HQ and the bot writing through the same service", () => {
+  const WEEK_ONE = Date.parse("2026-09-16T09:00:00Z");
+
+  beforeEach(async () => {
+    await seedImportedProject(PROJECT_A, "lead-a");
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+  });
+
+  it("records which surface an entry came from, and applies the same rules to both", async () => {
+    const fromBot = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Sent from Telegram", source: "telegram", atMs: WEEK_ONE });
+    expect(fromBot).toMatchObject({ ok: true, entry: expect.objectContaining({ source: "telegram" }) });
+    expect(await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "  ", source: "telegram", atMs: WEEK_ONE }))
+      .toEqual({ ok: false, reason: "empty_body" });
+  });
+
+  it("keeps authorship and history correct when both surfaces edit the same entry", async () => {
+    const created = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "v1", source: "hq", atMs: WEEK_ONE });
+    if (!created.ok) throw new Error("setup: expected a saved update");
+    const [fromWeb, fromBot] = await Promise.all([
+      editUpdate(member("lead-a"), { entryId: created.entry.id, body: "from the website", expectedVersion: 1 }),
+      editUpdate(member("lead-a"), { entryId: created.entry.id, body: "from the bot", expectedVersion: 1 }),
+    ]);
+    // Exactly one wins; the loser is told, and keeps its text to offer back.
+    const winners = [fromWeb, fromBot].filter((result) => result.ok);
+    expect(winners.length).toBe(1);
+    const loser = [fromWeb, fromBot].find((result) => !result.ok);
+    expect(loser).toMatchObject({ reason: "conflict", current: expect.objectContaining({ version: 2 }) });
+    expect(await rows(`SELECT version, editor_id FROM hq_reporting_entry_revisions WHERE entry_id=$1 ORDER BY version`, [created.entry.id]))
+      .toEqual([{ version: 1, editor_id: "lead-a" }, { version: 2, editor_id: "lead-a" }]);
+    expect(await rows(`SELECT version FROM hq_reporting_entries WHERE id=$1`, [created.entry.id])).toEqual([{ version: 2 }]);
+  });
+
+  it("does not create two entries when the same save is retried after a refusal", async () => {
+    const periods = await listReportingPeriods(db, EDITION);
+    await createUpdate(member("lead-a"), {
+      projectId: PROJECT_A, hackathonId: EDITION, body: "Retried", expectedPeriodId: periods[1].id, atMs: WEEK_ONE,
+    });
+    await createUpdate(member("lead-a"), {
+      projectId: PROJECT_A, hackathonId: EDITION, body: "Retried", expectedPeriodId: periods[0].id, atMs: WEEK_ONE,
+    });
+    expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_entries`)).toEqual([{ n: 1 }]);
+  });
+});
+
+describe("the performance rules", () => {
+  const WEEK_ONE = Date.parse("2026-09-16T09:00:00Z");
+
+  it("answers a whole edition's dashboard in a fixed number of queries, whatever the project count", async () => {
+    const counted = { queries: 0 };
+    const countingDb = { query: (text: string, values?: unknown[]) => { counted.queries += 1; return db.query(text, values); } };
+    for (let index = 0; index < 12; index += 1) {
+      const projectId = `00000000-0000-4000-9000-0000000001${String(index).padStart(2, "0")}`;
+      await seedImportedProject(projectId, `lead-${index}`, { name: `Team ${index}` });
+      await enableReporting(db, { projectId, hackathonId: EDITION });
+      if (index % 2 === 0) await createUpdate(member(`lead-${index}`), { projectId, hackathonId: EDITION, body: `Week one from ${index}`, atMs: WEEK_ONE });
+    }
+    counted.queries = 0;
+    const statuses = await reportingStatus(countingDb, { hackathonId: EDITION, atMs: WEEK_ONE });
+    expect(statuses.length).toBe(12);
+    expect(statuses.filter((row) => row.current?.completed).length).toBe(6);
+    // Periods, eligibility, config, then four grouped reads: no per-project loop.
+    expect(counted.queries).toBe(7);
+
+    // The same fixed cost for one project as for twelve, which is what
+    // "no per-project request loop" actually means.
+    counted.queries = 0;
+    await reportingStatus(countingDb, { hackathonId: EDITION, projectIds: ["00000000-0000-4000-9000-000000000100"], atMs: WEEK_ONE });
+    expect(counted.queries).toBe(7);
+  });
+
+  it("carries no entry body and no revision in a dashboard response", async () => {
+    await seedImportedProject(PROJECT_A, "lead-a");
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+    const created = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "BODY-TEXT-ONE", atMs: WEEK_ONE });
+    if (!created.ok) throw new Error("setup: expected a saved update");
+    await editUpdate(member("lead-a"), { entryId: created.entry.id, body: "BODY-TEXT-TWO", expectedVersion: 1 });
+    const serialized = JSON.stringify(await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_ONE, includeHistory: true }));
+    expect(serialized).not.toContain("BODY-TEXT");
+  });
+});
