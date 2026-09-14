@@ -47,6 +47,18 @@ export type CaptainAssignmentView = {
   roster: { name: string; username: string; joined: boolean }[];
 };
 
+/**
+ * One row of the Captain leaderboard, which admins and Captains may see
+ * (phase 4). Deliberately not a `CapabilityGrant`: that row carries the
+ * admin's free-text `reason` for the grant, the `grantedByUserId` and
+ * `revokedByUserId` operator ids, the grant id and the timestamps, none of
+ * which a Captain may see about another Captain. The account id is left out
+ * too, so a name on this page cannot be joined to an account. Phase 4 fills
+ * `assignedCount` from the assignment table; there is no reader here yet
+ * because there is nothing to count.
+ */
+export type CaptainLeaderboardView = { rank: number; displayName: string; assignedCount: number };
+
 /** A person as a public surface may show them: the name and the tag labels, never contact, org, notes or ids. */
 export type PublicPersonView = {
   name: string;

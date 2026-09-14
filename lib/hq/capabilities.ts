@@ -183,7 +183,16 @@ export async function listActiveCapabilitiesForUsers(userIds: readonly string[],
   return result;
 }
 
-/** Operator listing with grant and revocation metadata, newest grant first. */
+/**
+ * Operator listing with grant and revocation metadata, newest grant first.
+ *
+ * `CapabilityGrant` is an operator-only shape: the rows carry the admin's
+ * free-text `reason` plus the operator ids behind the grant and the
+ * revocation. It takes no actor and checks nothing, because every caller is
+ * already operator gated; a member-facing surface must map to a view model in
+ * ./view-models instead (`CaptainLeaderboardView` for the phase 4
+ * leaderboard), never hand these rows to a page a Captain can open.
+ */
 export async function listCapabilityGrants(
   filter: { capability: Capability; activeOnly?: boolean },
   db: BuilderQuery = builderDatabase(),

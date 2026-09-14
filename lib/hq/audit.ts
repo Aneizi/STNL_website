@@ -39,7 +39,17 @@ export async function recordAuditEvent(db: BuilderQuery, input: AuditEventInput)
   return toAuditEvent(rows[0]);
 }
 
-/** Operator listing, newest first. `nextCursor` is null on the last page. */
+/**
+ * Operator listing, newest first. `nextCursor` is null on the last page.
+ *
+ * `AuditEvent` is an operator-only shape: the rows name the actor behind every
+ * change and carry the reason an admin typed. This takes no actor and checks
+ * nothing, because every caller is already operator gated and because a
+ * session read here would make ./member-auth, which writes events through
+ * `recordAuditEvent`, import this module's session graph in a cycle. A member
+ * surface therefore never calls this; it renders a view model built from the
+ * records themselves.
+ */
 export async function listAuditEvents(
   filter: AuditEventFilter,
   page: AuditEventPage,

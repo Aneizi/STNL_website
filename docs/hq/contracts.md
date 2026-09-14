@@ -82,7 +82,7 @@ exists yet and none should be created before that phase.
 | Capability grants | grant and revoke, one effective grant per capability, audit trail | `lib/hq/capabilities.ts`, `lib/hq/actions/capabilities.ts` (operator gated) | `Capability = "captain"`, `grantCapability(db, { actor, byOperatorId, userId, capability, reason })` and `revokeCapability(db, ...)` (idempotent, the only writers of `hq_account_capabilities`, audit event in the same transaction). `actor` is the `AuditActor` the event records, `byOperatorId` the `hq_users` id the row is attributed to (`granted_by_user_id` / `revoked_by_user_id`) or null: a member redeeming a Captain invitation in phase 4 is a member actor with the inviting operator as `byOperatorId`. Grants are account-global, never scoped to an edition. Also `listActiveCapabilities(userId)`, `listActiveCapabilitiesForUsers(userIds)`, `listCapabilityGrants({ capability, activeOnly? })`, `personTags(roleLabel, capabilities)`; actions `grantCaptainCapability(userId, reason)`, `revokeCaptainCapability(userId, reason)` | 1 |
 | CRM person identity | stable person id, account link, edition People references, explicit correction | `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch(db, { personId, toUserId, reason, actor })` (detach, link, or merge into the account's own person; never by display name) and the operator action `correctPersonMatch({ personId, toUserId, reason })` | 1, used from 3 |
 | Audit | append only metadata events | `lib/hq/audit.ts`, `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata? })`, `listAuditEvents(filter, { limit, cursor })`; nothing else | 1 |
-| Actor aware response types | the smallest DTO per audience | new `lib/hq/view-models.ts` | `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView` | 1 |
+| Actor aware response types | the smallest DTO per audience | new `lib/hq/view-models.ts` | `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView`, `CaptainLeaderboardView` (phase 4 fills `assignedCount`) | 1 |
 | Shell and navigation | capability driven member menu, one member route list | new `lib/hq/member-routes.ts`, new `lib/hq/member-nav.ts` (both pure and client-safe), new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `app/hq/(member)/layout.tsx` (a provider, **not** the auth boundary) | `MEMBER_PUBLIC_PATHS`, `isMemberPath(pathname)`, `safeMemberNext(value)` in `member-routes.ts`; `NavItem`, `MemberNavInput`, `getMemberNav({ capabilities, hasTelegram, hasTeams })`, `isNavItemCurrent(item, pathname)` in `member-nav.ts`; `MemberNavProvider`, `BuilderNav`, `BuilderAccount` in `builder-nav.tsx`. The menu is derived from the request-cached `currentActor()` plus the store's `hasTeams(userId)` existence check, never the team rows; the layout passes it to the provider and every page composes `BuilderShell` itself | 2 |
 | Colosseum integration | validated snapshots, normalized fields, source status | `lib/colosseum-api.ts` extended, `lib/hq/colosseum-snapshot.ts` named only | `claimProject`, `refreshProject`, `listCountryProjects` | 3 |
 | Captain service | invitations, assignment changes | `lib/hq/captains.ts`, `lib/hq/actions/captains.ts`, named only | `acceptCaptainInvitation`, `assignCaptain`, `unassignCaptain`, `leaderboard` | 4 |
@@ -112,6 +112,17 @@ access; access is checked against `hq_account_capabilities` per request.
 
 Operator only fields stay in `lib/hq/types.ts`. The view models exist so that a
 member response cannot accidentally carry an operator field.
+
+`CapabilityGrant` (`lib/hq/capabilities.ts`) and `AuditEvent`
+(`lib/hq/audit-sql.ts`) are **operator-only shapes**, and `listCapabilityGrants`
+and `listAuditEvents` are operator-only readers: the rows carry the admin's
+free-text grant reason and the operator ids behind a grant, a revocation or any
+other change. Neither reader takes an actor, because every caller is already
+operator gated and a session read inside `listAuditEvents` would put
+`member-auth.ts -> audit.ts -> actor.ts -> member-auth.ts` in a cycle. A member
+or Captain surface maps to a view model instead: the phase 4 Captain
+leaderboard renders `CaptainLeaderboardView` (`{ rank, displayName,
+assignedCount }`), never `CapabilityGrant[]`.
 
 ## Phase checklist
 
@@ -325,9 +336,11 @@ without re-reading the whole log. The per-task detail is in
   `BuilderStore.hasTeams(userId)`, `BuilderStore.teamById(projectId)`, `BuilderStore.ownClaim(userId,
   projectId)`, `realEmail` in `lib/hq/builder-store.ts`; `builderDatabase()`,
   `BuilderQuery`, `BuilderDatabase`, `atomically()` in `lib/hq/builder-db.ts`;
-  `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView` and their
-  mappers in `lib/hq/view-models.ts`. A member response is built from a view
-  model so it cannot carry an operator field.
+  `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView`,
+  `CaptainLeaderboardView` and their mappers in `lib/hq/view-models.ts`. A
+  member response is built from a view model so it cannot carry an operator
+  field; `CapabilityGrant` and `AuditEvent` are operator-only shapes and never
+  reach one.
 - **Shell and routes.** `MEMBER_PUBLIC_PATHS`, `isMemberPath`, `safeMemberNext`
   in `lib/hq/member-routes.ts`; `getMemberNav({ capabilities, hasTelegram,
   hasTeams })` and `isNavItemCurrent` in `lib/hq/member-nav.ts`. A new phase 3
