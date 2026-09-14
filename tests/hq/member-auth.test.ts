@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { PGlite } from "@electric-sql/pglite";
+import { getIP } from "@better-auth/core/utils/ip";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
@@ -66,6 +67,14 @@ function latestCode() {
 }
 
 const SECRET = "test-only-independent-auth-secret-0123456789";
+
+/**
+ * The whole Set-Cookie line a member session must arrive with on an https
+ * origin: the __Secure- prefix with the Secure attribute it requires,
+ * HttpOnly, SameSite=Lax (the Telegram redirect is a top-level GET) and the
+ * 30-day Max-Age; no Domain, so it never reaches another host.
+ */
+const SESSION_COOKIE_LINE = /^__Secure-stnl_builder\.session_token=[^;]+; Max-Age=2592000; Path=\/; HttpOnly; Secure; SameSite=Lax$/;
 
 /** A session token signed the way Better Auth signs its session cookie, for rows inserted directly. */
 function signedSessionCookie(token: string) {
@@ -134,8 +143,9 @@ describe("public HQ sign-in through Better Auth", () => {
       { name: "Test Builder", contact: email, label: "Builder", hackathon_id: 41 },
     ]);
     const cookie = signedIn.headers.get("set-cookie")!;
-    expect(cookie).toContain("stnl_builder.session_token=");
-    expect(cookie).toContain("HttpOnly");
+    // The actual Set-Cookie line, with NODE_ENV not production: the attributes follow the https origin.
+    expect(process.env.NODE_ENV).not.toBe("production");
+    expect(signedIn.headers.getSetCookie()).toEqual([expect.stringMatching(SESSION_COOKIE_LINE)]);
     expect(cookie).not.toContain("hq_session=");
     const session = await request("/get-session", undefined, cookie.split(";")[0]);
     expect((await session.json()).user.id).toBe(user.id);
@@ -304,6 +314,98 @@ describe("public HQ sign-in through Better Auth", () => {
     }
     expect((await request("/email-otp/send-verification-otp", { email: "rate@example.com", type: "sign-in" })).status).toBe(429);
     expect(state.sent).toHaveLength(3);
+  });
+
+  // The budget is decided per client address and path before any handler
+  // runs, so a body the handler would refuse still spends it. The limits are
+  // the library's default for /sign-in/social, the repo's custom rule for the
+  // sign-in code, and the emailOTP plugin's for the change-email pair.
+  it.each([
+    ["/sign-in/social", { provider: "telegram", callbackURL: "/hq/welcome" }, 3],
+    ["/sign-in/email-otp", { email: "budget@example.com", otp: "000000" }, 5],
+    ["/email-otp/request-email-change", { newEmail: "budget@example.com" }, 3],
+    ["/email-otp/change-email", { newEmail: "budget@example.com", otp: "000000" }, 3],
+  ])("allows %s %i times per window from one address, then answers 429", async (path, body, max) => {
+    for (let attempt = 1; attempt <= max; attempt += 1) expect((await request(path, body)).status, `${path} attempt ${attempt}`).not.toBe(429);
+    const limited = await request(path, body);
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("x-retry-after")).toMatch(/^\d+$/);
+    // Another address is a separate budget.
+    expect((await request(path, body, undefined, "198.51.100.77")).status).not.toBe(429);
+    expect(state.sent).toEqual([]);
+  });
+
+  it("reads the client address from x-real-ip alone, and only when it is a single address", () => {
+    const options = { advanced: { ipAddress: { ipAddressHeaders: ["x-real-ip"] } } };
+    expect(getIP(new Headers({ "x-real-ip": "203.0.113.9", "x-forwarded-for": "198.51.100.1" }), options)).toBe("203.0.113.9");
+    // A forwarded chain in the trusted header is not unpicked without trustedProxies, and x-forwarded-for is never read;
+    // outside test and development the library then keys every such request on one shared bucket.
+    expect(getIP(new Headers({ "x-real-ip": "198.51.100.1, 203.0.113.9" }), options)).toBe("127.0.0.1");
+    expect(getIP(new Headers({ "x-forwarded-for": "198.51.100.1" }), options)).toBe("127.0.0.1");
+    expect(getIP(new Headers({ "x-real-ip": "not-an-address" }), options)).toBe("127.0.0.1");
+  });
+
+  it("answers a sign-in code request for a known address exactly like one for an unknown address, and serves no other code type", async () => {
+    const known = "known@example.com";
+    const unknown = "unknown@example.com";
+    let ip = 0;
+    const send = (email: string, type: string) => request("/email-otp/send-verification-otp", { email, type }, undefined, `198.51.100.${(ip += 1)}`);
+    expect((await send(known, "sign-in")).status).toBe(200);
+    expect((await request("/sign-in/email-otp", { email: known, otp: latestCode(), name: "Known Builder" })).status).toBe(200);
+    state.sent.length = 0;
+
+    const forKnown = await send(known, "sign-in");
+    const forUnknown = await send(unknown, "sign-in");
+    expect([forKnown.status, forUnknown.status]).toEqual([200, 200]);
+    expect(await forKnown.json()).toEqual(await forUnknown.json());
+    // Both get a code, so neither the answer nor the mail says which one has an account.
+    expect(state.sent.map((message) => message.to)).toEqual([known, unknown]);
+
+    // The other types would mail a known address and answer an unknown one at once: refused for both, before any lookup.
+    for (const type of ["email-verification", "forget-password", "change-email"]) {
+      for (const email of [known, unknown]) {
+        const refused = await send(email, type);
+        expect(refused.status, `${type} ${email}`).toBe(400);
+        expect((await refused.json()).code, `${type} ${email}`).toBe("INVALID_OTP_TYPE");
+      }
+    }
+    expect(state.sent).toHaveLength(2);
+    expect((await state.pg!.query("SELECT identifier FROM hq_auth_verification WHERE identifier NOT LIKE 'sign-in-otp-%'")).rows).toEqual([]);
+  });
+
+  it("keeps the code endpoints HQ does not use disabled, ahead of the rate limiter", async () => {
+    const email = "unused@example.com";
+    const attempts: Array<[string, object]> = [
+      ["/email-otp/check-verification-otp", { email, type: "sign-in", otp: "000000" }],
+      ["/email-otp/verify-email", { email, otp: "000000" }],
+      ["/email-otp/request-password-reset", { email }],
+      ["/forget-password/email-otp", { email }],
+      ["/email-otp/reset-password", { email, otp: "000000", password: "irrelevant-password" }],
+    ];
+    for (const [path, body] of attempts) expect((await request(path, body)).status, path).toBe(404);
+    expect(state.sent).toEqual([]);
+    expect((await state.pg!.query("SELECT * FROM hq_auth_verification")).rows).toEqual([]);
+    expect((await state.pg!.query("SELECT * FROM hq_auth_rate_limit")).rows).toEqual([]);
+  });
+
+  it("spends the sign-in code's three attempts and then refuses even the right code", async () => {
+    const email = "budget@example.com";
+    await request("/email-otp/send-verification-otp", { email, type: "sign-in" });
+    const code = latestCode();
+    const wrong = code === "000000" ? "111111" : "000000";
+    let ip = 0;
+    const guess = (otp: string) => request("/sign-in/email-otp", { email, otp }, undefined, `198.51.100.${(ip += 1)}`);
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const refused = await guess(wrong);
+      expect(refused.status, `attempt ${attempt}`).toBe(400);
+      expect((await refused.json()).code, `attempt ${attempt}`).toBe("INVALID_OTP");
+    }
+    // The sign-in route keeps the library's own answer: a code is not an account, so there is nothing to hide here.
+    const spent = await guess(code);
+    expect(spent.status).toBe(403);
+    expect((await spent.json()).code).toBe("TOO_MANY_ATTEMPTS");
+    expect((await guess(code)).status).toBe(400);
+    expect((await state.pg!.query("SELECT * FROM hq_auth_user")).rows).toHaveLength(0);
   });
 
   it("does not pretend email delivery succeeded when the sender fails", async () => {

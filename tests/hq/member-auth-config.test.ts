@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getMemberAuthAvailability, memberAuthOrigin, safeMemberNext } from "@/lib/hq/member-auth-config";
+import { getMemberAuthAvailability, memberAuthOrigin, memberAuthUsesSecureCookies, safeMemberNext } from "@/lib/hq/member-auth-config";
 
 describe("public HQ authentication configuration", () => {
   const env = { DATABASE_URL: "postgres://local/test", BETTER_AUTH_SECRET: "test-secret-that-is-at-least-thirty-two-characters", BETTER_AUTH_URL: "https://nl.superteam.fun", NODE_ENV: "production" };
@@ -34,6 +34,18 @@ describe("public HQ authentication configuration", () => {
     expect(memberAuthOrigin({ ...env, BETTER_AUTH_URL: "http://localhost:3000" })).toBeNull();
     expect(memberAuthOrigin({ ...env, NODE_ENV: "development", BETTER_AUTH_URL: "http://localhost:3000" })).toBe("http://localhost:3000");
     expect(memberAuthOrigin({ ...env, BETTER_AUTH_URL: "https://username:secret@nl.superteam.fun" })).toBeNull();
+  });
+
+  it("marks cookies Secure exactly when the origin is https, whatever NODE_ENV says", () => {
+    expect(memberAuthUsesSecureCookies(env)).toBe(true);
+    // A preview or test deployment on https keeps the prefix and the attribute together.
+    expect(memberAuthUsesSecureCookies({ ...env, NODE_ENV: "development" })).toBe(true);
+    expect(memberAuthUsesSecureCookies({ ...env, NODE_ENV: "test" })).toBe(true);
+    // Plain http is only ever localhost outside production, and there the browser would drop a Secure cookie.
+    expect(memberAuthUsesSecureCookies({ ...env, NODE_ENV: "development", BETTER_AUTH_URL: "http://localhost:3000" })).toBe(false);
+    // An origin the config refuses configures no auth at all, so nothing is secure either.
+    expect(memberAuthUsesSecureCookies({ ...env, BETTER_AUTH_URL: "http://nl.superteam.fun" })).toBe(false);
+    expect(memberAuthUsesSecureCookies({ ...env, BETTER_AUTH_URL: undefined })).toBe(false);
   });
 });
 

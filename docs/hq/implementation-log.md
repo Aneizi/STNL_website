@@ -1504,3 +1504,226 @@ No migration.
 ### External configuration still required, task T2.4
 
 Nothing new.
+
+### T2.5 review, rate limits and session cookies for both sign-in methods
+
+The plan line "Review rate limits and secure session-cookie behavior for
+both methods", one ruling per item, with the evidence in the installed
+library (Better Auth 1.7.2 under `node_modules/better-auth/dist`, its core
+under `node_modules/@better-auth/core/dist`, better-call under
+`node_modules/better-call/dist`; line numbers are those files') and the
+test that pins each ruling. Every Change is implemented in this task. No
+limit was weakened.
+
+- **(a) Client address from `x-real-ip` only. Keep, documented.** `getIP`
+  walks only `advanced.ipAddress.ipAddressHeaders` (core `utils/ip.mjs:201-217`),
+  takes a single valid IPv4 or IPv6 value (`:172-192`; a comma chain is
+  refused without `trustedProxies`, `:188`) and normalises IPv6 to its /64
+  (`:98-104`). Without a usable header it returns null in production, on
+  which the limiter keys every such request on one shared per-path bucket
+  and warns once (`api/rate-limiter/index.mjs:232-245`): throttled together,
+  never bypassed. In test and development it answers 127.0.0.1
+  (`ip.mjs:215`). Vercel sets `x-real-ip`, "identical to `x-forwarded-for`",
+  from the connection and overwrites a client-supplied value "to prevent
+  IP spoofing" (vercel.com/docs/headers/request-headers, read 2026-09-14).
+  The assumption now sits in the option's comment: the app is served by
+  Vercel directly; behind any other proxy the limits would key on that
+  proxy's address until its `trustedProxies` are configured. Test: "reads
+  the client address from x-real-ip alone" in `tests/hq/member-auth.test.ts`.
+
+- **(b) `Secure` attribute against the `__Secure-` prefix. Change.** The
+  prefix follows the baseURL scheme (`cookies/index.mjs:23`); the attribute
+  defaults to the prefix (`:34`) but is overridden by
+  `defaultCookieAttributes` (`:39`), which the repo set to `NODE_ENV ===
+  "production"`. On the wire the mismatch was latent: better-call forces
+  `Secure` onto any name starting with `__Secure-` (`cookies.mjs:47`), which
+  is why the test harness (NODE_ENV test, https origin) already emitted a
+  correct line. Not a property to lean on in a transitive dependency. Now
+  `memberAuthUsesSecureCookies()` (`lib/hq/member-auth-config.ts`) is true
+  exactly when `memberAuthOrigin()` is https, and that one boolean sets both
+  `advanced.useSecureCookies` (the prefix) and `defaultCookieAttributes.secure`.
+  Plain http is only ever localhost outside production, where a browser
+  drops a Secure cookie. Tests: the pure rule in
+  `tests/hq/member-auth-config.test.ts`; the actual Set-Cookie line, with
+  NODE_ENV asserted not production, on the email sign-in
+  (`member-auth.test.ts`) and on the Telegram callback and the signed state
+  cookie (`member-auth-telegram.test.ts`), each matched whole:
+  `__Secure-stnl_builder.session_token=...; Max-Age=2592000; Path=/;
+  HttpOnly; Secure; SameSite=Lax` and the state cookie with `Max-Age=300`.
+
+- **(c) Session 30 days, `updateAge` one day, cookie cache off. Keep.**
+  `expiresIn` is the cookie Max-Age (`cookies/index.mjs:49`) and the row's
+  expiry; a request more than `updateAge` after the last refresh extends
+  both by another 30 days (`api/routes/session.mjs:171-208`), so an inactive
+  account is signed out after 30 days and an active one stays in. The
+  actions that change how one signs in sit behind the identity plugin's
+  15-minute window on the session's `createdAt`, which the refresh never
+  touches (task T2.2), so the rolling session does not extend the sensitive
+  window. With the cookie cache off every request reads the session row, so
+  a deleted session (unlink, `redirectToMemberSignIn`, a missing identity
+  row) is gone on the next request; the cost is one indexed read per
+  request. No "remember me" choice is offered, so the Max-Age is always
+  set.
+
+- **(d) Rate limits. Keep every rule; Change the surface.** Precedence
+  (`api/rate-limiter/index.mjs:246-276`): a repo custom rule replaces a
+  plugin rule, which replaces the library's default special rule
+  (`:302-315`); otherwise the repo's 60 per 60 s. Effective, per client
+  address and path: `/sign-in/social` 3 per 10 s (default);
+  `/callback/telegram` 10 per 60 s (identity plugin; plugin matchers see the
+  request path, `:236,252`); `/email-otp/send-verification-otp` 3 per 60 s
+  (default, plugin and repo agree); `/sign-in/email-otp` 5 per 60 s (repo,
+  over the plugin's 3 per 60 s and the default's 3 per 10 s: room for a
+  mistyped code and a resend within the minute, while the code's own
+  three-attempt budget bounds guessing, `plugins/email-otp/routes.mjs:764-783`);
+  `/email-otp/request-email-change` and `/email-otp/change-email` 3 per 60 s
+  (emailOTP plugin, `email-otp/index.mjs:125-138`); the core `/change-email`
+  3 per 10 s (default) and disabled by option; `/link-social`,
+  `/unlink-account`, `/get-session`, `/sign-out` and the rest 60 per 60 s,
+  all behind a session and, for the first two, the recency window and a
+  confirmed intent. The limiter runs in `onRequest` before any handler
+  (`api/index.mjs:168`) as one atomic database step (`rate-limiter/index.mjs:91-170`
+  on `hq_auth_rate_limit`, whose `key` is unique); the four-path budget
+  test in `member-auth.test.ts` pins the first four rules above and that a
+  second address is a separate budget. `/callback/telegram` cannot be used
+  to brute-force `state`: the value is 32 characters from a 64-symbol
+  alphabet (`state.mjs:55`, `crypto/random.mjs:3`), must exist as a
+  verification row (`state.mjs:120`), must equal the signed
+  `stnl_builder.state` cookie of the same browser (`:131-137`;
+  `skipStateCookieCheck` false, `context/create-context.mjs:137`), is
+  consumed on first use (`:139`) and expires after ten minutes (`:141`),
+  all before the code exchange (`api/routes/callback.mjs:79` against
+  `:110`), so a guess costs Telegram nothing and the 10 per minute rule
+  bounds even that (test "rate-limits the Telegram callback per IP without
+  touching Telegram"). Changes: the emailOTP endpoints HQ never calls join
+  `disabledPaths`, answering 404 before the limiter and every hook
+  (`api/index.mjs:164-166`): `/email-otp/check-verification-otp` (verifies
+  a sign-in code without consuming it and counts attempts with a read then
+  a write, `routes.mjs:222-263`, a second guesser next to the atomic one),
+  `/email-otp/verify-email`, `/email-otp/request-password-reset`,
+  `/forget-password/email-otp` and `/email-otp/reset-password` (HQ has no
+  password; the reset routes mail a known address and answer an unknown
+  one at once, `routes.mjs:464-568`). The custom 5 per 60 s rule for the
+  now disabled `/email-otp/verify-email` is gone; should the path ever
+  return, the plugin's stricter 3 per 60 s applies. Test: "keeps the code
+  endpoints HQ does not use disabled, ahead of the rate limiter".
+
+- **(e) `HttpOnly` and `SameSite` on the session cookie. Keep.** Both are
+  the library's defaults (`cookies/index.mjs:35-37`), restated by the repo,
+  and serialised as `HttpOnly; SameSite=Lax` (better-call
+  `cookies.mjs:63-65`). Lax is required: the return from Telegram is a
+  top-level GET redirect that must carry the signed state cookie and, for a
+  link, the session; Strict would drop both. Cross-site POSTs are stopped by
+  the origin check (`disableOriginCheck` and `disableCSRFCheck` false; test
+  "rejects cross-origin mutation" in `member-auth.test.ts`). Verified on
+  the wire for both methods by the tests under (b).
+
+- **(f) Non-enumerating code requests. Keep for sign-in; Change the other
+  types.** For `type: "sign-in"` the library sends a code whether or not
+  the address has an account (`routes.mjs:103-110`), and both branches
+  await the same send (`runInBackgroundOrAwait` awaits when no background
+  handler is configured, `context/create-context.mjs:214-224`), so status,
+  body, timing and the mail are the same. Test: "answers a sign-in code
+  request for a known address exactly like one for an unknown address, and
+  serves no other code type". For `email-verification` and
+  `forget-password` the same endpoint mails a known address and answers an
+  unknown one at once without a mail (`routes.mjs:104-107`): a timing tell,
+  and a way for anyone to mail a member a code. An options-level before
+  hook now refuses every type but `sign-in` with 400 `INVALID_OTP_TYPE`
+  before any lookup; the client only ever sends `sign-in`
+  (`app/hq/(member)/account-form.tsx`).
+
+- **Carried from the T2.3 review: the `/email-otp/change-email` attempt
+  budget as an oracle. Change; the timing residue accepted.** The request
+  route stores a code for a free address and deletes it for a taken one
+  (`routes.mjs:666-669`), so the verify route answered `INVALID_OTP`
+  forever for a taken address but `TOO_MANY_ATTEMPTS` (403) after three
+  guesses and `OTP_EXPIRED` after five minutes for a free one
+  (`routes.mjs:764-783`). An options-level after hook now answers every
+  failed code on that one route with the library's own 400 `INVALID_OTP`
+  body. It returns a Response rather than throwing: the dispatcher keeps
+  the handler's status for an error thrown from an after hook
+  (`api/dispatch.mjs:231-236,242-244`; better-call `to-response.mjs:125-129`)
+  and replaces it only with a Response (`:97-104`). The sign-in route keeps
+  its own answers, a code there being no account (test "spends the sign-in
+  code's three attempts"). Test: "answers a failed code for an address
+  another account holds exactly like one for a free address, whatever the
+  attempt or the code's age" compares status, reason phrase, content type
+  and body across five guesses and an expired code, and checks the budget
+  still kills the right code. The copy for `TOO_MANY_ATTEMPTS` and
+  `OTP_EXPIRED` in `email-copy.ts` is unreachable from this route now; the
+  `INVALID_OTP` line already says "incorrect or has expired" and offers a
+  resend, so no copy change. Accepted, with reasoning: the request route
+  still returns at once for a taken address and after the mail send for a
+  free one, and the delivery wrapper's honest 503 (task T0.2) can only
+  occur for a free address. Closing those would mean padding response
+  times or hiding delivery failures. Against them stand a session created
+  within 15 minutes, a confirmation step per probed address, 3 requests
+  per minute per client address, one bit of low value (whether an address
+  has an HQ account), and a probe that mails a stranger one "you can
+  ignore this" line, which the public sign-in code endpoint already lets
+  anyone do at the same rate. Tighter per-address limits would slow the
+  oracle, not close it, and 3 per minute is the tightest rule there is.
+
+### What changed, task T2.5
+
+No migration. `lib/hq/member-auth-config.ts` gained
+`memberAuthUsesSecureCookies(env)`. `lib/hq/member-auth.ts`: one
+`secureCookies` boolean from it sets `advanced.useSecureCookies` and
+`defaultCookieAttributes.secure`; `disabledPaths` gained the five emailOTP
+paths named under (d); the custom rule for `/email-otp/verify-email` is
+gone; new options-level `hooks.before` (the code-type restriction under
+(f)) and `hooks.after` (the change-email normalisation above); comments on
+the address header and the rate-limit block record the rulings in place.
+
+### Checks passed, task T2.5
+
+- Baseline 744 tests; after this task 754 in 33 files, `env -u DATABASE_URL
+  -u DATABASE_URL_UNPOOLED npm test`. `npx tsc --noEmit` clean. `npm run
+  lint`: 0 errors, the same 18 warnings in `public/deck/deck-stage.js`.
+  No `app/` file changed, so no build.
+- `tests/hq/member-auth-config.test.ts` (+1): the secure-cookie rule for
+  https under production, development and test, http localhost, a refused
+  http origin and no origin.
+- `tests/hq/member-auth.test.ts` (+8, one table of four): the whole
+  session Set-Cookie line on email sign-in with NODE_ENV not production;
+  the per-address budgets of `/sign-in/social` (3), `/sign-in/email-otp`
+  (5), `/email-otp/request-email-change` (3) and `/email-otp/change-email`
+  (3), the 429 with `X-Retry-After`, and a second address unaffected;
+  `getIP` reading `x-real-ip` alone and refusing a chain; a known and an
+  unknown address answered and mailed alike for a sign-in code and the
+  other three types refused for both; the five disabled paths answering 404
+  with no mail, no row and no rate-limit row; the sign-in code's three
+  attempts, then 403 `TOO_MANY_ATTEMPTS` even for the right code.
+- `tests/hq/member-auth-telegram.test.ts` (+1, two strengthened): the
+  signed state cookie's whole line on `/sign-in/social` and the session
+  cookie's on the callback; the change-email oracle test described above.
+
+### Blocked or deferred, task T2.5
+
+- The timing difference on `/email-otp/request-email-change` and the
+  delivery-failure 503 for a free address are accepted, not closed (the
+  reasoning is in the carried-finding ruling).
+- The `TOO_MANY_ATTEMPTS` and `OTP_EXPIRED` entries in
+  `app/hq/(member)/account/email-copy.ts` no longer have a route that emits
+  them. They are harmless; removing them is copy work outside this task.
+- Behind a proxy other than Vercel the address rule under (a) needs
+  `trustedProxies`; no such deployment exists.
+- Server-side callers of `auth.api.changeEmailEmailOTP` would receive the
+  normalised Response instead of a thrown error; HQ has none.
+
+### Changed interfaces, task T2.5
+
+`lib/hq/member-auth-config.ts` exports `memberAuthUsesSecureCookies(env)`.
+`/email-otp/send-verification-otp` answers 400 `INVALID_OTP_TYPE` for any
+`type` but `sign-in`. `/email-otp/change-email` answers 400 `INVALID_OTP`
+for every failed code. `/email-otp/check-verification-otp`,
+`/email-otp/verify-email`, `/email-otp/request-password-reset`,
+`/forget-password/email-otp` and `/email-otp/reset-password` answer 404.
+Cookies on an https origin carry `Secure` and the `__Secure-` prefix
+regardless of `NODE_ENV`. No migration.
+
+### External configuration still required, task T2.5
+
+Nothing new. `BETTER_AUTH_URL` now also decides the cookies' `Secure`
+attribute; it must stay the https origin (`docs/hq/manual-setup.md`).

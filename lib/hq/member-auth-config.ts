@@ -18,6 +18,18 @@ export function memberAuthOrigin(env: AuthEnvironment = process.env): string | n
   }
 }
 
+/**
+ * Whether the member cookies carry the Secure attribute and the __Secure-
+ * name prefix: exactly when the configured origin is https, which is every
+ * origin `memberAuthOrigin` accepts except http://localhost outside
+ * production. Better Auth takes the prefix from the baseURL scheme but the
+ * attribute from `defaultCookieAttributes` (cookies/index.mjs), so both are
+ * set from this one answer and can never disagree.
+ */
+export function memberAuthUsesSecureCookies(env: AuthEnvironment = process.env): boolean {
+  return memberAuthOrigin(env)?.startsWith("https:") ?? false;
+}
+
 export function getMemberAuthAvailability(env: AuthEnvironment = process.env): MemberAuthAvailability {
   const configured = Boolean(env.DATABASE_URL && (env.BETTER_AUTH_SECRET?.length ?? 0) >= 32 && memberAuthOrigin(env));
   return {

@@ -141,8 +141,18 @@ async function startSignIn(extra: Record<string, unknown> = {}) {
   const response = await request("/sign-in/social", { provider: "telegram", callbackURL: "/hq/welcome", errorCallbackURL: "/hq/signin", disableRedirect: true, ...extra });
   expect(response.status).toBe(200);
   const url = new URL((await response.json()).url);
-  return { url, state: url.searchParams.get("state")!, nonce: url.searchParams.get("nonce")!, codeChallenge: url.searchParams.get("code_challenge")!, cookie: cookieHeader(response) };
+  return { url, state: url.searchParams.get("state")!, nonce: url.searchParams.get("nonce")!, codeChallenge: url.searchParams.get("code_challenge")!, cookie: cookieHeader(response), setCookies: response.headers.getSetCookie() };
 }
+
+/**
+ * The Set-Cookie lines the Telegram flow must produce on an https origin,
+ * with NODE_ENV not production: the __Secure- prefix with the Secure
+ * attribute it requires, HttpOnly, SameSite=Lax (the return from Telegram
+ * is a top-level GET, which Strict would strip), no Domain. The signed state
+ * lives five minutes, the session thirty days.
+ */
+const STATE_COOKIE_LINE = /^__Secure-stnl_builder\.state=[^;]+; Max-Age=300; Path=\/; HttpOnly; Secure; SameSite=Lax$/;
+const SESSION_COOKIE_LINE = /^__Secure-stnl_builder\.session_token=[^;]+; Max-Age=2592000; Path=\/; HttpOnly; Secure; SameSite=Lax$/;
 
 async function completeCallback(start: Awaited<ReturnType<typeof startSignIn>>, cookie = start.cookie) {
   state.nonce = start.nonce;
@@ -177,7 +187,7 @@ async function startLink(cookie: string) {
   const response = await request("/link-social", LINK_BODY, cookie);
   if (response.status !== 200) return { response, start: null };
   const url = new URL((await response.json()).url);
-  return { response, start: { url, state: url.searchParams.get("state")!, nonce: url.searchParams.get("nonce")!, codeChallenge: url.searchParams.get("code_challenge")!, cookie: cookieHeader(response) } };
+  return { response, start: { url, state: url.searchParams.get("state")!, nonce: url.searchParams.get("nonce")!, codeChallenge: url.searchParams.get("code_challenge")!, cookie: cookieHeader(response), setCookies: response.headers.getSetCookie() } };
 }
 
 /** The whole Connect Telegram flow for a signed-in member: confirmation step, /link-social, callback. */
@@ -312,6 +322,8 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(start.state).toMatch(/^[A-Za-z0-9_-]{32}$/);
     expect(start.nonce).toMatch(/^[A-Za-z0-9_-]{32}$/);
     expect(start.cookie).toContain("stnl_builder.state=");
+    expect(process.env.NODE_ENV).not.toBe("production");
+    expect(start.setCookies).toEqual([expect.stringMatching(STATE_COOKIE_LINE)]);
     expect(state.fetches).toEqual([]);
   });
 
@@ -319,7 +331,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     const { start, response, session } = await signInWithTelegram();
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toMatch(/\/hq\/welcome$/);
-    expect(session).toContain("HttpOnly");
+    expect(session).toMatch(SESSION_COOKIE_LINE);
     expect(session).not.toContain("hq_session=");
 
     // Only the JWKS and the token endpoint were contacted, never discovery.
@@ -1087,6 +1099,47 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     // Nothing to guess: no code exists for the taken address, and the holder's account is untouched.
     const guess = await request("/email-otp/change-email", { newEmail: "taken@example.com", otp: "000000" }, cookie);
     expect(guess.status).toBe(400);
+    expect((await state.pg!.query("SELECT email FROM hq_auth_user ORDER BY email")).rows).toEqual([{ email: PLACEHOLDER }, { email: "taken@example.com" }]);
+  });
+
+  it("answers a failed code for an address another account holds exactly like one for a free address, whatever the attempt or the code's age", async () => {
+    await signInWithEmail("taken@example.com", "Holder");
+    const { session } = await signInWithTelegram();
+    const cookie = session!.split(";")[0];
+    state.cookie = cookie;
+    state.sent.length = 0;
+    const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
+    const requestCode = async (newEmail: string) => {
+      expect(await confirmEmailChange(newEmail)).toEqual({ ok: true, newEmail });
+      expect((await request("/email-otp/request-email-change", { newEmail }, cookie)).status).toBe(200);
+    };
+    // What a caller can compare: status, reason phrase, content type and body.
+    const guess = async (newEmail: string, otp: string) => {
+      const response = await request("/email-otp/change-email", { newEmail, otp }, cookie);
+      return { status: response.status, statusText: response.statusText, type: response.headers.get("content-type"), body: await response.json() };
+    };
+    await requestCode("taken@example.com");
+    await requestCode("free@example.com");
+    expect(state.sent.map((message) => message.to)).toEqual(["free@example.com"]);
+    const code = state.sent[0].text.match(/\b\d{6}\b/)![0];
+    const wrong = code === "000000" ? "111111" : "000000";
+
+    // Five guesses each: three inside the budget, one past it (the library's TOO_MANY_ATTEMPTS), one with no row left.
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      const taken = await guess("taken@example.com", wrong);
+      expect(taken.status, `attempt ${attempt}`).toBe(400);
+      expect(taken.body.code, `attempt ${attempt}`).toBe("INVALID_OTP");
+      expect(await guess("free@example.com", wrong), `attempt ${attempt}`).toEqual(taken);
+    }
+    // The budget itself still holds: the right code is dead after three wrong ones.
+    expect((await guess("free@example.com", code)).body.code).toBe("INVALID_OTP");
+    expect(await changeEmailRows()).toEqual([]);
+
+    // A code past its five minutes (the library's OTP_EXPIRED) answers the same as no code at all.
+    await requestCode("expired@example.com");
+    await state.pg!.query(`UPDATE hq_auth_verification SET "expiresAt" = now() - interval '1 minute' WHERE identifier LIKE 'change-email-otp-%'`);
+    expect(await guess("expired@example.com", wrong)).toEqual(await guess("taken@example.com", wrong));
+    expect(await changeEmailRows()).toEqual([]);
     expect((await state.pg!.query("SELECT email FROM hq_auth_user ORDER BY email")).rows).toEqual([{ email: PLACEHOLDER }, { email: "taken@example.com" }]);
   });
 

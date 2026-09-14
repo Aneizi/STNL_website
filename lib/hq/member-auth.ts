@@ -3,11 +3,12 @@ import { cache } from "react";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { betterAuth } from "better-auth";
+import { APIError, createAuthMiddleware, isAPIError } from "better-auth/api";
 import { emailOTP } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
 import { Pool } from "pg";
 import { Resend } from "resend";
-import { getMemberAuthAvailability, memberAuthOrigin, safeMemberNext } from "./member-auth-config";
+import { getMemberAuthAvailability, memberAuthOrigin, memberAuthUsesSecureCookies, safeMemberNext } from "./member-auth-config";
 import { recordAuditEvent } from "./audit";
 import { builderDatabase } from "./builder-db";
 import { syncBuilderAccount } from "./builder-store";
@@ -34,10 +35,23 @@ export class MemberAuthUnavailableError extends Error {
 /** What the one sender takes: a plain message to one address. */
 type MemberEmail = { to: string; subject: string; text: string };
 
+/**
+ * The library's answers on /email-otp/change-email that only a stored code
+ * can produce. The request route stores a code for a free address and none
+ * for an address another account holds, so these would tell a caller, after
+ * a few guesses, which addresses have HQ accounts (task T2.5 review).
+ */
+const CHANGE_EMAIL_CODE_TELLS: ReadonlySet<string> = new Set(["TOO_MANY_ATTEMPTS", "OTP_EXPIRED"]);
+
+/** The one code type the public code endpoint serves: HQ has no password to reset and no separate email-verification step. */
+const PUBLIC_OTP_TYPE = "sign-in";
+
 function createMemberAuth() {
   const available = getMemberAuthAvailability();
   const baseURL = memberAuthOrigin();
   if (!available.configured || !baseURL) throw new MemberAuthUnavailableError();
+  // Prefix and attribute follow the origin's scheme together, never NODE_ENV.
+  const secureCookies = memberAuthUsesSecureCookies();
 
   /**
    * The one way member email leaves this module. False when nothing was
@@ -98,19 +112,51 @@ function createMemberAuth() {
       },
     },
     verification: { modelName: "hq_auth_verification" },
-    // These would hand the session holder the stored provider tokens,
-    // including the Telegram id_token. Nothing in HQ needs them and the
-    // stored id_token is read only by the identity plugin's database hooks.
-    disabledPaths: ["/get-access-token", "/refresh-token", "/account-info"],
+    // A disabled path answers 404 before the rate limiter and every hook
+    // (api/index.mjs onRequest). The first three would hand the session
+    // holder the stored provider tokens, including the Telegram id_token;
+    // nothing in HQ needs them and the stored id_token is read only by the
+    // identity plugin's database hooks. The email-OTP ones serve flows HQ
+    // does not have: password reset (three paths) and a separate
+    // email-verification code. check-verification-otp also tests a sign-in
+    // code without consuming it and counts attempts non-atomically
+    // (plugins/email-otp/routes.mjs), a second guesser next to the atomic one.
+    disabledPaths: [
+      "/get-access-token",
+      "/refresh-token",
+      "/account-info",
+      "/email-otp/check-verification-otp",
+      "/email-otp/verify-email",
+      "/email-otp/request-password-reset",
+      "/forget-password/email-otp",
+      "/email-otp/reset-password",
+    ],
     advanced: {
       cookiePrefix: "stnl_builder",
       disableOriginCheck: false,
       disableCSRFCheck: false,
+      // Vercel sets x-real-ip from the connection and overwrites a client's
+      // own value (vercel.com/docs/headers/request-headers); the library
+      // reads no other header, takes only a single valid address and shares
+      // one bucket per path among requests without it (core utils/ip.mjs,
+      // api/rate-limiter/index.mjs). Behind any other proxy, add its
+      // trustedProxies before relying on these limits.
       ipAddress: { ipAddressHeaders: ["x-real-ip"] },
-      defaultCookieAttributes: { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production" },
+      useSecureCookies: secureCookies,
+      defaultCookieAttributes: { httpOnly: true, sameSite: "lax", secure: secureCookies },
     },
     // No `socialProviders` option: the only OAuth provider is Telegram, which
     // the hqTelegramIdentity plugin registers on the context in its init.
+
+    // Per client address and path, decided before any handler runs. A custom
+    // rule replaces the plugin's, which replaces the library's default
+    // special rule (api/rate-limiter/index.mjs resolveRateLimitConfig):
+    // the sign-in code endpoint allows a mistyped code and a resend within
+    // the minute, while the code's own three-attempt budget bounds guessing.
+    // Everything not named here (the change-email pair at 3 per minute from
+    // the emailOTP plugin, the Telegram callback at 10 from the identity
+    // plugin, /sign-in/social at 3 per 10 seconds from the library) is
+    // reviewed in docs/hq/implementation-log.md, task T2.5.
     rateLimit: {
       enabled: true,
       storage: "database",
@@ -120,8 +166,40 @@ function createMemberAuth() {
       customRules: {
         "/email-otp/send-verification-otp": { window: 60, max: 3 },
         "/sign-in/email-otp": { window: 60, max: 5 },
-        "/email-otp/verify-email": { window: 60, max: 5 },
       },
+    },
+    hooks: {
+      /**
+       * The public code endpoint takes three code types and HQ uses one.
+       * For the other two the library mails a known address and answers an
+       * unknown one at once, without a mail (plugins/email-otp/routes.mjs
+       * sendVerificationOTP), so they would tell a caller which addresses
+       * have accounts and let anyone mail a member a code. A sign-in code
+       * goes to every address alike.
+       */
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path === "/email-otp/send-verification-otp" && ctx.body?.type !== PUBLIC_OTP_TYPE) {
+          throw new APIError("BAD_REQUEST", { code: "INVALID_OTP_TYPE", message: "Only a sign-in code can be requested." });
+        }
+      }),
+      /**
+       * Every failed code on /email-otp/change-email answers 400 INVALID_OTP,
+       * the answer an address with no stored code gets. A Response is
+       * returned rather than an error thrown: the dispatcher keeps the
+       * handler's status for an error from an after hook and replaces it
+       * only with a Response (api/dispatch.mjs, better-call to-response.mjs).
+       */
+      after: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== "/email-otp/change-email") return;
+        const returned: unknown = ctx.context.returned;
+        if (!isAPIError(returned) || !CHANGE_EMAIL_CODE_TELLS.has(String(returned.body?.code))) return;
+        const invalid = new APIError("BAD_REQUEST", { code: "INVALID_OTP", message: "Invalid OTP" });
+        return new Response(JSON.stringify(invalid.body), {
+          status: invalid.statusCode,
+          statusText: String(invalid.status),
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
     },
     databaseHooks: {
       user: {
