@@ -23,6 +23,10 @@ export function loginLabel({ email, telegram }: AccountLogin): string {
   return "No login email";
 }
 
+// Every row below is keyed by its record id alone. A key that also carried the
+// state the row's own form changes (a grant, a verification) remounted the row
+// on the very save that changed it, closing the open <details> and taking the
+// "Saved." feedback with it.
 function ActionForm({ action, children }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode }) {
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState("");
@@ -131,7 +135,7 @@ export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccou
       </ul>}
       {accounts.length === 0 && <p>No HQ accounts have joined this hackathon yet.</p>}
       {accounts.map((account) => (
-        <article className={styles.row} key={`${account.id}-${account.captain}`}>
+        <article className={styles.row} key={account.id}>
           <div className={styles.rowHeader}>
             <h3>{account.name}</h3>
             {account.captain && <span className={`${styles.badge} ${styles.potential}`}>Captain</span>}
@@ -177,7 +181,7 @@ export function BuilderProjectReviews({ projects, importRequests }: {
         <p>Team verification and HQ membership are separate from the submission gates above.</p>
         {projects.length === 0 && <p>No teams have been imported into this hackathon yet.</p>}
         {projects.map((project) => (
-          <article className={styles.row} key={`${project.id}-${project.verification}`}>
+          <article className={styles.row} key={project.id}>
             <div className={styles.rowHeader}>
               <h3>{project.name}</h3>
               <div className={styles.actions} style={{ marginTop: 0 }}>

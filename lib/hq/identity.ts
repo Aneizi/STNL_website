@@ -3,6 +3,11 @@ import type { BuilderQuery } from "./builder-db";
 import { builderDatabase, builderStore } from "./builder-store";
 import { isPlaceholderEmail } from "./telegram-provider";
 
+// The rule for the internal placeholder address is defined in
+// ./telegram-provider, next to the one function that mints it, and re-exported
+// here because this module is the identity boundary every other module reads.
+export { isPlaceholderEmail } from "./telegram-provider";
+
 /**
  * A verified Telegram identity attached to a public HQ account. The numeric
  * Telegram user id is a bigint in PostgreSQL and a string here, so it never
