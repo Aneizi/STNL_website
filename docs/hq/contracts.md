@@ -97,8 +97,9 @@ inventing their own: `capability.granted`, `capability.revoked`,
 `bot.consent_changed`, `person.linked`, `person.match_corrected`, and reserved
 for phase 4 `captain.assigned`, `captain.unassigned`,
 `captain.invitation_created`, `captain.invitation_revoked` and
-`captain.invitation_redeemed` (task T4.1 reserves the three invitation kinds;
-nothing writes any of the five yet). They are the
+`captain.invitation_redeemed` (task T4.1 reserved the three invitation kinds;
+task T4.2 writes them. `captain.assigned` and `captain.unassigned` remain
+unwritten until task T4.4). They are the
 `AUDIT_EVENT_KINDS` union in `lib/hq/audit-sql.ts`. Note bodies never go into
 audit. The audit module exposes no update and no delete, and
 `tests/hq/capabilities.test.ts` asserts that.
