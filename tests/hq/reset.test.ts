@@ -154,6 +154,23 @@ async function seedEverything() {
   await run(`INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ('${invitation}', 'builder-1')`);
   await run(`INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id)
              VALUES ('${project}', 'builder-1', '${user}')`);
+  // Weekly reporting (phase 5): the edition's schedule settings, which are
+  // Admin configuration and survive, and a full chain of reporting rows for
+  // the project, which are the edition's CRM and do not.
+  await run(`INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date) VALUES ('${hackathon}', '2026-10-05')`);
+  const period = await id(
+    `INSERT INTO hq_reporting_periods (hackathon_id, sequence, mode, start_date, end_date, starts_at, ends_at, closed_at)
+     VALUES ('${hackathon}', 1, 'weekly', '2026-09-14', '2026-09-20', '2026-09-13T22:00:00Z', '2026-09-20T22:00:00Z', now()) RETURNING id`,
+  );
+  await run(`INSERT INTO hq_reporting_eligibility (project_id, hackathon_id) VALUES ('${project}', '${hackathon}')`);
+  const entry = await id(
+    `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body)
+     VALUES ('${project}', '${period}', 'member', 'builder-1', 'Shipped the importer') RETURNING id`,
+  );
+  await run(`INSERT INTO hq_reporting_entry_revisions (entry_id, version, body, visibility, editor_kind, editor_id)
+             VALUES ('${entry}', 1, 'Shipped the importer', 'shared', 'member', 'builder-1')`);
+  await run(`INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis, entry_id, captain_user_id)
+             VALUES ('${period}', '${project}', true, 'entry', '${entry}', 'builder-1')`);
 }
 
 beforeEach(async () => {

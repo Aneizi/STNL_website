@@ -345,3 +345,166 @@ UPDATE hq_project_onboarding SET tracks = ARRAY(SELECT jsonb_array_elements_text
 -- check has run for these rows, and "Not checked" is the honest answer until
 -- one does.
 UPDATE hq_project_onboarding SET source_status = 'ok', source_checked_at = created_at WHERE source_status = 'never';
+
+-- ---------------------------------------------------------------------------
+-- Phase 5: weekly reporting. Periods, project eligibility, entries, an
+-- append-only revision per version, and one persisted outcome per project and
+-- closed period.
+--
+-- These tables live here rather than in schema.sql because an entry's author
+-- and an eligibility row's enabling operator both belong to the public
+-- account side, and because upgrades.ts runs before hq_builder_profiles
+-- exists (migration convention 2's DDL-PLACEMENT ruling).
+
+-- Per-edition reporting configuration. Deliberately thin: the reporting
+-- window itself is hq_hackathons.start_date/end_date and the timezone is
+-- hq_settings.timezone, both already operator-editable, and duplicating
+-- either here would create the competing source of truth the data contract
+-- forbids. What is left is the settings that have no home yet: the explicit
+-- final-period start (the "merge setting" the plan requires so the last
+-- weeks become one submission-focus window instead of hardcoded dates in a
+-- component), the official external submission deadline when it differs from
+-- HQ's own window, and the mid-period nudge weekday and local time, stored so
+-- that phase 8 can change them without editing bot code.
+CREATE TABLE IF NOT EXISTS hq_reporting_config (
+  hackathon_id int PRIMARY KEY REFERENCES hq_hackathons(id) ON DELETE CASCADE,
+  final_period_start_date date,
+  official_submission_deadline timestamptz,
+  nudge_weekday int NOT NULL DEFAULT 3 CONSTRAINT hq_reporting_config_nudge_weekday_check CHECK (nudge_weekday BETWEEN 1 AND 7),
+  nudge_time time NOT NULL DEFAULT '12:00',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- One row per reporting period, written once reporting begins so that an
+-- entry and an outcome reference a stable period id rather than a pair of
+-- dates that an admin could later edit out from under them. start_date and
+-- end_date are the INCLUSIVE local dates a screen displays; starts_at and
+-- ends_at are the UTC instants a comparison uses, with ends_at EXCLUSIVE, so
+-- one period's ends_at is exactly the next one's starts_at and no instant
+-- belongs to two periods. `sequence` is the period's identity within the
+-- edition, which is why the schedule generator is deterministic: a stored
+-- period is matched to a regenerated one by sequence, never by its dates.
+-- closed_at is set by closePeriod once its outcomes are persisted.
+CREATE TABLE IF NOT EXISTS hq_reporting_periods (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  hackathon_id int NOT NULL REFERENCES hq_hackathons(id) ON DELETE CASCADE,
+  sequence int NOT NULL CONSTRAINT hq_reporting_periods_sequence_check CHECK (sequence > 0),
+  mode text NOT NULL CONSTRAINT hq_reporting_periods_mode_check CHECK (mode IN ('weekly','submission')),
+  start_date date NOT NULL,
+  end_date date NOT NULL,
+  starts_at timestamptz NOT NULL,
+  ends_at timestamptz NOT NULL,
+  nudge_at timestamptz,
+  closed_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT hq_reporting_periods_window_check CHECK (ends_at > starts_at AND end_date >= start_date),
+  UNIQUE (hackathon_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS hq_reporting_periods_window_idx ON hq_reporting_periods (hackathon_id, starts_at, ends_at);
+
+-- When a project entered reporting, and whether it is currently paused. A
+-- self-service import writes this row in the import's own transaction; an
+-- admin writes it for a manually tracked project that was never imported
+-- (enabled_by_user_id then names them, and is NULL for an import). No missed
+-- week is ever recorded before eligible_from, so a late joiner starts in the
+-- period that is open when they arrive. paused_at stops FUTURE periods only:
+-- outcomes already closed are history and are never removed by a pause.
+CREATE TABLE IF NOT EXISTS hq_reporting_eligibility (
+  project_id uuid PRIMARY KEY REFERENCES hq_projects(id) ON DELETE CASCADE,
+  hackathon_id int NOT NULL REFERENCES hq_hackathons(id) ON DELETE CASCADE,
+  eligible_from timestamptz NOT NULL DEFAULT now(),
+  paused_at timestamptz,
+  enabled_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hq_reporting_eligibility_hackathon_idx ON hq_reporting_eligibility (hackathon_id) WHERE paused_at IS NULL;
+
+-- A reporting entry: one team update or one Captain note, bound to the period
+-- it counts for.
+--
+-- author_kind/author_id follow hq_audit_events.actor_kind/actor_id rather
+-- than a foreign key, and for the same two reasons. An author may be a public
+-- account (hq_builder_profiles.id, a text id) or an operator (hq_users.id, a
+-- uuid), which no single foreign key can express; and the plan requires the
+-- ORIGINAL author to be preserved even when an admin edits, which a
+-- SET NULL on account deletion would quietly undo. lib/hq/authz-sql.ts
+-- namespaces an operator author as "operator:<id>" on the way out, so a
+-- member id can never be read back as matching an operator's.
+--
+-- submitted_at is the server's own clock at first save and never changes: it
+-- is what "an entry submitted during the period" is measured against, and an
+-- edit years later must not move it. version is the optimistic concurrency
+-- token HQ and the Telegram bot both check. `late` marks an entry explicitly
+-- added to a period that had already closed; it never changes that period's
+-- recorded outcome. voided_at is admin moderation: entries are never hard
+-- deleted through ordinary permissions, and a voided entry stops counting
+-- toward completion without losing its revisions.
+CREATE TABLE IF NOT EXISTS hq_reporting_entries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES hq_projects(id) ON DELETE CASCADE,
+  period_id uuid NOT NULL REFERENCES hq_reporting_periods(id) ON DELETE CASCADE,
+  author_kind text NOT NULL CONSTRAINT hq_reporting_entries_author_kind_check CHECK (author_kind IN ('member','operator')),
+  author_id text NOT NULL,
+  body text NOT NULL CONSTRAINT hq_reporting_entries_body_check CHECK (btrim(body) <> '' AND length(body) <= 4000),
+  visibility text NOT NULL DEFAULT 'shared' CONSTRAINT hq_reporting_entries_visibility_check CHECK (visibility IN ('shared','sensitive')),
+  source text NOT NULL DEFAULT 'hq' CONSTRAINT hq_reporting_entries_source_check CHECK (source IN ('hq','telegram')),
+  version int NOT NULL DEFAULT 1 CONSTRAINT hq_reporting_entries_version_check CHECK (version > 0),
+  late boolean NOT NULL DEFAULT false,
+  submitted_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  voided_at timestamptz,
+  voided_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  void_reason text
+);
+-- The dashboard's grouped completion read and a project's own entry list.
+CREATE INDEX IF NOT EXISTS hq_reporting_entries_period_idx ON hq_reporting_entries (period_id, project_id) WHERE voided_at IS NULL;
+CREATE INDEX IF NOT EXISTS hq_reporting_entries_project_idx ON hq_reporting_entries (project_id, submitted_at DESC);
+CREATE INDEX IF NOT EXISTS hq_reporting_entries_author_idx ON hq_reporting_entries (author_kind, author_id);
+
+-- One immutable row per version of an entry, version 1 being the content as
+-- first submitted. Written in the same transaction as the insert or update it
+-- records, so an entry's current version always has a revision and history can
+-- never be missing a step. Nothing updates or deletes these rows through the
+-- application; the plan's "prevent production hard deletion of revisions
+-- through ordinary app permissions" is enforced by there being no writer
+-- other than the append in lib/hq/reporting.ts. Retrieval is operators only
+-- (canReadRevisionHistory), and (entry_id, version) is both the uniqueness
+-- rule and the pagination key.
+CREATE TABLE IF NOT EXISTS hq_reporting_entry_revisions (
+  entry_id uuid NOT NULL REFERENCES hq_reporting_entries(id) ON DELETE CASCADE,
+  version int NOT NULL CONSTRAINT hq_reporting_entry_revisions_version_check CHECK (version > 0),
+  body text NOT NULL,
+  visibility text NOT NULL CONSTRAINT hq_reporting_entry_revisions_visibility_check CHECK (visibility IN ('shared','sensitive')),
+  editor_kind text NOT NULL CONSTRAINT hq_reporting_entry_revisions_editor_kind_check CHECK (editor_kind IN ('member','operator')),
+  editor_id text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (entry_id, version)
+);
+
+-- What a closed period recorded for a project. `completed` is the factual
+-- on-time outcome at close and is never rewritten: a late entry added
+-- afterwards does not erase a missed week. An admin correction of a mistaken
+-- outcome writes corrected_completed beside it with a reason, so the
+-- effective answer is COALESCE(corrected_completed, completed) and the
+-- original stays readable. captain_user_id is the Captain at close, NULL for
+-- unassigned, carried as history the way author_id is and so deliberately
+-- without a foreign key: reassigning or deleting that account later must not
+-- change what this period recorded.
+CREATE TABLE IF NOT EXISTS hq_reporting_outcomes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  period_id uuid NOT NULL REFERENCES hq_reporting_periods(id) ON DELETE CASCADE,
+  project_id uuid NOT NULL REFERENCES hq_projects(id) ON DELETE CASCADE,
+  completed boolean NOT NULL,
+  basis text NOT NULL CONSTRAINT hq_reporting_outcomes_basis_check CHECK (basis IN ('entry','submission','none')),
+  entry_id uuid REFERENCES hq_reporting_entries(id) ON DELETE SET NULL,
+  captain_user_id text,
+  closed_at timestamptz NOT NULL DEFAULT now(),
+  corrected_completed boolean,
+  corrected_at timestamptz,
+  corrected_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  correction_reason text,
+  UNIQUE (period_id, project_id)
+);
+CREATE INDEX IF NOT EXISTS hq_reporting_outcomes_project_idx ON hq_reporting_outcomes (project_id);

@@ -22,6 +22,20 @@ export const CLEAR_TABLES = [
   // standing grant. The cascade from hq_projects already emptied it before
   // it was named here (task T4.1).
   "hq_captain_assignments",
+  // Weekly reporting (phase 5). Every one of these belongs to the edition's
+  // projects, which are cleared below, so they would go by cascade anyway;
+  // naming them keeps the manifest self-documenting. The periods go too,
+  // even though nobody typed them into the dashboard: they are generated
+  // deterministically from the edition's own dates and hq_reporting_config,
+  // which both survive, so the schedule comes back identical on the next
+  // ensureReportingPeriods() — and keeping them while their entries and
+  // outcomes were cleared would leave periods marked closed with nothing
+  // recorded against them.
+  "hq_reporting_entry_revisions",
+  "hq_reporting_outcomes",
+  "hq_reporting_entries",
+  "hq_reporting_eligibility",
+  "hq_reporting_periods",
   // Imported Colosseum teams and their invite codes belong to the project
   // rows below; the cascade from hq_projects already emptied them before they
   // were named here.
@@ -76,6 +90,11 @@ export const KEEP_TABLES = [
   // Per-edition Colosseum mapping and toggles, typed into Admin: settings,
   // like hq_settings.
   "hq_hackathon_onboarding",
+  // The edition's reporting schedule settings (final-period start, official
+  // submission deadline, nudge weekday and time), typed into Admin: settings
+  // again, and the reason clearing hq_reporting_periods above loses nothing
+  // (task T5.1).
+  "hq_reporting_config",
   // Builder-side records the reset never touched before they were classified
   // (task T1.1). Kept so that classifying them changes nothing a live reset
   // does; whether enrollments and requests should be emptied with the

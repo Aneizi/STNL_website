@@ -671,3 +671,137 @@ describe("phase 3: the Colosseum source snapshot and the removed challenge", () 
     }
   });
 });
+
+describe("phase 5: the reporting tables", () => {
+  const HACKATHON = 95;
+
+  async function seed(pg: PGlite) {
+    await run(pg, `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date) VALUES (${HACKATHON}, 'reporting', 'Reporting', '2026-09-14', '2026-10-12')`);
+    await run(pg, `INSERT INTO hq_project_statuses (slug, label, color, counts_as_active, sort) VALUES ('green', 'Green', 'green', true, 0)`);
+    await run(pg, `INSERT INTO hq_project_forecasts (slug, label, color, sort) VALUES ('committed', 'Committed', 'green', 0)`);
+    const [project] = await run(
+      pg,
+      `INSERT INTO hq_projects (hackathon_id, name, status_id, forecast_id, last_check_in)
+       SELECT ${HACKATHON}, 'Project', s.id, f.id, current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f
+       RETURNING id::text AS id`,
+    );
+    await run(pg, `INSERT INTO hq_builder_profiles (id, email, name) VALUES ('author-1', 'a1@example.test', 'Author One')`);
+    const [period] = await run(
+      pg,
+      `INSERT INTO hq_reporting_periods (hackathon_id, sequence, mode, start_date, end_date, starts_at, ends_at)
+       VALUES (${HACKATHON}, 1, 'weekly', '2026-09-14', '2026-09-20', '2026-09-13T22:00:00Z', '2026-09-20T22:00:00Z')
+       RETURNING id::text AS id`,
+    );
+    return { projectId: String(project.id), periodId: String(period.id) };
+  }
+
+  const insertEntry = (projectId: string, periodId: string, extra = "") =>
+    `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body${extra ? ", " + extra.split("=")[0] : ""})
+     VALUES ('${projectId}', '${periodId}', 'member', 'author-1', 'Shipped the importer'${extra ? ", " + extra.split("=")[1] : ""}) RETURNING id::text AS id`;
+
+  it("creates every reporting table and takes the migration twice without drift", async () => {
+    const pg = new PGlite();
+    try {
+      await applyMigrations(pg);
+      await applyMigrations(pg);
+      for (const table of ["hq_reporting_config", "hq_reporting_periods", "hq_reporting_eligibility", "hq_reporting_entries", "hq_reporting_entry_revisions", "hq_reporting_outcomes"]) {
+        expect(await exists(pg, table), table).toBe(true);
+      }
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses a second period with the same sequence in one edition", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      await seed(pg);
+      await expect(run(
+        pg,
+        `INSERT INTO hq_reporting_periods (hackathon_id, sequence, mode, start_date, end_date, starts_at, ends_at)
+         VALUES (${HACKATHON}, 1, 'weekly', '2026-09-21', '2026-09-27', '2026-09-20T22:00:00Z', '2026-09-27T22:00:00Z')`,
+      )).rejects.toThrow(/hq_reporting_periods_hackathon_id_sequence_key/);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses an empty entry body, one over the 4000 character maximum, and an unknown visibility", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, periodId } = await seed(pg);
+      const insert = (body: string, visibility = "shared") =>
+        run(pg, `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility) VALUES ($1, $2, 'member', 'author-1', $3, $4)`,
+          [projectId, periodId, body, visibility]);
+      await expect(insert("   ")).rejects.toThrow(/hq_reporting_entries_body_check/);
+      await expect(insert("x".repeat(4001))).rejects.toThrow(/hq_reporting_entries_body_check/);
+      await expect(insert("fine", "secret")).rejects.toThrow(/hq_reporting_entries_visibility_check/);
+      await expect(insert("x".repeat(4000))).resolves.toBeDefined();
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses a second revision of the same entry version, and keeps revisions when the entry is deleted only by cascade", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, periodId } = await seed(pg);
+      const [{ id }] = await run(pg, insertEntry(projectId, periodId));
+      await run(pg, `INSERT INTO hq_reporting_entry_revisions (entry_id, version, body, visibility, editor_kind, editor_id) VALUES ($1, 1, 'v1', 'shared', 'member', 'author-1')`, [id]);
+      await expect(run(
+        pg,
+        `INSERT INTO hq_reporting_entry_revisions (entry_id, version, body, visibility, editor_kind, editor_id) VALUES ($1, 1, 'v1 again', 'shared', 'member', 'author-1')`,
+        [id],
+      )).rejects.toThrow(/hq_reporting_entry_revisions_entry_id_version_key/);
+      await run(pg, `DELETE FROM hq_reporting_entries WHERE id = $1`, [id]);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_reporting_entry_revisions`)).toEqual([{ n: 0 }]);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses a second outcome for the same project and period", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, periodId } = await seed(pg);
+      const insert = () => run(
+        pg,
+        `INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis) VALUES ($1, $2, true, 'entry')`,
+        [periodId, projectId],
+      );
+      await insert();
+      await expect(insert()).rejects.toThrow(/hq_reporting_outcomes_period_id_project_id_key/);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("removes every reporting row of a project with the project itself", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, periodId } = await seed(pg);
+      const [{ id }] = await run(pg, insertEntry(projectId, periodId));
+      await run(pg, `INSERT INTO hq_reporting_entry_revisions (entry_id, version, body, visibility, editor_kind, editor_id) VALUES ($1, 1, 'v1', 'shared', 'member', 'author-1')`, [id]);
+      await run(pg, `INSERT INTO hq_reporting_eligibility (project_id, hackathon_id) VALUES ($1, ${HACKATHON})`, [projectId]);
+      await run(pg, `INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis) VALUES ($1, $2, true, 'entry')`, [periodId, projectId]);
+      await run(pg, `DELETE FROM hq_projects WHERE id = $1`, [projectId]);
+      for (const table of ["hq_reporting_entries", "hq_reporting_entry_revisions", "hq_reporting_eligibility", "hq_reporting_outcomes"]) {
+        expect(await run(pg, `SELECT count(*)::int AS n FROM ${table}`), table).toEqual([{ n: 0 }]);
+      }
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("keeps an entry's author when the authoring account is deleted, the way the audit trail does", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, periodId } = await seed(pg);
+      await run(pg, insertEntry(projectId, periodId));
+      await run(pg, `DELETE FROM hq_builder_profiles WHERE id = 'author-1'`);
+      expect(await run(pg, `SELECT author_kind, author_id FROM hq_reporting_entries`)).toEqual([{ author_kind: "member", author_id: "author-1" }]);
+    } finally {
+      await pg.close();
+    }
+  });
+});
