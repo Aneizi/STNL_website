@@ -261,14 +261,23 @@ CREATE TABLE IF NOT EXISTS hq_captain_assignments (
   unassigned_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
   reason text
 );
--- Dropped before being recreated so that a database which already applied
--- the original (task T4.1 first-round) predicate picks up the corrected
--- one: CREATE INDEX IF NOT EXISTS is a no-op when an index of that name
--- already exists, even under a different definition.
+-- hq_captain_assignments_current_idx and hq_captain_assignments_captain_idx
+-- were this pair's first-round (task T4.1) names, with a predicate that
+-- missed "AND captain_user_id IS NOT NULL". They are retired here, by name,
+-- rather than reused: reusing a name means pairing it with
+-- CREATE ... IF NOT EXISTS under the corrected predicate, and since neither
+-- statement's IF-condition ever changes, both would run for real on every
+-- future migrate forever, not just this one transition — an unwrapped
+-- DROP then CREATE on every deploy, with a real window between them where
+-- the "one current Captain" invariant is unenforced, and a real unique-index
+-- rebuild every time instead of converging to a no-op. Retiring the name
+-- instead makes both statements permanent no-ops after the first run: the
+-- old name is gone and stays gone, the new one exists and stays. Do not
+-- re-add a CREATE for either name below.
 DROP INDEX IF EXISTS hq_captain_assignments_current_idx;
-CREATE UNIQUE INDEX IF NOT EXISTS hq_captain_assignments_current_idx ON hq_captain_assignments (project_id) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL;
+DROP INDEX IF EXISTS hq_captain_assignments_captain_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS hq_captain_assignments_one_current_idx ON hq_captain_assignments (project_id) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL;
 -- The leaderboard's indexed aggregate: current assignments grouped by
 -- Captain, joined to hq_projects.hackathon_id to scope the count to the
--- selected edition's active projects. Same drop-then-create as above.
-DROP INDEX IF EXISTS hq_captain_assignments_captain_idx;
-CREATE INDEX IF NOT EXISTS hq_captain_assignments_captain_idx ON hq_captain_assignments (captain_user_id) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL;
+-- selected edition's active projects.
+CREATE INDEX IF NOT EXISTS hq_captain_assignments_captain_current_idx ON hq_captain_assignments (captain_user_id) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL;

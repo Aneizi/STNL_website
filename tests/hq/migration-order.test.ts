@@ -180,30 +180,36 @@ async function expectCaptainSchema(pg: PGlite) {
     ),
   ).toEqual([{ confdeltype: "n" }, { confdeltype: "n" }]);
 
-  for (const index of ["hq_captain_assignments_current_idx", "hq_captain_assignments_captain_idx"]) {
+  for (const index of ["hq_captain_assignments_one_current_idx", "hq_captain_assignments_captain_current_idx"]) {
     expect(await exists(pg, index), index).toBe(true);
   }
   // A single non-unique index on hq_captain_invitation_redemptions(invitation_id) would be redundant:
   // the leading column of UNIQUE(invitation_id, user_id) already serves that lookup.
   expect(await exists(pg, "hq_captain_invitation_redemptions_invitation_idx")).toBe(false);
+  // The fix round 1 names, retired rather than reused (fix round 2): they must stay gone, not
+  // come back under the corrected predicate, or the DROP/CREATE pair would run for real on every
+  // future migrate instead of converging to a no-op.
+  for (const retired of ["hq_captain_assignments_current_idx", "hq_captain_assignments_captain_idx"]) {
+    expect(await exists(pg, retired), retired).toBe(false);
+  }
   // The partial unique index enforces at most one current Captain per project, and both partial
   // indexes exclude an orphaned row (captain_user_id set NULL by a deleted account) from counting
   // as "current" — that predicate is what fix round 1 (Important 1) added.
   expect(
-    await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_captain_assignments_current_idx'`),
+    await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_captain_assignments_one_current_idx'`),
   ).toEqual([
     {
       indexdef: expect.stringMatching(
-        /UNIQUE INDEX hq_captain_assignments_current_idx ON public\.hq_captain_assignments USING btree \(project_id\) WHERE \(\(unassigned_at IS NULL\) AND \(captain_user_id IS NOT NULL\)\)$/,
+        /UNIQUE INDEX hq_captain_assignments_one_current_idx ON public\.hq_captain_assignments USING btree \(project_id\) WHERE \(\(unassigned_at IS NULL\) AND \(captain_user_id IS NOT NULL\)\)$/,
       ),
     },
   ]);
   expect(
-    await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_captain_assignments_captain_idx'`),
+    await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_captain_assignments_captain_current_idx'`),
   ).toEqual([
     {
       indexdef: expect.stringMatching(
-        /CREATE INDEX hq_captain_assignments_captain_idx ON public\.hq_captain_assignments USING btree \(captain_user_id\) WHERE \(\(unassigned_at IS NULL\) AND \(captain_user_id IS NOT NULL\)\)$/,
+        /CREATE INDEX hq_captain_assignments_captain_current_idx ON public\.hq_captain_assignments USING btree \(captain_user_id\) WHERE \(\(unassigned_at IS NULL\) AND \(captain_user_id IS NOT NULL\)\)$/,
       ),
     },
   ]);
@@ -425,7 +431,7 @@ describe("task T4.1: Captain invitations, redemptions and assignments", () => {
       );
       await expect(
         run(pg, `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, 'cap-2', $2)`, [projectId, operatorId]),
-      ).rejects.toThrow(/hq_captain_assignments_current_idx/);
+      ).rejects.toThrow(/hq_captain_assignments_one_current_idx/);
 
       // Unassign, then reassign: the partial unique index only guards the current row.
       await run(
@@ -557,7 +563,8 @@ describe("task T4.1: Captain invitations, redemptions and assignments", () => {
 
       // A new assignment for the same project must succeed: before the fix round 1 predicate
       // change, the orphaned row still held the partial unique index's one slot per project and
-      // this insert raised hq_captain_assignments_current_idx, permanently blocking reassignment.
+      // this insert raised a unique violation on that index (then named
+      // hq_captain_assignments_current_idx), permanently blocking reassignment.
       await run(
         pg,
         `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, 'cap-2', $2)`,
