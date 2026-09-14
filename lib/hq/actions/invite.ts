@@ -1,0 +1,53 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+import { requireMemberActor } from "../actor";
+import { builderDatabase } from "../builder-db";
+import { acceptCaptainInvitation, type AcceptCaptainInvitationResult } from "../captains";
+import { INVITE_CONTINUATION_COOKIE, readInviteContinuation } from "../invite-continuation";
+
+// The member half of the Captain invitation flow; lib/hq/actions/captains.ts
+// is the operator half (creating and revoking links) and stays
+// operator-gated. This lives in its own module rather than alongside that
+// file because tests/hq/operator-imports.test.ts fails an operator action
+// module that transitively reaches lib/hq/member-auth.ts, and
+// requireMemberActor() below does exactly that. A dedicated member-gated
+// action module, with its own entry in both tests/hq/auth-boundary.test.ts's
+// ACTION_GATES and tests/hq/operator-imports.test.ts's MEMBER_ACTIONS, is the
+// same shape lib/hq/actions/telegram.ts already uses for the other
+// member-only actions.
+
+export type AcceptCaptainInvitationOutcome = AcceptCaptainInvitationResult["outcome"] | "invalid-continuation";
+export type AcceptCaptainInvitationActionResult = { outcome: AcceptCaptainInvitationOutcome };
+
+/**
+ * The only write path for a Captain invitation redemption reachable from the
+ * public web: an explicit POST, gated on a real, verified member session,
+ * over the continuation the exchange step
+ * (app/hq/(member)/invite/[token]/route.ts) recorded — never a token or an
+ * invitation id from a form field or a query string.
+ *
+ * No redeemability pre-check: acceptCaptainInvitation locks the invitation
+ * row and decides everything itself. A second submission (a double click, a
+ * retried request) reaches it again and gets "already-redeemed" back,
+ * consuming no further slot — the same idempotence
+ * tests/hq/captains.test.ts already proves at the service level.
+ */
+export async function acceptCaptainInvitationFromContinuation(
+  _previous: AcceptCaptainInvitationActionResult | null,
+  _formData: FormData,
+): Promise<AcceptCaptainInvitationActionResult> {
+  const actor = await requireMemberActor("/hq/invite/continue");
+  const continuationId = (await cookies()).get(INVITE_CONTINUATION_COOKIE)?.value;
+  const continuation = continuationId ? await readInviteContinuation(builderDatabase(), continuationId) : null;
+  if (!continuation) return { outcome: "invalid-continuation" };
+  const result = await acceptCaptainInvitation(builderDatabase(), { invitationId: continuation.invitationId, userId: actor.id });
+  // The Captain menu item is capability-driven (lib/hq/member-nav.ts, read
+  // from the member layout on every request); this only clears the cached
+  // route tree so the next navigation picks the new grant up immediately,
+  // the same revalidation lib/hq/actions/builders.ts does for its own
+  // member mutations.
+  if (result.outcome === "granted") revalidatePath("/hq", "layout");
+  return { outcome: result.outcome };
+}

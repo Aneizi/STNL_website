@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = process.cwd();
 
 /** The member side of lib/hq/actions; everything else there is operator gated (tests/hq/auth-boundary.test.ts holds the gate map). */
-const MEMBER_ACTIONS = new Set(["builders.ts", "telegram.ts"]);
+const MEMBER_ACTIONS = new Set(["builders.ts", "invite.ts", "telegram.ts"]);
 
 /** Reached only through the public member session. An operator action that needs one of these is a boundary change, not an import. */
 const FORBIDDEN_MODULES = ["lib/hq/member-auth.ts", "lib/hq/telegram-identity-plugin.ts", "lib/hq/telegram-provider.ts"];
