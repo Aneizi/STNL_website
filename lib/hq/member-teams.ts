@@ -5,6 +5,7 @@ import { loadProjectEdition } from "./authz-sql";
 import { builderDatabase } from "./builder-db";
 import { builderStore } from "./builder-store";
 import type { BuilderTeam } from "./builder-types";
+import { currentCaptainOfProject } from "./captains";
 import { toMemberTeamView, type MemberTeamView } from "./view-models";
 
 /**
@@ -62,5 +63,10 @@ export async function memberTeamView(actor: MemberActor, projectId: string): Pro
   if (outcome === "missing") return null;
   const store = builderStore();
   const team = outcome === "allowed" ? await store.teamById(projectId) : await store.ownClaim(actor.id, projectId);
-  return team && toMemberTeamView(team, actor);
+  if (!team) return null;
+  // Only the verified team sees its Captain, never the account watching its
+  // own still-pending or rejected claim: it is not confirmed as this
+  // project's team yet, so there is nothing for it to be "its own Captain".
+  const captain = outcome === "allowed" ? await currentCaptainOfProject(builderDatabase(), projectId) : null;
+  return toMemberTeamView(team, actor, captain ? { displayName: captain.captainName, contact: null } : null);
 }

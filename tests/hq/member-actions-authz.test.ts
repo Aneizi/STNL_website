@@ -36,6 +36,7 @@ import { requireMemberActor, type MemberActor } from "@/lib/hq/actor";
 import { createBuilderInvite, saveBuilderTeam } from "@/lib/hq/actions/builders";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { grantCapability, revokeCapability } from "@/lib/hq/capabilities";
+import { assignCaptain, unassignCaptain } from "@/lib/hq/captains";
 import { memberTeamView, TEAM_NOT_AVAILABLE } from "@/lib/hq/member-teams";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
@@ -277,5 +278,26 @@ describe("the team page", () => {
   it("sends a signed-out visitor to sign in with the team URL as the destination", async () => {
     mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/signin?next=${encodeURIComponent(next ?? "")}`); });
     await expect(page(PROJECT_A)).rejects.toThrow(`REDIRECT:/hq/signin?next=${encodeURIComponent(`/hq/team/${PROJECT_A}`)}`);
+  });
+
+  it("shows the team its assigned Captain's display name with no contact (task T4.5), and no Captain again once unassigned", async () => {
+    // PROJECT_C, never touched by an earlier test in this file: its owner
+    // (lead-c) and roster are exactly as seeded, so this test does not
+    // depend on the mutation history the tests above leave on PROJECT_A.
+    await rows("INSERT INTO hq_builder_profiles(id,email,name) VALUES('cap-view','cap-view@example.test','Team Captain') ON CONFLICT (id) DO NOTHING");
+    await grant("cap-view");
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_C, hackathonId: EDITION_B, captainUserId: "cap-view" })).toMatchObject({ outcome: "assigned" });
+
+    expect((await memberTeamView(await actorFor("lead-c"), PROJECT_C))?.captain).toEqual({ displayName: "Team Captain", contact: null });
+
+    await unassignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_C, hackathonId: EDITION_B });
+    expect((await memberTeamView(await actorFor("lead-c"), PROJECT_C))?.captain).toBeNull();
+  });
+
+  it("shows no Captain to the account watching its own still-unverified claim: only a verified team's own view is populated", async () => {
+    const claim = await memberTeamView(await actorFor("lead-p"), PROJECT_P);
+    expect(claim?.membership.role).toBe("owner");
+    expect(claim?.membership.verification).not.toBe("verified");
+    expect(claim?.captain).toBeNull();
   });
 });
