@@ -531,5 +531,13 @@ CREATE INDEX IF NOT EXISTS hq_reporting_outcomes_project_idx ON hq_reporting_out
 -- and in Admin. Account-global like the Captain grant itself, because a
 -- Captain who wants to be reached differently per team would be a second
 -- audience rule with no product behind it.
+--
+-- It shares a name, and nothing else, with `hq_partners.captain_contact`,
+-- which is a partner organisation's own contact person and has never had
+-- anything to do with project Captains (the plan's "The existing partner
+-- fields captain_name and captain_contact are partner contacts. They are not
+-- project Captain assignments"). Different table, different meaning, no join
+-- between them: a query that means this one always says
+-- `FROM hq_builder_profiles`.
 ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS team_contact text;
 ALTER TABLE hq_builder_profiles ADD COLUMN IF NOT EXISTS captain_contact text;

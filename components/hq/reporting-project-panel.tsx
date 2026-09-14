@@ -57,12 +57,23 @@ const smallField: React.CSSProperties = {
   fontSize: 13,
 };
 
-/** How reachable the assigned Captain is, said as two separate facts because they are two. */
-function captainLine(captainName: string, reach: CaptainReach | undefined): string {
-  const parts = [`Captain: ${captainName}`];
-  parts.push(reach?.contact ? `contact ${reach.contact}` : "no contact shared");
-  parts.push(reach?.telegram ? (reach.botMessaging ? "bot messages allowed" : "Telegram connected, bot messages not allowed") : "no Telegram connection");
-  return parts.join(", ");
+/**
+ * How reachable the assigned Captain is, on separate lines because these are
+ * separate facts: the contact they approved for their teams, and whether the
+ * bot could message them (a Telegram connection is not permission to use it).
+ */
+function CaptainLines({ captainName, reach }: { captainName: string; reach: CaptainReach | undefined }) {
+  return (
+    <>
+      <div>Captain: {captainName}</div>
+      <div>Contact for their teams: {reach?.contact ?? "none shared"}</div>
+      <div>
+        {reach?.telegram
+          ? reach.botMessaging ? "Telegram connected, bot messages allowed." : "Telegram connected, bot messages not allowed yet."
+          : "No Telegram connection, so the bot cannot reach them."}
+      </div>
+    </>
+  );
 }
 
 function Revisions({ entryId }: { entryId: string }) {
@@ -189,10 +200,13 @@ export function ProjectReportingPanel({
   const missed = missedLabel(status?.missedPeriods ?? detail?.missedPeriods ?? 0);
 
   return (
-    <div>
+    // Its own full-width row under the three columns above: the weeks and the
+    // updates are lists that read badly in a 280px track, and wrapping into
+    // one left a wide empty half beside them.
+    <div style={{ gridColumn: "1 / -1", borderTop: "1px solid var(--sep)", paddingTop: 16 }}>
       <div style={{ ...microLabel, marginBottom: 8 }}>Weekly reporting</div>
-      <div style={{ fontSize: 13, color: "var(--label-2)", marginBottom: 6 }}>
-        {captainName ? captainLine(captainName, reach) : "No Captain assigned."}
+      <div style={{ fontSize: 13, color: "var(--label-2)", marginBottom: 6, lineHeight: 1.5 }}>
+        {captainName ? <CaptainLines captainName={captainName} reach={reach} /> : "No Captain assigned."}
       </div>
 
       {!detail && !error && <div style={{ fontSize: 13, color: "var(--label-3)" }}>Loading…</div>}
@@ -243,6 +257,8 @@ export function ProjectReportingPanel({
             {detail.paused ? "Resume weekly reporting" : "Pause weekly reporting"}
           </button>
 
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 20 }}>
+          <div>
           <div style={{ ...microLabel, marginTop: 10, marginBottom: 6 }}>Weeks</div>
           {detail.history.length === 0 && <div style={{ fontSize: 13, color: "var(--label-3)" }}>No weeks are stored for this hackathon yet.</div>}
           {detail.history.map((period) => {
@@ -263,7 +279,9 @@ export function ProjectReportingPanel({
             );
           })}
 
-          <div style={{ ...microLabel, marginTop: 14, marginBottom: 6 }}>Updates</div>
+          </div>
+          <div>
+          <div style={{ ...microLabel, marginTop: 10, marginBottom: 6 }}>Updates</div>
           {detail.entries.length === 0 && <div style={{ fontSize: 13, color: "var(--label-3)" }}>No updates yet.</div>}
           {detail.entries.map((entry) => (
             <div key={entry.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--sep)" }}>
@@ -279,6 +297,8 @@ export function ProjectReportingPanel({
               {!entry.voided && <VoidUpdate entryId={entry.id} onDone={refresh} />}
             </div>
           ))}
+          </div>
+          </div>
         </>
       )}
     </div>
