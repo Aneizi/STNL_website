@@ -10,8 +10,25 @@
  * (reporting entry, phase 5). Their signatures and result types are fixed
  * here, the decision logic over them in ./authz is tested now with injected
  * fixtures, and each later phase only replaces the body.
+ *
+ * `assertHackathonMatches` lives here rather than in ./authz because it reads
+ * no session: every operator action module reaches it through
+ * ./actions/util.ts, and importing it from ./authz would pull the member auth
+ * graph into the operator bundles (tests/hq/operator-imports.test.ts).
  */
 import type { BuilderQuery } from "./builder-db";
+import { BuilderError } from "./builder-types";
+
+/**
+ * For actions that take a record id and the edition they run in: the record
+ * must exist and belong to that edition, or the action stops. A missing
+ * record and one from another edition fail the same way, so an id from a
+ * request body reveals nothing about records outside the actor's edition.
+ */
+export function assertHackathonMatches<T extends { hackathonId: number }>(record: T | null | undefined, hackathonId: number): T {
+  if (!record || record.hackathonId !== hackathonId) throw new BuilderError("This record is not available in the selected hackathon.");
+  return record;
+}
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

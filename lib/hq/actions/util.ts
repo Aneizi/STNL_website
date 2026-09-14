@@ -1,6 +1,8 @@
 import "server-only";
 import { revalidatePath } from "next/cache";
-import { assertHackathonMatches } from "../authz";
+// From the leaf module, not from ../authz: every operator action module
+// imports this file, and ../authz reaches the public member auth graph.
+import { assertHackathonMatches } from "../authz-sql";
 import { BuilderError } from "../builder-types";
 import { getSql } from "../db";
 import { todayInTz } from "../format";

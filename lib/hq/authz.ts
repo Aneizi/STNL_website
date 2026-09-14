@@ -10,11 +10,13 @@ import {
   type TeamMembership,
 } from "./authz-sql";
 import { builderDatabase, type BuilderQuery } from "./builder-db";
-import { BuilderError } from "./builder-types";
 import { listActiveCapabilities, type Capability } from "./capabilities";
 
 export type { CurrentAssignment, Entry, EntryVisibility, ProjectEdition, TeamMembership } from "./authz-sql";
-export { loadCurrentAssignment, loadEntry } from "./authz-sql";
+// `assertHackathonMatches` is defined in the leaf module and re-exported here,
+// so the operator action modules can reach it without this module's session
+// imports; ./authz stays the one place a caller looks for a decision.
+export { assertHackathonMatches, loadCurrentAssignment, loadEntry } from "./authz-sql";
 
 /**
  * Central authorization: every decision about what an actor may do with a
@@ -184,15 +186,4 @@ export async function canEditEntry(actor: Actor, entry: Entry, overrides?: Parti
 /** Revision history is operator-only. A member, an author included, never sees prior versions. */
 export function canReadRevisionHistory(actor: Actor): boolean {
   return actor.kind === "operator";
-}
-
-/**
- * For actions that take a record id and the edition they run in: the record
- * must exist and belong to that edition, or the action stops. A missing
- * record and one from another edition fail the same way, so an id from a
- * request body reveals nothing about records outside the actor's edition.
- */
-export function assertHackathonMatches<T extends { hackathonId: number }>(record: T | null | undefined, hackathonId: number): T {
-  if (!record || record.hackathonId !== hackathonId) throw new BuilderError("This record is not available in the selected hackathon.");
-  return record;
 }
