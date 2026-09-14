@@ -122,7 +122,9 @@ async function expectCaptainSchema(pg: PGlite) {
   expect(await column(pg, "hq_captain_invitations", "max_redemptions")).toEqual({ data_type: "integer", is_nullable: "NO" });
   expect(await column(pg, "hq_captain_invitations", "expires_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "NO" });
   expect(await column(pg, "hq_captain_invitations", "created_by_user_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_invitations", "created_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "NO" });
   expect(await column(pg, "hq_captain_invitations", "revoked_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_invitations", "revoked_by_user_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
   // Named, so a later change is a DROP CONSTRAINT IF EXISTS plus ADD, the same style as hq_account_capabilities.
   expect(
     await run(pg, `SELECT conname FROM pg_constraint WHERE conrelid = 'hq_captain_invitations'::regclass AND contype = 'c' ORDER BY conname`),
@@ -130,6 +132,10 @@ async function expectCaptainSchema(pg: PGlite) {
   expect(
     await run(pg, `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_invitations'::regclass AND contype = 'f' ORDER BY confdeltype`),
   ).toEqual([{ confdeltype: "n" }, { confdeltype: "n" }]);
+  // The bare column-level UNIQUE on token_hash: only the hash is ever stored, and it must be unique.
+  expect(
+    await run(pg, `SELECT conname FROM pg_constraint WHERE conrelid = 'hq_captain_invitations'::regclass AND contype = 'u'`),
+  ).toEqual([{ conname: "hq_captain_invitations_token_hash_key" }]);
 
   expect(await column(pg, "hq_captain_invitation_redemptions", "invitation_id")).toEqual({ data_type: "uuid", is_nullable: "NO" });
   expect(await column(pg, "hq_captain_invitation_redemptions", "user_id")).toEqual({ data_type: "text", is_nullable: "YES" });
@@ -150,7 +156,9 @@ async function expectCaptainSchema(pg: PGlite) {
   expect(await column(pg, "hq_captain_assignments", "project_id")).toEqual({ data_type: "uuid", is_nullable: "NO" });
   expect(await column(pg, "hq_captain_assignments", "captain_user_id")).toEqual({ data_type: "text", is_nullable: "YES" });
   expect(await column(pg, "hq_captain_assignments", "assigned_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "NO" });
+  expect(await column(pg, "hq_captain_assignments", "assigned_by_user_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
   expect(await column(pg, "hq_captain_assignments", "unassigned_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  expect(await column(pg, "hq_captain_assignments", "unassigned_by_user_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
   expect(await column(pg, "hq_captain_assignments", "reason")).toEqual({ data_type: "text", is_nullable: "YES" });
   expect(
     await run(
@@ -164,18 +172,41 @@ async function expectCaptainSchema(pg: PGlite) {
       `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_assignments'::regclass AND contype = 'f' AND confrelid = 'hq_builder_profiles'::regclass`,
     ),
   ).toEqual([{ confdeltype: "n" }]);
+  // assigned_by_user_id and unassigned_by_user_id: both operator references, both SET NULL.
+  expect(
+    await run(
+      pg,
+      `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_captain_assignments'::regclass AND contype = 'f' AND confrelid = 'hq_users'::regclass ORDER BY confdeltype`,
+    ),
+  ).toEqual([{ confdeltype: "n" }, { confdeltype: "n" }]);
 
-  for (const index of [
-    "hq_captain_assignments_current_idx",
-    "hq_captain_assignments_captain_idx",
-    "hq_captain_invitation_redemptions_invitation_idx",
-  ]) {
+  for (const index of ["hq_captain_assignments_current_idx", "hq_captain_assignments_captain_idx"]) {
     expect(await exists(pg, index), index).toBe(true);
   }
-  // The partial unique index is what enforces at most one current Captain per project.
+  // A single non-unique index on hq_captain_invitation_redemptions(invitation_id) would be redundant:
+  // the leading column of UNIQUE(invitation_id, user_id) already serves that lookup.
+  expect(await exists(pg, "hq_captain_invitation_redemptions_invitation_idx")).toBe(false);
+  // The partial unique index enforces at most one current Captain per project, and both partial
+  // indexes exclude an orphaned row (captain_user_id set NULL by a deleted account) from counting
+  // as "current" — that predicate is what fix round 1 (Important 1) added.
   expect(
     await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_captain_assignments_current_idx'`),
-  ).toEqual([{ indexdef: expect.stringMatching(/UNIQUE INDEX hq_captain_assignments_current_idx ON public\.hq_captain_assignments USING btree \(project_id\) WHERE \(unassigned_at IS NULL\)$/) }]);
+  ).toEqual([
+    {
+      indexdef: expect.stringMatching(
+        /UNIQUE INDEX hq_captain_assignments_current_idx ON public\.hq_captain_assignments USING btree \(project_id\) WHERE \(\(unassigned_at IS NULL\) AND \(captain_user_id IS NOT NULL\)\)$/,
+      ),
+    },
+  ]);
+  expect(
+    await run(pg, `SELECT indexdef FROM pg_indexes WHERE indexname = 'hq_captain_assignments_captain_idx'`),
+  ).toEqual([
+    {
+      indexdef: expect.stringMatching(
+        /CREATE INDEX hq_captain_assignments_captain_idx ON public\.hq_captain_assignments USING btree \(captain_user_id\) WHERE \(\(unassigned_at IS NULL\) AND \(captain_user_id IS NOT NULL\)\)$/,
+      ),
+    },
+  ]);
 }
 
 describe("the migration files", () => {
@@ -478,6 +509,73 @@ describe("task T4.1: Captain invitations, redemptions and assignments", () => {
           [operatorId],
         ),
       ).rejects.toThrow(/hq_captain_invitations_capability_check/);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("keeps a redemption counting toward capacity after the redeeming account is deleted", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { operatorId } = await seed(pg);
+      const [invitation] = await run(
+        pg,
+        `INSERT INTO hq_captain_invitations (token_hash, capability, max_redemptions, expires_at, created_by_user_id)
+         VALUES ('hash-deleted-account', 'captain', 5, now() + interval '7 days', $1) RETURNING id::text AS id`,
+        [operatorId],
+      );
+      const invitationId = String(invitation.id);
+      await run(pg, `INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ($1, 'cap-1')`, [invitationId]);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_captain_invitation_redemptions WHERE invitation_id = $1`, [invitationId])).toEqual([{ n: 1 }]);
+
+      // Deleting the account the redemption names must not remove the redemption row: capacity
+      // already spent must not come back just because the account it was spent by is gone.
+      await run(pg, `DELETE FROM hq_builder_profiles WHERE id = 'cap-1'`);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_captain_invitation_redemptions WHERE invitation_id = $1`, [invitationId])).toEqual([{ n: 1 }]);
+      expect(await run(pg, `SELECT user_id FROM hq_captain_invitation_redemptions WHERE invitation_id = $1`, [invitationId])).toEqual([{ user_id: null }]);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("lets a project be reassigned after its Captain's account is deleted (Important 1 regression)", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, operatorId } = await seed(pg);
+      await run(
+        pg,
+        `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, 'cap-1', $2)`,
+        [projectId, operatorId],
+      );
+
+      // The account is deleted without ever being formally unassigned: the row survives with
+      // unassigned_at still NULL and captain_user_id set NULL by the FK.
+      await run(pg, `DELETE FROM hq_builder_profiles WHERE id = 'cap-1'`);
+      expect(
+        await run(pg, `SELECT captain_user_id, unassigned_at FROM hq_captain_assignments WHERE project_id = $1`, [projectId]),
+      ).toEqual([{ captain_user_id: null, unassigned_at: null }]);
+
+      // A new assignment for the same project must succeed: before the fix round 1 predicate
+      // change, the orphaned row still held the partial unique index's one slot per project and
+      // this insert raised hq_captain_assignments_current_idx, permanently blocking reassignment.
+      await run(
+        pg,
+        `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id) VALUES ($1, 'cap-2', $2)`,
+        [projectId, operatorId],
+      );
+      expect(
+        await run(
+          pg,
+          `SELECT captain_user_id FROM hq_captain_assignments WHERE project_id = $1 AND unassigned_at IS NULL AND captain_user_id IS NOT NULL`,
+          [projectId],
+        ),
+      ).toEqual([{ captain_user_id: "cap-2" }]);
+      // The orphaned row is still there, untouched by the reassignment (history is append-only);
+      // the schema's expectCaptainSchema check above is what proves the partial indexes exclude
+      // it by predicate rather than by deleting it.
+      expect(
+        await run(pg, `SELECT count(*)::int AS n FROM hq_captain_assignments WHERE captain_user_id IS NULL AND unassigned_at IS NULL`),
+      ).toEqual([{ n: 1 }]);
     } finally {
       await pg.close();
     }
