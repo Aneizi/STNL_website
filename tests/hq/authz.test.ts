@@ -70,8 +70,8 @@ const entry = (author: string, visibility: Entry["visibility"], projectId = PROJ
 let pg: PGlite;
 let db: BuilderDatabase;
 const rows = async (text: string, values: unknown[] = []) => (await pg.query(text, values)).rows as Record<string, unknown>[];
-const grant = (userId: string) => grantCapability(db, { actorOperatorId: OPERATOR_ID, userId, capability: "captain", reason: "test" });
-const revoke = (userId: string) => revokeCapability(db, { actorOperatorId: OPERATOR_ID, userId, capability: "captain", reason: "test" });
+const grant = (userId: string) => grantCapability(db, { actor: { kind: "operator", id: OPERATOR_ID }, byOperatorId: OPERATOR_ID, userId, capability: "captain", reason: "test" });
+const revoke = (userId: string) => revokeCapability(db, { actor: { kind: "operator", id: OPERATOR_ID }, byOperatorId: OPERATOR_ID, userId, capability: "captain", reason: "test" });
 
 beforeAll(async () => {
   pg = await createMigratedDatabase();

@@ -10,8 +10,14 @@ import { refreshHq } from "./util";
 
 // Operator actions over admin-controlled account capabilities. The actor id
 // comes from requireUser() and nowhere else; the account id and the reason
-// are the only inputs. Grants are account-global, so nothing here reads the
-// hackathon cookie.
+// are the only inputs. Here the operator is both the acting actor and the
+// `granted_by`; a member-initiated grant (phase 4's invitation redemption)
+// passes a member actor instead.
+//
+// Grants are account-global, so nothing here reads the hackathon cookie and,
+// unlike its neighbour updateBuilderTier in ./builders-admin.ts, nothing
+// requires the account to hold a People card in the selected edition: an
+// account that loses its card keeps the capability until it is revoked.
 
 const inputSchema = z.object({
   userId: z.string().min(1).max(200),
@@ -31,7 +37,7 @@ export async function grantCaptainCapability(userId: string, reason: string): Pr
   const parsed = inputSchema.safeParse({ userId, reason });
   if (!parsed.success) return INVALID;
   try {
-    await grantCapability(builderDatabase(), { actorOperatorId: user.id, ...parsed.data, capability: "captain" });
+    await grantCapability(builderDatabase(), { actor: { kind: "operator", id: user.id }, byOperatorId: user.id, ...parsed.data, capability: "captain" });
   } catch (error) {
     return failure(error);
   }
@@ -45,7 +51,7 @@ export async function revokeCaptainCapability(userId: string, reason: string): P
   const parsed = inputSchema.safeParse({ userId, reason });
   if (!parsed.success) return INVALID;
   try {
-    const revoked = await revokeCapability(builderDatabase(), { actorOperatorId: user.id, ...parsed.data, capability: "captain" });
+    const revoked = await revokeCapability(builderDatabase(), { actor: { kind: "operator", id: user.id }, byOperatorId: user.id, ...parsed.data, capability: "captain" });
     if (!revoked) return { ok: false, error: "This account does not hold Captain access." };
   } catch (error) {
     return failure(error);

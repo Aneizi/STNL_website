@@ -370,7 +370,7 @@ describe("People tags, Captain grants and person-match correction", () => {
     await rows("INSERT INTO hq_builder_profiles(id,email,name) VALUES('second','second@example.test','Second Builder')");
     await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT 11,'second','Second Builder',id FROM hq_people_roles");
     await rows("INSERT INTO hq_people(hackathon_id,name,role_id) SELECT 11,'Hand Entered',id FROM hq_people_roles");
-    await grantCapability(builderDb, { actorOperatorId: OPERATOR, userId: "selected", capability: "captain", reason: "Leads the cohort" });
+    await grantCapability(builderDb, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "selected", capability: "captain", reason: "Leads the cohort" });
     queryCalls = 0;
     const people = (await getPeople(11)).sort((a, b) => a.name.localeCompare(b.name));
     expect(queryCalls).toBe(1);

@@ -1,5 +1,5 @@
 import "server-only";
-import { recordAuditEvent } from "./audit";
+import { recordAuditEvent, type AuditActor } from "./audit";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { BuilderError } from "./builder-types";
 import type { PersonTag } from "./types";
@@ -7,12 +7,18 @@ import type { PersonTag } from "./types";
 /**
  * Admin-controlled account capabilities (hq_account_capabilities).
  *
- * A capability is granted to a public account by an operator and is the only
- * thing that ever opens a privileged surface to that account. It is never
- * derived from a People role, a People tag or the regular/member tier, and
- * the two functions below are the only writers of the table. Every grant and
- * revocation lands in the audit trail in the same transaction, so the row
- * and its event commit or roll back together.
+ * A capability held by a public account is the only thing that ever opens a
+ * privileged surface to it. It is never derived from a People role, a People
+ * tag or the regular/member tier, and the two functions below are the only
+ * writers of the table. Every grant and revocation lands in the audit trail
+ * in the same transaction, so the row and its event commit or roll back
+ * together.
+ *
+ * Who acted and who the row is attributed to are two different facts. An
+ * admin granting Captain in Admin is both; a member redeeming a Captain
+ * invitation (phase 4) is the actor, while the operator who created the
+ * invitation is at most the `granted_by`. The caller supplies each
+ * separately, so the trail never records an operator action nobody took.
  *
  * Reads take no cache: a revocation is visible on the next call.
  */
@@ -42,8 +48,20 @@ export type CapabilityGrant = {
 };
 
 export type CapabilityChange = {
-  /** From requireUser(); never from a form field. */
-  actorOperatorId: string;
+  /**
+   * Who is making the change, as the audit event records it. From
+   * `requireUser()`, `currentMember()` or a verified job token, never from a
+   * form field. A grant is not always an operator action: redeeming a Captain
+   * invitation (phase 4) is the member's own act, and the trail must say so.
+   */
+  actor: AuditActor;
+  /**
+   * The operator the row is attributed to: `granted_by_user_id` on a grant,
+   * `revoked_by_user_id` on a revocation. An `hq_users` id, so never a member
+   * id; null when no operator stands behind the change (a member redeeming an
+   * invitation an operator no longer owns, or a job).
+   */
+  byOperatorId: string | null;
   userId: string;
   capability: Capability;
   reason: string;
@@ -94,7 +112,7 @@ export async function grantCapability(db: BuilderQuery | BuilderDatabase, input:
        ON CONFLICT (user_id, capability) WHERE revoked_at IS NULL DO NOTHING
        RETURNING id::text AS id, user_id, capability, granted_by_user_id::text AS granted_by_user_id, granted_at,
          revoked_by_user_id::text AS revoked_by_user_id, revoked_at, reason`,
-      [input.userId, input.capability, input.actorOperatorId, input.reason],
+      [input.userId, input.capability, input.byOperatorId, input.reason],
     );
     if (!inserted.length) {
       const existing = await activeGrant(tx, input.userId, input.capability);
@@ -104,7 +122,7 @@ export async function grantCapability(db: BuilderQuery | BuilderDatabase, input:
     const grant = toGrant({ ...inserted[0], user_name: accounts[0].name });
     await recordAuditEvent(tx, {
       kind: "capability.granted",
-      actor: { kind: "operator", id: input.actorOperatorId },
+      actor: input.actor,
       subjectUserId: input.userId,
       metadata: { capability: input.capability, grantId: grant.id, reason: input.reason },
     });
@@ -125,13 +143,13 @@ export async function revokeCapability(db: BuilderQuery | BuilderDatabase, input
        FROM hq_builder_profiles b
        WHERE g.user_id = $1 AND g.capability = $2 AND g.revoked_at IS NULL AND b.id = g.user_id
        RETURNING ${GRANT_SELECT}`,
-      [input.userId, input.capability, input.actorOperatorId],
+      [input.userId, input.capability, input.byOperatorId],
     );
     if (!rows.length) return null;
     const grant = toGrant(rows[0]);
     await recordAuditEvent(tx, {
       kind: "capability.revoked",
-      actor: { kind: "operator", id: input.actorOperatorId },
+      actor: input.actor,
       subjectUserId: input.userId,
       metadata: { capability: input.capability, grantId: grant.id, reason: input.reason },
     });
