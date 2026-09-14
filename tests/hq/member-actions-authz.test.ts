@@ -7,6 +7,7 @@
 // relationship is visible on the next call. Bot requests are deferred to
 // phase 7.
 import type { PGlite } from "@electric-sql/pglite";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -29,6 +30,9 @@ vi.mock("next/headers", () => ({ cookies: mocks.cookies, headers: async () => ne
 vi.mock("next/navigation", () => ({
   notFound: () => { throw new Error("NOT_FOUND"); },
   redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); },
+  // BuilderTeamControls (rendered inside TeamPage) calls useRouter(); only
+  // this file's new markup-level render actually exercises that.
+  useRouter: () => ({ replace() {}, refresh() {}, push() {} }),
 }));
 
 import TeamPage from "@/app/hq/(member)/team/[id]/page";
@@ -289,9 +293,14 @@ describe("the team page", () => {
     expect(await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_C, hackathonId: EDITION_B, captainUserId: "cap-view" })).toMatchObject({ outcome: "assigned" });
 
     expect((await memberTeamView(await actorFor("lead-c"), PROJECT_C))?.captain).toEqual({ displayName: "Team Captain", contact: null });
+    // The view model is only half the proof: the team page must actually
+    // render the name, not just carry it in an unread prop.
+    const html = renderToStaticMarkup(await page(PROJECT_C));
+    expect(html).toContain("Team Captain");
 
     await unassignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_C, hackathonId: EDITION_B });
     expect((await memberTeamView(await actorFor("lead-c"), PROJECT_C))?.captain).toBeNull();
+    expect(renderToStaticMarkup(await page(PROJECT_C))).not.toContain("Team Captain");
   });
 
   it("shows no Captain to the account watching its own still-unverified claim: only a verified team's own view is populated", async () => {

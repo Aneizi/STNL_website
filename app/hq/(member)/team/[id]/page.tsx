@@ -19,6 +19,7 @@ export default async function TeamPage({params}:{params:Promise<{id:string}>}){
     {verification==='pending'&&<p>Superteam NL will review your team. You can check your details now. Edits and invites open after approval.</p>}
     {verification==='rejected'&&<p>Superteam NL could not approve this import. Check your Colosseum team and contact us for help.</p>}
     <p><a className={styles.inlineLink} href={team.projectUrl} target='_blank' rel='noopener noreferrer'>View project on Colosseum</a></p>
+    {team.captain&&<p>Captain: {team.captain.displayName}</p>}
     <BuilderTeamControls team={team}/>
   </BuilderShell>;
 }
