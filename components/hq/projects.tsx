@@ -47,6 +47,9 @@ import type {
 type PartnerOption = { id: string; name: string };
 type EventOption = { id: string; name: string };
 type CaptainOption = { id: string; name: string };
+/** A roster row the service could not resolve either way — echoed back verbatim (by memberId) as the acknowledgement of the second "Assign anyway" call. */
+type UnresolvedCaptainRosterRow = { memberId: string; name: string; username: string | null };
+type CaptainReview = { projectId: string; captainUserId: string; captainName: string; unresolved: UnresolvedCaptainRosterRow[] };
 
 type ProjectPatch =
   | { kind: "status"; id: string; slug: string }
@@ -137,6 +140,88 @@ const panelField: React.CSSProperties = {
 const gridColumns =
   "minmax(0,1.8fr) minmax(0,1.3fr) minmax(0,1.4fr) 92px 105px 176px 92px 64px 46px";
 
+/**
+ * The detail panel's Captain control: a picker limited to accounts with an
+ * active Captain grant, a "No Captain" removal option, and — only while
+ * `review` names this exact project — the second, explicit confirmation
+ * step an unresolved roster identity requires. A conflict is a plain toast
+ * elsewhere (nothing changed, this select just snaps back to
+ * `project.captainUserId` on the next render); unresolved identity is
+ * instead this standing choice until the operator confirms or cancels it —
+ * visible at the point of assignment, not folded into a toast that could be
+ * missed.
+ */
+function CaptainField({
+  project,
+  captainOptions,
+  review,
+  onPick,
+  onRemove,
+  onAssignAnyway,
+  onCancelReview,
+}: {
+  project: Project;
+  captainOptions: CaptainOption[];
+  review: CaptainReview | null;
+  onPick: (captainUserId: string) => void;
+  onRemove: () => void;
+  onAssignAnyway: (unresolved: UnresolvedCaptainRosterRow[]) => void;
+  onCancelReview: () => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <select
+        value={project.captainUserId ?? ""}
+        onChange={(e) => {
+          const value = e.target.value;
+          if (!value) onRemove();
+          else onPick(value);
+        }}
+        style={panelField}
+      >
+        <option value="">No Captain</option>
+        {captainOptions.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name}
+          </option>
+        ))}
+      </select>
+      {review ? (
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--label-2)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            padding: "8px 10px",
+            background: "var(--fill-4)",
+          }}
+        >
+          <span>
+            {review.unresolved.length} roster row{review.unresolved.length === 1 ? "" : "s"} on this project could not
+            be checked against an imported HQ identity yet:{" "}
+            {review.unresolved.map((m) => (m.username ? `@${m.username}` : m.name)).join(", ")}. Assign{" "}
+            {review.captainName} anyway?
+          </span>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => onAssignAnyway(review.unresolved)} style={{ ...accentBtn, padding: "4px 9px", fontSize: 12 }}>
+              Assign anyway
+            </button>
+            <button
+              onClick={onCancelReview}
+              className="hq-hover-accent"
+              style={{ border: "none", cursor: "pointer", background: "none", color: "var(--label-3)", fontSize: 12, padding: "4px 9px" }}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export function Projects({
   projects,
   partnerOptions,
@@ -187,14 +272,12 @@ export function Projects({
   const prevExpandId = useRef<string | null>(null);
   // The detail panel's Captain picker needs a second, explicit step when the
   // service reports unresolved roster identity: this holds that pending
-  // choice (which project, which candidate) until the operator confirms or
-  // cancels it. Only one at a time, the same reasoning as editingNoteId.
-  const [captainReview, setCaptainReview] = useState<{
-    projectId: string;
-    captainUserId: string;
-    captainName: string;
-    unresolved: Array<{ name: string; username: string | null }>;
-  } | null>(null);
+  // choice (which project, which candidate, which exact roster rows were
+  // shown) until the operator confirms or cancels it. Only one at a time,
+  // the same reasoning as editingNoteId — and, like editingNoteId, cleared
+  // whenever the expanded project changes, so a stale review never
+  // reappears against a different (or the same, later) row on re-expand.
+  const [captainReview, setCaptainReview] = useState<CaptainReview | null>(null);
   const [bulkSelected, setBulkSelected] = useState<Record<string, boolean>>({});
   const [bulkCaptainId, setBulkCaptainId] = useState("");
   const [bulkResults, setBulkResults] = useState<Array<{ projectId: string; name: string; result: AssignCaptainActionResult }> | null>(null);
@@ -202,6 +285,7 @@ export function Projects({
   useEffect(() => {
     if (expandId && expandId !== prevExpandId.current) {
       setExpandedId(expandId);
+      setCaptainReview(null);
       setProjSearch("");
       setStatusFilter("");
       setForecastFilter("");
@@ -242,17 +326,21 @@ export function Projects({
   // Captain assignment is not a fire-and-forget patch like partner: the
   // service can refuse (a conflict) or ask for a second, explicit
   // confirmation (unresolved roster identity — captainReview holds that
-  // pending state above). acknowledgeUnresolved is only ever true on that
-  // second, operator-driven call.
-  const pickCaptain = (projectId: string, captainUserId: string, acknowledgeUnresolved = false) => {
+  // pending state above). acknowledgedUnresolvedIds is only ever the
+  // memberIds from a needs_review response already shown to the operator,
+  // on that second, operator-driven call — never invented client-side.
+  const pickCaptain = (projectId: string, captainUserId: string, acknowledgedUnresolvedIds?: string[]) => {
     const captainName = captainOptions.find((o) => o.id === captainUserId)?.name ?? "";
     startTransition(async () => {
-      const result = await assignProjectCaptain({ projectId, captainUserId, acknowledgeUnresolved });
+      const result = await assignProjectCaptain({ projectId, captainUserId, acknowledgedUnresolvedIds });
       if (result.outcome === "assigned") {
         patch({ kind: "captain", id: projectId, captainUserId, captainName });
         setCaptainReview(null);
         flash();
       } else if (result.outcome === "needs_review") {
+        // Always the service's own, freshly re-derived list — if the
+        // operator's acknowledgement above was stale (something resolved,
+        // or a new row appeared), this replaces it with what is current now.
         setCaptainReview({ projectId, captainUserId, captainName, unresolved: result.unresolved });
       } else {
         setCaptainReview(null);
@@ -266,6 +354,7 @@ export function Projects({
       const res = await unassignProjectCaptain(projectId);
       if (res.ok) {
         patch({ kind: "captain", id: projectId, captainUserId: null, captainName: "" });
+        setCaptainReview((current) => (current?.projectId === projectId ? null : current));
         flash();
       } else {
         showToast(res.error ?? "Could not remove the Captain.");
@@ -278,12 +367,21 @@ export function Projects({
   };
 
   const onBulkAssignCaptain = () => {
-    const projectIds = Object.keys(bulkSelected).filter((id) => bulkSelected[id]);
+    // Intersected with the currently filtered list at submit time: a
+    // project selected before a filter change, then hidden by it, must not
+    // be silently included in a batch the operator can no longer see.
+    const visibleIds = new Set(filtered.map((p) => p.id));
+    const projectIds = Object.keys(bulkSelected).filter((id) => bulkSelected[id] && visibleIds.has(id));
     const captainUserId = bulkCaptainId;
     const captainName = captainOptions.find((o) => o.id === captainUserId)?.name ?? "";
     if (!projectIds.length || !captainUserId) return;
     startTransition(async () => {
-      const outcomes = await bulkAssignProjectCaptain({ projectIds, captainUserId });
+      const { outcomes, error } = await bulkAssignProjectCaptain({ projectIds, captainUserId });
+      if (error) {
+        setBulkResults(null);
+        showToast(error);
+        return;
+      }
       setBulkResults(
         outcomes.map((o) => ({
           projectId: o.projectId,
@@ -403,7 +501,7 @@ export function Projects({
   };
 
   const onDeleteProject = (projectId: string) => {
-    if (expandedId === projectId) setExpandedId(null);
+    if (expandedId === projectId) { setExpandedId(null); setCaptainReview(null); }
     startTransition(async () => {
       patch({ kind: "remove", id: projectId });
       const res = await deleteProject(projectId);
@@ -545,13 +643,17 @@ export function Projects({
                 ))}
               </select>
             </FormField>
-            <button
-              onClick={onBulkAssignCaptain}
-              disabled={!bulkCaptainId || !Object.values(bulkSelected).some(Boolean)}
-              style={primaryBtn}
-            >
-              Assign to {Object.values(bulkSelected).filter(Boolean).length} selected
-            </button>
+            {/* Counts only what the current filters still show, matching
+                exactly what onBulkAssignCaptain will submit — a selection
+                made under a different filter never inflates this number. */}
+            {(() => {
+              const selectedVisibleCount = filtered.filter((p) => bulkSelected[p.id]).length;
+              return (
+                <button onClick={onBulkAssignCaptain} disabled={!bulkCaptainId || !selectedVisibleCount} style={primaryBtn}>
+                  Assign to {selectedVisibleCount} selected
+                </button>
+              );
+            })()}
           </div>
           <div style={{ marginTop: 12, maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
             {filtered.map((p) => (
@@ -921,6 +1023,7 @@ export function Projects({
                       onClick={() => {
                         setExpandedId(expanded ? null : p.id);
                         setEditingNoteId(null);
+                        setCaptainReview(null);
                       }}
                       className="hq-row-hover"
                       style={{
@@ -1240,66 +1343,18 @@ export function Projects({
                                 ))}
                               </select>
                               <span style={microLabel}>Captain</span>
-                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                <select
-                                  value={p.captainUserId ?? ""}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
-                                    if (!value) removeCaptain(p.id);
-                                    else pickCaptain(p.id, value);
-                                  }}
-                                  style={panelField}
-                                >
-                                  <option value="">No Captain</option>
-                                  {captainOptions.map((o) => (
-                                    <option key={o.id} value={o.id}>
-                                      {o.name}
-                                    </option>
-                                  ))}
-                                </select>
-                                {/* A conflict is a plain toast (nothing changed, the
-                                    select snaps back to p.captainUserId on the next
-                                    render). Unresolved roster identity is instead a
-                                    standing choice until the operator confirms or
-                                    cancels it — visible at the point of assignment,
-                                    not folded into a toast that could be missed. */}
-                                {captainReview && captainReview.projectId === p.id ? (
-                                  <div
-                                    style={{
-                                      fontSize: 12,
-                                      color: "var(--label-2)",
-                                      display: "flex",
-                                      flexDirection: "column",
-                                      gap: 6,
-                                      padding: "8px 10px",
-                                      background: "var(--fill-4)",
-                                    }}
-                                  >
-                                    <span>
-                                      {captainReview.unresolved.length} roster row
-                                      {captainReview.unresolved.length === 1 ? "" : "s"} on this project could not be
-                                      checked against an imported HQ identity yet:{" "}
-                                      {captainReview.unresolved.map((m) => (m.username ? `@${m.username}` : m.name)).join(", ")}.
-                                      Assign {captainReview.captainName} anyway?
-                                    </span>
-                                    <div style={{ display: "flex", gap: 6 }}>
-                                      <button
-                                        onClick={() => pickCaptain(p.id, captainReview.captainUserId, true)}
-                                        style={{ ...accentBtn, padding: "4px 9px", fontSize: 12 }}
-                                      >
-                                        Assign anyway
-                                      </button>
-                                      <button
-                                        onClick={() => setCaptainReview(null)}
-                                        className="hq-hover-accent"
-                                        style={{ border: "none", cursor: "pointer", background: "none", color: "var(--label-3)", fontSize: 12, padding: "4px 9px" }}
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : null}
-                              </div>
+                              <CaptainField
+                                project={p}
+                                captainOptions={captainOptions}
+                                review={captainReview && captainReview.projectId === p.id ? captainReview : null}
+                                onPick={(captainUserId) => pickCaptain(p.id, captainUserId)}
+                                onRemove={() => removeCaptain(p.id)}
+                                onAssignAnyway={(unresolved) => {
+                                  if (!captainReview) return;
+                                  pickCaptain(p.id, captainReview.captainUserId, unresolved.map((m) => m.memberId));
+                                }}
+                                onCancelReview={() => setCaptainReview(null)}
+                              />
                               <span style={microLabel}>Event</span>
                               <select
                                 defaultValue={p.eventSrc}
