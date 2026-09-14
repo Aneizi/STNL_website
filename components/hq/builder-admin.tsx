@@ -12,6 +12,7 @@ import type {
 } from "@/lib/hq/builder-admin-queries";
 import type { CaptainInvitationListing } from "@/lib/hq/captains";
 import { fmtWithZone } from "@/lib/hq/format";
+import { inviteLink } from "@/lib/hq/member-routes";
 import type { ActionResult } from "@/lib/hq/types";
 import { CopyButton } from "./ui-client";
 import styles from "./builder-admin.module.css";
@@ -33,14 +34,20 @@ export function loginLabel({ email, telegram }: AccountLogin): string {
 // verification) remounted the row on the very save that changed it, closing
 // the <details> and taking the "Saved." line with it.
 //
-// Because the row no longer remounts, a successful save must reset the form
-// itself: without it, a summary/button pair that flips its own label after a
-// grant (Grant -> Revoke) would leave the just-typed reason and a
-// pre-checked "required" confirm box sitting behind the new label, so one
-// further stray click would revoke with a stale confirmation. form.reset()
-// clears every input back to its defaultValue, which is exactly what a
-// fresh instance of the same control should show next.
-function ActionForm({ action, children }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode }) {
+// Because the row no longer remounts, a control whose summary/button flips
+// its own label after a save (Grant Captain -> Revoke Captain, Review ->
+// Change verification) must reset on success: without it, the just-typed
+// reason and a pre-checked "required" confirm box would sit behind the new
+// label, so one further stray click could revoke or re-decide with a stale
+// confirmation. `resetOnSuccess` opts a form into that — form.reset() clears
+// every input back to its defaultValue, which is exactly what a fresh
+// instance of the same control should show next. It defaults to false: a
+// form whose fields take their `defaultValue` from server props (onboarding
+// settings, a tier select, a project lead select) must NOT reset on its own
+// success, or the admin would briefly see the pre-save value snap back next
+// to "Saved.", before the revalidatePath round trip replaces it with the
+// real one.
+function ActionForm({ action, children, resetOnSuccess = false }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode; resetOnSuccess?: boolean }) {
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
@@ -55,7 +62,7 @@ function ActionForm({ action, children }: { action: (data: FormData) => Promise<
         const result = await action(data);
         setError(!result.ok);
         setMessage(result.ok ? "Saved." : result.error ?? "Could not save. Try again.");
-        if (result.ok) form.reset();
+        if (result.ok && resetOnSuccess) form.reset();
       } catch {
         setError(true);
         setMessage("Could not save. Try again.");
@@ -167,7 +174,7 @@ export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccou
           </ActionForm>
           <details className={styles.review}>
             <summary>{account.captain ? "Revoke Captain access" : "Grant Captain access"}</summary>
-            <ActionForm action={(data) => (account.captain ? revokeCaptainCapability : grantCaptainCapability)(account.id, String(data.get("reason") ?? ""))}>
+            <ActionForm resetOnSuccess action={(data) => (account.captain ? revokeCaptainCapability : grantCaptainCapability)(account.id, String(data.get("reason") ?? ""))}>
               <label className={styles.field}>Reason<input name="reason" required minLength={3} maxLength={500} placeholder={account.captain ? "Why this account loses Captain access." : "Why this account gets Captain access."} /></label>
               <label className={styles.checkbox}>
                 {account.captain
@@ -239,7 +246,7 @@ function useExpiryPreview(days: number, timezone: string): string {
 function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInvitationListing[]; timezone: string }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState("");
-  const [created, setCreated] = useState<{ token: string; label: string | null } | null>(null);
+  const [created, setCreated] = useState<{ token: string } | null>(null);
   const [days, setDays] = useState(7);
   const preview = useExpiryPreview(days, timezone);
 
@@ -249,19 +256,26 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
     const data = new FormData(form);
     setError("");
     startTransition(async () => {
-      const result = await createCaptainInvitation({
-        label: String(data.get("label") ?? "").trim() || undefined,
-        maxRedemptions: Number(data.get("maxRedemptions")),
-        expiresInDays: Number(data.get("validForDays")),
-      });
-      if (!result.ok) { setError(result.error); return; }
-      setCreated({ token: result.token, label: result.invitation.label });
-      form.reset();
-      setDays(7);
+      try {
+        const result = await createCaptainInvitation({
+          label: String(data.get("label") ?? "").trim() || undefined,
+          maxRedemptions: Number(data.get("maxRedemptions")),
+          expiresInDays: Number(data.get("validForDays")),
+        });
+        if (!result.ok) { setError(result.error); return; }
+        setCreated({ token: result.token });
+        form.reset();
+        setDays(7);
+      } catch {
+        // requireUser() throws on an expired or lost operator session — the
+        // most likely failure on a long-open Admin tab — and the action
+        // rethrows anything that is not a BuilderError.
+        setError("Could not create the invitation. Try again.");
+      }
     });
   }
 
-  const link = created ? `${window.location.origin}/hq/invite/${created.token}` : "";
+  const link = created ? `${window.location.origin}${inviteLink(created.token)}` : "";
 
   return (
     <section className={styles.section} aria-labelledby="captain-invitations-title">
@@ -273,7 +287,7 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
           <div className={styles.grid}>
             <label className={styles.field}>Internal label (optional)<input name="label" maxLength={200} placeholder="e.g. Rotterdam meetup" /></label>
             <label className={styles.field}>Maximum connected accounts<input name="maxRedemptions" type="number" inputMode="numeric" min={1} max={500} defaultValue={1} required /></label>
-            <label className={styles.field}>Valid for (days)<input name="validForDays" type="number" inputMode="numeric" min={1} defaultValue={7} required onChange={(event) => setDays(Number(event.currentTarget.value))} /></label>
+            <label className={styles.field}>Valid for (days)<input name="validForDays" type="number" inputMode="numeric" min={1} max={365} defaultValue={7} required onChange={(event) => setDays(Number(event.currentTarget.value))} /></label>
           </div>
           <p className={styles.muted}>{preview ? `Expires ${preview}, unless revoked sooner.` : "Choose a duration to see the expiry."}</p>
           <div className={styles.actions}><button className={styles.button} type="submit">Create invitation link</button></div>
@@ -363,7 +377,7 @@ export function BuilderProjectReviews({ projects, importRequests }: {
             </ActionForm>
             <details className={styles.review}>
               <summary>{project.verification === "pending" ? "Review team verification" : "Change team verification"}</summary>
-              <ActionForm action={(data) => reviewBuilderProject({ projectId: project.id,
+              <ActionForm resetOnSuccess action={(data) => reviewBuilderProject({ projectId: project.id,
                 decision: data.get("decision") === "verified" ? "verified" : "rejected",
                 reviewedEvidence: data.has("reviewed") as true, note: String(data.get("note") ?? ""),
               })}>

@@ -7,11 +7,19 @@
 // else. Neither list is authorization: every member page keeps its own gate.
 
 /**
+ * The invitation subtree's prefix, named once so the member route list below
+ * and inviteLink() (the one place a full invitation link is assembled) share
+ * it instead of repeating the literal — an admin-facing link and the route
+ * that must accept it can then never drift apart.
+ */
+const INVITE_PATH_PREFIX = "/hq/invite/";
+
+/**
  * Every member page. An entry ending in "/" names a subtree whose next and
  * last segment is a single id (a team's project id, an invitation token);
- * every other entry is matched exactly. "/hq/invite/" is the invitation
- * continuation path reserved for phase 4: accepted as a destination now so a
- * sign-in that started from an invitation can return to it.
+ * every other entry is matched exactly. The invitation continuation path is
+ * reserved for phase 4: accepted as a destination now so a sign-in that
+ * started from an invitation can return to it.
  */
 export const MEMBER_PUBLIC_PATHS = [
   "/hq/signin",
@@ -26,8 +34,19 @@ export const MEMBER_PUBLIC_PATHS = [
   "/hq/account/disconnect-telegram",
   "/hq/account/add-email",
   "/hq/captain",
-  "/hq/invite/",
+  INVITE_PATH_PREFIX,
 ] as const;
+
+/**
+ * The full path to a Captain invitation's landing page for a given token.
+ * The one place this is assembled — task T4.3's /hq/invite/<token> route and
+ * any admin-facing link builder (components/hq/builder-admin.tsx) both use
+ * this instead of concatenating the prefix themselves, so they cannot
+ * disagree about it.
+ */
+export function inviteLink(token: string): string {
+  return `${INVITE_PATH_PREFIX}${token}`;
+}
 
 /** The one id segment a subtree entry accepts: a UUID, an invite token, nothing with a slash, a dot or an escape in it. */
 const ID_SEGMENT = /^[A-Za-z0-9_-]+$/;
