@@ -90,13 +90,16 @@ describe("the submission signal", () => {
     expect(interpretSubmission({ checked: true, submittedAt: detail.submitted.project.submittedAt })).toBe("submitted");
   });
 
-  it("stays Not checked for a complete draft while the draft signal is unconfirmed", () => {
-    // The plan: `submittedAt` for a draft is an assumption, so HQ does not
-    // show a red badge it cannot stand behind. This asserts the current,
-    // deliberate state; flipping DRAFT_SIGNAL_CONFIRMED is what changes it,
-    // and this test is the place that says so out loud.
-    expect(DRAFT_SIGNAL_CONFIRMED).toBe(false);
-    expect(interpretSubmission({ checked: true, submittedAt: detail.unsubmitted.project.submittedAt })).toBe("not_checked");
+  it("is Not submitted for a checked draft, now that the draft signal is confirmed", () => {
+    // Confirmed live on 2026-09-14 with a submitted/unsubmitted pair through
+    // the detail endpoint; see the constant's own comment for both readings
+    // and the one caveat. This test is the place that says out loud which
+    // way the constant is set, so flipping it back is a visible change.
+    expect(DRAFT_SIGNAL_CONFIRMED).toBe(true);
+    expect(interpretSubmission({ checked: true, submittedAt: detail.unsubmitted.project.submittedAt })).toBe("not_submitted");
+    // Still Not checked before any successful check, whatever the draft
+    // signal says: the two are different questions.
+    expect(interpretSubmission({ checked: false, submittedAt: null })).toBe("not_checked");
   });
 
   it("never reads readiness as submission", () => {

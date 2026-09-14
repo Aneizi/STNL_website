@@ -3660,6 +3660,72 @@ confirming they land on the served redirect response needs a manual
 `docs/hq/contracts.md` under "Handoff to phase 3". Phase 4 added no
 environment variable.
 
+### Live API verification, after the phase 3 commits
+
+The phase 3 work above was built entirely against the recorded fixtures.
+Prompted by the owner, the adapter was then run against the **live** public
+API on 2026-09-14 (bounded, read-only, unauthenticated: one project of the
+current edition, one of Frontier, the directories list and one listing page).
+It found two real bugs and four facts, all now handled. Full structural
+detail is in `tests/hq/fixtures/colosseum/README.md` under "Re-checked live
+on 2026-09-14"; no live value was copied into a fixture.
+
+**Two bugs, both of which would have shipped:**
+
+1. **`sort` is required on `GET /api/projects`.**
+   `fetchEditionSubmissionWindow` did not send it, so every submission-window
+   read would have failed with 400 `BAD_REQUEST` — surfacing as
+   `SOURCE_REJECTED`, a plausible-looking "Colosseum refused that request"
+   that would have looked like an upstream problem rather than our own.
+   Fixed by sending `sort=NAME`; `tests/colosseum-api.test.ts` now asserts the
+   exact request URL, so the parameter cannot be dropped again. The
+   2026-09-13 note recorded that sorting *is* `NAME` or `RANDOM` and that
+   `sortApplied` came back in the envelope; neither said the parameter was
+   optional, and the fixture — a response — could not have caught it. This is
+   the class of bug a fixture cannot find.
+2. **One malformed listing row destroyed the whole edition's window.** A real
+   Frontier project carries the slug `""or""or`, which `slugSchema` rejects,
+   and `listingSchema` validated every row — so a single pathological project
+   anywhere in the page made `fetchEditionSubmissionWindow` return
+   `INVALID_RESPONSE` for the entire edition. The window read never looks at a
+   row, so `listingSchema.projects` is now `z.unknown()`; the detail endpoint,
+   which imports actually use, keeps strict validation. A regression test
+   drives a page containing that exact slug plus a nonsense row.
+
+**Four facts:**
+
+3. **The external edition is verified: id `7`, slug `crypto-worlds-fair`,
+   "Crypto World's Fair".** A live project of that edition carries it in its
+   own `hackathon` block. Recorded in `docs/hq/manual-setup.md` 2.6 and L11;
+   it stays operator data typed into Admin, never seeded, so no code changed.
+   The previous note ("plausible, but unproven, that 7 is the World's Fair")
+   is retired.
+4. **`DRAFT_SIGNAL_CONFIRMED` flipped to `true`.** The pair the constant was
+   waiting for was observed through the same unauthenticated detail endpoint:
+   an in-flight edition-7 project returned `"submittedAt": null` — present,
+   not absent — and a finished edition-6 project returned a real timestamp. A
+   checked project with no submission now shows a red **Not submitted**. The
+   caveat is recorded at the constant and in L13: the two projects are from
+   different editions, because the current edition's disabled directory makes
+   a same-edition pair unobtainable. Two tests assert which way the constant
+   is set, so flipping it back is a visible change.
+5. **`projectCompletion` is not returned by the public detail endpoint at
+   all**, on either project — contradicting the fixture and the earlier note
+   that it is "returned by the detail endpoint only". The schema already had
+   it `nullish`, so nothing broke, but in practice `completion_is_complete`
+   is always NULL and the "Colosseum readiness" line on the team page never
+   renders. Corrected in the fixtures README and in `contracts.md`.
+6. **Roster `avatarUrl` was null for every member observed**; the picture is
+   an `avatarPresetId` HQ does not read. So `hq_project_members.avatar_url`,
+   added by this phase, is usually NULL. Kept — it costs nothing and is
+   populated when a member does have a URL — but it is not the roster imagery
+   the plan's Imported fields table implied. The detail response also carries
+   a top-level `presentation` block and `bio`/`publicRole` per member, all of
+   which survive unread inside `raw`.
+
+Everything above is a small, contained change: two files of adapter logic,
+one constant, three tests, and documentation.
+
 ### Verification run for phase 4, task T4.6
 
 First run at commit `e363fbe` (the last commit to touch source, before this

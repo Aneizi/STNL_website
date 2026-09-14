@@ -51,7 +51,7 @@ sessions working while Telegram is unreachable") asserts it.
 | Telegram login (OIDC) | **Not configured** | Telegram sign-in and Connect Telegram |
 | Legacy Google and GitHub variables | Removed from code, live clean-up outstanding | Nothing. They are dead weight |
 | Local `setup/hq/auth.env.template` | Stale, gitignored, must be regenerated | Nothing in production. It misleads the next person who reads it |
-| Colosseum edition mapping | **Not configured, and the correct value is unverified** | Every self-service import: phase 3 answers "Superteam NL has not confirmed this hackathon's Colosseum edition yet" until it is set |
+| Colosseum edition mapping | **Not configured**, but the value is verified: id `7`, slug `crypto-worlds-fair` (item 2.6) | Every self-service import: phase 3 answers "Superteam NL has not confirmed this hackathon's Colosseum edition yet" until it is typed into Admin |
 | Project fallback image | Done in code; an optional smaller copy is yours if you want it | Nothing |
 | Telegram bot messaging | **Not configured** | Phase 7 only. Nothing before then |
 | Local dev environment | Absent | Running the app locally. Tests need none of it |
@@ -320,7 +320,8 @@ changes, update your local copies in `setup/hq/` to match.
 
 ## 2.6 Colosseum edition mapping
 
-**Status: Not configured, and the correct value is unverified.**
+**Status: Not configured. The value is now VERIFIED and is written below —
+you still have to type it into Admin.**
 
 **Who:** you, with Colosseum. **Where:** HQ Admin, under Builder onboarding.
 
@@ -328,26 +329,37 @@ changes, update your local copies in `setup/hq/` to match.
 Admin and stored in `hq_hackathon_onboarding`. They are never an environment
 variable, never a constant and never seeded.
 
-**What is known as of 2026-09-13.**
+**What is known as of 2026-09-14.**
 
+- **The current campaign is external Colosseum id `7`, slug
+  `crypto-worlds-fair`, name "Crypto World's Fair".** Verified on 2026-09-14
+  by reading a live project of that edition through
+  `GET /api/project?slug=...&type=HACKATHON`, whose response carries
+  `hackathon: { id: 7, name: "Crypto World's Fair", slug: "crypto-worlds-fair" }`.
+  This replaces the 2026-09-13 note that 7 was "plausible, but unproven".
+- That edition's **project directory is still disabled**, so it does not
+  appear in `GET /api/projects/directories` and its projects cannot be
+  listed — which is why the detail endpoint, not the directory, is what
+  confirmed it. It also means the edition's submission window
+  (`projectSubmissionEndDate`) cannot be read yet.
 - External Colosseum id 6 is the **Frontier** edition, slug `frontier`. It
   finished, and submissions closed on 2026-05-12. It is **not** the current
   campaign.
-- An edition with external id 7 exists, but its project directory is disabled,
-  so its name, slug and dates cannot be read from the public API. It is
-  plausible, but unproven, that 7 is the World's Fair.
 - The `6` that appears inside HQ is an internal key for the HQ hackathon record,
   not Colosseum's id. Do not copy it into the external mapping.
 
-**Steps.** Confirm the World's Fair external id and slug with Colosseum once
-that edition is enabled, then enter both in Admin before you open imports.
+**Steps.** Enter `7` and `crypto-worlds-fair` in Admin, under Builder
+onboarding, and tick Enable project imports. Check both against Colosseum's
+own page first: the value above is verified but it is still a one-way door,
+and HQ deliberately holds no copy of it in code.
 
 **How to verify.** Admin refuses to open imports while the external id is null
 or the slug is empty, so the mapping is proved by imports becoming available at
 all. Check the id and slug against Colosseum's own page before you save.
 
-**Unavailable until done:** phase 3 Colosseum imports for the current edition. A
-"Dutch registrations" view must say "edition not available", never 0.
+**Unavailable until done:** every self-service import. Phase 3 refuses with
+its own message — "Superteam NL has not confirmed this hackathon's Colosseum
+edition yet" — rather than comparing a project against a null mapping.
 
 **One-way door.** The mapping cannot be corrected after the first import, so set
 it once and set it right.
@@ -355,13 +367,10 @@ it once and set it right.
 **Code-level checks:** `tests/hq/builders-admin.test.ts` "requires a confirmed
 external mapping before imports and blocks foreign signup hosts" and "keeps
 external IDs separate and prevents remapping imported teams";
-`tests/hq/builder-onboarding.test.ts` "updates the current Colosseum link and
-slug when recovering the same external project" and the rollback cases;
-`tests/colosseum-api.test.ts` "requires the correct hackathon ID and slug".
-
-**Not covered:** the public action guards in `lib/hq/actions/builders.ts` that
-refuse a preview, a challenge or an import while the mapping is unset have no
-test of their own.
+`tests/hq/builder-onboarding.test.ts` "refuses when the edition mapping is
+unset rather than comparing against null" and "refuses with reason
+wrong_edition and writes nothing"; `tests/colosseum-api.test.ts` "requires the
+correct hackathon ID and slug".
 
 ## 2.7 Project fallback image
 
@@ -503,26 +512,26 @@ actually seen the result.
 
 ## Colosseum, after item 2.6
 
-- **L11.** Confirm the World's Fair external id and slug with Colosseum, and
-  check them against Colosseum's own page before saving them in Admin. They
-  cannot be corrected after the first import.
+- **L11. Done, 2026-09-14.** The World's Fair external id and slug are `7` and
+  `crypto-worlds-fair`, read from a live project of that edition through the
+  detail endpoint. Still check them against Colosseum's own page before saving
+  in Admin: the mapping cannot be corrected after the first import.
 
 ## Colosseum submission signal, after real projects exist
 
-- **L13.** Phase 3 shows a green **Submitted** badge from Colosseum's own
-  `submittedAt`, and shows **Not checked** rather than a red **Not submitted**
-  for a project whose `submittedAt` is null. The reason is in
-  `lib/hq/colosseum-snapshot.ts`: `submittedAt` was non-null on every project
-  observed live, but no unsubmitted project was ever reachable through the
-  public API, so "null means draft" is an assumption HQ will not put a red
-  badge behind. **What would confirm it:** open two projects of the same
-  edition through `GET /api/project?slug=...&type=HACKATHON`, one genuinely
-  submitted and one genuinely not, and see `submittedAt` set on the first and
-  null on the second. When that has been observed, flip
-  `DRAFT_SIGNAL_CONFIRMED` to `true` in that file (one constant, one line),
-  record the observation here, and Not submitted starts showing. Nothing else
-  changes. Not possible this session: the World's Fair directory is not
-  enabled, so no draft is reachable.
+- **L13. Done, 2026-09-14.** The submitted/unsubmitted pair was observed
+  through the unauthenticated detail endpoint: an in-flight Crypto World's
+  Fair project returned `"submittedAt": null` (the field present and null) and
+  a finished Frontier project returned a real timestamp.
+  `DRAFT_SIGNAL_CONFIRMED` in `lib/hq/colosseum-snapshot.ts` is now `true`, so
+  a checked project with no submission shows a red **Not submitted**. One
+  caveat recorded at the constant: the two projects are from different
+  editions, because the current edition's disabled directory makes a
+  same-edition pair unobtainable. Set it back to `false` if a project is ever
+  seen to have submitted while reporting a null `submittedAt`.
+  **Note what this means during the hackathon:** until Colosseum opens
+  submissions for this edition, every imported team correctly reads "Not
+  submitted". That is accurate, not a fault.
 
 ## Team join links, no owner setup required
 

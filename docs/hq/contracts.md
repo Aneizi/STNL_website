@@ -340,13 +340,26 @@ Limitations, all of which shape phase 3 and later:
   believes the wrong person imported it is routed to the Superteam NL
   Telegram group, where an admin can delete the team. That is the owner's
   chosen trade, recorded here so nobody re-derives it as an oversight.
-- **`submittedAt` is the submission signal.** It was non null on every observed
-  row. Its value for a draft is unverified, assumed `null`.
-- **`projectCompletion` is a readiness diagnostic**, returned by the detail
-  endpoint only. It must never drive a "Submitted" badge, and the element type of
-  `fieldErrors` is unverified.
-- **No sort by submission date.** A "new submissions since X" poll has to page
-  the country subset and diff by id and `submittedAt`.
+- **`submittedAt` is the submission signal**, and as of 2026-09-14 its draft
+  behaviour is **verified, not assumed**: a live in-flight project returned
+  the field present and null, a finished-edition project returned a
+  timestamp, both unauthenticated through the detail endpoint.
+- **`projectCompletion` is a readiness diagnostic** and must never drive a
+  "Submitted" badge. Correction from 2026-09-14: the **public** detail
+  endpoint does not return it at all (presumably owner-authenticated), so
+  `completion_is_complete` stays NULL in practice and the readiness line
+  never renders. The schema keeps it optional and the element type of
+  `fieldErrors` remains unverified.
+- **No sort by submission date**, and as of 2026-09-14 **`sort` is required**
+  on `GET /api/projects` (omitting it answers 400 "Invalid discriminator
+  value. Expected 'RANDOM' | 'NAME'"). A "new submissions since X" poll would
+  have to page the country subset and diff by id and `submittedAt`.
+- **A listing row's `slug` is not always slug-shaped.** A real Frontier
+  project carries `""or""or`. `listingSchema` therefore does not validate
+  listing rows at all, so one pathological project cannot take an edition's
+  submission window down with it; the detail endpoint keeps strict
+  validation. A team whose slug is not slug-shaped could not import — an
+  accepted edge, not worth loosening the URL parser for.
 - **Error bodies are discarded today.** ~~Every non 2xx other than 404 and 429
   collapses to `UNAVAILABLE`~~ — **closed by phase 3**: `lib/colosseum-api.ts`
   reads the body's `code` and `message` and gives a 4xx its own
@@ -481,11 +494,16 @@ needs to start without re-reading the whole log. The per-task detail is in
    operators), never a member-facing message and never markup.
 5. **One submission interpretation.**
    `lib/hq/colosseum-snapshot.ts#interpretSubmission` is the only writer of
-   `submission_status`, and `DRAFT_SIGNAL_CONFIRMED` (currently `false`) is
-   the single switch that decides whether a null `submittedAt` may read as
-   Not submitted. `projectCompletion.isComplete` is readiness and is not an
-   input. Phase 10's final-period work builds on this function; it does not
-   add a second reading.
+   `submission_status`, and `DRAFT_SIGNAL_CONFIRMED` is the single switch
+   deciding whether a null `submittedAt` may read as Not submitted. It is
+   **`true` since 2026-09-14**, when the submitted/unsubmitted pair was
+   finally observed live (both readings are in the constant's own comment,
+   with the one caveat that they come from different editions).
+   `projectCompletion.isComplete` is readiness, is not an input, and — also
+   found on 2026-09-14 — is not returned by the public detail endpoint at
+   all, so `completion_is_complete` is NULL in practice. Phase 10's
+   final-period work builds on this function; it does not add a second
+   reading.
 6. **The Captain-conflict race is closed by a lock.**
    `checkCaptainConflict` (`lib/hq/captains.ts`) now locks the CRM person
    rows its roster points at, in id order — lock-order step 3b. Phase 3
@@ -521,17 +539,26 @@ and re-serving arbitrary remote bytes from this application. It is decorative
 project imagery, never a fallback for a human avatar. The file is 1.1 MB; a
 smaller export is an optional owner follow-up (manual setup 2.7).
 
-### The unverified Colosseum edition
+### The Colosseum edition: now verified, still operator data
 
-Unchanged and still outstanding. The World's Fair external Colosseum id and
-slug are **unverified** and must not be guessed, seeded or hard coded.
-External id 6 is the finished **Frontier** edition, slug `frontier`. An
-edition with external id 7 exists but its project directory is disabled. The
-operator types the confirmed id and slug into Admin, under Builder
-onboarding, and they are stored in `hq_hackathon_onboarding`. The `6` that
+**Verified on 2026-09-14:** the current campaign is external Colosseum id
+**7**, slug **`crypto-worlds-fair`**, name "Crypto World's Fair", read from a
+live project of that edition whose response carries
+`hackathon: { id: 7, name: "Crypto World's Fair", slug: "crypto-worlds-fair" }`.
+That edition's project directory is still disabled, so it is absent from
+`GET /api/projects/directories` and its submission window cannot be read yet;
+the detail endpoint is what confirmed it. External id 6 is the finished
+**Frontier** edition, slug `frontier`.
+
+**Knowing the value changes nothing about where it lives.** It is still
+operator data: the admin types it into Admin under Builder onboarding and it
+is stored in `hq_hackathon_onboarding`, never seeded, never a constant, never
+an environment variable. The verified value is recorded in
+`docs/hq/manual-setup.md` item 2.6 — a document, not code. The `6` that
 appears inside HQ is the internal `hq_hackathons.id`, never the external
-mapping. **Until it is set, every self-service import is refused with
-`edition_not_configured`** — phase 3 does not silently compare against null.
+mapping. **Until the mapping is set, every self-service import is refused
+with `edition_not_configured`** — phase 3 does not silently compare against
+null.
 
 ### Fixtures
 

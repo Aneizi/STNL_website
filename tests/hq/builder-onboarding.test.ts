@@ -530,9 +530,10 @@ describe("refreshing a team's Colosseum snapshot", () => {
     const later = { ...PROJECT, name: "Tulip Ledger v2", description: "Updated on Colosseum", submittedAt: null,
       members: [PROJECT.members[0], PROJECT.members[1], { username: "fictional_builder_9", displayName: "Fictional Builder Nine", avatarUrl: null }] };
     const submission = await store.refreshTeam({ projectId: id, hackathonId: 41, project: later });
-    // The draft signal is not confirmed, so a null submittedAt reads as "not
-    // checked" rather than a red badge HQ cannot stand behind.
-    expect(submission).toBe("not_checked");
+    // A checked project whose submittedAt is null reads as Not submitted: the
+    // draft signal was confirmed live on 2026-09-14 (see
+    // lib/hq/colosseum-snapshot.ts#DRAFT_SIGNAL_CONFIRMED).
+    expect(submission).toBe("not_submitted");
 
     const refreshed = await store.team(OWNER.id, id);
     expect(refreshed).toMatchObject({ name: "Tulip Ledger v2", description: "Updated on Colosseum", stage: "beta", leadUsername: "fictional_builder_2", ownerId: OWNER.id, verification: "verified" });

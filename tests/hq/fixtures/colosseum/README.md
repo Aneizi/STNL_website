@@ -54,8 +54,10 @@ Two top level entries for `GET /api/project?slug=...&type=HACKATHON`:
   strings.
 
 `project.submittedAt` is the official submission signal.
-`projectCompletion.isComplete` is a readiness diagnostic returned only by the
-detail endpoint, and it must never drive a "Submitted" badge.
+`projectCompletion.isComplete` is a readiness diagnostic and must never drive
+a "Submitted" badge. It was described here as "returned only by the detail
+endpoint"; the 2026-09-14 re-check found the public detail endpoint does not
+return it at all (finding 3 above).
 
 Neither field is parsed by `lib/colosseum-api.ts` today. Both survive inside the
 retained `raw` snapshot because the zod object is not strict.
@@ -72,6 +74,52 @@ edition", and the current client discards error bodies and collapses every non
 No rate limit response was observed, so there is no 429 body here. The client
 maps HTTP 429 to `RATE_LIMITED` without reading the body, and real thresholds are
 unknown.
+
+## Re-checked live on 2026-09-14 (phase 3)
+
+A second round of bounded, read-only, unauthenticated requests. **No value
+below was copied into a fixture**; only the structural findings are recorded.
+Five of them change what the code has to do, and all five are handled.
+
+1. **`sort` is now REQUIRED on `GET /api/projects`.** Omitting it answers 400
+   `BAD_REQUEST`, `"Invalid discriminator value. Expected 'RANDOM' | 'NAME'"`.
+   The 2026-09-13 note said only that sorting *is* `NAME` or `RANDOM`;
+   `sortApplied` in `listing.json` was the applied value, not evidence the
+   parameter was optional. `fetchEditionSubmissionWindow` sends `sort=NAME`.
+2. **A listing row's `slug` is not always a slug.** A real Frontier project
+   carries `""or""or`, which `slugSchema` rejects. Validating listing rows
+   would therefore let one pathological project destroy the whole edition's
+   submission window, so `listingSchema.projects` is `z.unknown()`: the window
+   read never looks at a row. The **detail** endpoint keeps strict validation,
+   because that is what HQ actually imports from.
+3. **`projectCompletion` is NOT returned by the public detail endpoint.**
+   Neither of the two live projects read on 2026-09-14 carried it, though
+   `detail.json` has it and the note below claimed the detail endpoint returns
+   it. It is presumably owner-authenticated. The schema already had it
+   `nullish`, so nothing breaks — but in practice `completion_is_complete` is
+   always NULL, and the "Colosseum readiness" line never renders. The fixture
+   keeps the block as a shape to stay defensive against.
+4. **The detail response carries a top-level `presentation` block**, a second
+   copy of the project fields plus a `revision` hash, and team members carry
+   `avatarPresetId`, `bio` and `publicRole` alongside the known keys. All
+   survive unread inside the retained `raw` snapshot. Worth knowing:
+   **`avatarUrl` was null for every member observed** — the picture is the
+   preset id — so `hq_project_members.avatar_url` is usually NULL in practice.
+5. **The submitted/unsubmitted pair was finally observed**, which is what
+   `DRAFT_SIGNAL_CONFIRMED` was waiting for. An in-flight Crypto World's Fair
+   project returned `"submittedAt": null` (present, not absent) and a finished
+   Frontier project returned a real timestamp, both through the same
+   unauthenticated detail endpoint. `detail.json`'s `unsubmitted` entry is
+   therefore no longer only a structural assumption about that one field; the
+   rest of that entry still is.
+
+**And the big one: external edition 7 is the current campaign.** A live
+project of that edition carries
+`hackathon: { id: 7, name: "Crypto World's Fair", slug: "crypto-worlds-fair" }`.
+Edition 7 is still absent from `GET /api/projects/directories` (that endpoint
+lists enabled directories only), so the detail endpoint is what confirms it.
+This does **not** change the standing rule: the mapping stays operator data,
+typed into Admin, never seeded and never a constant.
 
 ## Two notes about the values
 

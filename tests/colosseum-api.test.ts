@@ -215,11 +215,24 @@ describe("the edition submission window", () => {
       submissionEnd: "2026-05-12T06:59:00.000Z",
       directoryEnabled: true,
     });
-    expect(String(fetcher.mock.calls[0][0])).toBe("https://api.colosseum.com/api/projects?hackathonIds%5B%5D=6");
+    // `sort` is REQUIRED: without it the live API answers 400 "Invalid
+    // discriminator value. Expected 'RANDOM' | 'NAME'" (observed 2026-09-14),
+    // so this assertion is what stops the parameter being dropped again.
+    expect(String(fetcher.mock.calls[0][0])).toBe("https://api.colosseum.com/api/projects?hackathonIds%5B%5D=6&sort=NAME");
   });
 
   it("returns null when the envelope does not carry the edition asked for", async () => {
     expect(await fetchEditionSubmissionWindow(7, mockFetch([json(listing)]))).toBeNull();
+  });
+
+  it("still reads the window when a listed project is one this client would refuse", async () => {
+    // Observed live on 2026-09-14: a real Frontier project carries the slug
+    // `""or""or`. The window read does not look at a single listing row, so
+    // one pathological project must not take the whole edition's deadline
+    // down with it.
+    const hostile = { ...listing, projects: [{ ...listing.projects[0], slug: '""or""or' }, { nonsense: true }] };
+    expect(await fetchEditionSubmissionWindow(6, mockFetch([json(hostile)])))
+      .toMatchObject({ externalId: 6, submissionEnd: "2026-05-12T06:59:00.000Z" });
   });
 
   it("keeps a disabled directory distinguishable from an unknown edition", async () => {

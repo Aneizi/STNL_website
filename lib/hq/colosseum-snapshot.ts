@@ -31,19 +31,30 @@ export const SUBMISSION_LABELS: Record<SubmissionStatus, string> = {
 /**
  * Whether a null `submittedAt` may be reported as "Not submitted".
  *
- * `submittedAt` was non-null on every project observed through the public API
- * on 2026-09-13, so a non-null value confirming a submission is evidence. Its
- * value for a *draft* is an assumption: no unsubmitted project was reachable,
- * because the API lists submitted projects of enabled editions only.
+ * **CONFIRMED on 2026-09-14** by two live, unauthenticated reads of
+ * `GET /api/project?slug=...&type=HACKATHON`, the same endpoint HQ imports
+ * from:
  *
- * WHAT WOULD CONFIRM IT, and the only thing that may flip this constant to
- * `true`: observing one genuinely submitted and one genuinely unsubmitted
- * project of the same edition through `GET /api/project`, and seeing
- * `submittedAt` set on the first and null on the second. Until then a null
- * reads as "Not checked" rather than a red badge HQ cannot stand behind.
- * Record the observation in `docs/hq/manual-setup.md` when it happens.
+ * - a project of the in-flight Crypto World's Fair edition (external id 7,
+ *   directory disabled, so it cannot have submitted) returned
+ *   `"submittedAt": null` — the field **present and null**, not absent;
+ * - a project of the finished Frontier edition (external id 6, submissions
+ *   closed 2026-05-12) returned `"submittedAt": "2026-05-04T07:10:59.746Z"`.
+ *
+ * That is the submitted/unsubmitted pair this constant was waiting for: the
+ * field is reliably populated for a submitted project and reliably null for
+ * one that has not submitted, so a null may now drive a red "Not submitted".
+ *
+ * One caveat, stated rather than glossed: the two projects are from
+ * **different editions**, because a same-edition pair is not obtainable — the
+ * current edition's directory is disabled, so its submitted projects cannot
+ * be listed or found by slug. Set this back to `false` if a project is ever
+ * seen to have submitted while reporting a null `submittedAt`.
+ *
+ * `projectCompletion.isComplete` is not an input to any of this: a complete
+ * draft is still a draft.
  */
-export const DRAFT_SIGNAL_CONFIRMED = false;
+export const DRAFT_SIGNAL_CONFIRMED = true;
 
 /**
  * The ONE place a Colosseum response becomes a submission status.

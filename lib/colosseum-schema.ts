@@ -116,9 +116,20 @@ export const listingHackathonSchema = z.object({
   isProjectDirectoryEnabled: z.boolean().nullish(),
 });
 
-/** `GET /api/projects?hackathonIds[]=...` — the listing envelope. */
+/**
+ * `GET /api/projects?hackathonIds[]=...&sort=NAME` — the listing envelope,
+ * read ONLY for its `hackathons` block.
+ *
+ * `projects` is deliberately `z.unknown()` rather than an array of
+ * `projectBodySchema`. Observed live on 2026-09-14: a real Frontier project
+ * carries the slug `""or""or`, which `slugSchema` rejects — and validating
+ * the rows would make one pathological project anywhere in the page destroy
+ * the edition's submission window for everyone. Nothing here reads a listing
+ * row, so nothing here should be able to fail on one. The detail endpoint,
+ * which HQ actually imports from, keeps its strict validation.
+ */
 export const listingSchema = z.object({
-  projects: z.array(projectBodySchema).max(200),
+  projects: z.unknown(),
   hackathons: z.array(listingHackathonSchema).max(50),
   offset: z.number().int().nonnegative(),
   hasMore: z.boolean(),
