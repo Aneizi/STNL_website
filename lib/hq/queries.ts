@@ -130,6 +130,7 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     SELECT
       p.id, p.name, p.lead_name, p.lead_contact,
       p.partner_id, COALESCE(pa.name, '') AS partner_name,
+      ca.captain_user_id, COALESCE(cap.name, '') AS captain_name,
       p.event_src, s.slug AS status_slug, f.slug AS forecast_slug,
       p.last_check_in::text AS last_check_in, p.blocker,
       COALESCE(u.display_name, '') AS touched_by, p.touched_at::text AS touched_at,
@@ -161,6 +162,8 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     JOIN hq_project_forecasts f ON f.id = p.forecast_id
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
     LEFT JOIN hq_users u ON u.id = p.touched_by_user_id
+    LEFT JOIN hq_captain_assignments ca ON ca.project_id = p.id AND ca.unassigned_at IS NULL AND ca.captain_user_id IS NOT NULL
+    LEFT JOIN hq_builder_profiles cap ON cap.id = ca.captain_user_id
     WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
@@ -172,6 +175,8 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     members: r.members ?? [],
     partnerId: r.partner_id,
     partnerName: r.partner_name,
+    captainUserId: r.captain_user_id,
+    captainName: r.captain_name,
     eventSrc: r.event_src,
     statusSlug: r.status_slug,
     forecastSlug: r.forecast_slug,

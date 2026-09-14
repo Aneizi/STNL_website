@@ -28,12 +28,16 @@ import {
   reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
-import { createCaptainInvitation as createCaptainInvitationAction, revokeCaptainInvitation as revokeCaptainInvitationAction } from "@/lib/hq/actions/captains";
+import {
+  assignProjectCaptain, bulkAssignProjectCaptain,
+  createCaptainInvitation as createCaptainInvitationAction, revokeCaptainInvitation as revokeCaptainInvitationAction,
+  unassignProjectCaptain,
+} from "@/lib/hq/actions/captains";
 import { correctPersonMatch, createPerson, updatePerson } from "@/lib/hq/actions/people";
 import { getBuilderAdminData, getBuilderProjectReviews } from "@/lib/hq/builder-admin-queries";
 import type { BuilderQuery } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
-import { createCaptainInvitation as createCaptainInvitationRecord } from "@/lib/hq/captains";
+import { countAssignmentsForCaptain, createCaptainInvitation as createCaptainInvitationRecord } from "@/lib/hq/captains";
 import { getPeople } from "@/lib/hq/queries";
 import {
   addProjectMember, addProjectNote, deleteProject, editProjectNote, logMondayReview, removeProjectMember, saveProjectBlocker,
@@ -48,6 +52,8 @@ const REQUEST = "00000000-0000-4000-8000-000000000004";
 const OTHER_REQUEST = "00000000-0000-4000-8000-000000000005";
 const HOST_REQUEST = "00000000-0000-4000-8000-000000000006";
 const OTHER_HOST_REQUEST = "00000000-0000-4000-8000-000000000007";
+/** A project created directly in Admin, never imported: no onboarding row, no roster — nothing for the Captain conflict check's source 2 to see. */
+const BARE_PROJECT = "00000000-0000-4000-8000-000000000008";
 const config = { externalHackathonId: 42, externalHackathonSlug: "competition-42", projectsOpen: false,
   projectsAvailableAt: "", signupUrl: "https://colosseum.com/signup", hostingEnabled: false };
 let pg: PGlite;
@@ -98,6 +104,8 @@ beforeAll(async () => {
       VALUES($1,$2,$2,$2,now())`, [id, owner]);
   }
   await rows(`INSERT INTO hq_project_members(project_id,name,colosseum_username) VALUES($1,'Not Joined','notjoined')`, [PROJECT]);
+  await rows(`INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+    SELECT $1,11,'Bare project',s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f`, [BARE_PROJECT]);
   for (const [id, user, hackathon] of [[REQUEST, "selected", 11], [OTHER_REQUEST, "other", 12]] as const) {
     await rows(`INSERT INTO hq_project_import_requests(id,user_id,hackathon_id,project_url,note) VALUES($1,$2,$3,$4,'Please help import')`, [id, user, hackathon, `https://colosseum.com/arena/projects/explore/${user}`]);
   }
@@ -150,6 +158,9 @@ describe("builder administration authorization and scoping", () => {
     ["revoking Captain", () => revokeCaptainCapability("selected", "Stepped down")],
     ["creating a Captain invitation", () => createCaptainInvitationAction({ maxRedemptions: 1, expiresInDays: 7 })],
     ["revoking a Captain invitation", () => revokeCaptainInvitationAction("00000000-0000-4000-8000-000000000099")],
+    ["assigning a Captain", () => assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" })],
+    ["unassigning a Captain", () => unassignProjectCaptain(BARE_PROJECT)],
+    ["bulk assigning Captains", () => bulkAssignProjectCaptain({ projectIds: [BARE_PROJECT], captainUserId: "selected" })],
     ["correcting a person match", () => correctPersonMatch({ personId: PROJECT, toUserId: null, reason: "Wrong person" })],
   ] as const)("requires an operator session for %s", async (_, action) => {
     mocks.requireUser.mockRejectedValue(new Error("Not an operator"));
@@ -251,7 +262,9 @@ describe("builder administration authorization and scoping", () => {
     expect(await updatePerson(MISSING, { field: "org", value: "Forged" })).toMatchObject({ ok: false });
     // Nothing moved: no activity, no touch, no note, no edit, no deletion, no card change.
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 2 }]);
+    // 3, not 2: BARE_PROJECT (a project created directly in Admin, with no
+    // onboarding row) is also seeded in beforeAll for task T4.4's tests.
+    expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 3 }]);
     expect(await rows("SELECT body,edited_at FROM hq_project_notes")).toEqual([{ body: "Other note", edited_at: null }]);
     expect(await rows("SELECT blocker,touched_by_user_id FROM hq_projects WHERE id=$1", [OTHER_PROJECT])).toEqual([{ blocker: "", touched_by_user_id: null }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_project_gates")).toEqual([{ n: 0 }]);
@@ -515,5 +528,96 @@ describe("Captain invitations in Admin", () => {
     // The create form's own default is the one-use, effortless choice.
     expect(html).toMatch(/name="maxRedemptions"[^>]*value="1"/);
     expect(html).toMatch(/name="validForDays"[^>]*value="7"/);
+  });
+});
+
+describe("Captain assignment in Admin (task T4.4)", () => {
+  async function seedCandidate(id: string) {
+    await rows(`INSERT INTO hq_builder_profiles(id,email,name) VALUES($1,$2,$3) ON CONFLICT (id) DO NOTHING`, [id, `${id}@example.test`, id]);
+    await grantCaptainCapability(id, "Leads the cohort");
+  }
+  const currentCaptain = (projectId: string) => rows("SELECT captain_user_id FROM hq_captain_assignments WHERE project_id=$1 AND unassigned_at IS NULL", [projectId]);
+
+  it("assigns and unassigns a Captain on a project created directly in Admin, refreshing HQ", async () => {
+    await seedCandidate("captain-bare");
+    expect(await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "captain-bare" })).toEqual({ outcome: "assigned" });
+    expect(await currentCaptain(BARE_PROJECT)).toEqual([{ captain_user_id: "captain-bare" }]);
+    expect(mocks.refreshHq).toHaveBeenCalled();
+
+    expect(await unassignProjectCaptain(BARE_PROJECT)).toEqual({ ok: true });
+    expect(await currentCaptain(BARE_PROJECT)).toEqual([]);
+  });
+
+  it("refuses an account without an active Captain grant, with an operator-facing message, writing nothing", async () => {
+    expect(await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "other" })).toEqual({ outcome: "error", error: expect.any(String) });
+    expect(await currentCaptain(BARE_PROJECT)).toEqual([]);
+  });
+
+  it("surfaces a conflict as a named, operator-facing error rather than assigning", async () => {
+    await grantCaptainCapability("selected", "Leads the cohort");
+    // "selected" already owns PROJECT.
+    const result = await assignProjectCaptain({ projectId: PROJECT, captainUserId: "selected" });
+    expect(result.outcome).toBe("error");
+    if (result.outcome !== "error") throw new Error("expected error");
+    expect(result.error.length).toBeGreaterThan(0);
+    expect(await currentCaptain(PROJECT)).toEqual([]);
+  });
+
+  it("returns needs_review for an unresolved roster identity and only assigns once explicitly acknowledged", async () => {
+    await seedCandidate("captain-review");
+    const first = await assignProjectCaptain({ projectId: PROJECT, captainUserId: "captain-review" });
+    expect(first).toEqual({ outcome: "needs_review", unresolved: [{ name: "Not Joined", username: "notjoined" }] });
+    expect(await currentCaptain(PROJECT)).toEqual([]);
+
+    expect(await assignProjectCaptain({ projectId: PROJECT, captainUserId: "captain-review", acknowledgeUnresolved: true })).toEqual({ outcome: "assigned" });
+    expect(await currentCaptain(PROJECT)).toEqual([{ captain_user_id: "captain-review" }]);
+  });
+
+  it("treats a project from another edition exactly like a missing one", async () => {
+    await seedCandidate("captain-edition");
+    expect(await assignProjectCaptain({ projectId: OTHER_PROJECT, captainUserId: "captain-edition" }))
+      .toEqual({ outcome: "error", error: "This project is not available in the selected hackathon." });
+    expect(await unassignProjectCaptain(OTHER_PROJECT)).toEqual({ ok: false, error: "This project is not available in the selected hackathon." });
+  });
+
+  it("reports per-project outcomes in bulk — a conflicted or needs-review project is named, not silently skipped, and does not stop the rest", async () => {
+    await seedCandidate("captain-bulk");
+    const outcomes = await bulkAssignProjectCaptain({ projectIds: [BARE_PROJECT, PROJECT], captainUserId: "captain-bulk" });
+    expect(outcomes).toEqual(expect.arrayContaining([
+      { projectId: BARE_PROJECT, result: { outcome: "assigned" } },
+      { projectId: PROJECT, result: { outcome: "needs_review", unresolved: [{ name: "Not Joined", username: "notjoined" }] } },
+    ]));
+    expect(await currentCaptain(BARE_PROJECT)).toEqual([{ captain_user_id: "captain-bulk" }]);
+    expect(await currentCaptain(PROJECT)).toEqual([]);
+    expect(mocks.refreshHq).toHaveBeenCalled();
+  });
+
+  it("shows the affected project count before a revocation and clears the assignment in the same action", async () => {
+    await grantCaptainCapability("selected", "Leads the cohort");
+    await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" });
+
+    const before = await getBuilderAdminData();
+    expect(before.accounts.find(a => a.id === "selected")).toMatchObject({ captain: true, captainAssignmentCount: 1 });
+    expect(await countAssignmentsForCaptain(builderDb, "selected")).toEqual([{ projectId: BARE_PROJECT, projectName: "Bare project", hackathonId: 11 }]);
+
+    expect(await revokeCaptainCapability("selected", "Stepped down")).toEqual({ ok: true });
+    const after = await getBuilderAdminData();
+    expect(after.accounts.find(a => a.id === "selected")).toMatchObject({ captain: false, captainAssignmentCount: 0 });
+    expect(await currentCaptain(BARE_PROJECT)).toEqual([]);
+    expect((await rows("SELECT kind,subject_user_id FROM hq_audit_events WHERE kind='captain.unassigned'")))
+      .toEqual([{ kind: "captain.unassigned", subject_user_id: "selected" }]);
+  });
+
+  it("renders the real assignment count in the revoke confirmation copy, and the grant-side copy when there is none to lose", async () => {
+    await grantCaptainCapability("selected", "Leads the cohort");
+    await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" });
+    const withOne = await getBuilderAdminData();
+    expect(renderToStaticMarkup(createElement(BuilderAdmin, { ...withOne, timezone: "Europe/Amsterdam" })))
+      .toContain("It currently captains 1 project; revoking clears it in the same action.");
+
+    await unassignProjectCaptain(BARE_PROJECT);
+    const withNone = await getBuilderAdminData();
+    expect(renderToStaticMarkup(createElement(BuilderAdmin, { ...withNone, timezone: "Europe/Amsterdam" })))
+      .toContain("It captains no project right now.");
   });
 });

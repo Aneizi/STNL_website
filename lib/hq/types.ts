@@ -92,6 +92,9 @@ export type Project = {
   members: ProjectMember[];
   partnerId: string | null;
   partnerName: string;
+  /** The account holding the project's current Captain assignment, or null for "No Captain". Never a role or a tag — the one source is hq_captain_assignments. */
+  captainUserId: string | null;
+  captainName: string;
   eventSrc: string;
   statusSlug: string;
   forecastSlug: string;

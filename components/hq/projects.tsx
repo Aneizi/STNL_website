@@ -15,6 +15,12 @@ import { showToast } from "@/components/hq/toast";
 import { Badge, FormField, accentBtn, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
 import {
+  assignProjectCaptain,
+  bulkAssignProjectCaptain,
+  unassignProjectCaptain,
+  type AssignCaptainActionResult,
+} from "@/lib/hq/actions/captains";
+import {
   addProjectMember,
   addProjectNote,
   createProject,
@@ -40,12 +46,14 @@ import type {
 
 type PartnerOption = { id: string; name: string };
 type EventOption = { id: string; name: string };
+type CaptainOption = { id: string; name: string };
 
 type ProjectPatch =
   | { kind: "status"; id: string; slug: string }
   | { kind: "forecast"; id: string; slug: string }
   | { kind: "gate"; id: string; gateId: string; done: boolean }
   | { kind: "partner"; id: string; partnerId: string | null; partnerName: string }
+  | { kind: "captain"; id: string; captainUserId: string | null; captainName: string }
   | { kind: "memberAdd"; id: string; member: ProjectMember }
   | { kind: "memberRemove"; id: string; memberId: string }
   | { kind: "noteEdit"; id: string; noteId: string; body: string; editedAt: string }
@@ -69,6 +77,8 @@ function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
         };
       case "partner":
         return { ...p, partnerId: patch.partnerId, partnerName: patch.partnerName };
+      case "captain":
+        return { ...p, captainUserId: patch.captainUserId, captainName: patch.captainName };
       case "memberAdd":
         return { ...p, members: [...p.members, patch.member] };
       case "memberRemove":
@@ -131,6 +141,7 @@ export function Projects({
   projects,
   partnerOptions,
   eventOptions,
+  captainOptions,
   classifiers,
   settings,
   now,
@@ -139,6 +150,8 @@ export function Projects({
   projects: Project[];
   partnerOptions: PartnerOption[];
   eventOptions: EventOption[];
+  /** Accounts with an active Captain grant, resolved server side — never every account, filtered on the client. */
+  captainOptions: CaptainOption[];
   classifiers: Classifiers;
   settings: Settings;
   now: number;
@@ -152,6 +165,7 @@ export function Projects({
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewLogged, setReviewLogged] = useState<Record<string, boolean>>({});
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [captainBulkMode, setCaptainBulkMode] = useState(false);
   const [projSearch, setProjSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [forecastFilter, setForecastFilter] = useState("");
@@ -171,6 +185,19 @@ export function Projects({
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [noteEditDraft, setNoteEditDraft] = useState("");
   const prevExpandId = useRef<string | null>(null);
+  // The detail panel's Captain picker needs a second, explicit step when the
+  // service reports unresolved roster identity: this holds that pending
+  // choice (which project, which candidate) until the operator confirms or
+  // cancels it. Only one at a time, the same reasoning as editingNoteId.
+  const [captainReview, setCaptainReview] = useState<{
+    projectId: string;
+    captainUserId: string;
+    captainName: string;
+    unresolved: Array<{ name: string; username: string | null }>;
+  } | null>(null);
+  const [bulkSelected, setBulkSelected] = useState<Record<string, boolean>>({});
+  const [bulkCaptainId, setBulkCaptainId] = useState("");
+  const [bulkResults, setBulkResults] = useState<Array<{ projectId: string; name: string; result: AssignCaptainActionResult }> | null>(null);
 
   useEffect(() => {
     if (expandId && expandId !== prevExpandId.current) {
@@ -209,6 +236,64 @@ export function Projects({
     startTransition(async () => {
       patch({ kind: "partner", id: projectId, partnerId: partnerId || null, partnerName });
       await updateProjectDetail(projectId, { field: "partnerId", value: partnerId || null });
+    });
+  };
+
+  // Captain assignment is not a fire-and-forget patch like partner: the
+  // service can refuse (a conflict) or ask for a second, explicit
+  // confirmation (unresolved roster identity — captainReview holds that
+  // pending state above). acknowledgeUnresolved is only ever true on that
+  // second, operator-driven call.
+  const pickCaptain = (projectId: string, captainUserId: string, acknowledgeUnresolved = false) => {
+    const captainName = captainOptions.find((o) => o.id === captainUserId)?.name ?? "";
+    startTransition(async () => {
+      const result = await assignProjectCaptain({ projectId, captainUserId, acknowledgeUnresolved });
+      if (result.outcome === "assigned") {
+        patch({ kind: "captain", id: projectId, captainUserId, captainName });
+        setCaptainReview(null);
+        flash();
+      } else if (result.outcome === "needs_review") {
+        setCaptainReview({ projectId, captainUserId, captainName, unresolved: result.unresolved });
+      } else {
+        setCaptainReview(null);
+        showToast(result.error);
+      }
+    });
+  };
+
+  const removeCaptain = (projectId: string) => {
+    startTransition(async () => {
+      const res = await unassignProjectCaptain(projectId);
+      if (res.ok) {
+        patch({ kind: "captain", id: projectId, captainUserId: null, captainName: "" });
+        flash();
+      } else {
+        showToast(res.error ?? "Could not remove the Captain.");
+      }
+    });
+  };
+
+  const toggleBulkSelected = (projectId: string) => {
+    setBulkSelected((selected) => ({ ...selected, [projectId]: !selected[projectId] }));
+  };
+
+  const onBulkAssignCaptain = () => {
+    const projectIds = Object.keys(bulkSelected).filter((id) => bulkSelected[id]);
+    const captainUserId = bulkCaptainId;
+    const captainName = captainOptions.find((o) => o.id === captainUserId)?.name ?? "";
+    if (!projectIds.length || !captainUserId) return;
+    startTransition(async () => {
+      const outcomes = await bulkAssignProjectCaptain({ projectIds, captainUserId });
+      setBulkResults(
+        outcomes.map((o) => ({
+          projectId: o.projectId,
+          name: optimistic.find((p) => p.id === o.projectId)?.name ?? o.projectId,
+          result: o.result,
+        })),
+      );
+      for (const o of outcomes) {
+        if (o.result.outcome === "assigned") patch({ kind: "captain", id: o.projectId, captainUserId, captainName });
+      }
     });
   };
 
@@ -385,6 +470,7 @@ export function Projects({
               setReviewMode(!reviewMode);
               setReviewLogged({});
               setNewProjectOpen(false);
+              setCaptainBulkMode(false);
             }}
             style={{
               border: "none",
@@ -401,8 +487,30 @@ export function Projects({
           </button>
           <button
             onClick={() => {
+              setCaptainBulkMode(!captainBulkMode);
+              setBulkSelected({});
+              setBulkResults(null);
+              setReviewMode(false);
+              setNewProjectOpen(false);
+            }}
+            style={{
+              border: "none",
+              cursor: "pointer",
+              padding: "7px 14px",
+              borderRadius: 0,
+              fontSize: 14,
+              fontWeight: 600,
+              background: captainBulkMode ? "var(--label-1)" : "var(--fill-3)",
+              color: captainBulkMode ? "var(--bg)" : "var(--accent-deep)",
+            }}
+          >
+            {captainBulkMode ? "Exit Captain assign" : "Assign Captains"}
+          </button>
+          <button
+            onClick={() => {
               setNewProjectOpen(!newProjectOpen);
               setReviewMode(false);
+              setCaptainBulkMode(false);
             }}
             style={primaryBtn}
           >
@@ -410,6 +518,74 @@ export function Projects({
           </button>
         </div>
       </div>
+
+      {captainBulkMode ? (
+        <div
+          className="hq-fade-in"
+          style={{
+            background: "var(--card)",
+            borderRadius: 0,
+            boxShadow: "var(--shadow-1)",
+            padding: "16px 18px",
+            marginTop: 14,
+          }}
+        >
+          <p style={{ margin: "0 0 10px", fontSize: 13, color: "var(--label-2)" }}>
+            Select projects below, choose a Captain, and assign to all of them at once. Each
+            project is checked on its own — a conflict on one does not stop the rest.
+          </p>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
+            <FormField label="Captain" minWidth={220}>
+              <select value={bulkCaptainId} onChange={(e) => setBulkCaptainId(e.target.value)} style={input}>
+                <option value="">Choose a Captain</option>
+                {captainOptions.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+            <button
+              onClick={onBulkAssignCaptain}
+              disabled={!bulkCaptainId || !Object.values(bulkSelected).some(Boolean)}
+              style={primaryBtn}
+            >
+              Assign to {Object.values(bulkSelected).filter(Boolean).length} selected
+            </button>
+          </div>
+          <div style={{ marginTop: 12, maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+            {filtered.map((p) => (
+              <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0" }}>
+                <input
+                  type="checkbox"
+                  checked={Boolean(bulkSelected[p.id])}
+                  onChange={() => toggleBulkSelected(p.id)}
+                />
+                <span style={{ fontWeight: 600 }}>{p.name}</span>
+                <span style={{ color: "var(--label-3)" }}>{p.captainName ? `Captain: ${p.captainName}` : "No Captain"}</span>
+              </label>
+            ))}
+          </div>
+          {bulkResults ? (
+            <div style={{ marginTop: 12, borderTop: "1px solid var(--sep)", paddingTop: 10 }}>
+              <span style={microLabel}>Results</span>
+              <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                {bulkResults.map((r) => (
+                  <li key={r.projectId} style={{ fontSize: 13 }}>
+                    <strong>{r.name}</strong>
+                    {": "}
+                    {r.result.outcome === "assigned"
+                      ? "Assigned."
+                      : r.result.outcome === "needs_review"
+                        ? `Needs review — ${r.result.unresolved.length} roster row${r.result.unresolved.length === 1 ? "" : "s"} could not be checked. Resolve it in the project's own Captain field.`
+                        : r.result.error}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {newProjectOpen ? (
         <div
@@ -1063,6 +1239,67 @@ export function Projects({
                                   </option>
                                 ))}
                               </select>
+                              <span style={microLabel}>Captain</span>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                <select
+                                  value={p.captainUserId ?? ""}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    if (!value) removeCaptain(p.id);
+                                    else pickCaptain(p.id, value);
+                                  }}
+                                  style={panelField}
+                                >
+                                  <option value="">No Captain</option>
+                                  {captainOptions.map((o) => (
+                                    <option key={o.id} value={o.id}>
+                                      {o.name}
+                                    </option>
+                                  ))}
+                                </select>
+                                {/* A conflict is a plain toast (nothing changed, the
+                                    select snaps back to p.captainUserId on the next
+                                    render). Unresolved roster identity is instead a
+                                    standing choice until the operator confirms or
+                                    cancels it — visible at the point of assignment,
+                                    not folded into a toast that could be missed. */}
+                                {captainReview && captainReview.projectId === p.id ? (
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      color: "var(--label-2)",
+                                      display: "flex",
+                                      flexDirection: "column",
+                                      gap: 6,
+                                      padding: "8px 10px",
+                                      background: "var(--fill-4)",
+                                    }}
+                                  >
+                                    <span>
+                                      {captainReview.unresolved.length} roster row
+                                      {captainReview.unresolved.length === 1 ? "" : "s"} on this project could not be
+                                      checked against an imported HQ identity yet:{" "}
+                                      {captainReview.unresolved.map((m) => (m.username ? `@${m.username}` : m.name)).join(", ")}.
+                                      Assign {captainReview.captainName} anyway?
+                                    </span>
+                                    <div style={{ display: "flex", gap: 6 }}>
+                                      <button
+                                        onClick={() => pickCaptain(p.id, captainReview.captainUserId, true)}
+                                        style={{ ...accentBtn, padding: "4px 9px", fontSize: 12 }}
+                                      >
+                                        Assign anyway
+                                      </button>
+                                      <button
+                                        onClick={() => setCaptainReview(null)}
+                                        className="hq-hover-accent"
+                                        style={{ border: "none", cursor: "pointer", background: "none", color: "var(--label-3)", fontSize: 12, padding: "4px 9px" }}
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </div>
                               <span style={microLabel}>Event</span>
                               <select
                                 defaultValue={p.eventSrc}
