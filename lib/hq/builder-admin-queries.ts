@@ -117,6 +117,17 @@ export async function getBuilderAdminData() {
         FROM hq_event_host_requests r JOIN hq_builder_profiles b ON b.id = r.user_id ${LOGIN_JOIN}
         WHERE r.hackathon_id = $1
         ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
+    // This is the same active-Captain-grant read leaderboard() below makes
+    // again on its own: fetched here for the account list's `captain` flag
+    // (BuilderAccount, below) and again inside leaderboard() for the merge
+    // that keeps a zero-assignment Captain visible. Left as two calls
+    // deliberately rather than threading this list into leaderboard() as a
+    // parameter: leaderboard()'s own narrowing of the grant row (dropping
+    // `reason`, `grantedByUserId`, `revokedByUserId` before anything else
+    // sees it) is what makes it safe to hand the same function straight to
+    // a Captain's own page too, and a caller-supplied grant list would
+    // reopen exactly that seam for a future caller that forgot to narrow
+    // its own copy first.
     listCapabilityGrants({ capability: "captain", activeOnly: true }, operatorQuery()),
     // Invitations are account-global like the grants above, never scoped to
     // this hackathon's People list.

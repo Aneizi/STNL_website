@@ -354,10 +354,10 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
 function CaptainLeaderboard({ hackathonName, leaderboard, assignments }: {
   hackathonName: string; leaderboard: CaptainLeaderboardView[]; assignments: CurrentCaptainAssignment[];
 }) {
-  const byCaptain = new Map<string, { name: string; projects: string[] }>();
+  const byCaptain = new Map<string, { name: string; projects: Array<{ id: string; name: string }> }>();
   for (const row of assignments) {
     const entry = byCaptain.get(row.captainUserId) ?? { name: row.captainName, projects: [] };
-    entry.projects.push(row.projectName);
+    entry.projects.push({ id: row.projectId, name: row.projectName });
     byCaptain.set(row.captainUserId, entry);
   }
   return (
@@ -375,13 +375,13 @@ function CaptainLeaderboard({ hackathonName, leaderboard, assignments }: {
           ))}
         </ol>
       )}
-      <p>Which projects each Captain currently holds:</p>
+      <p>Which projects each Captain currently holds, including projects whose status does not count as active (so this list can name a project the count above does not include):</p>
       {byCaptain.size === 0 && <p>No project currently has a Captain in this hackathon.</p>}
       {[...byCaptain.entries()].map(([userId, entry]) => (
         <article className={styles.row} key={userId}>
           <h3>{entry.name}</h3>
           <ul className={styles.roster} aria-label={`${entry.name} projects`}>
-            {entry.projects.map((name) => <li key={name}><span>{name}</span></li>)}
+            {entry.projects.map((project) => <li key={project.id}><span>{project.name}</span></li>)}
           </ul>
         </article>
       ))}
