@@ -60,6 +60,9 @@ export const KEEP_TABLES = [
   // way it keeps logins and persons (ruling Q10, task T1.2).
   "hq_account_capabilities",
   "hq_audit_events",
+  // Whether the account agreed to bot messages: a standing decision by the
+  // person, not an edition's CRM, so it survives like a login (task T2.3).
+  "hq_telegram_bot_consent",
   // Per-edition Colosseum mapping and toggles, typed into Admin: settings,
   // like hq_settings.
   "hq_hackathon_onboarding",

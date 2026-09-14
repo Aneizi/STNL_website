@@ -145,6 +145,9 @@ async function seedEverything() {
              VALUES ('builder-1', 'captain', '${user}', 'seeded for the reset test')`);
   await run(`INSERT INTO hq_audit_events (kind, actor_kind, actor_id, subject_user_id, metadata)
              VALUES ('capability.granted', 'operator', '${user}', 'builder-1', '{"capability":"captain"}')`);
+  // The account's bot-messaging decision (task T2.3), which survives like the login it belongs to.
+  await run(`INSERT INTO hq_telegram_bot_consent (user_id, telegram_user_id, messaging_enabled, consented_at)
+             VALUES ('builder-1', 7000000000123, true, now())`);
 }
 
 beforeEach(async () => {

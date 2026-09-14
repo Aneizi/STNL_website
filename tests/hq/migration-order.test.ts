@@ -98,6 +98,17 @@ async function expectIdentitySchema(pg: PGlite) {
   expect(
     await run(pg, `SELECT conname FROM pg_constraint WHERE conrelid = 'hq_account_capabilities'::regclass AND contype = 'c' ORDER BY conname`),
   ).toEqual([{ conname: "hq_account_capabilities_capability_check" }]);
+  // Task T2.3: bot-messaging consent, keyed on the account and cascading with it.
+  expect(await exists(pg, "hq_telegram_bot_consent")).toBe(true);
+  expect(await column(pg, "hq_telegram_bot_consent", "user_id")).toEqual({ data_type: "text", is_nullable: "NO" });
+  expect(await column(pg, "hq_telegram_bot_consent", "telegram_user_id")).toEqual({ data_type: "bigint", is_nullable: "NO" });
+  expect(await column(pg, "hq_telegram_bot_consent", "messaging_enabled")).toEqual({ data_type: "boolean", is_nullable: "NO" });
+  expect(await column(pg, "hq_telegram_bot_consent", "consented_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  expect(await column(pg, "hq_telegram_bot_consent", "revoked_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  expect(await column(pg, "hq_telegram_bot_consent", "updated_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "NO" });
+  expect(
+    await run(pg, `SELECT confdeltype FROM pg_constraint WHERE conrelid = 'hq_telegram_bot_consent'::regclass AND contype = 'f'`),
+  ).toEqual([{ confdeltype: "c" }]);
 }
 
 describe("the migration files", () => {

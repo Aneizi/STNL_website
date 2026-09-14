@@ -19,6 +19,7 @@ export const AUDIT_EVENT_KINDS = [
   "identity.linked",
   "identity.unlinked",
   "identity.email_changed",
+  "bot.consent_changed",
   "person.linked",
   "person.match_corrected",
   "captain.assigned",

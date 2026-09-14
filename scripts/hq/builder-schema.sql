@@ -173,3 +173,17 @@ CREATE TABLE IF NOT EXISTS hq_audit_events (
 );
 CREATE INDEX IF NOT EXISTS hq_audit_events_subject_idx ON hq_audit_events (subject_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS hq_audit_events_kind_idx ON hq_audit_events (kind, created_at DESC);
+
+-- Permission to be messaged by the HQ Telegram bot. Separate from the Telegram
+-- identity in hq_auth_telegram_identity: connecting Telegram never implies
+-- consent, declining changes nothing about website access, and disconnecting
+-- Telegram revokes it. Written only by lib/hq/telegram-consent.ts. Nothing is
+-- delivered before phase 7, which extends this table with chat state.
+CREATE TABLE IF NOT EXISTS hq_telegram_bot_consent (
+  user_id text PRIMARY KEY REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
+  telegram_user_id bigint NOT NULL,
+  messaging_enabled boolean NOT NULL DEFAULT false,
+  consented_at timestamptz,
+  revoked_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

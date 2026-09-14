@@ -165,7 +165,7 @@ describe("the audit module", () => {
     expect(list.text).not.toMatch(/\b(UPDATE|DELETE|INSERT)\b/i);
     expect(AUDIT_EVENT_KINDS).toEqual([
       "capability.granted", "capability.revoked", "identity.linked", "identity.unlinked", "identity.email_changed",
-      "person.linked", "person.match_corrected", "captain.assigned", "captain.unassigned",
+      "bot.consent_changed", "person.linked", "person.match_corrected", "captain.assigned", "captain.unassigned",
     ]);
   });
 
