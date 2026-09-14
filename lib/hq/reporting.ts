@@ -1,7 +1,7 @@
 import "server-only";
 import type { Actor } from "./actor";
 import { recordAuditEvent, type AuditActor } from "./audit";
-import { authorizeProjectAction, canEditEntry, canReadRevisionHistory, entryAudience, type Authorization, type AuthzLoaders } from "./authz";
+import { authorizeProjectAction, canEditEntry, canReadRevisionHistory, entryAudience, type Authorization, type AuthzLoaders } from "./authz-decisions";
 import { loadCurrentAssignment, loadProjectEdition, loadTeamMembership, type Entry, type EntryVisibility } from "./authz-sql";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { BuilderError } from "./builder-types";
@@ -29,10 +29,14 @@ import { periodForInstant, type ReportingPeriodMode } from "./reporting-periods"
  *
  * - The schedule arithmetic is pure and lives in ./reporting-periods, so the
  *   plan's period table can be asserted literally without a database.
- * - Every project decision goes through `authorizeProjectAction` in ./authz.
- *   There is no second per-action permission rule here, and an entry's
- *   audience is `entryAudience`/`canEditEntry` over `loadEntry` — the phase 1
- *   decisions, unchanged.
+ * - Every project decision goes through `authorizeProjectAction`, and an
+ *   entry's audience through `entryAudience`/`canEditEntry` over `loadEntry`:
+ *   the phase 1 decisions, unchanged, and there is no second per-action
+ *   permission rule here. They are imported from ./authz-decisions rather
+ *   than ./authz because ./authz's own `requireOperator()` reaches the public
+ *   member auth graph, and phase 6's operator Server Actions call this module
+ *   (tests/hq/operator-imports.test.ts). Same decisions, same definitions;
+ *   ./authz re-exports every one of them for everybody else.
  * - The tables are documented where they are created, in
  *   scripts/hq/builder-schema.sql. Read those comment blocks before changing
  *   anything here.
@@ -89,10 +93,13 @@ export {
   listReportingPeriods,
   pauseReporting,
   previewReportingPeriods,
+  readReportingConfig,
   readReportingSchedule,
   reportingEligibility,
+  writeReportingConfig,
 } from "./reporting-enrolment";
 export type {
+  ReportingConfig,
   ReportingEligibility,
   ReportingEligibilityResult,
   ReportingPeriod,
@@ -573,6 +580,8 @@ export type PeriodStatus = {
   mode: ReportingPeriodMode;
   startDate: string;
   endDate: string;
+  /** The inclusive start instant, so a screen can tell whether this week is open at the instant it is rendering for. */
+  startsAt: string;
   /** The exclusive end, which is the deadline a screen counts down to. */
   endsAt: string;
   nudgeAt: string | null;
@@ -736,7 +745,7 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
         : { completed: live !== "none", basis: live };
       const status: PeriodStatus = {
         periodId: period.id, periodSequence: period.sequence, mode: period.mode,
-        startDate: period.startDate, endDate: period.endDate, endsAt: period.endsAt, nudgeAt: period.nudgeAt,
+        startDate: period.startDate, endDate: period.endDate, startsAt: period.startsAt, endsAt: period.endsAt, nudgeAt: period.nudgeAt,
         completed: recorded.completed, basis: recorded.basis,
         entries: tally?.entries ?? 0, latestEntryAt: tally?.latestEntryAt ?? null,
         closed: period.closedAt != null,

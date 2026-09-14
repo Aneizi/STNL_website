@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 const ROOT = process.cwd();
 
 /** The member side of lib/hq/actions; everything else there is operator gated (tests/hq/auth-boundary.test.ts holds the gate map). */
-const MEMBER_ACTIONS = new Set(["builders.ts", "invite.ts", "telegram.ts"]);
+const MEMBER_ACTIONS = new Set(["builders.ts", "invite.ts", "reporting.ts", "telegram.ts"]);
 
 /** Reached only through the public member session. An operator action that needs one of these is a boundary change, not an import. */
 const FORBIDDEN_MODULES = ["lib/hq/member-auth.ts", "lib/hq/telegram-identity-plugin.ts", "lib/hq/telegram-provider.ts"];
@@ -78,9 +78,29 @@ describe("the operator server actions import nothing from the public member auth
     }
   });
 
-  it("keeps assertHackathonMatches in the leaf module, re-exported from authz", () => {
+  // Phase 6 needed the reporting service from an operator action, and
+  // lib/hq/authz.ts reaches ./actor (and through it ./member-auth) for
+  // requireOperator() alone. The decisions moved to the session-free
+  // ./authz-decisions, which ./authz re-exports unchanged; if that edge ever
+  // comes back, every operator action module above fails, and so does this.
+  it("keeps the authorization decisions session-free, so the reporting service stays operator-safe", () => {
+    const { modules } = reachable("lib/hq/reporting.ts");
+    expect([...modules]).toContain("lib/hq/authz-decisions.ts");
+    for (const forbidden of FORBIDDEN_MODULES) expect([...modules]).not.toContain(forbidden);
+    expect([...reachable("lib/hq/authz-decisions.ts").modules]).not.toContain("lib/hq/actor.ts");
+    // ./authz still carries requireOperator, and still reaches the member
+    // graph because of it: the split is what keeps that off the reporting
+    // side, not a claim that ./authz became a leaf.
+    expect([...reachable("lib/hq/authz.ts").modules]).toContain("lib/hq/member-auth.ts");
+  });
+
+  it("keeps assertHackathonMatches in the leaf module, re-exported through authz", () => {
     expect(readFileSync(join(ROOT, "lib/hq/authz-sql.ts"), "utf8")).toContain("export function assertHackathonMatches");
-    expect(readFileSync(join(ROOT, "lib/hq/authz.ts"), "utf8")).toMatch(/export \{[^}]*assertHackathonMatches[^}]*\} from "\.\/authz-sql"/);
+    // Re-exported by the decisions module and again by ./authz, so a caller
+    // still finds it where the contract says it is. The definition stays in
+    // the leaf either way, which is what actions/util.ts imports.
+    expect(readFileSync(join(ROOT, "lib/hq/authz-decisions.ts"), "utf8")).toMatch(/export \{[^}]*assertHackathonMatches[^}]*\} from "\.\/authz-sql"/);
+    expect(readFileSync(join(ROOT, "lib/hq/authz.ts"), "utf8")).toMatch(/export \{[^}]*assertHackathonMatches[^}]*\} from "\.\/authz-decisions"/);
     expect(readFileSync(join(ROOT, "lib/hq/actions/util.ts"), "utf8")).toContain('from "../authz-sql"');
   });
 });

@@ -13,11 +13,13 @@ import {
  * The edition's reporting schedule as it is stored, and which projects are in
  * reporting at all. Split out of ./reporting so that `lib/hq/builder-store.ts`
  * can enrol a team inside the import's own transaction: ./reporting reaches
- * `./authz` for the entry rules, `./authz` reaches `./actor` and through it
- * `./member-auth`, and `./member-auth` imports the store — the same cycle
- * `./authz-sql` and `./placeholder-email` were extracted to avoid. Nothing
- * here imports `./authz`, and `./actor` is a type-only import, erased at
- * compile time.
+ * the entry rules, those reach `./actor` and through it `./member-auth`, and
+ * `./member-auth` imports the store — the same cycle `./authz-sql` and
+ * `./placeholder-email` were extracted to avoid. Nothing here imports the
+ * authorization modules at all, and `./actor` is a type-only import, erased
+ * at compile time. (Phase 6 narrowed the authorization end of that chain too,
+ * splitting the session-free decisions into `./authz-decisions`; this file
+ * stays as it is, because an enrolment needs no decision.)
  *
  * Everything in this file is re-exported unchanged from ./reporting, which
  * stays the one module a caller looks in (contracts.md's "Reporting
@@ -76,6 +78,76 @@ export async function readReportingSchedule(db: BuilderQuery, hackathonId: numbe
     nudgeWeekday: row.nudge_weekday == null ? DEFAULT_NUDGE_WEEKDAY : Number(row.nudge_weekday),
     nudgeTime: row.nudge_time == null ? DEFAULT_NUDGE_TIME : toTimeOfDay(row.nudge_time),
   };
+}
+
+/**
+ * The edition's stored reporting configuration, as an admin edits it.
+ *
+ * `readReportingSchedule` above merges these values with the edition's own
+ * dates and timezone, which is what the generator runs on; this is the raw
+ * row, because a settings form must show what is stored and not what was
+ * defaulted, and because `officialSubmissionDeadline` is not part of the
+ * schedule at all (it is Colosseum's own cutoff, phase 10's input, and it
+ * never moves HQ's window). An edition with no row reads back as the column
+ * defaults with `stored: false`.
+ */
+export type ReportingConfig = {
+  hackathonId: number;
+  /** The local day the submission-focus period starts on, or null for a purely weekly schedule. */
+  finalPeriodStartDate: string | null;
+  /** Colosseum's own deadline when an admin has recorded one. Never read from Colosseum here. */
+  officialSubmissionDeadline: string | null;
+  nudgeWeekday: number;
+  nudgeTime: string;
+  /** Whether a row exists, so a screen can say "not set yet" rather than showing a default as a decision. */
+  stored: boolean;
+};
+
+const CONFIG_COLUMNS = "hackathon_id, final_period_start_date, official_submission_deadline, nudge_weekday, nudge_time";
+
+const toConfig = (hackathonId: number, row: Record<string, unknown> | undefined): ReportingConfig => ({
+  hackathonId,
+  finalPeriodStartDate: row?.final_period_start_date == null ? null : toDay(row.final_period_start_date),
+  officialSubmissionDeadline: row?.official_submission_deadline == null ? null : toIso(row.official_submission_deadline),
+  nudgeWeekday: row?.nudge_weekday == null ? DEFAULT_NUDGE_WEEKDAY : Number(row.nudge_weekday),
+  nudgeTime: row?.nudge_time == null ? DEFAULT_NUDGE_TIME : toTimeOfDay(row.nudge_time),
+  stored: row != null,
+});
+
+export async function readReportingConfig(db: BuilderQuery, hackathonId: number): Promise<ReportingConfig> {
+  const { rows } = await db.query(`SELECT ${CONFIG_COLUMNS} FROM hq_reporting_config WHERE hackathon_id = $1`, [hackathonId]);
+  return toConfig(hackathonId, rows[0]);
+}
+
+/**
+ * Saves the edition's reporting configuration and returns it as stored.
+ *
+ * Deliberately does not regenerate the periods: changing the final-period
+ * start changes the schedule, and the plan requires an admin to see which
+ * stored weeks a change would move before it happens. The screen saves here,
+ * reads `previewReportingPeriods`, and only then applies. Nothing validates
+ * the window here either, because the window is the edition's own dates and
+ * belongs to the hackathon record.
+ */
+export async function writeReportingConfig(
+  db: BuilderDatabase | BuilderQuery,
+  input: { hackathonId: number; finalPeriodStartDate: string | null; officialSubmissionDeadline: string | null; nudgeWeekday: number; nudgeTime: string },
+): Promise<ReportingConfig> {
+  return atomically(db, async (tx) => {
+    const { rows } = await tx.query(
+      `INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date, official_submission_deadline, nudge_weekday, nudge_time)
+       VALUES ($1, $2::date, $3::timestamptz, $4, $5::time)
+       ON CONFLICT (hackathon_id) DO UPDATE SET
+         final_period_start_date = EXCLUDED.final_period_start_date,
+         official_submission_deadline = EXCLUDED.official_submission_deadline,
+         nudge_weekday = EXCLUDED.nudge_weekday,
+         nudge_time = EXCLUDED.nudge_time,
+         updated_at = now()
+       RETURNING ${CONFIG_COLUMNS}`,
+      [input.hackathonId, input.finalPeriodStartDate, input.officialSubmissionDeadline, input.nudgeWeekday, input.nudgeTime],
+    );
+    return toConfig(input.hackathonId, rows[0]);
+  });
 }
 
 /** A stored reporting period: the generated window plus its row identity and closure state. */
