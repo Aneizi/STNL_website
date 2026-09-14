@@ -282,10 +282,11 @@ export class BuilderStore {
     return { tier: String(profile.rows[0]?.tier??'regular'), requests:requests.rows, enrollments:enrollments.rows, events:events.rows };
   }
 
+  /** The last line of defence behind `authorizedTeam(... 'membership.change')`: the same verified-owner predicate the decision makes, so a caller that forgot the decision gets no looser rule. */
   async updateTeam(userId: string, projectId: string, stage: ProjectStage, leadUsername: string) {
     await this.db.transaction(async db => {
       const { rows } = await db.query(`UPDATE hq_project_onboarding o SET stage=$1,lead_username=$2
-        WHERE o.project_id=$3 AND o.owner_user_id=$4 AND o.verification<>'rejected'
+        WHERE o.project_id=$3 AND o.owner_user_id=$4 AND o.verification='verified'
           AND EXISTS(SELECT 1 FROM hq_project_members m WHERE m.project_id=o.project_id AND m.colosseum_username=$2)
         RETURNING project_id`, [stage,leadUsername,projectId,userId]);
       if (!rows.length) throw new BuilderError('Choose a lead from your imported team.');

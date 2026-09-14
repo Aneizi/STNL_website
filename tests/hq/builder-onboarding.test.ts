@@ -657,6 +657,13 @@ describe("roster invitations and team access", () => {
     expect(await rows("SELECT lead_name FROM hq_projects WHERE id=$1", [item.projectId])).toEqual([{ lead_name: "Fictional Builder One" }]);
     expect(await store.team(OWNER.id, item.projectId)).toMatchObject({ stage: "live", leadUsername: "fictional_builder_1" });
   });
+
+  it.each(["pending", "rejected"])("refuses a team change on a %s claim, the way the decision that gates it does", async state => {
+    const item = await invite();
+    await db.query("UPDATE hq_project_onboarding SET verification=$1 WHERE project_id=$2", [state, item.projectId]);
+    await expect(store.updateTeam(OWNER.id, item.projectId, "beta", "fictional_builder_1")).rejects.toThrow("imported team");
+    expect(await rows("SELECT stage FROM hq_project_onboarding WHERE project_id=$1", [item.projectId])).toEqual([{ stage: "mvp" }]);
+  });
 });
 
 describe("manual requests, dashboard and member privileges", () => {
