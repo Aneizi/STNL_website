@@ -31,6 +31,8 @@ const OPERATOR = "00000000-0000-4000-8000-000000000001";
 const EDITION = 51;
 const PROJECT_MINE = "00000000-0000-4000-8000-00000000001a";
 const PROJECT_THEIRS = "00000000-0000-4000-8000-00000000001b";
+/** A second project of my own, never imported from Colosseum (no hq_project_onboarding row) — the CRM-only fallback card's own branch, covered alongside the full one above. */
+const PROJECT_MINE_BARE = "00000000-0000-4000-8000-00000000001c";
 
 let pg: PGlite;
 let db: BuilderDatabase;
@@ -58,38 +60,76 @@ beforeEach(async () => {
   await rows("INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES($1,'edition','Fictional Edition','2026-09-14','2026-10-12')", [EDITION]);
   await rows("INSERT INTO hq_project_statuses(slug,label,color,counts_as_active,sort) VALUES('active','Active','green',true,1)");
   await rows("INSERT INTO hq_project_forecasts(slug,label,color,sort) VALUES('likely','Likely','green',1)");
-  await rows("INSERT INTO hq_builder_profiles(id,email,name) VALUES ('me','me@example.test','My Own Name'),('rival','rival@example.test','Rival Captain')");
-  for (const [id, name] of [[PROJECT_MINE, "My Secret Project"], [PROJECT_THEIRS, "Rival Confidential Project"]] as const) {
+  await rows(
+    `INSERT INTO hq_builder_profiles(id,email,name) VALUES
+       ('me','me@example.test','My Own Name'),('rival','rival@example.test','Rival Captain'),
+       ('owner-mine','owner-mine@example.test','Mine Owner'),('owner-theirs','owner-theirs@example.test','Theirs Owner')`,
+  );
+  // Both real projects are imported teams (hq_project_onboarding present),
+  // not just bare hq_projects rows: PROJECT_THEIRS needs a real roster,
+  // lead username and Colosseum URL of its own for the "no leak" test below
+  // to mean anything — without them there is nothing rival-specific for a
+  // leak to carry. The owner is a separate account from the Captain
+  // candidate on each project: the Captain candidate being the project's
+  // own claimant would be the "claimant" conflict, not what this seeds.
+  for (const [id, name, owner, ownerDisplay] of [
+    [PROJECT_MINE, "My Secret Project", "owner-mine", "Mine Owner"],
+    [PROJECT_THEIRS, "Rival Confidential Project", "owner-theirs", "Theirs Owner"],
+  ] as const) {
     await rows(
       `INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
        SELECT $1,$2,$3,s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f`,
       [id, EDITION, name],
     );
+    await rows(
+      `INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,project_url,slug,country,raw,owner_user_id,verification,lead_username)
+       VALUES($1,$2,$3,$4,$5,'Netherlands','{}',$6,'verified',$6)`,
+      [id, EDITION, id === PROJECT_MINE ? 9001 : 9002, `https://colosseum.com/arena/projects/explore/${owner}`, owner, owner],
+    );
+    await rows(
+      `INSERT INTO hq_project_members(project_id,name,colosseum_username,builder_user_id,joined_at) VALUES($1,$2,$3,$3,now())`,
+      [id, ownerDisplay, owner],
+    );
   }
+  // A second project of mine, never imported: the CRM-only fallback card's branch.
+  await rows(
+    `INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+     SELECT $1,$2,$3,s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f`,
+    [PROJECT_MINE_BARE, EDITION, "My Bare CRM Project"],
+  );
   await grantCapability(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "me", capability: "captain", reason: "test" });
   await grantCapability(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "rival", capability: "captain", reason: "test" });
   expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: PROJECT_MINE, hackathonId: EDITION, captainUserId: "me" })).toMatchObject({ outcome: "assigned" });
+  expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: PROJECT_MINE_BARE, hackathonId: EDITION, captainUserId: "me" })).toMatchObject({ outcome: "assigned" });
   expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: PROJECT_THEIRS, hackathonId: EDITION, captainUserId: "rival" })).toMatchObject({ outcome: "assigned" });
 });
 
 afterAll(async () => { await pg.close(); });
 
 describe("/hq/captain against the real database", () => {
-  it("renders for a Captain, showing only that Captain's own assignment", async () => {
+  it("renders for a Captain, showing only that Captain's own assignments — both the full team card and the CRM-only fallback card", async () => {
     mocks.requireMemberActor.mockResolvedValue(member("me", "My Own Name"));
     const html = renderToStaticMarkup(await CaptainPage());
+    // The full CaptainAssignmentView branch: an imported team's own roster, lead and Colosseum link.
     expect(html).toContain("My Secret Project");
+    expect(html).toContain("Mine Owner");
+    expect(html).toMatch(/colosseum\.com[^"]*owner-mine/i);
+    // The reduced BareAssignment branch: a CRM-only project with no onboarding row.
+    expect(html).toContain("My Bare CRM Project");
+    expect(html).toContain("No further team details are available for this project yet.");
   });
 
-  it("leaks no other Captain's project name, id or link — names and counts only on the leaderboard", async () => {
+  it("leaks no other Captain's project name, roster, lead or Colosseum link — names and counts only on the leaderboard", async () => {
     mocks.requireMemberActor.mockResolvedValue(member("me", "My Own Name"));
     const html = renderToStaticMarkup(await CaptainPage());
     // The leaderboard may show the other Captain's name and count...
     expect(html).toContain("Rival Captain");
-    // ...but never their project's title, id or Colosseum link.
+    // ...but never their project's title, id, roster, lead username or Colosseum link — the full CaptainAssignmentView detail their project actually has (seeded above), not just a name.
     expect(html).not.toContain("Rival Confidential Project");
     expect(html).not.toContain(PROJECT_THEIRS);
+    expect(html).not.toContain("Theirs Owner");
     expect(html).not.toMatch(/colosseum\.com[^"]*rival/i);
+    expect(html).not.toMatch(/colosseum\.com[^"]*owner-theirs/i);
   });
 
   it("is not found for a member without the Captain capability, even one the leaderboard names", async () => {
