@@ -40,7 +40,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Sear
   const lastLoginMethod = actor.email === null;
 
   return (
-    <BuilderShell back="/hq/dashboard">
+    <BuilderShell>
       <h1>Your <em>account.</em></h1>
       <p>The ways you can sign in to Superteam NL HQ. Adding or removing one never changes your account, your teams or your roles.</p>
       {notice && <p role="status" className={styles.success}>{notice}</p>}

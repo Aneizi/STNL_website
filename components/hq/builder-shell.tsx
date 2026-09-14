@@ -1,13 +1,24 @@
 import Image from 'next/image';
 import Link from 'next/link';
+import { BuilderAccount, BuilderNav } from './builder-nav';
 import styles from './builder-shell.module.css';
 
-export function BuilderShell({children,wide=false,back='/hq/dashboard'}:{children:React.ReactNode;wide?:boolean;back?:string}) {
+/**
+ * The member page frame: brand, the capability-driven menu, the account
+ * corner and the content column. The menu and the account come from the
+ * member layout's provider; a page passes `back` only when it is a step in
+ * a flow, since the menu's Home covers the rest.
+ */
+export function BuilderShell({children,wide=false,back}:{children:React.ReactNode;wide?:boolean;back?:string}) {
   return <div className={styles.page}>
     <header className={styles.header}>
       <Link className={styles.brand} href='/' aria-label='Superteam NL home'><Image src='/landing/st-orange.png' alt='' width={28} height={28}/><span>superteam NL</span></Link>
-      <nav className={styles.nav} aria-label='HQ navigation'><Link href={back}>Back</Link><Link href='/hq/dashboard'>My HQ</Link></nav>
+      <BuilderNav/>
+      <BuilderAccount/>
     </header>
-    <main className={`${styles.main} ${wide?styles.wide:''}`}>{children}</main>
+    <main className={`${styles.main} ${wide?styles.wide:''}`}>
+      {back&&<Link className={styles.back} href={back}>Back</Link>}
+      {children}
+    </main>
   </div>;
 }

@@ -1,9 +1,23 @@
 .page { min-height:100svh; background:#fbf7f0; color:#16130f; font-family:var(--font-archivo),Arial,sans-serif; font-size:17px; line-height:1.55; }
-.header { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:22px clamp(20px,4vw,48px); border-bottom:1px solid rgba(22,19,15,.15); }
-.page .brand { display:flex; align-items:center; gap:10px; color:inherit; text-decoration:none; font-size:18px; font-weight:700; }
+.header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 28px; padding:18px clamp(20px,4vw,48px); border-bottom:1px solid rgba(22,19,15,.15); }
+.page .brand { display:flex; align-items:center; gap:10px; color:inherit; text-decoration:none; font-size:18px; font-weight:700; white-space:nowrap; }
 .brand img { width:28px; height:auto; }
-.nav { display:flex; gap:20px; align-items:center; }
-.page .nav a { color:#57534a; text-decoration:none; font-size:15px; }
+/* The menu sits between the brand and the account corner on wide screens and
+ * drops onto its own wrapping row below 960px, the way the operator chrome
+ * does, instead of scrolling sideways. */
+.nav { display:flex; align-items:center; min-width:0; }
+.navList { display:flex; flex-wrap:wrap; align-items:center; gap:2px 22px; margin:0; padding:0; list-style:none; }
+.page .nav a { display:inline-block; padding:6px 0; color:#57534a; text-decoration:none; font-size:15px; white-space:nowrap; border-bottom:2px solid transparent; transition:color .2s ease,border-color .2s ease; }
+.page .nav a:hover { color:#16130f; }
+.page .nav a[aria-current="page"] { color:#16130f; font-weight:600; border-bottom-color:#ee5b23; }
+.account { display:flex; align-items:center; gap:16px; margin-left:auto; min-width:0; }
+.accountName { color:#57534a; font-size:15px; max-width:40vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.signOut { background:none; border:0; padding:6px 0; color:#57534a; font:inherit; font-size:15px; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.signOut:hover { color:#16130f; }
+.signOut:disabled { opacity:.5; cursor:default; }
+.signOut:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+.page .back { display:inline-block; margin-bottom:28px; color:#57534a; text-decoration:none; font-size:15px; }
+.page .back:hover { color:#16130f; text-decoration:underline; text-underline-offset:4px; }
 .main { max-width:660px; margin:auto; padding:64px 24px 100px; }
 .wide { max-width:940px; }
 .main h1 { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(48px,7vw,68px); line-height:1.02; font-weight:400; letter-spacing:-.02em; margin:0 0 22px; }
@@ -45,5 +59,6 @@
 .check input { flex-shrink:0; width:22px; height:22px; accent-color:#ee5b23; }
 .details { margin-top:30px; }
 .details summary { cursor:pointer; text-decoration:underline; text-underline-offset:4px; padding:10px 0; }
-@media(max-width:540px) { .main{padding:44px 20px 72px}.header{padding:18px 20px}.brand{font-size:16px}.nav{gap:14px}.nav a{font-size:14px}.choice{padding:22px}.row{align-items:flex-start}.row .secondary{font-size:15px}.code{font-size:24px;letter-spacing:.1em} }
-@media(prefers-reduced-motion:reduce) { .button,.secondary,.choice{transition:none} }
+@media(max-width:960px) { .nav{order:1;flex:1 1 100%} }
+@media(max-width:540px) { .main{padding:44px 20px 72px}.header{padding:14px 20px;gap:4px 20px}.brand{font-size:16px}.navList{gap:0 16px}.nav a{font-size:14px}.accountName,.signOut{font-size:14px}.choice{padding:22px}.row{align-items:flex-start}.row .secondary{font-size:15px}.code{font-size:24px;letter-spacing:.1em} }
+@media(prefers-reduced-motion:reduce) { .button,.secondary,.choice,.nav a{transition:none} }
