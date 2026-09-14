@@ -2,7 +2,7 @@ import "server-only";
 import { requireUser } from "./auth";
 import { realEmail } from "./builder-store";
 import { listActiveCapabilitiesForUsers, listCapabilityGrants } from "./capabilities";
-import { listCaptainInvitations, type CaptainInvitationListing } from "./captains";
+import { countAssignmentsForUsers, listCaptainInvitations, type CaptainInvitationListing } from "./captains";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
 import { operatorQuery } from "./queries";
@@ -34,6 +34,8 @@ export type BuilderAccount = AccountLogin & {
   tier: "regular" | "member";
   /** Holds an active Captain grant. Read from hq_account_capabilities, never from a role or the tier. */
   captain: boolean;
+  /** Current assignments this account would lose if its Captain grant were revoked now, across every edition. 0 when `captain` is false. */
+  captainAssignmentCount: number;
 };
 
 /** An active Captain grant, for the Admin overview. Grants are account-global, not per hackathon. */
@@ -117,6 +119,10 @@ export async function getBuilderAdminData() {
     listCaptainInvitations(operatorQuery()),
   ]);
   const capabilities = await listActiveCapabilitiesForUsers(accounts.map((row) => String(row.id)), operatorQuery());
+  // Confirm the affected project count to the admin before they revoke: this
+  // batches it in the same one-query-per-render shape as `capabilities`
+  // above, rather than one query per account.
+  const assignmentCounts = await countAssignmentsForUsers(operatorQuery(), accounts.map((row) => String(row.id)));
   const config = configs[0];
   return {
     hackathonName: hackathon.name,
@@ -132,6 +138,7 @@ export async function getBuilderAdminData() {
       id: String(row.id), name: String(row.name), ...login(row), contactEmail: realEmail(row.contact_email),
       tier: row.tier === "member" ? "member" : "regular",
       captain: (capabilities.get(String(row.id)) ?? []).includes("captain"),
+      captainAssignmentCount: assignmentCounts.get(String(row.id)) ?? 0,
     } satisfies BuilderAccount)),
     captains: captains.map((grant) => ({
       userId: grant.userId, name: grant.userName, grantedAt: grant.grantedAt, reason: grant.reason,

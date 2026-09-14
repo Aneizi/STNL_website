@@ -178,7 +178,9 @@ export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccou
               <label className={styles.field}>Reason<input name="reason" required minLength={3} maxLength={500} placeholder={account.captain ? "Why this account loses Captain access." : "Why this account gets Captain access."} /></label>
               <label className={styles.checkbox}>
                 {account.captain
-                  ? "I confirm this account should lose Captain access. Its assignments stop opening on the next request."
+                  ? account.captainAssignmentCount > 0
+                    ? `I confirm this account should lose Captain access. It currently captains ${account.captainAssignmentCount} project${account.captainAssignmentCount === 1 ? "" : "s"}; revoking clears ${account.captainAssignmentCount === 1 ? "it" : "all of them"} in the same action.`
+                    : "I confirm this account should lose Captain access. It captains no project right now."
                   : "I confirm this account should have Captain access. It opens no project until an assignment exists."}
                 <input name="confirm" type="checkbox" required />
               </label>
