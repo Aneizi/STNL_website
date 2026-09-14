@@ -23,7 +23,7 @@ export type TelegramConfirmationCode = "SESSION_NOT_FRESH" | "TELEGRAM_UNAVAILAB
 export type TelegramLinkConfirmation = { ok: true } | { ok: false; code: TelegramConfirmationCode };
 /** `accountId` is the Better Auth account row to pass to unlinkAccount(); it is not a Telegram id. */
 export type TelegramUnlinkConfirmation = { ok: true; accountId: string } | { ok: false; code: TelegramConfirmationCode };
-export type EmailChangeConfirmationCode = "SESSION_NOT_FRESH" | "EMAIL_UNAVAILABLE" | "INVALID_EMAIL" | "EMAIL_UNCHANGED";
+export type EmailChangeConfirmationCode = "SESSION_NOT_FRESH" | "EMAIL_UNAVAILABLE" | "INVALID_EMAIL" | "EMAIL_UNCHANGED" | "EMAIL_ALREADY_SET";
 /** `newEmail` is the normalized address the intent was recorded for; the client sends exactly that to the endpoints. */
 export type EmailChangeConfirmation = { ok: true; newEmail: string } | { ok: false; code: EmailChangeConfirmationCode };
 export type BotMessagingResult = { ok: true; enabled: boolean } | { ok: false; code: "TELEGRAM_NOT_CONNECTED" };
@@ -59,16 +59,29 @@ export async function confirmUnlinkTelegram(): Promise<TelegramUnlinkConfirmatio
 }
 
 /**
- * Confirms adding (or changing to) a login email. Adding a login method is
- * as sensitive as removing one, so the same recency window applies. The
- * placeholder is never a valid new address, whatever the session holds.
- * Whether the address is taken is not checked here or anywhere the client
- * can see: the endpoint answers the same either way and simply sends no
- * code to an address that belongs to another account.
+ * Confirms adding a login email to an account that has none: the recovery
+ * email for a Telegram-first account, and nothing else. An account that
+ * already signs in with an email is refused here, not only redirected by the
+ * page: an action is directly callable, and /email-otp/change-email is
+ * configured with verifyCurrentEmail false (no code goes to the current
+ * address, because a Telegram-first account has none to send one to), so
+ * without this an attacker holding a fresh session could move an existing
+ * account's login address to one they control. Changing a verified address
+ * is not a product feature; if it becomes one it needs a code to the current
+ * address, not this endpoint.
+ *
+ * Adding a login method is as sensitive as removing one, so the same recency
+ * window applies. The placeholder is never a valid new address, whatever the
+ * session holds. Whether the address is taken is not checked here or anywhere
+ * the client can see: the endpoint answers the same either way and simply
+ * sends no code to an address that belongs to another account.
  */
 export async function confirmEmailChange(newEmail: string): Promise<EmailChangeConfirmation> {
   const actor = await requireMemberActor("/hq/account/add-email");
   if (!getMemberAuthAvailability().email) return { ok: false, code: "EMAIL_UNAVAILABLE" };
+  // actor.email is the verified login email; an account that has one has
+  // nothing to add here, the same rule the page redirects on.
+  if (actor.email !== null) return { ok: false, code: "EMAIL_ALREADY_SET" };
   const address = normalizeEmailAddress(newEmail);
   if (address.length > 254 || !EMAIL_SHAPE.test(address) || isPlaceholderEmail(address)) return { ok: false, code: "INVALID_EMAIL" };
   const session = await currentMemberSession();

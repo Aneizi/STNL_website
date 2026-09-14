@@ -224,18 +224,23 @@ async function changeEmailRows() {
 }
 
 /**
- * The whole Add a recovery email flow for the session behind `cookie`:
- * confirmation step, request, the code from the one message sent, change.
+ * The two change-email endpoints for the session behind `cookie`, given a
+ * recorded intent: request, the code from the one message sent, change.
  * Returns the change-email response; the caller asserts the outcome.
  */
-async function addRecoveryEmail(cookie: string, newEmail: string) {
-  state.cookie = cookie;
-  const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
-  expect(await confirmEmailChange(newEmail)).toEqual({ ok: true, newEmail });
+async function changeEmailWithCode(cookie: string, newEmail: string) {
   const requested = await request("/email-otp/request-email-change", { newEmail }, cookie);
   expect(requested.status).toBe(200);
   const otp = state.sent.at(-1)!.text.match(/\b\d{6}\b/)![0];
   return request("/email-otp/change-email", { newEmail, otp }, cookie);
+}
+
+/** The whole Add a recovery email flow: the confirmation step the page runs, then the endpoints. */
+async function addRecoveryEmail(cookie: string, newEmail: string) {
+  state.cookie = cookie;
+  const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
+  expect(await confirmEmailChange(newEmail)).toEqual({ ok: true, newEmail });
+  return changeEmailWithCode(cookie, newEmail);
 }
 
 /** What linking must never touch: the account id, its profile, enrollments, capability grants and team rows. */
@@ -796,8 +801,12 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     }
     const { confirmEmailChange, confirmLinkTelegram, confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
     expect(await confirmLinkTelegram()).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
+    // Both confirmations answer the account's own state before the session's:
+    // this account has no Telegram to disconnect and already signs in with an
+    // email. The staleness they also enforce is asserted on a Telegram-only
+    // account in "lets a stale session neither add an email nor..." below.
     expect(await confirmUnlinkTelegram()).toEqual({ ok: false, code: "TELEGRAM_NOT_CONNECTED" });
-    expect(await confirmEmailChange("recover@example.com")).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
+    expect(await confirmEmailChange("recover@example.com")).toEqual({ ok: false, code: "EMAIL_ALREADY_SET" });
     expect(state.sent).toHaveLength(sent);
     expect(await changeEmailRows()).toEqual([]);
     expect((await state.pg!.query('SELECT email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ email: "stale@example.com", emailVerified: true }]);
@@ -1037,6 +1046,9 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
 
     const { currentMember } = await import("@/lib/hq/member-auth");
     expect(await currentMember()).toEqual({ id: userId, email: "recover@example.com", name: NAME });
+    // The account now signs in with an email, so the same action will not move it.
+    expect(await confirmEmailChange("second@example.com")).toEqual({ ok: false, code: "EMAIL_ALREADY_SET" });
+    expect(await intents(userId)).toEqual([]);
     const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
     const html = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({ email: "added" }) }));
     expect(html).toContain("recover@example.com");
@@ -1060,11 +1072,35 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(await currentMember()).toEqual({ id: userId, email: "recover@example.com", name: NAME });
   });
 
+  it("refuses to move the login email of an account that already has one, whatever the session", async () => {
+    const emailUser = await signInWithEmail("holder@example.com", "Settled Builder");
+    state.cookie = emailUser.cookie;
+    state.sent.length = 0;
+    const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
+
+    // A session minutes old passes every other check the action makes: only
+    // the account already having a login email stops it. The page redirects
+    // such an account away, but an action is directly callable.
+    expect(await confirmEmailChange("attacker@example.com")).toEqual({ ok: false, code: "EMAIL_ALREADY_SET" });
+    expect(await intents(emailUser.user.id)).toEqual([]);
+    expect(state.sent).toEqual([]);
+    // And with no intent recorded the endpoint refuses too, so nothing moved.
+    const requested = await request("/email-otp/request-email-change", { newEmail: "attacker@example.com" }, emailUser.cookie);
+    expect(requested.status).toBe(403);
+    expect((await requested.json()).code).toBe("CONFIRMATION_REQUIRED");
+    expect(await changeEmailRows()).toEqual([]);
+    expect((await state.pg!.query("SELECT email FROM hq_auth_user")).rows).toEqual([{ email: "holder@example.com" }]);
+  });
+
   it("tells the previous verified address, once, when the login email changes", async () => {
     const emailUser = await signInWithEmail("before@example.com", "Moving Builder");
     const userId = emailUser.user.id;
+    state.cookie = emailUser.cookie;
     state.sent.length = 0;
-    const changed = await addRecoveryEmail(emailUser.cookie, "after@example.com");
+    // No page or action moves a login email that already exists, so the
+    // intent the endpoint requires is written directly to reach the hook.
+    await recordTelegramIntent(await intentStore(), userId, "change-email", "after@example.com");
+    const changed = await changeEmailWithCode(emailUser.cookie, "after@example.com");
     expect(changed.status).toBe(200);
     // Exactly two messages: the code to the new address, then the notice to the old one, which carries no code.
     expect(state.sent.map((message) => message.to)).toEqual(["after@example.com", "before@example.com"]);

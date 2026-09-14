@@ -15,6 +15,8 @@ const CODE_MESSAGES: Record<string, string> = {
   TOO_MANY_ATTEMPTS: "That code has had too many attempts. Request a new one.",
   TOO_MANY_REQUESTS: "Too many attempts. Please wait a minute and try again.",
   INVALID_EMAIL: "Enter a valid email address.",
+  // Only a direct call reaches this: the page redirects such an account away.
+  EMAIL_ALREADY_SET: "This account already signs in with an email address, so there is nothing to add here.",
 };
 
 // The library answers these two without a code; the second is safe to show

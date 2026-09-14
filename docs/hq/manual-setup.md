@@ -435,8 +435,10 @@ actually seen the result.
   and confirm exactly one code arrives, at the **new** address, and that nothing
   arrives anywhere else. Requires item 2.3 as well, since you need a
   Telegram-only account to try it from. The notice to a previous verified
-  address when a login email changes is automated-only today, because no page
-  offers Change email to an account that already signs in with email;
+  address when a login email changes is automated-only today, because neither
+  a page nor the confirmation action offers Change email to an account that
+  already signs in with email (`confirmEmailChange` answers `EMAIL_ALREADY_SET`
+  and the endpoint then has no intent to consume);
   `tests/hq/member-auth-telegram.test.ts` "tells the previous verified address,
   once, when the login email changes" asserts that it goes out, carries no code
   and does not name the new address. Nothing is ever sent to the internal
