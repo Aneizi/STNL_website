@@ -157,8 +157,35 @@ describe("loaders", () => {
     expect(await loadCurrentAssignment(refuseQuery, "not-a-uuid")).toBeNull();
   });
 
-  it("the phase 5 hook is typed and returns null until its table exists", async () => {
-    expect(await loadEntry(db, "any-entry")).toBeNull();
+  it("loadEntry reads a reporting entry with its project's edition, and treats a malformed id as missing without a query", async () => {
+    const [period] = await rows(
+      `INSERT INTO hq_reporting_periods (hackathon_id, sequence, mode, start_date, end_date, starts_at, ends_at)
+       VALUES ($1, 1, 'weekly', '2026-09-14', '2026-09-20', '2026-09-13T22:00:00Z', '2026-09-20T22:00:00Z') RETURNING id::text AS id`,
+      [EDITION_A],
+    );
+    const [entry] = await rows(
+      `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility)
+       VALUES ($1, $2, 'member', 'lead-a', 'Shipped the importer', 'shared') RETURNING id::text AS id`,
+      [PROJECT_A, String(period.id)],
+    );
+    expect(await loadEntry(db, String(entry.id))).toEqual({
+      id: String(entry.id), projectId: PROJECT_A, hackathonId: EDITION_A, authorUserId: "lead-a", visibility: "shared",
+    });
+
+    // An operator author is namespaced on the way out, so no member id can
+    // ever be read back as matching it.
+    const [byOperator] = await rows(
+      `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility)
+       VALUES ($1, $2, 'operator', $3, 'Corrected on the team''s behalf', 'sensitive') RETURNING id::text AS id`,
+      [PROJECT_A, String(period.id), OPERATOR_ID],
+    );
+    expect(await loadEntry(db, String(byOperator.id))).toEqual({
+      id: String(byOperator.id), projectId: PROJECT_A, hackathonId: EDITION_A, authorUserId: `operator:${OPERATOR_ID}`, visibility: "sensitive",
+    });
+
+    expect(await loadEntry(db, UNKNOWN)).toBeNull();
+    const refuseQuery: BuilderQuery = { query: async () => { throw new Error("loadEntry queried the database for a malformed id"); } };
+    expect(await loadEntry(refuseQuery, "not-a-uuid")).toBeNull();
   });
 });
 

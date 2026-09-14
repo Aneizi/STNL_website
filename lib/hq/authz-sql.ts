@@ -5,12 +5,15 @@
  * them against a throwaway Postgres and a revocation is visible on the very
  * next call.
  *
- * Two of the loaders are typed hooks for records a later phase creates:
- * `loadCurrentAssignment` (Captain assignment, phase 4, reads
- * hq_captain_assignments as of task T4.1) and `loadEntry` (reporting entry,
- * phase 5, still a stub). Their signatures and result types were fixed
- * before either table existed, the decision logic over them in ./authz is
- * tested with injected fixtures, and each phase only replaces the body.
+ * Two of the loaders were typed hooks for records a later phase created:
+ * `loadCurrentAssignment` (Captain assignment, reads hq_captain_assignments
+ * since task T4.1) and `loadEntry` (reporting entry, reads
+ * hq_reporting_entries since task T5.2). Their signatures and result types
+ * were fixed before either table existed, the decision logic over them in
+ * ./authz is tested with injected fixtures, and each phase replaced only the
+ * body — neither needed a change to `Entry`, `CurrentAssignment`,
+ * `entryAudience` or `canEditEntry`, which is what the injected-fixture
+ * approach was for.
  *
  * `assertHackathonMatches` lives here rather than in ./authz because it reads
  * no session: every operator action module reaches it through
@@ -33,8 +36,8 @@ export function assertHackathonMatches<T extends { hackathonId: number }>(record
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** A project id that could be a row. Anything else is treated as not found instead of reaching the database. */
-const isProjectId = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
+/** A record id that could be a row. Anything else is treated as not found instead of reaching the database. */
+const isRecordId = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
 
 /** The edition a project belongs to, from the core record. */
 export type ProjectEdition = { projectId: string; hackathonId: number };
@@ -65,7 +68,7 @@ export type Entry = {
 };
 
 export async function loadProjectEdition(db: BuilderQuery, projectId: string): Promise<ProjectEdition | null> {
-  if (!isProjectId(projectId)) return null;
+  if (!isRecordId(projectId)) return null;
   const { rows } = await db.query("SELECT id::text AS project_id, hackathon_id FROM hq_projects WHERE id = $1::uuid", [projectId]);
   return rows.length ? { projectId: String(rows[0].project_id), hackathonId: Number(rows[0].hackathon_id) } : null;
 }
@@ -77,7 +80,7 @@ export async function loadProjectEdition(db: BuilderQuery, projectId: string): P
  * revealed when there is no membership.
  */
 export async function loadTeamMembership(db: BuilderQuery, input: { userId: string; projectId: string }): Promise<TeamMembership | null> {
-  if (!isProjectId(input.projectId)) return null;
+  if (!isRecordId(input.projectId)) return null;
   const { rows } = await db.query(
     `SELECT o.project_id::text AS project_id, p.hackathon_id,
        CASE WHEN o.owner_user_id = $1 THEN 'owner' ELSE 'member' END AS role
@@ -102,7 +105,7 @@ export type EntryLoader = (db: BuilderQuery, entryId: string) => Promise<Entry |
  * orphaned row is never read back as a live assignment.
  */
 export const loadCurrentAssignment: AssignmentLoader = async (db, projectId) => {
-  if (!isProjectId(projectId)) return null;
+  if (!isRecordId(projectId)) return null;
   const { rows } = await db.query(
     "SELECT captain_user_id FROM hq_captain_assignments WHERE project_id = $1::uuid AND unassigned_at IS NULL AND captain_user_id IS NOT NULL",
     [projectId],
@@ -110,6 +113,38 @@ export const loadCurrentAssignment: AssignmentLoader = async (db, projectId) => 
   return rows.length ? { captainUserId: String(rows[0].captain_user_id) } : null;
 };
 
-// TODO(phase 5): read the entry from the reporting entry table once phase 5
-// creates it. Until then there are no entries to authorize.
-export const loadEntry: EntryLoader = async () => null;
+/**
+ * The reporting entry an audience decision is made about, or null.
+ *
+ * The edition comes from the project rather than from a column of the
+ * entry's own, so an entry can never claim an edition its project is not in.
+ *
+ * `authorUserId` is the entry's `author_id` for a member author and
+ * `operator:<id>` for an operator one. The two author spaces are different
+ * tables (`hq_builder_profiles.id`, a text id from the login provider, and
+ * `hq_users.id`, a uuid), and the only reader of this field compares it
+ * against a *member* actor's id to decide the author-only rules in ./authz.
+ * Namespacing the operator side means an admin-authored sensitive note can
+ * never be read as a member's own, however the two id spaces happen to
+ * overlap. A voided entry is still returned: voiding is moderation, not
+ * deletion, and whether an edit is refused for that reason belongs to the
+ * reporting service, not to an authorization fact.
+ */
+export const loadEntry: EntryLoader = async (db, entryId) => {
+  if (!isRecordId(entryId)) return null;
+  const { rows } = await db.query(
+    `SELECT e.id::text AS id, e.project_id::text AS project_id, p.hackathon_id, e.author_kind, e.author_id, e.visibility
+     FROM hq_reporting_entries e JOIN hq_projects p ON p.id = e.project_id
+     WHERE e.id = $1::uuid`,
+    [entryId],
+  );
+  if (!rows.length) return null;
+  const row = rows[0];
+  return {
+    id: String(row.id),
+    projectId: String(row.project_id),
+    hackathonId: Number(row.hackathon_id),
+    authorUserId: row.author_kind === "operator" ? `operator:${String(row.author_id)}` : String(row.author_id),
+    visibility: row.visibility === "sensitive" ? "sensitive" : "shared",
+  };
+};
