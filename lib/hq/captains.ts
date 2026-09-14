@@ -483,16 +483,24 @@ export async function listCaptainInvitations(db: BuilderQuery = builderDatabase(
  * `person_id NULL`), or a `person_id` whose person has never been linked to
  * an account — is **not** silently passed. It is collected as "needs
  * review" and the assignment stops *unless* the caller explicitly
- * acknowledges it (`acknowledgeUnresolved: true`, recorded in the
- * `captain.assigned` audit event's metadata so the override itself leaves a
- * trail). This is the "warning the operator must acknowledge" reading of the
- * plan's "surface it for admin review rather than claiming the conflict
- * check is complete": it blocks by default (nothing is assigned on the first
- * call), and only proceeds on a second, explicit call that names the risk it
- * is accepting. See the task report for why a hard, un-overridable block was
- * rejected: today it would make Captain assignment practically unusable,
- * since nearly every imported roster has an unclaimed member with no
- * resolvable identity.
+ * acknowledges it: `acknowledgedUnresolvedIds` must name the *exact* set of
+ * `hq_project_members.id`s the caller was shown as unresolved. This
+ * transaction re-derives the unresolved set itself rather than trusting
+ * whatever an earlier read returned, and if the two sets differ — a roster
+ * row resolved, or a new one appeared, since the operator last looked —
+ * the acknowledgement does not count: `needs_review` comes back again, with
+ * the current set, rather than assigning over rows the caller never
+ * actually saw. On a match, the acknowledged ids are recorded on the
+ * `captain.assigned` audit event's metadata (not just a count), so the
+ * override itself leaves a trail of exactly what was overridden. This is
+ * the "warning the operator must acknowledge" reading of the plan's
+ * "surface it for admin review rather than claiming the conflict check is
+ * complete": it blocks by default (nothing is assigned on the first call),
+ * and only proceeds on a second, explicit call that names the precise risk
+ * it is accepting. See the task report for why a hard, un-overridable block
+ * was rejected: today it would make Captain assignment practically
+ * unusable, since nearly every imported roster has an unclaimed member with
+ * no resolvable identity.
  */
 
 /** One row of an "imported roster identity" conflict, or of a "needs review" list — never a display-name match, always this project's own `hq_project_members` row. */
@@ -502,12 +510,31 @@ export type CaptainConflictReason =
   | { kind: "verified_member"; role: "owner" | "member" }
   | { kind: "roster_member"; memberName: string; memberUsername: string | null }
   /**
-   * Defensive only: `hq_projects` is locked (lock order step 2) before this
-   * would ever be reached, so two concurrent `assignCaptain` calls for the
-   * same never-before-assigned project should already fully serialize
-   * through that lock. This outcome exists so that if a future change ever
-   * weakens that lock, the partial unique index's own violation still fails
-   * as a typed outcome instead of an unhandled Postgres error.
+   * The account named `owner_user_id` on the project's own
+   * `hq_project_onboarding` row — the account that submitted the Colosseum
+   * claim — regardless of `verification` state and regardless of whether it
+   * also has a linked roster row (`importTeam` only links one when a roster
+   * member's username matches the claimant's exactly; a claimant absent
+   * from the roster, or case-mismatched against it, gets none). Strictly
+   * wider than `verified_member`'s owner case, not a duplicate of it: this
+   * is what closes the pending/rejected window `loadTeamMembership` cannot
+   * see on its own, so a claimant can never become their own project's
+   * Captain through an unverified claim plus an acknowledged "needs review".
+   */
+  | { kind: "claimant" }
+  /**
+   * The one case the lock order above cannot itself serialize: two
+   * concurrent `assignCaptain` calls on the same *never-before-assigned*
+   * project have no `hq_captain_assignments` row yet to lock against each
+   * other on (lock order step 4 is a no-op for both). Step 2 (`hq_projects`)
+   * is a deliberately *unlocked* read — see the header block above — so it
+   * cannot close this either. What actually guarantees "one project cannot
+   * hold two current Captains" here is the database: the insert is
+   * `ON CONFLICT ... DO NOTHING` against the partial unique index, and the
+   * loser gets this typed outcome back instead of an unhandled constraint
+   * violation. This is load-bearing, not a defensive fallback — do not
+   * remove the `ON CONFLICT` clause on the theory that some lock already
+   * covers this case; none does.
    */
   | { kind: "already_assigned" };
 
@@ -524,11 +551,15 @@ type ConflictCheck =
   | { kind: "conflict"; conflict: CaptainConflictReason }
   | { kind: "needs_review"; unresolved: UnresolvedRosterMember[] };
 
-/** The conflict check described above. `onboarded` decides whether source 2 (the imported roster) applies at all. */
-async function checkCaptainConflict(tx: BuilderQuery, input: { candidateUserId: string; projectId: string; onboarded: boolean }): Promise<ConflictCheck> {
+/** The conflict check described above. `onboarded` decides whether source 2 (the imported roster) applies at all; `ownerUserId` is the onboarding row's own claimant, independent of the roster. */
+async function checkCaptainConflict(
+  tx: BuilderQuery,
+  input: { candidateUserId: string; projectId: string; onboarded: boolean; ownerUserId: string | null },
+): Promise<ConflictCheck> {
   const membership = await loadTeamMembership(tx, { userId: input.candidateUserId, projectId: input.projectId });
   if (membership) return { kind: "conflict", conflict: { kind: "verified_member", role: membership.role } };
   if (!input.onboarded) return { kind: "clear" };
+  if (input.ownerUserId != null && input.ownerUserId === input.candidateUserId) return { kind: "conflict", conflict: { kind: "claimant" } };
 
   const { rows } = await tx.query(
     `SELECT m.id::text AS id, m.name, m.colosseum_username, m.builder_user_id,
@@ -562,25 +593,46 @@ async function checkCaptainConflict(tx: BuilderQuery, input: { candidateUserId: 
   return unresolved.length ? { kind: "needs_review", unresolved } : { kind: "clear" };
 }
 
+/** Whether `acknowledgedIds` names exactly the current unresolved set — no fewer, no more, no stale or substituted ids. Order-independent; `undefined` (no acknowledgement offered at all) never matches. */
+function acknowledgesExactly(unresolved: UnresolvedRosterMember[], acknowledgedIds: string[] | undefined): boolean {
+  if (!acknowledgedIds) return false;
+  if (acknowledgedIds.length !== unresolved.length) return false;
+  const current = new Set(unresolved.map((member) => member.memberId));
+  return acknowledgedIds.every((id) => current.has(id));
+}
+
 /**
  * Assigns (or reassigns) the current Captain of a project, in one
  * transaction under the lock order documented above. Choosing to insert the
  * same account already current is a no-op (no history churn, no audit
- * event): `acknowledgeUnresolved` only matters on a real change.
+ * event): `acknowledgedUnresolvedIds` only matters on a real change.
  *
- * Replacing a different current Captain ends their row (`unassigned_at`,
- * `unassigned_by_user_id`) and audits `captain.unassigned` for them before
- * the new `captain.assigned` — so the partial unique index is never
- * violated and a reassignment is one atomic operation, not two. An orphaned
- * current row (`captain_user_id IS NULL`, the account was deleted) is ended
- * the same way but audits nothing for it: `loadCurrentAssignment` never
- * treated it as a live assignment, so nothing is being "unassigned" from
- * that account's perspective, but it still must not be left sitting there —
- * schema comment on `hq_captain_assignments`.
+ * `acknowledgedUnresolvedIds`, when given, must name the exact
+ * `hq_project_members.id`s the caller was shown as unresolved — checked
+ * against this transaction's own, freshly re-derived unresolved set, not
+ * whatever an earlier read returned. A mismatch (something resolved, or
+ * something new appeared) is treated as no acknowledgement at all: the
+ * caller gets `needs_review` again, with the current set, rather than the
+ * assignment going through over rows it never actually saw.
+ *
+ * Replacing a different current Captain ends every other currently live row
+ * for the project (`unassigned_at`, `unassigned_by_user_id`) — at most one
+ * under the partial unique index, but ended as a set rather than assumed to
+ * be exactly one row — and audits `captain.unassigned` for whichever of
+ * them actually named a captain, before the new `captain.assigned`, so the
+ * partial unique index is never violated and a reassignment is one atomic
+ * operation, not two. An orphaned row (`captain_user_id IS NULL`, the
+ * account was deleted) is ended the same way but audits nothing for it:
+ * `loadCurrentAssignment` never treated it as a live assignment, so nothing
+ * is being "unassigned" from that account's perspective, but it still must
+ * not be left sitting there — schema comment on `hq_captain_assignments`.
  */
 export async function assignCaptain(
   db: BuilderQuery | BuilderDatabase,
-  input: { actorOperatorId: string; projectId: string; hackathonId: number; captainUserId: string; reason?: string; acknowledgeUnresolved?: boolean },
+  input: {
+    actorOperatorId: string; projectId: string; hackathonId: number; captainUserId: string; reason?: string;
+    acknowledgedUnresolvedIds?: string[];
+  },
 ): Promise<AssignCaptainResult> {
   return atomically(db, async (tx) => {
     // Lock order step 1.
@@ -595,26 +647,41 @@ export async function assignCaptain(
     if (!projects.length || Number(projects[0].hackathon_id) !== input.hackathonId) return { outcome: "not_found" };
 
     // Lock order step 3: the project's onboarding row, if it has one.
-    const { rows: onboarding } = await tx.query(`SELECT 1 FROM hq_project_onboarding WHERE project_id = $1::uuid FOR UPDATE`, [input.projectId]);
+    const { rows: onboarding } = await tx.query(`SELECT owner_user_id FROM hq_project_onboarding WHERE project_id = $1::uuid FOR UPDATE`, [input.projectId]);
     const onboarded = onboarding.length > 0;
+    const ownerUserId = onboarding[0]?.owner_user_id == null ? null : String(onboarding[0].owner_user_id);
 
-    const conflict = await checkCaptainConflict(tx, { candidateUserId: input.captainUserId, projectId: input.projectId, onboarded });
+    const conflict = await checkCaptainConflict(tx, { candidateUserId: input.captainUserId, projectId: input.projectId, onboarded, ownerUserId });
     if (conflict.kind === "conflict") return { outcome: "conflict", conflict: conflict.conflict };
-    if (conflict.kind === "needs_review" && !input.acknowledgeUnresolved) return { outcome: "needs_review", unresolved: conflict.unresolved };
+    if (conflict.kind === "needs_review" && !acknowledgesExactly(conflict.unresolved, input.acknowledgedUnresolvedIds)) {
+      return { outcome: "needs_review", unresolved: conflict.unresolved };
+    }
 
-    // Lock order step 4.
+    // Lock order step 4. No LIMIT: this selects and locks *every* currently
+    // live row for the project, not just one. Under the partial unique
+    // index there should never be more than one, but the ending step right
+    // below acts on the whole set it finds rather than assuming that —
+    // a set-based end that survives that invariant ever breaking, instead
+    // of a by-id end of an arbitrarily chosen first row that would leave
+    // any others (an orphaned row alongside a live one; a hypothetical
+    // future bug) still marked current.
     const { rows: current } = await tx.query(
       `SELECT id::text AS id, captain_user_id::text AS captain_user_id FROM hq_captain_assignments
        WHERE project_id = $1::uuid AND unassigned_at IS NULL FOR UPDATE`,
       [input.projectId],
     );
-    const currentRow = current[0] as { id: string; captain_user_id: string | null } | undefined;
-    if (currentRow?.captain_user_id === input.captainUserId) {
-      return { outcome: "assigned", assignmentId: currentRow.id, replacedCaptainUserId: null };
+    const currentRows = current as Array<{ id: string; captain_user_id: string | null }>;
+    const alreadyCurrent = currentRows.find((row) => row.captain_user_id === input.captainUserId);
+    if (alreadyCurrent) {
+      return { outcome: "assigned", assignmentId: alreadyCurrent.id, replacedCaptainUserId: null };
     }
-    if (currentRow) {
-      await tx.query(`UPDATE hq_captain_assignments SET unassigned_at = now(), unassigned_by_user_id = $2::uuid WHERE id = $1::uuid`, [currentRow.id, input.actorOperatorId]);
+    const toEnd = currentRows.filter((row) => row.captain_user_id !== input.captainUserId);
+    for (const row of toEnd) {
+      await tx.query(`UPDATE hq_captain_assignments SET unassigned_at = now(), unassigned_by_user_id = $2::uuid WHERE id = $1::uuid`, [row.id, input.actorOperatorId]);
     }
+    // The one live row with a real captain among whatever was ended — under
+    // the invariant holding, `toEnd` has at most one entry at all.
+    const replaced = toEnd.find((row) => row.captain_user_id != null) ?? null;
 
     const { rows: inserted } = await tx.query(
       `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id, reason)
@@ -625,14 +692,14 @@ export async function assignCaptain(
     );
     if (!inserted.length) return { outcome: "conflict", conflict: { kind: "already_assigned" } };
 
-    if (currentRow?.captain_user_id) {
+    if (replaced) {
       await recordAuditEvent(tx, {
         kind: "captain.unassigned",
         actor: { kind: "operator", id: input.actorOperatorId },
-        subjectUserId: currentRow.captain_user_id,
+        subjectUserId: replaced.captain_user_id!,
         hackathonId: input.hackathonId,
         projectId: input.projectId,
-        metadata: { assignmentId: currentRow.id, reassignedToUserId: input.captainUserId },
+        metadata: { assignmentId: replaced.id, reassignedToUserId: input.captainUserId },
       });
     }
     await recordAuditEvent(tx, {
@@ -644,17 +711,29 @@ export async function assignCaptain(
       metadata: {
         assignmentId: inserted[0].id,
         reason: input.reason ?? null,
-        replacedCaptainUserId: currentRow?.captain_user_id ?? null,
-        unresolvedRosterAcknowledged: conflict.kind === "needs_review" ? conflict.unresolved.length : 0,
+        replacedCaptainUserId: replaced?.captain_user_id ?? null,
+        // The exact rows overridden, not just how many — this is the one
+        // place a safety check is deliberately bypassed, and the audit
+        // trail is its only record of what, specifically, was overridden.
+        acknowledgedUnresolvedMemberIds: conflict.kind === "needs_review" ? conflict.unresolved.map((member) => member.memberId) : [],
       },
     });
-    return { outcome: "assigned", assignmentId: String(inserted[0].id), replacedCaptainUserId: currentRow?.captain_user_id ?? null };
+    return { outcome: "assigned", assignmentId: String(inserted[0].id), replacedCaptainUserId: replaced?.captain_user_id ?? null };
   });
 }
 
 export type UnassignCaptainResult =
   | { outcome: "unassigned"; assignmentId: string; captainUserId: string }
-  /** Idempotent: no live current assignment to end, whether none ever existed or the project's Captain is already unassigned. */
+  /**
+   * Also covers a write that did happen: an orphaned row
+   * (`captain_user_id IS NULL`, the account was deleted) with no live
+   * captain is still ended here — see the function body — but is reported
+   * identically to "nothing to remove", because `loadCurrentAssignment`
+   * never treated it as a live assignment in the first place, so nothing
+   * observable changed from any caller's point of view.
+   * `unassignProjectCaptain` (lib/hq/actions/captains.ts) relies on exactly
+   * this to skip `refreshHq()` for it.
+   */
   | { outcome: "not_assigned" }
   | { outcome: "not_found" };
 
@@ -679,6 +758,11 @@ export async function unassignCaptain(
       [input.projectId, input.actorOperatorId],
     );
     const captainUserId = rows[0]?.captain_user_id == null ? null : String(rows[0].captain_user_id);
+    // The UPDATE above already committed to ending rows[0] if it matched at
+    // all — including an orphaned one (captain_user_id IS NULL) — so a
+    // "not_assigned" answer here can still mean a row was just cleaned up.
+    // See UnassignCaptainResult's own doc comment for why that is reported
+    // this way rather than as a distinct outcome.
     if (!rows.length || !captainUserId) return { outcome: "not_assigned" };
 
     await recordAuditEvent(tx, {
@@ -809,4 +893,30 @@ export async function listAssignments(db: BuilderQuery, input: { hackathonId: nu
     captainName: String(row.captain_name),
     assignedAt: toIso(row.assigned_at),
   }));
+}
+
+export type CaptainAssignmentCount = { captainUserId: string; captainName: string; assignedCount: number };
+
+/**
+ * The leaderboard's own read: one Captain per row with how many projects
+ * they currently captain in the edition, highest first — a `GROUP BY`
+ * query, not `listAssignments`'s per-project rows grouped in JS (the "load
+ * every project and count in the client" shape the plan forbids).
+ * `lib/hq/view-models.ts#CaptainLeaderboardView` (`{ rank, displayName,
+ * assignedCount }`) is a direct map over this: `rank` is the row's 1-based
+ * position in the array this already returns in count order, `displayName`
+ * is `captainName`.
+ */
+export async function countAssignmentsByCaptain(db: BuilderQuery, hackathonId: number): Promise<CaptainAssignmentCount[]> {
+  const { rows } = await db.query(
+    `SELECT a.captain_user_id AS captain_user_id, b.name AS captain_name, count(*)::int AS n
+     FROM hq_captain_assignments a
+     JOIN hq_projects p ON p.id = a.project_id
+     JOIN hq_builder_profiles b ON b.id = a.captain_user_id
+     WHERE p.hackathon_id = $1 AND a.unassigned_at IS NULL AND a.captain_user_id IS NOT NULL
+     GROUP BY a.captain_user_id, b.name
+     ORDER BY n DESC, b.name`,
+    [hackathonId],
+  );
+  return rows.map((row) => ({ captainUserId: String(row.captain_user_id), captainName: String(row.captain_name), assignedCount: Number(row.n) }));
 }

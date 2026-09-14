@@ -94,7 +94,7 @@ export async function revokeCaptainInvitation(invitationId: string): Promise<Act
 // switch the client would otherwise have to repeat at every call site.
 export type AssignCaptainActionResult =
   | { outcome: "assigned" }
-  | { outcome: "needs_review"; unresolved: Array<{ name: string; username: string | null }> }
+  | { outcome: "needs_review"; unresolved: Array<{ memberId: string; name: string; username: string | null }> }
   | { outcome: "error"; error: string };
 
 function conflictMessage(conflict: CaptainConflictReason): string {
@@ -105,6 +105,8 @@ function conflictMessage(conflict: CaptainConflictReason): string {
         : "This account is a verified member of this project's team. Change that relationship, or choose a different Captain.";
     case "roster_member":
       return `This account is linked to ${conflict.memberUsername ? `${conflict.memberName} (@${conflict.memberUsername})` : conflict.memberName} on this project's imported roster.`;
+    case "claimant":
+      return "This account submitted this project's Colosseum claim, as its owner. Change that relationship, or choose a different Captain.";
     case "already_assigned":
       return "This project was just given a Captain by someone else. Reload and try again.";
   }
@@ -115,7 +117,7 @@ function toAssignActionResult(result: AssignCaptainResult): AssignCaptainActionR
     case "assigned":
       return { outcome: "assigned" };
     case "needs_review":
-      return { outcome: "needs_review", unresolved: result.unresolved.map((member) => ({ name: member.name, username: member.username })) };
+      return { outcome: "needs_review", unresolved: result.unresolved.map((member) => ({ memberId: member.memberId, name: member.name, username: member.username })) };
     case "no_grant":
       return { outcome: "error", error: "This account does not currently hold an active Captain grant." };
     case "not_found":
@@ -129,16 +131,21 @@ const assignSchema = z.object({
   projectId: z.string().uuid(),
   captainUserId: z.string().min(1).max(200),
   reason: z.string().trim().max(500).optional(),
-  acknowledgeUnresolved: z.boolean().optional(),
+  // The exact hq_project_members.id set the client was shown as unresolved,
+  // echoed back as the second call of a two-step confirmation. The service
+  // re-checks this against its own, freshly re-derived unresolved set, so an
+  // id list that is stale (something resolved, or something new appeared
+  // since the client last read it) does not count as an acknowledgement.
+  acknowledgedUnresolvedIds: z.array(z.string().min(1).max(200)).optional(),
 });
 
 /**
- * Assigns (or reassigns) a project's current Captain. `acknowledgeUnresolved`
- * is the second call of a two-step confirmation: the first call over an
- * unresolved roster identity writes nothing and returns `needs_review`
- * naming the rows; only a caller that explicitly passes `true` after seeing
- * that list can push the assignment through. Never true by default, and
- * never inferred from anything but an explicit operator action.
+ * Assigns (or reassigns) a project's current Captain.
+ * `acknowledgedUnresolvedIds` is the second call of a two-step confirmation:
+ * the first call over an unresolved roster identity writes nothing and
+ * returns `needs_review` naming the rows; only a caller that echoes back
+ * those exact `memberId`s can push the assignment through. Never inferred
+ * from anything but an explicit operator action that has seen the list.
  */
 export async function assignProjectCaptain(input: z.infer<typeof assignSchema>): Promise<AssignCaptainActionResult> {
   const user = await requireUser();
@@ -152,7 +159,7 @@ export async function assignProjectCaptain(input: z.infer<typeof assignSchema>):
       hackathonId: hackathon.id,
       captainUserId: parsed.data.captainUserId,
       reason: parsed.data.reason,
-      acknowledgeUnresolved: parsed.data.acknowledgeUnresolved,
+      acknowledgedUnresolvedIds: parsed.data.acknowledgedUnresolvedIds,
     });
     if (result.outcome === "assigned") refreshHq();
     return toAssignActionResult(result);
@@ -188,23 +195,34 @@ const bulkAssignSchema = z.object({
   projectIds: z.array(z.string().uuid()).min(1).max(200),
   captainUserId: z.string().min(1).max(200),
   reason: z.string().trim().max(500).optional(),
-  acknowledgeUnresolved: z.boolean().optional(),
+  acknowledgedUnresolvedIds: z.array(z.string().min(1).max(200)).optional(),
 });
 
 export type BulkAssignCaptainOutcome = { projectId: string; result: AssignCaptainActionResult };
+
+/**
+ * `error` is a whole-batch failure (bad shape, or more than 200 projects
+ * selected) that never reached a single project — distinct from `outcomes`,
+ * where every entry is one project's own, individually reported result. A
+ * caller must not treat an empty `outcomes` array as "nothing to report":
+ * check `error` first.
+ */
+export type BulkAssignCaptainResult = { outcomes: BulkAssignCaptainOutcome[]; error: string | null };
 
 /**
  * Assigns one Captain to several projects. Each project is its own
  * transaction (assignCaptainRecord), run in sequence and reported
  * individually: a project that conflicts is named in the results, not
  * silently skipped, and the projects before and after it are unaffected —
- * there is no batch-wide rollback to skip past.
+ * there is no batch-wide rollback to skip past. A schema failure over the
+ * whole request (not a single project) is its own `error`, not a silent
+ * empty result.
  */
-export async function bulkAssignProjectCaptain(input: z.infer<typeof bulkAssignSchema>): Promise<BulkAssignCaptainOutcome[]> {
+export async function bulkAssignProjectCaptain(input: z.infer<typeof bulkAssignSchema>): Promise<BulkAssignCaptainResult> {
   const user = await requireUser();
   const hackathon = await requireHackathon();
   const parsed = bulkAssignSchema.safeParse(input);
-  if (!parsed.success) return [];
+  if (!parsed.success) return { outcomes: [], error: "Choose a Captain and select between 1 and 200 projects." };
   const db = builderDatabase();
   const outcomes: BulkAssignCaptainOutcome[] = [];
   let anyAssigned = false;
@@ -216,7 +234,7 @@ export async function bulkAssignProjectCaptain(input: z.infer<typeof bulkAssignS
         hackathonId: hackathon.id,
         captainUserId: parsed.data.captainUserId,
         reason: parsed.data.reason,
-        acknowledgeUnresolved: parsed.data.acknowledgeUnresolved,
+        acknowledgedUnresolvedIds: parsed.data.acknowledgedUnresolvedIds,
       });
       if (result.outcome === "assigned") anyAssigned = true;
       outcomes.push({ projectId, result: toAssignActionResult(result) });
@@ -225,5 +243,5 @@ export async function bulkAssignProjectCaptain(input: z.infer<typeof bulkAssignS
     }
   }
   if (anyAssigned) refreshHq();
-  return outcomes;
+  return { outcomes, error: null };
 }

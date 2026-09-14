@@ -563,13 +563,20 @@ describe("Captain assignment in Admin (task T4.4)", () => {
     expect(await currentCaptain(PROJECT)).toEqual([]);
   });
 
-  it("returns needs_review for an unresolved roster identity and only assigns once explicitly acknowledged", async () => {
+  it("returns needs_review for an unresolved roster identity and only assigns once explicitly acknowledged by the exact rows shown", async () => {
     await seedCandidate("captain-review");
     const first = await assignProjectCaptain({ projectId: PROJECT, captainUserId: "captain-review" });
-    expect(first).toEqual({ outcome: "needs_review", unresolved: [{ name: "Not Joined", username: "notjoined" }] });
+    expect(first).toEqual({ outcome: "needs_review", unresolved: [{ memberId: expect.any(String), name: "Not Joined", username: "notjoined" }] });
+    expect(await currentCaptain(PROJECT)).toEqual([]);
+    if (first.outcome !== "needs_review") throw new Error("expected needs_review");
+
+    // A stale or wrong acknowledgement does not count.
+    expect(await assignProjectCaptain({ projectId: PROJECT, captainUserId: "captain-review", acknowledgedUnresolvedIds: ["00000000-0000-4000-8000-0000000000ff"] }))
+      .toEqual({ outcome: "needs_review", unresolved: first.unresolved });
     expect(await currentCaptain(PROJECT)).toEqual([]);
 
-    expect(await assignProjectCaptain({ projectId: PROJECT, captainUserId: "captain-review", acknowledgeUnresolved: true })).toEqual({ outcome: "assigned" });
+    expect(await assignProjectCaptain({ projectId: PROJECT, captainUserId: "captain-review", acknowledgedUnresolvedIds: first.unresolved.map((m) => m.memberId) }))
+      .toEqual({ outcome: "assigned" });
     expect(await currentCaptain(PROJECT)).toEqual([{ captain_user_id: "captain-review" }]);
   });
 
@@ -582,14 +589,23 @@ describe("Captain assignment in Admin (task T4.4)", () => {
 
   it("reports per-project outcomes in bulk — a conflicted or needs-review project is named, not silently skipped, and does not stop the rest", async () => {
     await seedCandidate("captain-bulk");
-    const outcomes = await bulkAssignProjectCaptain({ projectIds: [BARE_PROJECT, PROJECT], captainUserId: "captain-bulk" });
+    const { outcomes, error } = await bulkAssignProjectCaptain({ projectIds: [BARE_PROJECT, PROJECT], captainUserId: "captain-bulk" });
+    expect(error).toBeNull();
     expect(outcomes).toEqual(expect.arrayContaining([
       { projectId: BARE_PROJECT, result: { outcome: "assigned" } },
-      { projectId: PROJECT, result: { outcome: "needs_review", unresolved: [{ name: "Not Joined", username: "notjoined" }] } },
+      { projectId: PROJECT, result: { outcome: "needs_review", unresolved: [{ memberId: expect.any(String), name: "Not Joined", username: "notjoined" }] } },
     ]));
     expect(await currentCaptain(BARE_PROJECT)).toEqual([{ captain_user_id: "captain-bulk" }]);
     expect(await currentCaptain(PROJECT)).toEqual([]);
     expect(mocks.refreshHq).toHaveBeenCalled();
+  });
+
+  it("reports a whole-batch error, rather than a silently empty result, when the request itself is invalid", async () => {
+    await seedCandidate("captain-invalid-bulk");
+    const { outcomes, error } = await bulkAssignProjectCaptain({ projectIds: [], captainUserId: "captain-invalid-bulk" });
+    expect(outcomes).toEqual([]);
+    expect(error).toEqual(expect.any(String));
+    expect(error).not.toBe("");
   });
 
   it("shows the affected project count before a revocation and clears the assignment in the same action", async () => {

@@ -16,9 +16,9 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  acceptCaptainInvitation, assignCaptain, clearCaptainAssignments, countAssignmentsForCaptain, countAssignmentsForUsers,
-  createCaptainInvitation, listAssignments, listCaptainInvitations, readCaptainInvitationByToken, revokeCaptainInvitation,
-  unassignCaptain,
+  acceptCaptainInvitation, assignCaptain, clearCaptainAssignments, countAssignmentsByCaptain, countAssignmentsForCaptain,
+  countAssignmentsForUsers, createCaptainInvitation, listAssignments, listCaptainInvitations, readCaptainInvitationByToken,
+  revokeCaptainInvitation, unassignCaptain,
 } from "@/lib/hq/captains";
 import { loadTeamMembership } from "@/lib/hq/authz-sql";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
@@ -75,7 +75,14 @@ async function seedProject(id: string, hackathonId: number = EDITION_A, name = "
  * 'verified' so `loadTeamMembership` sees the owner; pass 'pending' to test
  * the pre-verification window loadTeamMembership misses on its own.
  */
-async function seedImportedProject(input: { id: string; hackathonId?: number; ownerUserId: string; verification?: "pending" | "verified" | "rejected" }) {
+/**
+ * `linkOwnerToRoster` defaults to true (the normal case, where the claimant
+ * also matches a roster member's username exactly — `importTeam`'s own
+ * link condition). Pass false to model a claimant absent from the imported
+ * roster, or case-mismatched against it: `owner_user_id` is set, but no
+ * `hq_project_members` row names them at all.
+ */
+async function seedImportedProject(input: { id: string; hackathonId?: number; ownerUserId: string; verification?: "pending" | "verified" | "rejected"; linkOwnerToRoster?: boolean }) {
   const hackathonId = input.hackathonId ?? EDITION_A;
   await seedAccount(input.ownerUserId);
   await seedProject(input.id, hackathonId, `Imported ${input.ownerUserId}`);
@@ -85,10 +92,12 @@ async function seedImportedProject(input: { id: string; hackathonId?: number; ow
      VALUES($1,$2,$3,$4,$5,'Netherlands','{}',$6,$7,$6)`,
     [input.id, hackathonId, 90_000 + projectCounter, `https://colosseum.com/arena/projects/explore/${input.ownerUserId}`, `slug-${projectCounter}`, input.ownerUserId, input.verification ?? "verified"],
   );
-  await rows(
-    `INSERT INTO hq_project_members(project_id,name,colosseum_username,builder_user_id,joined_at) VALUES($1,$2,$2,$3,now())`,
-    [input.id, input.ownerUserId, input.ownerUserId],
-  );
+  if (input.linkOwnerToRoster ?? true) {
+    await rows(
+      `INSERT INTO hq_project_members(project_id,name,colosseum_username,builder_user_id,joined_at) VALUES($1,$2,$2,$3,now())`,
+      [input.id, input.ownerUserId, input.ownerUserId],
+    );
+  }
 }
 
 /** A joined-and-verified (not owner) roster member on an already-imported project. */
@@ -477,7 +486,7 @@ describe("assignCaptain", () => {
     expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-first" }]);
     expect(await assignmentEvents()).toEqual([
       { kind: "captain.assigned", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "cap-first",
-        metadata: { assignmentId: expect.any(String), reason: "First assignment", replacedCaptainUserId: null, unresolvedRosterAcknowledged: 0 } },
+        metadata: { assignmentId: expect.any(String), reason: "First assignment", replacedCaptainUserId: null, acknowledgedUnresolvedMemberIds: [] } },
     ]);
   });
 
@@ -545,7 +554,32 @@ describe("assignCaptain", () => {
     // loadTeamMembership requires verification='verified' and would see nothing here on its own.
     expect(await loadTeamMembership(db, { userId: "pending-owner", projectId: project })).toBeNull();
     expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "pending-owner" }))
-      .toEqual({ outcome: "conflict", conflict: { kind: "roster_member", memberName: "pending-owner", memberUsername: "pending-owner" } });
+      .toEqual({ outcome: "conflict", conflict: { kind: "claimant" } });
+  });
+
+  it("a claimant absent from the imported roster (or case-mismatched against it) is still a conflict, never needs_review", async () => {
+    // importTeam only links a roster row to the claimant when a member's
+    // username matches theirs exactly; here it does not, so owner_user_id is
+    // set but no hq_project_members row names them at all. Without the
+    // owner_user_id check, the roster scan below would see nothing tying
+    // this candidate to the project and, with an unrelated unclaimed row
+    // still on the roster, would answer needs_review instead of a hard
+    // conflict — letting a single "Assign anyway" make a project's own
+    // claimant its Captain.
+    await seedCaptain("absent-owner");
+    const project = "00000000-0000-4000-8000-000000000111";
+    await seedImportedProject({ id: project, ownerUserId: "absent-owner", verification: "pending", linkOwnerToRoster: false });
+    await unclaimedRosterRow(project, "Someone Else", "someone_else");
+    expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE project_id=$1 AND builder_user_id='absent-owner'", [project])).toEqual([]);
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "absent-owner" }))
+      .toEqual({ outcome: "conflict", conflict: { kind: "claimant" } });
+    // Still a conflict once verified — now via loadTeamMembership itself
+    // (verification='verified' plus owner_user_id is exactly its predicate,
+    // no roster link required), so this new check's own job is specifically
+    // the pending/rejected window loadTeamMembership cannot see.
+    await rows("UPDATE hq_project_onboarding SET verification='verified' WHERE project_id=$1", [project]);
+    expect(await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "absent-owner" }))
+      .toEqual({ outcome: "conflict", conflict: { kind: "verified_member", role: "owner" } });
   });
 
   it("an unresolved roster identity produces the needs-review outcome rather than a silent pass, and only proceeds once explicitly acknowledged", async () => {
@@ -563,10 +597,54 @@ describe("assignCaptain", () => {
     expect(await currentAssignments()).toEqual([]);
     expect(await assignmentEvents()).toEqual([]);
 
-    const second = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-review", acknowledgeUnresolved: true });
+    const acknowledgedIds = first.unresolved.map((m) => m.memberId);
+    const second = await assignCaptain(db, {
+      actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-review",
+      acknowledgedUnresolvedIds: acknowledgedIds,
+    });
     expect(second.outcome).toBe("assigned");
     expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-review" }]);
-    expect((await assignmentEvents())[0]).toMatchObject({ kind: "captain.assigned", metadata: expect.objectContaining({ unresolvedRosterAcknowledged: 2 }) });
+    // The exact rows overridden are on the trail, not just a count.
+    const assignedEvent = (await assignmentEvents())[0];
+    expect(assignedEvent).toMatchObject({ kind: "captain.assigned" });
+    expect((assignedEvent.metadata as { acknowledgedUnresolvedMemberIds: string[] }).acknowledgedUnresolvedMemberIds.sort()).toEqual([...acknowledgedIds].sort());
+  });
+
+  it("refuses a stale acknowledgement: an id list that no longer matches the current unresolved set is treated as no acknowledgement at all", async () => {
+    await seedCaptain("cap-stale");
+    const project = "00000000-0000-4000-8000-000000000110";
+    await seedImportedProject({ id: project, ownerUserId: "owner-other-stale" });
+    await unclaimedRosterRow(project, "Unclaimed One", "unclaimed_one");
+    await unclaimedRosterRow(project, "Unclaimed Two", "unclaimed_two");
+
+    const first = await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-stale" });
+    if (first.outcome !== "needs_review") throw new Error("expected needs_review");
+    expect(first.unresolved).toHaveLength(2);
+
+    // A completely wrong id list: refused, and the operator is handed the
+    // real, current set again rather than an unhandled mismatch.
+    const wrongIds = await assignCaptain(db, {
+      actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-stale",
+      acknowledgedUnresolvedIds: ["00000000-0000-4000-8000-0000000000ff"],
+    });
+    expect(wrongIds).toEqual({ outcome: "needs_review", unresolved: first.unresolved });
+
+    // A subset of the real ids (one of the two rows resolved since the
+    // operator last looked, in this test's telling: they just never saw
+    // the second one) is also refused, not partially honoured.
+    const partialIds = await assignCaptain(db, {
+      actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-stale",
+      acknowledgedUnresolvedIds: [first.unresolved[0].memberId],
+    });
+    expect(partialIds).toEqual({ outcome: "needs_review", unresolved: first.unresolved });
+    expect(await currentAssignments()).toEqual([]);
+
+    // The exact current set: goes through.
+    const exact = await assignCaptain(db, {
+      actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-stale",
+      acknowledgedUnresolvedIds: first.unresolved.map((m) => m.memberId),
+    });
+    expect(exact.outcome).toBe("assigned");
   });
 
   it("never compares display names: an unclaimed roster row whose name matches the candidate is still only 'needs review', never a silent conflict or a silent pass", async () => {
@@ -588,30 +666,64 @@ describe("assignCaptain", () => {
     expect((await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-bare" })).outcome).toBe("assigned");
   });
 
-  it("one project cannot hold two current Captains, including under two concurrent assignCaptain calls", async () => {
+  it("two Promise.all-issued assignCaptain calls for the same never-before-assigned project settle to one current row — proves sequential safety only, the same thing the reassignment test already proves", async () => {
     await seedCaptain("cap-race-x");
     await seedCaptain("cap-race-y");
     const project = "00000000-0000-4000-8000-000000001012";
     await seedProject(project);
     // pgliteBuilderDatabase (tests/hq/helpers/db.ts) funnels every
-    // transaction through one promise queue on PGlite's single connection,
-    // so these two Promise.all calls run as two strictly sequential
-    // transactions in call order, never truly interleaved. This proves the
-    // partial unique index is never violated and exactly one current row
-    // survives however these are interleaved in real Postgres — it does NOT
-    // prove the FOR UPDATE locks are what keeps two truly concurrent callers
-    // from racing the index directly; that is guarded separately below, by
-    // the source-level test, since this harness cannot exercise real
-    // concurrency to prove it.
+    // transaction through one promise queue on PGlite's single connection:
+    // each call's `db.transaction(...)` is invoked synchronously before
+    // either awaits anything, so these two calls queue and run as two
+    // strictly sequential, non-overlapping transactions in call order — not
+    // an interleaved race. By the time the second call's own lock-order
+    // step 4 runs, the first has already committed a real current row, so
+    // this exercises the ordinary reassignment path (end the first, insert
+    // the second), not the ON CONFLICT DO NOTHING path — the same thing
+    // "reassignment ends the old assignment..." above already proves, just
+    // reached through Promise.all instead of two sequential awaits. Kept
+    // here anyway as a second, differently-shaped witness that nothing
+    // about issuing the calls this way changes the outcome.
     const results = await Promise.all([
       assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-race-x" }),
       assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-race-y" }),
     ]);
     expect(results.map((r) => r.outcome)).toEqual(["assigned", "assigned"]);
-    const current = await currentAssignments();
-    expect(current).toHaveLength(1);
-    expect(["cap-race-x", "cap-race-y"]).toContain(current[0].captain_user_id);
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-race-y" }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_captain_assignments WHERE project_id = $1", [project])).toEqual([{ n: 2 }]);
+  });
+
+  it("the ON CONFLICT DO NOTHING guard itself: a second current-row insert for the same project is silently refused at the database level, never a raised constraint violation", async () => {
+    // What assignCaptain's own already_assigned branch (:626) relies on,
+    // isolated from the rest of the function: within a single transaction,
+    // lock order step 4's SELECT ... FOR UPDATE always sees (and ends)
+    // any row this INSERT could conflict with — its WHERE clause
+    // (`unassigned_at IS NULL`) is a strict superset of the partial unique
+    // index's own predicate (`unassigned_at IS NULL AND captain_user_id IS
+    // NOT NULL`), so assignCaptain can never reach this branch through its
+    // own single transaction, only through two genuinely concurrent ones —
+    // which this single-connection harness cannot produce (see the test
+    // above). This proves the database mechanism itself holds, the same
+    // way tests/hq/capabilities.test.ts's "allows one effective grant per
+    // capability at the database level" proves its own partial index,
+    // rather than trusting it as an assumption.
+    await seedCaptain("cap-db-guard-1");
+    await seedCaptain("cap-db-guard-2");
+    const project = "00000000-0000-4000-8000-000000001025";
+    await seedProject(project);
+    const insertCurrent = (captainUserId: string) =>
+      rows(
+        `INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id)
+         VALUES ($1::uuid, $2, $3::uuid)
+         ON CONFLICT (project_id) WHERE unassigned_at IS NULL AND captain_user_id IS NOT NULL DO NOTHING
+         RETURNING id`,
+        [project, captainUserId, OPERATOR],
+      );
+    expect(await insertCurrent("cap-db-guard-1")).toHaveLength(1);
+    // The second insert conflicts with the first's still-live row and is
+    // silently dropped — 0 rows back, no thrown error.
+    await expect(insertCurrent("cap-db-guard-2")).resolves.toHaveLength(0);
+    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-db-guard-1" }]);
   });
 
   it("locks the candidate's active grant, the project's onboarding row (if any) and the current assignment row for update — a regression guard, since PGlite's serialized test pool cannot itself prove concurrency safety", () => {
@@ -783,5 +895,43 @@ describe("listAssignments", () => {
     await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-orphan" });
     await rows("DELETE FROM hq_builder_profiles WHERE id = 'cap-orphan'");
     expect(await listAssignments(db, { hackathonId: EDITION_A })).toEqual([]);
+  });
+});
+
+describe("countAssignmentsByCaptain", () => {
+  it("counts each Captain's current projects in one edition with one GROUP BY query, highest first — T4.5's leaderboard read, not a client-side grouping of listAssignments", async () => {
+    await seedCaptain("cap-count-1");
+    await seedCaptain("cap-count-2");
+    const p1 = "00000000-0000-4000-8000-000000001026";
+    const p2 = "00000000-0000-4000-8000-000000001027";
+    const p3 = "00000000-0000-4000-8000-000000001028";
+    const other = "00000000-0000-4000-8000-000000001029";
+    await seedProject(p1, EDITION_A, "Alpha");
+    await seedProject(p2, EDITION_A, "Beta");
+    await seedProject(p3, EDITION_A, "Gamma");
+    await seedProject(other, EDITION_B, "Delta");
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "cap-count-1" });
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p2, hackathonId: EDITION_A, captainUserId: "cap-count-1" });
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p3, hackathonId: EDITION_A, captainUserId: "cap-count-2" });
+    // A different edition's assignment for cap-count-1 must not inflate edition A's count.
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: other, hackathonId: EDITION_B, captainUserId: "cap-count-1" });
+
+    const queries: string[] = [];
+    const counting = { query: (text: string, values?: unknown[]) => { queries.push(text); return db.query(text, values); } };
+    const counts = await countAssignmentsByCaptain(counting, EDITION_A);
+    expect(counts).toEqual([
+      { captainUserId: "cap-count-1", captainName: "cap-count-1", assignedCount: 2 },
+      { captainUserId: "cap-count-2", captainName: "cap-count-2", assignedCount: 1 },
+    ]);
+    expect(queries).toHaveLength(1);
+  });
+
+  it("never counts an orphaned row (a deleted account's former seat)", async () => {
+    await seedCaptain("cap-count-orphan");
+    const project = "00000000-0000-4000-8000-000000001030";
+    await seedProject(project);
+    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-count-orphan" });
+    await rows("DELETE FROM hq_builder_profiles WHERE id = 'cap-count-orphan'");
+    expect(await countAssignmentsByCaptain(db, EDITION_A)).toEqual([]);
   });
 });

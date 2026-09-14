@@ -693,8 +693,14 @@ describe("Captain assignment races with membership acceptance", () => {
     const item = await invite();
     await grantCaptain(TEAMMATE.id);
     // TEAMMATE's own unclaimed roster row is exactly the unresolved identity
-    // the conflict check cannot yet clear on its own — the admin acknowledges it here.
-    const assigned = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: item.projectId, hackathonId: 41, captainUserId: TEAMMATE.id, acknowledgeUnresolved: true });
+    // the conflict check cannot yet clear on its own — the admin acknowledges
+    // it here, by the exact memberId the preview call named.
+    const preview = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: item.projectId, hackathonId: 41, captainUserId: TEAMMATE.id });
+    if (preview.outcome !== "needs_review") throw new Error("expected needs_review");
+    const assigned = await assignCaptain(db, {
+      actorOperatorId: OPERATOR_ID, projectId: item.projectId, hackathonId: 41, captainUserId: TEAMMATE.id,
+      acknowledgedUnresolvedIds: preview.unresolved.map((m) => m.memberId),
+    });
     expect(assigned.outcome).toBe("assigned");
 
     await expect(store.redeemInvite(TEAMMATE, item.code)).rejects.toThrow("You currently hold the Captain role for this project");
@@ -726,7 +732,12 @@ describe("Captain assignment races with membership acceptance", () => {
     await grantCaptain(OUTSIDER.id);
     // One unresolved roster row (the unclaimed second teammate) on this
     // project; OUTSIDER is unrelated to it, so this is the acknowledged path.
-    const assigned = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: id, hackathonId: 41, captainUserId: OUTSIDER.id, acknowledgeUnresolved: true });
+    const preview = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: id, hackathonId: 41, captainUserId: OUTSIDER.id });
+    if (preview.outcome !== "needs_review") throw new Error("expected needs_review");
+    const assigned = await assignCaptain(db, {
+      actorOperatorId: OPERATOR_ID, projectId: id, hackathonId: 41, captainUserId: OUTSIDER.id,
+      acknowledgedUnresolvedIds: preview.unresolved.map((m) => m.memberId),
+    });
     expect(assigned.outcome).toBe("assigned");
 
     const challenge = await store.issueChallenge(OUTSIDER, 41, PROJECT, "fictional_builder_1");
@@ -734,6 +745,35 @@ describe("Captain assignment races with membership acceptance", () => {
       .rejects.toThrow("You currently hold the Captain role for this project");
     // Refused, not silently dropped: the claim is still pending under OWNER.
     expect(await rows("SELECT owner_user_id FROM hq_project_onboarding WHERE project_id=$1", [id])).toEqual([{ owner_user_id: OWNER.id }]);
+  });
+
+  it("pins that the Captain-role refusal now wins over the pre-existing 'already verified' message, for an already-verified team too", async () => {
+    // This guard runs before the existing verification-state branch, so it
+    // changes an existing path's behaviour: completing an old challenge
+    // against a team that became verified out from under it used to always
+    // throw "This team is already verified. Ask its owner for an invite."
+    // (see "never replaces an already verified team..." above, same setup)
+    // — now, if the completing account is that team's current Captain, they
+    // see the Captain-specific refusal instead. Accurate and not leaky, but
+    // it is a real behaviour change to an existing path, pinned here rather
+    // than left to the newer tests above (which only ever exercise pending
+    // claims, where there is no pre-existing message to compete with).
+    await seedOperator();
+    // OUTSIDER's challenge is issued while the project is still unclaimed —
+    // issueChallenge itself refuses once a verified claim exists.
+    const challenge = await store.issueChallenge(OUTSIDER, 41, PROJECT, "fictional_builder_1");
+    const { id } = await importProject(); // OWNER verifies the same external project out from under it
+    await grantCaptain(OUTSIDER.id);
+    const preview = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: id, hackathonId: 41, captainUserId: OUTSIDER.id });
+    if (preview.outcome !== "needs_review") throw new Error("expected needs_review");
+    const assigned = await assignCaptain(db, {
+      actorOperatorId: OPERATOR_ID, projectId: id, hackathonId: 41, captainUserId: OUTSIDER.id,
+      acknowledgedUnresolvedIds: preview.unresolved.map((m) => m.memberId),
+    });
+    expect(assigned.outcome).toBe("assigned");
+
+    await expect(store.importTeam(OUTSIDER, challenge.id, PROJECT, "fictional_builder_2", "live", PROOF))
+      .rejects.toThrow("You currently hold the Captain role for this project");
   });
 });
 
