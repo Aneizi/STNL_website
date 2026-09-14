@@ -78,7 +78,7 @@ exists yet and none should be created before that phase.
 | Module | Owns | Repo files | Typed entry points | Phase |
 |---|---|---|---|---|
 | Identity | verified login identities, sessions, linking, optional contact email | `lib/hq/member-auth.ts`, new `lib/hq/telegram-provider.ts`, new `lib/hq/telegram-identity-plugin.ts`, new `lib/hq/identity.ts`, `lib/hq/actions/telegram.ts` (member gated); task T4.2 added `lib/hq/placeholder-email.ts` (`PLACEHOLDER_DOMAIN` and `isPlaceholderEmail` are defined here — the one leaf module with no `server-only` and no Better Auth import — and re-exported, unchanged, from `telegram-provider.ts` and `identity.ts` for every existing caller) | `isPlaceholderEmail(email)`, `getLoginMethods(userId)`, `hasTelegramIdentity(userId)`, `getTelegramIdentity(userId)`, `verifiedLoginEmail(user)`, `isVerifiedAccount(user)` (the one definition of "verified account"; every session reader imports it); phase 2: `isRecentSession(session)` and `telegramIsLastLoginMethod(user)` (the one recency rule and the one last-login-method rule, enforced by the plugin's before hooks and read by the confirmation actions), `recordTelegramIntent(store, userId, intent)`, `currentMemberSession()` (its `user.email` is null for a Telegram-only account: a `customSession` transform replaces the internal placeholder on `/get-session`, and so on every reader of a session, `StoredAccount.email` being `string | null` for that reason), `redirectToMemberSignIn(next)`, and the actions `confirmLinkTelegram()`, `confirmUnlinkTelegram()`; task T2.3: `confirmEmailChange(newEmail)` (the confirmation before the emailOTP change-email endpoints; the intent is bound to the address, and an account that already has a verified login email is refused with `EMAIL_ALREADY_SET`, so the endpoints only ever add a first address), `normalizeEmailAddress(value)`, the `user.update.after` hook in `member-auth.ts` (notifies the previous verified real address and records `identity.email_changed`), and in `lib/hq/telegram-consent.ts` `getBotConsent(userId)`, `setBotConsent(actor, enabled)`, `revokeBotConsent(userId, db)` with the action `setBotMessaging(enabled)` | 0 spike, then 1 and 2 |
-| Authorization | operator checks, capabilities, membership, assignment, note audience | `lib/hq/authz.ts` with pure loaders in `lib/hq/authz-sql.ts`; member-facing team reads over the decision in `lib/hq/member-teams.ts`; operator actions resolve record ids through `inHackathon` in `lib/hq/actions/util.ts` | `getActorCapabilities(actor)`, `authorizeProjectAction(actor, { projectId, hackathonId, action }, loaders?)` returning `Authorization`, `requireOperator()`, `isTeamMember(actor, projectId)`, `isAssignedCaptain(actor, projectId)`, `entryAudience(entry, actor)`, `canEditEntry(actor, entry)`, `canReadRevisionHistory(actor)`, `assertHackathonMatches(record, hackathonId)`; loaders are injectable per call and never cached across requests. The typed hooks `loadCurrentAssignment(db, projectId)` (reads `hq_captain_assignments` since task T4.1) and `loadEntry(db, entryId)` (reads `hq_reporting_entries` since task T5.2, with an operator author namespaced as `operator:<id>`) live in `authz-sql.ts`; the decisions over them are tested with injected fixtures, independent of whether the loader body is real, and neither phase needed a change to `Entry`, `CurrentAssignment`, `entryAudience` or `canEditEntry`. `assertHackathonMatches` is defined in `authz-sql.ts` and re-exported from `authz.ts`: it reads no session, and `actions/util.ts` imports it from the leaf so the operator action modules do not reach the member auth graph (`tests/hq/operator-imports.test.ts`). `authorizedTeam(actor, { projectId, hackathonId?, action })` and `memberTeamView(actor, projectId)` return null for every denial; `inHackathon(record, hackathonId)` returns null for a missing record and for one from another edition alike | 1 |
+| Authorization | operator checks, capabilities, membership, assignment, note audience | `lib/hq/authz.ts` (the one module a caller imports) over the session-free decisions in `lib/hq/authz-decisions.ts` and the pure loaders in `lib/hq/authz-sql.ts`; member-facing team reads over the decision in `lib/hq/member-teams.ts`; operator actions resolve record ids through `inHackathon` in `lib/hq/actions/util.ts` | `getActorCapabilities(actor)`, `authorizeProjectAction(actor, { projectId, hackathonId, action }, loaders?)` returning `Authorization`, `requireOperator()`, `isTeamMember(actor, projectId)`, `isAssignedCaptain(actor, projectId)`, `entryAudience(entry, actor)`, `canEditEntry(actor, entry)`, `canReadRevisionHistory(actor)`, `assertHackathonMatches(record, hackathonId)`; loaders are injectable per call and never cached across requests. The typed hooks `loadCurrentAssignment(db, projectId)` (reads `hq_captain_assignments` since task T4.1) and `loadEntry(db, entryId)` (reads `hq_reporting_entries` since task T5.2, with an operator author namespaced as `operator:<id>`) live in `authz-sql.ts`; the decisions over them are tested with injected fixtures, independent of whether the loader body is real, and neither phase needed a change to `Entry`, `CurrentAssignment`, `entryAudience` or `canEditEntry`. `assertHackathonMatches` is defined in `authz-sql.ts` and re-exported from `authz.ts`: it reads no session, and `actions/util.ts` imports it from the leaf so the operator action modules do not reach the member auth graph (`tests/hq/operator-imports.test.ts`). Phase 6 split that reasoning one level further: every decision above lives in `authz-decisions.ts`, which imports `Actor` as a type only, and `authz.ts` re-exports all of them and keeps `requireOperator()`, the one function here that reads a session. `lib/hq/reporting.ts` imports the decisions leaf for that reason and nothing else; every other caller imports `./authz`. `authorizedTeam(actor, { projectId, hackathonId?, action })` and `memberTeamView(actor, projectId)` return null for every denial; `inHackathon(record, hackathonId)` returns null for a missing record and for one from another edition alike | 1 |
 | Capability grants | grant and revoke, one effective grant per capability, audit trail | `lib/hq/capabilities.ts`, `lib/hq/actions/capabilities.ts` (operator gated) | `Capability = "captain"`, `grantCapability(db, { actor, byOperatorId, userId, capability, reason })` and `revokeCapability(db, ...)` (idempotent, the only writers of `hq_account_capabilities`, audit event in the same transaction). `actor` is the `AuditActor` the event records, `byOperatorId` the `hq_users` id the row is attributed to (`granted_by_user_id` / `revoked_by_user_id`) or null: a member redeeming a Captain invitation in phase 4 is a member actor with the inviting operator as `byOperatorId`. Grants are account-global, never scoped to an edition. Also `listActiveCapabilities(userId)`, `listActiveCapabilitiesForUsers(userIds)`, `listCapabilityGrants({ capability, activeOnly? })`, `personTags(roleLabel, capabilities)`; actions `grantCaptainCapability(userId, reason)`, `revokeCaptainCapability(userId, reason)` | 1 |
 | CRM person identity | stable person id, account link, edition People references, explicit correction | `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch(db, { personId, toUserId, reason, actor })` (detach, link, or merge into the account's own person; never by display name) and the operator action `correctPersonMatch({ personId, toUserId, reason })` | 1, used from 3 |
 | Audit | append only metadata events | `lib/hq/audit.ts`, `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata? })`, `listAuditEvents(filter, { limit, cursor })`; nothing else | 1 |
@@ -88,6 +88,7 @@ exists yet and none should be created before that phase.
 | Captain service | invitations, redemptions, assignments, leaderboard | `lib/hq/captains.ts` (the service); `lib/hq/actions/captains.ts` (operator actions, gated `requireUser()`, scanned by `tests/hq/operator-imports.test.ts`); `lib/hq/actions/invite.ts` (the one member-gated action, its own module because `actions/captains.ts` is operator-scanned); `lib/hq/invite-exchange.ts` and `lib/hq/invite-continuation.ts` (the `/hq/invite/<token>` exchange and its short-lived continuation, written directly into `hq_auth_verification`) | Invitations: `createCaptainInvitation`, `readCaptainInvitationByToken`, `acceptCaptainInvitation`, `revokeCaptainInvitation`, `listCaptainInvitations`. Assignments: `assignCaptain`, `unassignCaptain`, `clearCaptainAssignments`, `countAssignmentsForCaptain`, `countAssignmentsForUsers`, `listAssignments`, `countAssignmentsByCaptain`. Reads: `leaderboard(db, hackathonId, viewerUserId?)`, `currentCaptainOfProject(db, projectId)`. Operator actions: `createCaptainInvitation`, `revokeCaptainInvitation`, `assignProjectCaptain`, `unassignProjectCaptain`, `bulkAssignProjectCaptain`. Member action: `acceptCaptainInvitationFromContinuation`. Route helpers: `inviteLink(token)`, `INVITE_CONTINUE_PATH` in `lib/hq/member-routes.ts` | 4, complete |
 | Record deletion | admin removal of a team and of a person | `lib/hq/record-deletion.ts`; operator actions in `lib/hq/actions/builders-admin.ts` (`deleteBuilderTeam`), `lib/hq/actions/people.ts` (`deletePerson`) and `lib/hq/actions/projects.ts` (`deleteProject`, which delegates here so there is one deletion, not two) | `teamRemovalImpact`, `deleteTeamRecord`, `personRemovalImpact`, `deletePersonRecord`. One transaction each, audited (`project.deleted`, `person.deleted`), real counts read before the destructive step and again inside it. Deleting a person NEVER deletes the `hq_builder_profiles` account behind them | 3 |
 | Reporting service | periods, eligibility, entries, revisions, completion, outcomes | `lib/hq/reporting.ts` (the one module a caller imports), `lib/hq/reporting-enrolment.ts` (schedule and eligibility, split out **only** so `builder-store.ts` can enrol a team inside the import transaction without `./authz -> ./actor -> ./member-auth -> ./builder-store` closing a cycle; everything it owns is re-exported unchanged), `lib/hq/reporting-periods.ts` (the pure generator, no `server-only`) | Schedule: `readReportingSchedule`, `listReportingPeriods`, `currentReportingPeriod`, `ensureReportingPeriods`, `previewReportingPeriods`. Eligibility: `reportingEligibility`, `listReportingEligibility`, `enableReporting`, `pauseReporting`. Entries: `createUpdate`, `editUpdate`, `voidUpdate`, `readAuthorizedUpdates`, `readRevisionHistory`, `MAX_BODY_LENGTH`. Status and outcomes: `reportingStatus`, `closePeriod`, `listPeriodOutcomes`, `correctOutcome`. Pure: `generateReportingPeriods`, `zonedDateTimeToUtc`, `addDays`, `periodForInstant` | 5, complete |
+| Reporting surfaces | the team, Captain and admin reporting screens and the actions behind them | `lib/hq/reporting-view.ts` (pure copy and presentation rules, client-safe), `lib/hq/reporting-contacts.ts` (the two opt-in contacts, no `./authz` import so operator queries reach it), `lib/hq/reporting-surface.ts` (the two member page reads), `lib/hq/actions/reporting.ts` (member gated), `lib/hq/actions/reporting-admin.ts` (operator gated, scanned by `tests/hq/operator-imports.test.ts`), `components/hq/reporting-member.tsx`, `components/hq/reporting-admin.tsx`, `components/hq/reporting-project-panel.tsx` | Member actions: `addReportingUpdate`, `editReportingUpdate`, `saveTeamContact`, `saveCaptainContact`. Operator actions: `previewReportingSchedule`, `applyReportingSchedule`, `saveReportingConfiguration`, `enableProjectReporting`, `setProjectReportingPaused`, `voidReportingUpdate`, `correctReportingOutcome`, `loadProjectReporting`, `loadEntryRevisions`. Pure: `statusLabel`, `periodRangeLabel`, `deadlineLabel`, `shouldPromptUpdate`, `promptDismissKey`, `byOutstandingFirst`, `ADD_UPDATE_MESSAGES`, `EDIT_UPDATE_MESSAGES`, `AUDIENCE_NOTES`, `normalizeContact`, `MAX_CONTACT_LENGTH`. Reads: `teamReportingPanel`, `captainReportingBoard`, `readTeamContact(s)`, `readCaptainContact(s)`. A phase that writes reporting copy adds it to `reporting-view.ts`, so the em dash and middot scan keeps covering it | 6, complete |
 | Telegram adapter | authenticated chat commands, drafts, delivery | `lib/hq/telegram-bot.ts`, `app/api/telegram/webhook/route.ts`, named only | decided in phase 7 | 7 |
 | Job runner | reminders, closures, bounded sync | `lib/hq/jobs.ts` named only, `lib/hq/github-actions-auth.ts` parameterised by audience and workflow | `prepareReminder`, with a separate OIDC audience and no shared privileges | 8 |
 | Discovery and readiness | final submission readiness | named only | decided in phase 10 | 10 |
@@ -409,11 +410,11 @@ The approved project fallback image:
 The plan's original path, `assets/hq-project-fallback.png`, does not exist at the
 repository root. Phase 3 copied the source above to the target path.
 
-## Handoff to phase 6 and later
+## Handoff to phase 7 and later
 
-Phases 0, 1, 2, 3, 4 and 5 are complete. **Phase 6 (the reporting dashboards
-and prompts) is next**, then phase 7 onward; there is no phase 9. This section
-is what a later phase needs to start without re-reading the whole log. The
+Phases 0, 1, 2, 3, 4, 5 and 6 are complete. **Phase 7 (the STNL Telegram bot)
+is next**, then phase 8 and phase 10; there is no phase 9. This section is
+what a later phase needs to start without re-reading the whole log. The
 per-task detail is in `docs/hq/implementation-log.md`.
 
 ### Interfaces available now
@@ -643,15 +644,16 @@ refusal from a service is shown as the specific, actionable message the
 service distinguishes — never collapsed into a generic error, the rule phase
 3 established for imports.
 
-### What phase 5 settled, and what phase 6 owes it
+### What phase 5 settled, and what phase 6 did with it
 
 Phase 5 built the reporting model and deliberately built **no screen and no
 Server Action**: standing rule 1 above ("a stub module is work with no user",
 "a stub route handler would be a live endpoint") applies exactly to an action
-with no page behind it. Phase 6 adds the team, Captain and admin surfaces and
-the actions that call the service; phase 7 the bot handlers; phase 8 the
-reminder and closure jobs. Nothing in the service is a stub — every entry
-point below is real and tested.
+with no page behind it. Phase 6 added the team, Captain and admin surfaces and
+the actions that call the service; phase 7 adds the bot handlers and phase 8
+the reminder and closure jobs. The ten points below are the service's own
+rules, all still current; the section after this one records what phase 6
+settled on top of them.
 
 1. **Dates come from the edition, never from Colosseum.**
    `readReportingSchedule(db, hackathonId)` assembles the campaign window from
@@ -666,9 +668,9 @@ point below is real and tested.
    sequence and **refuses to move or remove any period that already holds an
    entry or an outcome or that has been closed**, returning it as a
    `ReportingPeriodConflict` instead. `previewReportingPeriods` is the same
-   computation with no writes: **phase 6's admin schedule screen must show its
-   result before a live date change**, which is the plan's "show affected
-   periods before an admin changes a live schedule".
+   computation with no writes, and it is what Admin's Weekly reporting panel
+   shows before a live date change (the plan's "show affected periods before
+   an admin changes a live schedule"); applying is a separate press.
 3. **Ends are exclusive internally, inclusive in what you display.** Every
    period carries both: `startDate`/`endDate` for the screen,
    `startsAt`/`endsAt` (exclusive) for every comparison. Never print
@@ -680,7 +682,7 @@ point below is real and tested.
    `ProjectReportingStatus` both carry `projectName` and `imported`. Build the
    reporting parts of a Captain or admin card from the status shape and it
    needs no `BuilderTeam`; only roster, lead and Colosseum link still require
-   one.
+   one. Phase 6's Captain page does exactly that, so the reduced card is gone.
 5. **The audience is applied in SQL, so do not filter in the browser.**
    `readAuthorizedUpdates` never returns a sensitive body, a sensitive entry's
    existence, or a voided entry to a member who is not its author, and a
@@ -696,10 +698,11 @@ point below is real and tested.
    this rule in a component.
 7. **Drafts are bound to their period.** Pass `expectedPeriodId` from whatever
    the composer was opened against; a save that crossed midnight comes back
-   `{ ok: false, reason: "period_changed", currentPeriod }` and phase 6 must
+   `{ ok: false, reason: "period_changed", currentPeriod }` and the caller must
    ask before moving the text into the new week. An edit conflict comes back
    `{ ok: false, reason: "conflict", current }` and the unsaved text must be
-   preserved, not discarded.
+   preserved, not discarded. Phase 6's screens do both; a phase 7 handler owes
+   them the same.
 8. **A period's recorded outcome is history.** `closePeriod` is idempotent and
    never rewrites; a late entry is marked `late`, completes nothing and leaves
    the missed outcome exactly as recorded; `correctOutcome` writes
@@ -719,17 +722,60 @@ point below is real and tested.
     and a person deletion never deletes the account an entry names. That
     decision is written in the module header with a test behind it.
 
-### What phase 6 still has to decide for itself
+### What phase 6 settled, and what phase 7 and later inherit
 
-- **The team-level preferred contact** is still not built (carried from phase
-  3). `MemberTeamView.captain.contact` is always null because nothing gives a
-  Captain a way to approve one. It is one nullable column and one field, and
-  phase 6's team dashboard is its natural home.
-- **The Monday and Tuesday prompt** is entirely phase 6's: the service tells
-  it whether the open period is complete (`current.completed`) and when it
-  ends (`current.endsAt`), and stores no dismissal of its own.
-- **`nudge_at` is computed and stored per period but nothing sends anything.**
-  Delivery is phase 8's, and the weekday and time live in
-  `hq_reporting_config` so that phase changes a setting rather than bot code.
-- **No reporting surface is browser-verified**, because phase 5 rendered
-  nothing. The whole visual layer, on desktop and on a phone, is new work.
+Phase 6 built the team, Captain and admin reporting surfaces and the Server
+Actions behind them. It added no table.
+
+1. **The authorization decisions are session-free, and reporting depends on
+   that.** `lib/hq/authz-decisions.ts` holds every decision; `lib/hq/authz.ts`
+   re-exports all of them and keeps `requireOperator()`, the one function that
+   reads a session. `lib/hq/reporting.ts` therefore reaches neither `./actor`
+   nor `./member-auth`, which is what lets one reporting service serve both a
+   member action and an operator one instead of being copied. Restoring that
+   edge breaks every operator action module at once
+   (`tests/hq/operator-imports.test.ts`).
+2. **Two service refusals have screen answers, and a phase 7 handler owes them
+   the same.** `period_changed` carries the week that is open now and writes
+   nothing; the caller asks before moving the text. `conflict` carries the
+   entry as it is saved now; the caller keeps the unsaved text beside it. A bot
+   handler that collapses either into "something went wrong" loses the
+   person's words, which is the case the plan names.
+3. **Copy lives in `lib/hq/reporting-view.ts`.** Pure, client-safe, and scanned
+   by `tests/hq/reporting-view.test.ts` for em dashes and middots along with
+   the three reporting components. A phase that writes reporting copy puts it
+   there rather than inline, or the scan stops covering it.
+4. **A card's reporting half is built from `ProjectReportingStatus`.** It
+   carries `projectName` and `imported`, so a CRM-only project gets the same
+   week, status and composer as an imported team; only the Colosseum detail
+   differs. There is no reduced reporting row, and reintroducing one would
+   undo the phase 5 ruling.
+5. **The two contacts are opt-in and self-set.**
+   `hq_project_onboarding.team_contact` (the team lead sets it, the assigned
+   Captain and admins read it) and `hq_builder_profiles.captain_contact` (the
+   Captain sets it, their teams and admins read it). Setting one is the
+   approval; nothing derives either from a login, a profile address or
+   Colosseum, and `MemberTeamView.captain.contact` is now populated from the
+   second. The Captain column shares a name, and nothing else, with
+   `hq_partners.captain_contact`, which is a partner organisation's contact
+   person.
+6. **The prompt's dismissal is per browser, keyed by project and period.** Not
+   a table: it has no audience and no history, the outstanding action stays
+   either way, and completion is what ends the prompt for good. It renders on
+   the server too, because its hydration snapshot answers "not dismissed".
+7. **A live date change is previewed before it is applied.** Admin shows
+   `previewReportingPeriods`'s plan and every week it must not move, with the
+   reason and the counts; applying is a separate press. `saveReportingConfiguration`
+   deliberately does not regenerate the periods, for the same reason.
+8. **`closePeriod` still has no production caller, and no admin button.**
+   Closing a period is phase 8's scheduled, idempotent job.
+   `reportingStatus` computes the same answer live for a week that has ended
+   and not been closed, so every screen is already honest about a missed week.
+9. **`nudge_at` is computed and stored per period but nothing sends anything.**
+   Delivery is phase 8's; the weekday and time are now editable in Admin
+   rather than only in the database.
+10. **The member pages have not been reached through a real sign-in**, because
+    `BETTER_AUTH_URL`/`BETTER_AUTH_SECRET` are still the owner's outstanding
+    setup item. Their components were checked in a browser against real rows
+    at desktop and phone width, and `tests/hq/reporting-team-page.test.ts`
+    renders the real page. What is unverified is the sign-in path into them.

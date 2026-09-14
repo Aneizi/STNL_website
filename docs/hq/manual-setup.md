@@ -54,7 +54,7 @@ sessions working while Telegram is unreachable") asserts it.
 | Colosseum edition mapping | **Not configured**, but the value is verified: id `7`, slug `crypto-worlds-fair` (item 2.6) | Every self-service import: phase 3 answers "Superteam NL has not confirmed this hackathon's Colosseum edition yet" until it is typed into Admin |
 | Project fallback image | Done in code; an optional smaller copy is yours if you want it | Nothing |
 | Telegram bot messaging | **Not configured** | Phase 7 only. Nothing before then |
-| Reporting schedule for this edition (item 2.10) | **Not configured**, and the value is agreed: final period starts `2026-10-05` | Nothing breaks without it, but the 5 to 12 October window would be a weekly period plus a stray day instead of one submission-focus period |
+| Reporting schedule for this edition (item 2.10) | **Not configured**, and the value is agreed: final period starts `2026-10-05`. Since phase 6 it is set in Admin under Weekly reporting, not in SQL | Nothing breaks without it, but the 5 to 12 October window would be a weekly period plus a stray day instead of one submission-focus period |
 | Local dev environment | Absent | Running the app locally. Tests need none of it |
 
 ---
@@ -468,9 +468,9 @@ actually seen the result.
 **Status:** Not configured. One row, one value, and the value is already
 agreed.
 
-**Who:** you. **Where:** the `hq_reporting_config` row for the World's Fair
-edition (phase 6 puts this on an Admin screen; until then it is one SQL
-statement).
+**Who:** you. **Where:** **Admin, under Weekly reporting** (the panel below
+Captain leaderboard), for the edition you have selected. Phase 6 put this on
+screen, so the SQL below is now only a reference for what the fields write.
 
 **Variables:** none. This is edition data, not configuration in an
 environment.
@@ -486,7 +486,14 @@ window**, and the setting that produces it is
 without the row — an edition with no reporting configuration still reports
 weekly — but the final period will not be the agreed one.
 
-**What to set.**
+**What to set.** In Admin, under Weekly reporting: set **Final submission
+period starts** to 5 October 2026 and press **Save reporting settings**. Then
+read the panel's "Before you change the dates" line and press **Apply the
+hackathon dates to the weeks**, which is what writes the periods; the panel
+names any week it will not move because teams have already reported against
+it, before you press it.
+
+The same row, as SQL, for reference:
 
 ```sql
 INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date)
@@ -494,7 +501,7 @@ VALUES (<the World's Fair hq_hackathons.id>, '2026-10-05')
 ON CONFLICT (hackathon_id) DO UPDATE SET final_period_start_date = EXCLUDED.final_period_start_date, updated_at = now();
 ```
 
-Two optional columns on the same row:
+Two optional columns on the same row, both also on that Admin panel:
 
 - `official_submission_deadline` — set this **only if Colosseum's own cutoff
   turns out to be earlier** than 13 October 00:00 Europe/Amsterdam, which is
@@ -504,12 +511,15 @@ Two optional columns on the same row:
   disabled (item 2.6), so `projectSubmissionEndDate` cannot be fetched. Leave
   it NULL until you know the real value. HQ's reporting window never changes
   the external deadline either way.
-- `nudge_weekday` and `nudge_time` — default to ISO weekday 3 (Wednesday) and
-  12:00 local, which is the agreed reminder slot. Change them here rather than
-  in bot code; phase 8 reads this row.
+- `nudge_weekday` and `nudge_time` — the **Reminder day** and **Reminder time**
+  fields, defaulting to Wednesday and 12:00 local, which is the agreed
+  reminder slot. Change them here rather than in bot code; phase 8 reads this
+  row. Nothing sends anything yet.
 
-**How to verify.** After setting the row, the edition's four periods appear as
-soon as any team is in reporting (an import does it automatically). In psql:
+**How to verify.** The Admin panel lists the stored weeks directly: expect
+"Week 1: 14 to 20 September", "Week 2: 21 to 27 September", "Week 3: 28
+September to 4 October" and "Week 4: 5 to 12 October (final submission
+period)". The same in psql, if you would rather:
 
 ```sql
 SELECT sequence, mode, start_date, end_date, nudge_at FROM hq_reporting_periods

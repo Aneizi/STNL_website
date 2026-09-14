@@ -4441,3 +4441,303 @@ for the 5 to 12 October window to be one submission-focus period rather than a
 week plus a stray day, and `official_submission_deadline` only if Colosseum's
 own cutoff turns out to be earlier than 13 October 00:00 Amsterdam. Both are
 recorded in `docs/hq/manual-setup.md`.
+
+## Phase 6, the reporting dashboards and prompts
+
+Implemented in one session on branch `hq-captains-phases-0-2`, on top of
+phase 5. The plan's Phase 6 section is the authority for everything below,
+together with section 2's "Weekly reporting", section 5's privacy contract
+and `docs/hq/contracts.md`'s "Building a surface, for the phases that render
+one" and "What phase 5 settled, and what phase 6 owes it".
+
+This is the first phase whose main output is interface. Phase 5 built the
+model and deliberately built no screen and no Server Action, so phase 6 adds
+both together: every entry point it needs was already a typed function on
+`lib/hq/reporting.ts`, and nothing here re-derives a rule that service
+already enforces.
+
+### What changed
+
+**The module graph, first (`lib/hq/authz-decisions.ts`, new).** Phase 6's
+admin actions call the same reporting service its member actions do, and they
+could not: `lib/hq/reporting.ts` imported `./authz`, `./authz` imported
+`./actor` for `requireOperator()` alone, and `./actor` imports
+`./member-auth`, so an operator action module that reached reporting failed
+`tests/hq/operator-imports.test.ts`. The decisions themselves read no session.
+They moved to `lib/hq/authz-decisions.ts`, which takes `Actor` as a type-only
+import; `./authz` re-exports every one of them unchanged and keeps
+`requireOperator`. Same definitions, one module-graph edge fewer, and exactly
+the split (and the reason) that put `reporting-enrolment` beside `reporting`.
+The alternative was a second copy of `voidUpdate` and `correctOutcome` for
+operators, which is the "one reporting service" rule broken for a module
+boundary. `tests/hq/operator-imports.test.ts` now pins the shape: reporting
+reaches the decisions and not `./member-auth`, the decisions do not reach
+`./actor`, and `./authz` still does, because `requireOperator` is still there.
+
+**The presentation rules as a pure module (`lib/hq/reporting-view.ts`, new).**
+No `server-only`, no database handle, no session, following `member-nav.ts`
+and `reporting-periods.ts`: a week's wording from the inclusive dates (never
+`endsAt`, which is local midnight on the following day), the two words a
+week's state is ever said in, the deadline as the day it falls on, the
+Monday-and-Tuesday prompt rule, one distinct message per service refusal, the
+audience notes, and the ordering that puts outstanding work first. Client
+components and tests import the same functions, so the copy rule is
+assertable directly rather than through one rendered page.
+
+**The member writes (`lib/hq/actions/reporting.ts`, new, member gated).**
+`addReportingUpdate`, `editReportingUpdate`, `saveTeamContact`,
+`saveCaptainContact`. Thin callers: `createUpdate` and `editUpdate` make their
+own authorization decision, which is what makes them safe to share with the
+phase 7 bot, and adding a second check here would be a weaker second rule (a
+Captain's assigned project has no `BuilderTeam` to look up at all). The two
+contact actions touch a team record rather than a reporting one, so they go
+through `authorizedTeam` like every other team write, and the Captain one
+re-reads the grant through `getActorCapabilities` rather than trusting the
+set the actor was built with.
+
+**Two refusals get a real answer, not an error.** `period_changed` means the
+draft was bound to a week that closed while it was being written: the service
+names the week that is open now, **nothing is written**, and the composer asks
+before moving the text into it. `conflict` means the entry changed under an
+edit: the service hands back the version that is saved now, the composer shows
+both and keeps the unsaved text, and saving again is an explicit second press.
+Every other refusal keeps its own wording too, the rule phase 3 set for
+imports.
+
+**The admin writes (`lib/hq/actions/reporting-admin.ts`, new, operator
+gated).** Moderation (`voidReportingUpdate`), historical correction
+(`correctReportingOutcome`), eligibility (`enableProjectReporting`,
+`setProjectReportingPaused`), the schedule (`previewReportingSchedule`,
+`applyReportingSchedule`, `saveReportingConfiguration`) and the two
+detail-panel reads (`loadProjectReporting`, `loadEntryRevisions`). Every
+record action resolves its id through `inHackathon`, so a project or a period
+from another edition answers exactly like one that does not exist. The
+operator `Actor` is built from `requireUser()` rather than
+`requireOperatorActor()`, because that function lives in `./actor`; the gate
+is the same one every other operator action uses.
+
+**The team surface (`app/hq/(member)/team/[id]/page.tsx`,
+`components/hq/reporting-member.tsx`, new).** The open week with its inclusive
+dates and its deadline, Updated or Not updated, the updates this viewer may
+read, the composer, an inline editor for the author with the simple edited
+indication and no revision history, and the team's preferred contact for its
+lead. The Captain line sits on the page rather than inside the reporting
+section, because a team has a Captain whether or not weekly updates have
+started for it.
+
+**The Monday and Tuesday prompt.** Inline and dismissible, one per project and
+week, never a popup: the plan asks for no stack of blocking dialogs. A
+dismissal lives in this browser, keyed by project and period, so dismissing
+one week never silences the next and dismissing one team never silences
+another; it is deliberately not a table, because a dismissal has no audience
+and no history and the Add update action stays whatever the prompt does.
+Completion is what ends it for good. It is read through
+`useSyncExternalStore`, whose server snapshot answers "not dismissed", so the
+prompt is in the first HTML the browser receives and disappears immediately
+afterwards for anyone who dismissed it. Reading `localStorage` during render
+would be a hydration mismatch and setting state from an effect a cascading
+render; this is neither.
+
+**The Captain surface (`app/hq/(member)/captain/page.tsx`).** Rebuilt around
+the week. Each assigned project's card is built from `ProjectReportingStatus`,
+which carries `projectName` and `imported` itself, so **a project an admin
+created in the CRM has the same week, status, contact line and composer as an
+imported team** and only the Colosseum detail differs. That is the phase 5
+ruling applied: the reduced card is gone, and there is no reduced reporting
+row. Not-updated projects sort first, then the most missed weeks, then by name.
+The composer carries the Sensitive toggle with the audience described before
+the save. The leaderboard and the Connect Telegram hint are unchanged.
+
+**The two contacts, one nullable column each.** `hq_project_onboarding.team_contact`
+is the team's preferred contact, set by its lead, read by its assigned Captain
+and by admins; `hq_builder_profiles.captain_contact` is the contact a Captain
+approves for the teams they hold, read by those teams and by admins. Setting
+one **is** the approval, which is why nothing derives either from a login, a
+profile address or a Colosseum field. This is phase 3's carried deferral and
+the writer `MemberTeamView.captain.contact` never had. The Captain column
+shares a name, and nothing else, with `hq_partners.captain_contact`, a partner
+organisation's own contact person; the schema comment says so where the column
+is created.
+
+**The admin surfaces.** Projects gains a Weekly column (Updated, Not updated,
+Paused or Not in reporting, with any missed weeks under it) and the four
+filters the plan names, kept as independent toggles so any combination is
+askable: Unassigned, Not updated this period, Missed weeks, Not submitted. The
+weekly and the Colosseum signals stay separate, and Not checked never counts
+as Not submitted. Its detail panel gains a full-width reporting row, loaded
+when the row is opened rather than for every row on the board: the assigned
+Captain with their contact and whether the bot could actually reach them
+(a Telegram connection and permission to message it are two facts, said as
+two), every week, every update including the sensitive and the removed ones,
+the saved versions behind any update, and the four controls. Admin gains a
+Weekly reporting panel: the stored weeks, `previewReportingPeriods`'s answer
+to "what would applying the hackathon dates do", the weeks it must not move
+with the reason and the counts, an Apply button as a separate press, and the
+reporting settings. The HQ accounts list gains each account's Telegram and bot
+messaging state and, for a Captain, the contact they approved.
+
+### Which migrations apply
+
+Two idempotent single statements in `scripts/hq/builder-schema.sql`, applied
+by `hq:migrate` in the usual order:
+
+- `ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS team_contact text`
+- `ALTER TABLE hq_builder_profiles ADD COLUMN IF NOT EXISTS captain_contact text`
+
+No new table, so `scripts/hq/reset-statements.ts` is unchanged and
+`lib/hq/record-deletion.ts` is unchanged: both columns live on rows that
+already cascade with their project and their account. No backfill; both are
+nullable and empty means "not shared", which is the correct starting state for
+a contact nobody has approved yet.
+
+### Checks passed
+
+Named tests, one per acceptance bullet.
+
+| Acceptance bullet | Test |
+|---|---|
+| New users can find team import immediately; Captains can find outstanding teams without admin tools | `tests/hq/member-nav.test.ts` (unchanged: Register team until an account has one); `tests/hq/reporting-view.test.ts`: "puts this week's outstanding work first, then the most missed, then a stable name order"; `tests/hq/captain-page.test.ts`: "renders for a Captain, showing only that Captain's own assignments" |
+| Saved updates immediately update the relevant views; completion stops the prompt | `tests/hq/reporting-team-page.test.ts`: "shows a saved update, marks the week Updated and offers the author an edit", "shows a teammate's update to the rest of the team, without offering them an edit", "prompts on a Monday while the week is outstanding, and stops once it is complete", "does not prompt on a Wednesday, whatever the week's state" |
+| Admins can inspect all weeks and histories | `tests/hq/reporting-actions.test.ts`: "loads a project's whole reporting record for the detail panel, sensitive notes included", "removes an update with a reason, keeps its versions, and stops it counting", "corrects a recorded week beside the original rather than over it" |
+| Captains cannot see other Captains' assignments | `tests/hq/captain-page.test.ts`: "leaks no other Captain's project name, roster, lead or Colosseum link", "shows the other Captain at zero once their own assignment ends, and drops them entirely once revoked" (both unchanged, re-run against the rebuilt page) |
+| Desktop and mobile flows work without overflowing tables, clipped actions or repeated modal interruptions | Browser check, below. The prompt is inline and dismissible rather than a dialog, asserted by `tests/hq/reporting-team-page.test.ts`'s prompt cases; the Projects table keeps its existing `overflow-x` container |
+| Interface copy contains no em dashes or middots and avoids unnecessary technical terminology | `tests/hq/reporting-view.test.ts`: "has no em dash and no middot anywhere in it", "leaves the reporting components free of them as well"; `tests/hq/reporting-team-page.test.ts`: "uses no em dash and no middot anywhere on the page" |
+| A draft whose period closed gets the period that is open now | `tests/hq/reporting-actions.test.ts`: "names the week that is open now when the draft's week closed under it, and keeps nothing of the text", "saves into the new week once the person says so" |
+| A stale edit gets the current entry, so unsaved text survives | `tests/hq/reporting-actions.test.ts`: "hands back the version that is saved now when the edit lost a race", "saves over it once the person has seen both and asked again" |
+| The Admin schedule screen shows `previewReportingPeriods`' conflicts before a live date change | `tests/hq/reporting-actions.test.ts`: "previews a live date change without writing anything, and names the weeks it must not move", "applies the change and still leaves the reported week exactly as it was", "saves the reporting settings without touching the stored weeks" |
+| The reduced-card gap is answered from `ProjectReportingStatus`, with no reduced reporting row | `tests/hq/reporting-actions.test.ts`: "adds a CRM-only project to weekly reporting, with the same week as an imported team"; `tests/hq/captain-page.test.ts`: the CRM-only card now differs from the imported one only in its Colosseum detail |
+| Sensitive notes complete a week without a preview or a count reaching the team | `tests/hq/reporting-team-page.test.ts`: "marks the week Updated on a Captain's sensitive note without showing the team the note, a preview or a count" |
+| Every new action module is gated and stays on its own side of the auth boundary | `tests/hq/auth-boundary.test.ts` (`ACTION_GATES` gained `reporting.ts` member and `reporting-admin.ts` operator); `tests/hq/operator-imports.test.ts`: "keeps the authorization decisions session-free, so the reporting service stays operator-safe" |
+| The member shell stays free of operator modules | `tests/hq/member-shell.test.ts`: `components/hq/reporting-member.tsx` added to the scan |
+
+`tests/hq/reporting-view.test.ts` (20 cases) covers the pure rules,
+`tests/hq/reporting-actions.test.ts` (26) the Server Actions against real rows
+with only the two session reads stubbed, and
+`tests/hq/reporting-team-page.test.ts` (12) the team page rendered for a real
+team. Three existing files were updated rather than worked around:
+`member-shell.test.ts` stubs the new reporting read the way it already stubbed
+the two Captain reads, `captain-page.test.ts` gained the `useRouter` mock the
+client cards need and its fallback-card assertion now reads the new copy, and
+`member-actions-authz.test.ts` was left untouched once the Captain line moved
+back onto the page.
+
+Verification run at commit `ddd0755`: `npm test` 1,165 tests in 51 files
+passing (phase 5 closed at 1,091); `npx tsc --noEmit` clean; `npm run lint` 0
+errors and 18 warnings, all pre-existing and all in `public/deck/deck-stage.js`,
+unchanged from the phase 0 baseline; `npm run build` passes.
+
+**Browser check.** The operator surfaces were driven in a real browser against
+a local Postgres with fixture rows: the Projects Weekly column and the Not
+updated filter, the detail panel's reporting row, and the Admin panel both
+with the dates matching and with the start date moved a day, which produced
+"Applying the hackathon dates would move 2 weeks" and "Week 1, 14 to 20
+September, which the dates would make 15 to 21 September. Kept because teams
+have already written updates in it (1 update, 0 recorded results)". The member
+components were rendered against the same rows at 1200px and at phone width.
+Three things it changed, all committed: the Projects reporting block took a
+280px grid track and wrapped under Submission gates leaving half a row empty,
+so it now takes its own full-width row with the weeks and the updates side by
+side; the Captain contact and bot reachability read as one comma-run, so they
+are three lines; and the member shell had no `h3`, so every reporting
+subheading rendered as body text against a card border, which is now one CSS
+rule and no new class.
+
+### Blocked or deferred
+
+- **The two member pages were not reached through a real sign-in.** Public HQ
+  login needs Better Auth credentials (`BETTER_AUTH_URL`,
+  `BETTER_AUTH_SECRET`) that are not configured locally and are still the
+  owner's outstanding setup item. Their components were rendered in the
+  browser against real rows through a temporary, gitignored route that was
+  deleted afterwards, and `tests/hq/reporting-team-page.test.ts` renders the
+  real page for a real team. What is unverified is the sign-in path into them,
+  not the pages.
+- **A dismissal of the prompt is per browser, not per account.** Deliberate:
+  it has no audience and no history, the outstanding action stays on the
+  dashboard either way, and the service stores none. An account that dismisses
+  on a phone still sees the prompt on a laptop that week.
+- **`closePeriod` still has no production caller.** Period closure is phase
+  8's job; `reportingStatus` computes the same answer live for a week that has
+  ended and not been closed, so every screen is honest about a missed week
+  before the job exists. There is deliberately no admin "close this week"
+  button: closing is a scheduled, idempotent job, not an operator action.
+- **No admin control edits an update's text.** Admin moderation here is void
+  plus outcome correction, which is what the plan's admin view asks for;
+  `editUpdate` by an operator is supported by the service and used by its
+  tests, but giving an admin a body editor was out of scope for this phase's
+  screens.
+- **`nudge_at` is still computed and stored per period with nothing sending
+  anything.** Delivery is phase 8's, and the weekday and time are now editable
+  in Admin rather than only in the database.
+- **The local fixture rows are still in the local development database**
+  (two projects, three accounts, one update, all clearly fictional and keyed
+  by fixed UUIDs beginning `00000000-0000-4000-9300-`). They are harmless and
+  useful for the next phase's browser check; deleting them is one statement.
+- **A migration was run against the Neon database by mistake during this
+  phase.** `npm run hq:migrate` reads `DATABASE_URL_UNPOOLED`, not
+  `DATABASE_URL`, so a local override of the latter alone still targets Neon.
+  What it applied there is the additive, idempotent schema: the six phase 5
+  reporting tables and the two phase 6 columns. Every content table there was
+  and is empty apart from the three operator accounts, which are untouched, so
+  nothing was lost. Recorded here because it happened, not because it needs
+  undoing.
+
+### Changed interfaces
+
+For phase 7 and later.
+
+- **`lib/hq/authz-decisions.ts` (new)** holds `authorizeProjectAction`,
+  `getActorCapabilities`, `isTeamMember`, `isAssignedCaptain`, `entryAudience`,
+  `canEditEntry`, `canReadRevisionHistory` and their types.
+  **`lib/hq/authz.ts` re-exports all of them unchanged** and keeps
+  `requireOperator`, so every existing caller is unaffected and a caller still
+  looks in `./authz`. Only `lib/hq/reporting.ts` imports the leaf directly, and
+  only because its operator Server Actions must not reach the member auth
+  graph.
+- **`PeriodStatus` gained `startsAt`**, the inclusive start instant, so a
+  screen can tell whether the week it is showing is open at the instant it is
+  rendering for. Everything else on the shape is unchanged.
+- **`lib/hq/reporting.ts` gained `readReportingConfig(db, hackathonId)` and
+  `writeReportingConfig(db, input)`** (defined in `reporting-enrolment.ts`,
+  re-exported as usual) and the `ReportingConfig` type. The write deliberately
+  does not regenerate the periods: an admin previews and then applies.
+- **`lib/hq/reporting-view.ts` (new, pure and client-safe)**:
+  `REPORTING_STATUS_LABELS`, `statusLabel`, `periodRangeLabel`, `weekdayName`,
+  `deadlineLabel`, `weekdayInZone`, `shouldPromptUpdate`, `promptDismissKey`,
+  `ADD_UPDATE_MESSAGES`, `EDIT_UPDATE_MESSAGES`, `AUDIENCE_NOTES`,
+  `NO_UPDATES_YET`, `missedLabel`, `SUBMISSION_FILTER_LABEL`,
+  `byOutstandingFirst`, `MAX_CONTACT_LENGTH`, `normalizeContact`. A phase that
+  writes reporting copy adds it here, so the copy scan keeps covering it.
+- **`lib/hq/reporting-contacts.ts` (new, server only)**: `readTeamContact`,
+  `readTeamContacts`, `writeTeamContact`, `readCaptainContact`,
+  `readCaptainContacts`, `writeCaptainContact`. No `./authz` import, so
+  operator queries and operator actions reach it too; the surfaces decide the
+  audience over the decision they already made.
+- **`lib/hq/reporting-surface.ts` (new, server only)**: `teamReportingPanel`
+  and `captainReportingBoard`, the two member reads composed once. The bot in
+  phase 7 should read the service directly rather than these, which are shaped
+  for a page.
+- **`MemberTeamView.captain.contact` is now populated.** It is the contact that
+  Captain approved, or null. Any surface showing a Captain may show it.
+- **`BuilderAccount` gained `captainContact` and `botMessaging`**;
+  `lib/hq/builder-admin-queries.ts` gained `getReportingAdminData()` and
+  `getProjectReportingBoard()` with the `ReportingAdminData`,
+  `ProjectReportingBoard` and `CaptainReach` types.
+- **`components/hq/projects.tsx` gained two required props**, `reporting`
+  (`ProjectReportingStatus[]`) and `captainReach`. A new caller of that
+  component supplies both from `getProjectReportingBoard()`.
+- **`components/hq/builder-shell.module.css` gained one rule**, `.main h3`.
+  The class list the contract names is unchanged; this is an element selector.
+- **`tests/hq/auth-boundary.test.ts#ACTION_GATES` gained two entries** and
+  `tests/hq/operator-imports.test.ts#MEMBER_ACTIONS` gained
+  `reporting.ts`. A phase adding an action module updates both.
+
+### External configuration still required
+
+None new. Phase 6 needs nothing from Colosseum and no environment variable of
+its own. The edition's `hq_reporting_config` row, previously a database-only
+value (manual setup 2.10), is now editable in Admin under Weekly reporting,
+including `final_period_start_date` and the optional Colosseum submission
+deadline, so that item is satisfiable from the interface rather than from SQL.
+`BETTER_AUTH_URL` and `BETTER_AUTH_SECRET` remain outstanding and are what
+stands between this phase's two member pages and a real sign-in.
