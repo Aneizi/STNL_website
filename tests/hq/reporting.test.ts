@@ -263,7 +263,7 @@ describe("currentReportingPeriod", () => {
 describe("enableReporting", () => {
   it("puts an imported team into reporting and stores the edition's schedule with it", async () => {
     await seedImportedProject(PROJECT_A, "lead-a");
-    const enabled = await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    const enabled = await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     expect(enabled).toMatchObject({ ok: true, created: true });
     expect(await reportingEligibility(db, PROJECT_A)).toMatchObject({ projectId: PROJECT_A, hackathonId: EDITION, paused: false });
     // "Store period identities once reporting begins": the first team entering
@@ -273,44 +273,44 @@ describe("enableReporting", () => {
 
   it("is idempotent and never moves an existing eligibility start", async () => {
     await seedImportedProject(PROJECT_A, "lead-a");
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     const first = await reportingEligibility(db, PROJECT_A);
-    const again = await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: OPERATOR, operatorId: OPERATOR_ID });
+    const again = await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, operatorId: OPERATOR_ID });
     expect(again).toMatchObject({ ok: true, created: false });
     expect((await reportingEligibility(db, PROJECT_A))?.eligibleFrom).toBe(first?.eligibleFrom);
   });
 
   it("enables a project an admin created directly, which has no imported team at all", async () => {
     await seedProject(BARE_PROJECT, EDITION, "CRM only");
-    expect(await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, actor: OPERATOR, operatorId: OPERATOR_ID }))
+    expect(await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, operatorId: OPERATOR_ID }))
       .toMatchObject({ ok: true, created: true });
     expect(await reportingEligibility(db, BARE_PROJECT)).toMatchObject({ projectId: BARE_PROJECT });
   });
 
   it("refuses a project from another edition and one that does not exist", async () => {
     await seedImportedProject(PROJECT_B, "lead-b", { hackathonId: OTHER_EDITION });
-    expect(await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION, actor: OPERATOR, operatorId: OPERATOR_ID }))
+    expect(await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION, operatorId: OPERATOR_ID }))
       .toEqual({ ok: false, reason: "not_found" });
-    expect(await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: OPERATOR, operatorId: OPERATOR_ID }))
+    expect(await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, operatorId: OPERATOR_ID }))
       .toEqual({ ok: false, reason: "not_found" });
   });
 
   it("resumes a paused project rather than restarting its eligibility", async () => {
     await seedImportedProject(PROJECT_A, "lead-a");
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     const start = (await reportingEligibility(db, PROJECT_A))?.eligibleFrom;
-    await pauseReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, paused: true, operatorId: OPERATOR_ID, actor: OPERATOR });
+    await pauseReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, paused: true, operatorId: OPERATOR_ID });
     expect(await reportingEligibility(db, PROJECT_A)).toMatchObject({ paused: true });
-    await pauseReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, paused: false, operatorId: OPERATOR_ID, actor: OPERATOR });
+    await pauseReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, paused: false, operatorId: OPERATOR_ID });
     expect(await reportingEligibility(db, PROJECT_A)).toMatchObject({ paused: false, eligibleFrom: start });
   });
 
   it("records an audit event for an admin enabling or pausing a project, and none for the import's own", async () => {
     await seedImportedProject(PROJECT_A, "lead-a");
     await seedProject(BARE_PROJECT, EDITION, "CRM only");
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
-    await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, actor: OPERATOR, operatorId: OPERATOR_ID });
-    await pauseReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, paused: true, operatorId: OPERATOR_ID, actor: OPERATOR });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+    await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, operatorId: OPERATOR_ID });
+    await pauseReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, paused: true, operatorId: OPERATOR_ID });
     const events = await rows(`SELECT kind, actor_kind, project_id::text AS project_id, metadata FROM hq_audit_events ORDER BY id`);
     expect(events.map((row) => [row.kind, row.actor_kind, row.project_id])).toEqual([
       ["reporting.eligibility_changed", "operator", BARE_PROJECT],
@@ -325,8 +325,8 @@ describe("the Captain reduced-card gap", () => {
     await seedProject(BARE_PROJECT, EDITION, "CRM only");
     await seedImportedProject(PROJECT_A, "lead-a", { name: "Imported" });
     await seedAssignedCaptain("cap", BARE_PROJECT);
-    await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, actor: OPERATOR, operatorId: OPERATOR_ID });
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, operatorId: OPERATOR_ID });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     // Reporting is keyed on hq_projects, not on hq_project_onboarding, so
     // eligibility, periods and status exist for both alike; what the CRM-only
     // project lacks is roster and Colosseum detail, which reporting never
@@ -339,7 +339,7 @@ describe("the Captain reduced-card gap", () => {
 describe("createUpdate", () => {
   beforeEach(async () => {
     await seedImportedProject(PROJECT_A, "lead-a", { members: ["member-a"] });
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
   });
 
   const WEEK_ONE = Date.parse("2026-09-16T09:00:00Z");
@@ -464,7 +464,7 @@ describe("editUpdate", () => {
 
   beforeEach(async () => {
     await seedImportedProject(PROJECT_A, "lead-a", { members: ["member-a"] });
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     const created = await createUpdate(member("member-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "First draft", atMs: WEEK_ONE });
     if (!created.ok) throw new Error("setup: expected a saved update");
     entryId = created.entry.id;
@@ -547,7 +547,7 @@ describe("voidUpdate", () => {
 
   beforeEach(async () => {
     await seedImportedProject(PROJECT_A, "lead-a");
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     const created = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Spam", atMs: WEEK_ONE });
     if (!created.ok) throw new Error("setup: expected a saved update");
     entryId = created.entry.id;
@@ -581,7 +581,7 @@ describe("readAuthorizedUpdates", () => {
 
   beforeEach(async () => {
     await seedImportedProject(PROJECT_A, "lead-a", { members: ["member-a"] });
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     await seedAssignedCaptain("cap", PROJECT_A);
     await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Team update", atMs: WEEK_ONE });
     await createUpdate(member("cap", ["captain"]), { projectId: PROJECT_A, hackathonId: EDITION, body: "Shared Captain note", atMs: WEEK_ONE });
@@ -655,7 +655,7 @@ describe("readAuthorizedUpdates", () => {
 describe("readRevisionHistory", () => {
   it("is admin only, whoever wrote the entry", async () => {
     await seedImportedProject(PROJECT_A, "lead-a");
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     const created = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "v1", atMs: Date.parse("2026-09-16T09:00:00Z") });
     if (!created.ok) throw new Error("setup: expected a saved update");
     await editUpdate(member("lead-a"), { entryId: created.entry.id, body: "v2", expectedVersion: 1 });
@@ -672,8 +672,8 @@ describe("reportingStatus", () => {
   beforeEach(async () => {
     await seedImportedProject(PROJECT_A, "lead-a", { name: "Reported" });
     await seedImportedProject(PROJECT_B, "lead-b", { name: "Silent" });
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
-    await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION, actor: member("lead-b") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+    await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION });
   });
 
   const of = (statuses: Awaited<ReturnType<typeof reportingStatus>>, projectId: string) => {
@@ -712,7 +712,7 @@ describe("reportingStatus", () => {
   });
 
   it("stops counting missed weeks for a paused project without touching what it already recorded", async () => {
-    await pauseReporting(db, { projectId: PROJECT_B, hackathonId: EDITION, paused: true, operatorId: OPERATOR_ID, actor: OPERATOR });
+    await pauseReporting(db, { projectId: PROJECT_B, hackathonId: EDITION, paused: true, operatorId: OPERATOR_ID });
     await rows(`UPDATE hq_reporting_eligibility SET paused_at='2026-09-15T08:00:00Z' WHERE project_id=$1`, [PROJECT_B]);
     expect(of(await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_TWO }), PROJECT_B)).toMatchObject({ paused: true, missedPeriods: 0 });
   });
@@ -736,7 +736,7 @@ describe("reportingStatus", () => {
 
   it("gives a CRM-only project the same status row as an imported one", async () => {
     await seedProject(BARE_PROJECT, EDITION, "CRM only");
-    await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, actor: OPERATOR, operatorId: OPERATOR_ID });
+    await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, operatorId: OPERATOR_ID });
     expect(of(await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_ONE }), BARE_PROJECT)).toMatchObject({
       projectName: "CRM only", imported: false, submissionStatus: "not_checked",
       current: expect.objectContaining({ periodSequence: 1, completed: false }),
@@ -764,8 +764,8 @@ describe("closePeriod", () => {
   beforeEach(async () => {
     await seedImportedProject(PROJECT_A, "lead-a", { name: "Reported" });
     await seedImportedProject(PROJECT_B, "lead-b", { name: "Silent" });
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
-    await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION, actor: member("lead-b") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+    await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION });
     periodOne = (await listReportingPeriods(db, EDITION))[0].id;
   });
 
@@ -831,7 +831,7 @@ describe("correctOutcome", () => {
 
   beforeEach(async () => {
     await seedImportedProject(PROJECT_A, "lead-a");
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     periodOne = (await listReportingPeriods(db, EDITION))[0].id;
     await closePeriod(db, { periodId: periodOne, actor: OPERATOR, atMs: AFTER_WEEK_ONE });
   });
@@ -867,7 +867,7 @@ describe("record deletion, extended for the reporting tables", () => {
 
   async function seedReportedTeam() {
     await seedImportedProject(PROJECT_A, "lead-a", { name: "Reported" });
-    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
     const created = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Week one", atMs: WEEK_ONE });
     if (!created.ok) throw new Error("setup: expected a saved update");
     await editUpdate(member("lead-a"), { entryId: created.entry.id, body: "Week one, corrected", expectedVersion: 1 });

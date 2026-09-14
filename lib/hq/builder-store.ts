@@ -7,6 +7,7 @@ import { BuilderError, ImportRefusedError, isNetherlands, type BuilderHackathon,
 import { interpretSubmission, toSnapshotFields, type SubmissionStatus } from './colosseum-snapshot';
 import { correctPersonMatch, ensurePersonForAccount, ensurePersonForRosterMember } from './crm-identity';
 import { isPlaceholderEmail } from './placeholder-email';
+import { enableReporting } from './reporting-enrolment';
 
 // The pool and its handle types live in builder-db.ts; they are re-exported
 // here so every existing import path keeps working.
@@ -275,6 +276,13 @@ export class BuilderStore {
       if (!created.length) throw new ImportRefusedError('already_imported');
       await upsertRoster(db, { projectId: id, hackathonId: input.hackathonId, members: project.members });
       await enroll(db, user, input.hackathonId);
+      // "A team enters reporting as soon as its HQ import succeeds" (plan
+      // section 3). In the import's own transaction, so a committed team is
+      // never outside reporting and a rolled-back one never leaves an
+      // eligibility row: the same reasoning as the audit event below. The
+      // member is the actor and no separate audit event is written, because
+      // `project.imported` already records this.
+      await enableReporting(db, { projectId: id, hackathonId: input.hackathonId });
       // In the import's own transaction, not after it: an import with no
       // trail, or a trail for an import that rolled back, would both be
       // wrong. The member is the actor — this is the first member-actor

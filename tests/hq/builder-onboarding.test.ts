@@ -453,6 +453,25 @@ describe("self-service import", () => {
     expect(await rows("SELECT message FROM hq_activity")).toEqual([{ message: "Tulip Ledger imported from Colosseum" }]);
   });
 
+  it("puts the imported team straight into weekly reporting, with the edition's schedule", async () => {
+    const id = await importProject();
+    expect(await rows(`SELECT project_id::text AS project_id, hackathon_id, paused_at, enabled_by_user_id FROM hq_reporting_eligibility`))
+      .toEqual([{ project_id: id, hackathon_id: 41, paused_at: null, enabled_by_user_id: null }]);
+    // "Store period identities once reporting begins": the first import in an
+    // edition brings that edition's periods with it.
+    expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_periods WHERE hackathon_id=41`)).toEqual([{ n: 5 }]);
+    // Entering reporting is part of the import's own audit trail, not a
+    // second operator-attributed event.
+    expect(await rows(`SELECT count(*)::int AS n FROM hq_audit_events WHERE kind='reporting.eligibility_changed'`)).toEqual([{ n: 0 }]);
+  });
+
+  it("leaves no eligibility row behind when the import itself rolls back", async () => {
+    await importProject();
+    await expect(store.importTeam(OUTSIDER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
+      .rejects.toMatchObject({ reason: "already_imported" });
+    expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_eligibility`)).toEqual([{ n: 1 }]);
+  });
+
   it("reports an already-imported project rather than creating a second team", async () => {
     await importProject();
     await expect(store.importTeam(OUTSIDER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
