@@ -32,13 +32,34 @@ import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } 
  *   `hq_scores` and `hq_awards.winner_project_id`), and phase 4's
  *   `hq_captain_assignments` — every one CASCADE except the award winner,
  *   which is SET NULL. `hq_team_invites` cascades from the onboarding row.
- *   Phase 5's reporting tables do not exist at this checkout; the phase that
- *   adds them must extend this (see `docs/hq/contracts.md`).
+ *   Phase 5's reporting tables were added after this list was first written
+ *   and are included here now: `hq_reporting_eligibility`,
+ *   `hq_reporting_entries` (and through it `hq_reporting_entry_revisions`)
+ *   and `hq_reporting_outcomes`, every one CASCADE. Cascading is right for
+ *   all four: a team's updates, its revision history, whether it was in
+ *   reporting at all and what each week recorded are statements ABOUT that
+ *   team, and none of them means anything once the team is gone — unlike an
+ *   award, which outlives its winner. `hq_reporting_periods` is deliberately
+ *   NOT touched: the periods belong to the edition, not to any one project,
+ *   and the other teams still report against them.
  * - at `hq_people`: `hq_scores.judge_id` (CASCADE).
  * - at `hq_crm_persons`: `hq_people.person_id` and
  *   `hq_project_members.person_id` (both SET NULL — detachment, not
  *   cascade), and `hq_crm_persons.builder_user_id`, which is the link to the
  *   account and disappears with the person row, never with the account.
+ *
+ * **Nothing points at a person or a CRM person from the reporting tables**,
+ * which is why `deletePersonRecord` needed no change for phase 5 and is
+ * stated here rather than left to be rediscovered. An entry's author is
+ * `author_kind`/`author_id` with no foreign key — the same shape
+ * `hq_audit_events.actor_kind`/`actor_id` uses, and for the same reason: the
+ * author may be a public account or an operator, and the row must outlive
+ * both. Even if it were a foreign key it would change nothing here, because
+ * deleting a People card never deletes the `hq_builder_profiles` account
+ * behind it (rule 2 above), so the account an entry names is still there
+ * afterwards. A person's updates therefore survive their People card, which
+ * is correct: the card is an edition's CRM entry, the updates are a team's
+ * record of its own weeks.
  */
 
 export type TeamRemovalImpact = {
@@ -58,6 +79,14 @@ export type TeamRemovalImpact = {
   gates: number;
   finalist: boolean;
   judgeScores: number;
+  /** Whether the project is in weekly reporting at all (phase 5). */
+  reportingEnrolled: boolean;
+  /** Reporting entries that go with it, voided ones included: the whole record, not only what a team could still see. */
+  reportingEntries: number;
+  /** Every version of every one of those entries. History is the reason this is counted separately from the entries. */
+  reportingRevisions: number;
+  /** Closed-period outcomes, the record of which weeks this team made and missed. */
+  reportingOutcomes: number;
 };
 
 const count = (value: unknown) => Number(value ?? 0);
@@ -74,7 +103,12 @@ const TEAM_REMOVAL_SELECT =
        (SELECT count(*) FROM hq_project_notes n WHERE n.project_id = p.id) AS notes,
        (SELECT count(*) FROM hq_project_gates g WHERE g.project_id = p.id) AS gates,
        EXISTS (SELECT 1 FROM hq_finalists f WHERE f.project_id = p.id) AS finalist,
-       (SELECT count(*) FROM hq_scores s WHERE s.project_id = p.id) AS judge_scores
+       (SELECT count(*) FROM hq_scores s WHERE s.project_id = p.id) AS judge_scores,
+       EXISTS (SELECT 1 FROM hq_reporting_eligibility re WHERE re.project_id = p.id) AS reporting_enrolled,
+       (SELECT count(*) FROM hq_reporting_entries e WHERE e.project_id = p.id) AS reporting_entries,
+       (SELECT count(*) FROM hq_reporting_entry_revisions v
+          JOIN hq_reporting_entries e ON e.id = v.entry_id WHERE e.project_id = p.id) AS reporting_revisions,
+       (SELECT count(*) FROM hq_reporting_outcomes o WHERE o.project_id = p.id) AS reporting_outcomes
      FROM hq_projects p WHERE $WHERE`;
 
 const toTeamRemoval = (row: Record<string, unknown>): TeamRemovalImpact => ({
@@ -84,6 +118,8 @@ const toTeamRemoval = (row: Record<string, unknown>): TeamRemovalImpact => ({
   currentCaptain: count(row.current_captain), captainHistory: count(row.captain_history),
   notes: count(row.notes), gates: count(row.gates), finalist: Boolean(row.finalist),
   judgeScores: count(row.judge_scores),
+  reportingEnrolled: Boolean(row.reporting_enrolled), reportingEntries: count(row.reporting_entries),
+  reportingRevisions: count(row.reporting_revisions), reportingOutcomes: count(row.reporting_outcomes),
 });
 
 /**
@@ -137,6 +173,8 @@ export async function deleteTeamRecord(
         rosterRows: impact.rosterRows, joinLinks: impact.joinLinksTotal,
         currentCaptain: impact.currentCaptain, captainHistory: impact.captainHistory,
         notes: impact.notes, gates: impact.gates, finalist: impact.finalist, judgeScores: impact.judgeScores,
+        reportingEnrolled: impact.reportingEnrolled, reportingEntries: impact.reportingEntries,
+        reportingRevisions: impact.reportingRevisions, reportingOutcomes: impact.reportingOutcomes,
       },
     });
     await tx.query("INSERT INTO hq_activity (hackathon_id, user_id, message) VALUES ($1, $2::uuid, $3)",

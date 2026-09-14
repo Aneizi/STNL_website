@@ -38,6 +38,7 @@ import {
   reportingStatus,
   voidUpdate,
 } from "@/lib/hq/reporting";
+import { deletePersonRecord, deleteTeamRecord, teamRemovalImpact } from "@/lib/hq/record-deletion";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const OPERATOR_ID = "00000000-0000-4000-8000-0000000000a1";
@@ -857,5 +858,57 @@ describe("correctOutcome", () => {
       .toEqual({ ok: false, reason: "unchanged" });
     expect(await correctOutcome(OPERATOR, { periodId: periodOne, projectId: PROJECT_B, completed: true, reason: "nothing here", operatorId: OPERATOR_ID }))
       .toEqual({ ok: false, reason: "not_found" });
+  });
+});
+
+describe("record deletion, extended for the reporting tables", () => {
+  const WEEK_ONE = Date.parse("2026-09-16T09:00:00Z");
+  const AFTER_WEEK_ONE = Date.parse("2026-09-21T09:00:00Z");
+
+  async function seedReportedTeam() {
+    await seedImportedProject(PROJECT_A, "lead-a", { name: "Reported" });
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION, actor: member("lead-a") });
+    const created = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Week one", atMs: WEEK_ONE });
+    if (!created.ok) throw new Error("setup: expected a saved update");
+    await editUpdate(member("lead-a"), { entryId: created.entry.id, body: "Week one, corrected", expectedVersion: 1 });
+    await closePeriod(db, { periodId: (await listReportingPeriods(db, EDITION))[0].id, actor: OPERATOR, atMs: AFTER_WEEK_ONE });
+  }
+
+  it("counts the reporting rows a team deletion would take with it", async () => {
+    await seedReportedTeam();
+    expect(await teamRemovalImpact(db, PROJECT_A)).toMatchObject({
+      name: "Reported", reportingEnrolled: true, reportingEntries: 1, reportingRevisions: 2, reportingOutcomes: 1,
+    });
+  });
+
+  it("removes every reporting row with the team, in the deletion's own transaction", async () => {
+    await seedReportedTeam();
+    expect(await deleteTeamRecord(db, { projectId: PROJECT_A, hackathonId: EDITION, operatorId: OPERATOR_ID }))
+      .toMatchObject({ reportingEntries: 1, reportingOutcomes: 1 });
+    for (const table of ["hq_reporting_entries", "hq_reporting_entry_revisions", "hq_reporting_eligibility", "hq_reporting_outcomes"]) {
+      expect(await rows(`SELECT count(*)::int AS n FROM ${table}`), table).toEqual([{ n: 0 }]);
+    }
+    // The edition's periods are not the team's to take: another team still reports against them.
+    expect((await listReportingPeriods(db, EDITION)).length).toBe(4);
+  });
+
+  it("records the reporting counts in the deletion's audit event", async () => {
+    await seedReportedTeam();
+    await deleteTeamRecord(db, { projectId: PROJECT_A, hackathonId: EDITION, operatorId: OPERATOR_ID });
+    const [event] = await rows(`SELECT metadata FROM hq_audit_events WHERE kind='project.deleted'`);
+    expect(event.metadata).toMatchObject({ reportingEntries: 1, reportingOutcomes: 1 });
+  });
+
+  it("leaves a person's reporting entries exactly where they are, because the account behind them is never deleted", async () => {
+    await seedReportedTeam();
+    const [card] = await rows(
+      `INSERT INTO hq_people(hackathon_id,name,role_id,builder_user_id)
+       SELECT $1,'Lead A',r.id,'lead-a' FROM hq_people_roles r LIMIT 1 RETURNING id::text AS id`,
+      [EDITION],
+    );
+    const removal = await deletePersonRecord(db, { cardId: String(card.id), hackathonId: EDITION, operatorId: OPERATOR_ID });
+    expect(removal).toMatchObject({ accountKept: true });
+    expect(await rows(`SELECT author_kind, author_id FROM hq_reporting_entries`)).toEqual([{ author_kind: "member", author_id: "lead-a" }]);
+    expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_entry_revisions`)).toEqual([{ n: 2 }]);
   });
 });

@@ -407,6 +407,15 @@ function teamRemovalSummary(removal: BuilderProjectReview["removal"]): string {
   if (removal.gates) parts.push(`${removal.gates} submission gate tick${removal.gates === 1 ? "" : "s"}`);
   if (removal.finalist) parts.push("its finalist place");
   if (removal.judgeScores) parts.push(`${removal.judgeScores} judge score${removal.judgeScores === 1 ? "" : "s"}`);
+  // Weekly reporting. The revision count is named separately from the entry
+  // count because it is the edit history behind those entries, and this is
+  // the only place in HQ where it can be removed at all.
+  if (removal.reportingEntries) {
+    parts.push(`${removal.reportingEntries} weekly update${removal.reportingEntries === 1 ? "" : "s"} with all ${removal.reportingRevisions} saved version${removal.reportingRevisions === 1 ? "" : "s"}`);
+  } else if (removal.reportingEnrolled) {
+    parts.push("its place in weekly reporting");
+  }
+  if (removal.reportingOutcomes) parts.push(`${removal.reportingOutcomes} recorded week${removal.reportingOutcomes === 1 ? "" : "s"}`);
   if (!parts.length) return "Nothing else is attached to it.";
   return `It also removes ${parts.join(", ")}.`;
 }
