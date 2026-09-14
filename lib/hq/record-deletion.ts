@@ -62,9 +62,8 @@ export type TeamRemovalImpact = {
 
 const count = (value: unknown) => Number(value ?? 0);
 
-/** What deleting this project takes with it. Read before the destructive step, and again inside it. */
-export async function teamRemovalImpact(db: BuilderQuery, projectId: string): Promise<TeamRemovalImpact | null> {
-  const { rows } = await db.query(
+/** One row per project. `$WHERE` is the only part that differs between the single and batched reads. */
+const TEAM_REMOVAL_SELECT =
     `SELECT p.id::text AS id, p.name, p.hackathon_id,
        EXISTS (SELECT 1 FROM hq_project_onboarding o WHERE o.project_id = p.id) AS imported,
        (SELECT count(*) FROM hq_project_members m WHERE m.project_id = p.id) AS roster_rows,
@@ -76,19 +75,33 @@ export async function teamRemovalImpact(db: BuilderQuery, projectId: string): Pr
        (SELECT count(*) FROM hq_project_gates g WHERE g.project_id = p.id) AS gates,
        EXISTS (SELECT 1 FROM hq_finalists f WHERE f.project_id = p.id) AS finalist,
        (SELECT count(*) FROM hq_scores s WHERE s.project_id = p.id) AS judge_scores
-     FROM hq_projects p WHERE p.id = $1::uuid`,
-    [projectId],
-  );
-  if (!rows.length) return null;
-  const row = rows[0];
-  return {
-    projectId: String(row.id), name: String(row.name), hackathonId: Number(row.hackathon_id),
-    imported: Boolean(row.imported), rosterRows: count(row.roster_rows),
-    openJoinLinks: count(row.open_join_links), joinLinksTotal: count(row.join_links_total),
-    currentCaptain: count(row.current_captain), captainHistory: count(row.captain_history),
-    notes: count(row.notes), gates: count(row.gates), finalist: Boolean(row.finalist),
-    judgeScores: count(row.judge_scores),
-  };
+     FROM hq_projects p WHERE $WHERE`;
+
+const toTeamRemoval = (row: Record<string, unknown>): TeamRemovalImpact => ({
+  projectId: String(row.id), name: String(row.name), hackathonId: Number(row.hackathon_id),
+  imported: Boolean(row.imported), rosterRows: count(row.roster_rows),
+  openJoinLinks: count(row.open_join_links), joinLinksTotal: count(row.join_links_total),
+  currentCaptain: count(row.current_captain), captainHistory: count(row.captain_history),
+  notes: count(row.notes), gates: count(row.gates), finalist: Boolean(row.finalist),
+  judgeScores: count(row.judge_scores),
+});
+
+/**
+ * The same read for a whole page of projects, in one query rather than one
+ * per row: Admin's "Imported teams" panel needs every Delete team
+ * confirmation's counts on every render, and a listing of a hundred teams is
+ * a hundred round trips over the HTTP driver otherwise.
+ */
+export async function teamRemovalImpacts(db: BuilderQuery, projectIds: string[]): Promise<Map<string, TeamRemovalImpact>> {
+  if (!projectIds.length) return new Map();
+  const { rows } = await db.query(TEAM_REMOVAL_SELECT.replace("$WHERE", "p.id = ANY($1::uuid[])"), [projectIds]);
+  return new Map(rows.map((row) => [String(row.id), toTeamRemoval(row)]));
+}
+
+/** What deleting this project takes with it. Read before the destructive step, and again inside it. */
+export async function teamRemovalImpact(db: BuilderQuery, projectId: string): Promise<TeamRemovalImpact | null> {
+  const { rows } = await db.query(TEAM_REMOVAL_SELECT.replace("$WHERE", "p.id = $1::uuid"), [projectId]);
+  return rows.length ? toTeamRemoval(rows[0]) : null;
 }
 
 /**

@@ -6,11 +6,11 @@ import {
   countAssignmentsForUsers, leaderboard, listAssignments, listCaptainInvitations,
   type CaptainInvitationListing, type CurrentCaptainAssignment,
 } from "./captains";
+import type { SubmissionStatus } from "./colosseum-snapshot";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
-import type { SubmissionStatus } from "./colosseum-snapshot";
 import { operatorQuery } from "./queries";
-import { teamRemovalImpact, type TeamRemovalImpact } from "./record-deletion";
+import { teamRemovalImpacts, type TeamRemovalImpact } from "./record-deletion";
 import type { CaptainLeaderboardView } from "./view-models";
 
 export type OnboardingConfig = {
@@ -217,12 +217,10 @@ export async function getBuilderProjectReviews() {
         ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
   ]);
   // The real counts behind every Delete team confirmation, read here so the
-  // operator sees what disappears before they tick anything. One query per
-  // project, like the Captain revocation flow's own confirmation read.
-  const removals = new Map<string, TeamRemovalImpact>();
-  for (const impact of await Promise.all(projects.map((row) => teamRemovalImpact(operatorQuery(), String(row.id))))) {
-    if (impact) removals.set(impact.projectId, impact);
-  }
+  // operator sees what disappears before they tick anything. One batched
+  // query for the whole page, the same shape as `capabilities` and
+  // `assignmentCounts` above rather than one query per row.
+  const removals = await teamRemovalImpacts(operatorQuery(), projects.map((row) => String(row.id)));
   return {
     projects: projects.map((row) => ({
       id: String(row.id), name: String(row.name), projectUrl: String(row.project_url),

@@ -3948,6 +3948,15 @@ build` passes, with `/hq/join/[code]` listed as a distinct dynamic route.
   them. `lib/hq/record-deletion.ts` says so at the top, and the contracts
   hand-off tells phase 5 to extend both deletions rather than assume they are
   complete.
+- **A refresh overwrites an operator's rename of an imported project.**
+  `refreshTeam` writes `hq_projects.name` from the snapshot, which is what
+  the plan's Imported fields table asks for (name, description and country
+  are project details from the source; "editable HQ annotations remain
+  separate"), but the Projects board's `updateProjectDetail` can also rename
+  an imported project, and the next Check submission reverts that rename.
+  Not a defect of either piece on its own, and not worth a pinning column
+  before someone actually wants one — recorded so it is a known consequence
+  rather than a surprise.
 
 ### Changed interfaces
 
