@@ -274,6 +274,15 @@ function readDismissed(key: string): boolean {
 const noSubscribe = () => () => {};
 
 /**
+ * The server, and the client's hydrating render, both answer "not
+ * dismissed", so the prompt is in the HTML the browser first receives rather
+ * than appearing a moment later. React uses this snapshot for hydration and
+ * then re-renders with the real one, so a dismissed prompt disappears
+ * immediately afterwards with no mismatch.
+ */
+const notDismissedOnServer = () => false;
+
+/**
  * The Monday and Tuesday prompt for one project and week.
  *
  * Inline and dismissible, never a popup: the plan asks for one prompt per
@@ -287,14 +296,13 @@ const noSubscribe = () => () => {};
 function Prompt({ projectId, period, teamName }: { projectId: string; period: PeriodStatus; teamName: string }) {
   const key = promptDismissKey(projectId, period.periodId);
   // `useSyncExternalStore` is React's seam for reading a value that is not
-  // React's own. The server snapshot is null, so the server and the client's
-  // first render agree (nothing) and the real answer arrives on the next one;
-  // reading localStorage during render, or setting state from an effect,
-  // would be a hydration mismatch and a cascading render respectively.
-  const stored = useSyncExternalStore(noSubscribe, () => readDismissed(key), () => null);
+  // React's own. Reading localStorage during render, or setting state from an
+  // effect, would be a hydration mismatch and a cascading render
+  // respectively; this is neither.
+  const stored = useSyncExternalStore(noSubscribe, () => readDismissed(key), notDismissedOnServer);
   const [dismissed, setDismissed] = useState(false);
 
-  if (stored !== false || dismissed) return null;
+  if (stored || dismissed) return null;
   return (
     <section className={styles.notice} role="status" aria-label={`Weekly update needed for ${teamName}`}>
       <h3>This week still needs an update</h3>
