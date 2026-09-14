@@ -27,6 +27,22 @@ const toTeam = (r: Record<string, unknown>): BuilderTeam => ({ id: String(r.proj
   projectUrl: String(r.project_url), description: String(r.description), stage: r.stage as ProjectStage, verification: r.verification as BuilderTeam['verification'],
   ownerId: String(r.owner_user_id), leadUsername: String(r.lead_username), members: (r.members ?? []) as BuilderTeam['members'] });
 
+/**
+ * The current edition for a surface with no edition selector of its own: the
+ * soonest-ending edition that has not ended yet, else the soonest upcoming
+ * one, archived editions excluded — the same ordering `hackathons()` lists
+ * by and `syncAccount`'s own default-enrollment pick uses. Shared so a third
+ * copy of this SQL never has to be written: `syncAccount` below calls it on
+ * its own transaction handle, and `BuilderStore#currentHackathonId` calls it
+ * on the pool for a member page (`/hq/captain`) that must never read the
+ * operator `hq_hackathon` cookie instead.
+ */
+async function selectCurrentHackathonId(db: BuilderQuery): Promise<number | null> {
+  const { rows } = await db.query(`SELECT id FROM hq_hackathons WHERE archived_at IS NULL
+    ORDER BY (end_date >= current_date) DESC, start_date ASC LIMIT 1`);
+  return rows.length ? Number(rows[0].id) : null;
+}
+
 async function enroll(db: BuilderQuery, user: BuilderIdentity, hackathonId: number, participation: 'builder' | 'supporter' = 'builder') {
   const { rows: editions } = await db.query('SELECT id FROM hq_hackathons WHERE id=$1 AND archived_at IS NULL', [hackathonId]);
   if (!editions.length) throw new BuilderError('Choose an available hackathon.');
@@ -65,9 +81,8 @@ export class BuilderStore {
       await ensurePersonForAccount(db, { userId: user.id, displayName: user.name });
       const { rows: existing } = await db.query('SELECT 1 FROM hq_builder_enrollments WHERE user_id=$1 LIMIT 1', [user.id]);
       if (existing.length) return;
-      const { rows } = await db.query(`SELECT id FROM hq_hackathons WHERE archived_at IS NULL
-        ORDER BY (end_date >= current_date) DESC, start_date ASC LIMIT 1`);
-      if (rows.length) await enroll(db, user, Number(rows[0].id));
+      const hackathonId = await selectCurrentHackathonId(db);
+      if (hackathonId !== null) await enroll(db, user, hackathonId);
     });
   }
 
@@ -76,6 +91,16 @@ export class BuilderStore {
     const { rows } = await this.db.query('SELECT id,email,contact_email,name FROM hq_builder_profiles WHERE id=$1', [userId]);
     if (!rows.length) return null;
     return { id: String(rows[0].id), email: realEmail(rows[0].email), contactEmail: realEmail(rows[0].contact_email), name: String(rows[0].name) };
+  }
+
+  /**
+   * The current edition for a member surface with no edition selector: see
+   * `selectCurrentHackathonId` above. Member surfaces must never read the
+   * operator `hq_hackathon` cookie (`docs/hq/contracts.md`), so this is
+   * their one server-side source of "now".
+   */
+  async currentHackathonId(): Promise<number | null> {
+    return selectCurrentHackathonId(this.db);
   }
 
   async enroll(user: BuilderIdentity, hackathonId: number, participation: 'builder' | 'supporter') {

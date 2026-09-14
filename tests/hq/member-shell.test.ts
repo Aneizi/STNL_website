@@ -15,6 +15,11 @@ const mocks = vi.hoisted(() => ({
   requireMemberActor: vi.fn(),
   teams: vi.fn(),
   hasTeams: vi.fn(),
+  currentHackathonId: vi.fn(),
+  teamById: vi.fn(),
+  leaderboard: vi.fn(),
+  listAssignments: vi.fn(),
+  builderDatabase: vi.fn(),
   pathname: "/hq/dashboard",
 }));
 vi.mock("server-only", () => ({}));
@@ -31,10 +36,17 @@ vi.mock("@/lib/hq/builder-store", () => ({
   builderStore: () => ({
     teams: mocks.teams,
     hasTeams: mocks.hasTeams,
+    currentHackathonId: mocks.currentHackathonId,
+    teamById: mocks.teamById,
     dashboard: async () => ({ tier: "regular", requests: [], enrollments: [], events: [] }),
     hackathons: async () => [],
   }),
 }));
+// The captain page's two other reads: a real pool would need DATABASE_URL,
+// which this unit test never sets, and the DB-shaped functions themselves
+// are stubbed below so nothing here touches a real connection.
+vi.mock("@/lib/hq/builder-db", () => ({ builderDatabase: mocks.builderDatabase }));
+vi.mock("@/lib/hq/captains", () => ({ leaderboard: mocks.leaderboard, listAssignments: mocks.listAssignments }));
 // The icon package ships its source; the pages here render markup, not icons.
 vi.mock("symbols-react", () => ({ IconArrowRight: (props: Record<string, unknown>) => createElement("svg", props) }));
 
@@ -105,12 +117,28 @@ describe("the member shell imports nothing operator-side", () => {
 });
 
 describe("the captain page", () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // The captain-with-nothing-yet defaults every test starts from; tests
+    // that need real assignment or leaderboard data override these.
+    mocks.currentHackathonId.mockResolvedValue(41);
+    mocks.listAssignments.mockResolvedValue([]);
+    mocks.leaderboard.mockResolvedValue([]);
+    mocks.teamById.mockResolvedValue(null);
+    mocks.builderDatabase.mockReturnValue({});
+  });
 
   it("is not found without the capability, whatever else the account holds", async () => {
     mocks.requireMemberActor.mockResolvedValue(member({ telegram: { userId: "7000000000123" } }));
     await expect(CaptainPage()).rejects.toThrow("NOT_FOUND");
     expect(mocks.requireMemberActor).toHaveBeenCalledWith("/hq/captain");
+    expect(mocks.listAssignments).not.toHaveBeenCalled();
+    expect(mocks.leaderboard).not.toHaveBeenCalled();
+  });
+
+  it("sends a signed-out visitor to sign in with the captain URL as the destination", async () => {
+    mocks.requireMemberActor.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/signin?next=${encodeURIComponent(next ?? "")}`); });
+    await expect(CaptainPage()).rejects.toThrow(`REDIRECT:/hq/signin?next=${encodeURIComponent("/hq/captain")}`);
   });
 
   it("shows the empty state and the Connect Telegram hint for a captain without a Telegram identity", async () => {
@@ -128,6 +156,42 @@ describe("the captain page", () => {
     const html = renderToStaticMarkup(await CaptainPage());
     expect(html).toContain("No assignments yet.");
     expect(html).not.toContain("Connect Telegram");
+  });
+
+  it("reads the current edition once, and asks its two data reads for exactly the signed-in Captain's own id", async () => {
+    mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } }));
+    const db = { marker: "builder-pool" };
+    mocks.builderDatabase.mockReturnValue(db);
+    await CaptainPage();
+    expect(mocks.currentHackathonId).toHaveBeenCalledTimes(1);
+    expect(mocks.listAssignments).toHaveBeenCalledWith(db, { hackathonId: 41, captainUserId: "acct-1" });
+    expect(mocks.leaderboard).toHaveBeenCalledWith(db, 41, "acct-1");
+  });
+
+  it("renders the Captain's own assignment and the leaderboard, marking their own row, with no other project's name", async () => {
+    mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } }));
+    mocks.listAssignments.mockResolvedValue([
+      { projectId: "p1", projectName: "Solo Project", hackathonId: 41, captainUserId: "acct-1", captainName: "Fictional Builder", assignedAt: "2026-01-01T00:00:00.000Z" },
+    ]);
+    mocks.teamById.mockResolvedValue({
+      id: "p1", name: "Solo Project", hackathonId: 41, hackathonName: "Edition A",
+      projectUrl: "https://colosseum.com/arena/projects/explore/solo", description: "internal only", stage: "mvp",
+      verification: "verified", ownerId: "acct-1", leadUsername: "acct1_handle",
+      members: [{ id: "m1", name: "Fictional Builder", username: "acct1_handle", joined: true }],
+    });
+    // Another Captain's name and count are allowed on the leaderboard; their
+    // project id, title or link are not part of this shape at all.
+    mocks.leaderboard.mockResolvedValue([
+      { rank: 1, displayName: "Fictional Builder", assignedCount: 1, isYou: true },
+      { rank: 2, displayName: "Other Captain", assignedCount: 0, isYou: false },
+    ]);
+    const html = renderToStaticMarkup(await CaptainPage());
+    expect(html).not.toContain("No assignments yet.");
+    expect(html).toContain("Solo Project");
+    expect(html).toContain("Other Captain");
+    expect(html).toContain("(you)");
+    // The description field never reaches a Captain's own copy of their team either.
+    expect(html).not.toContain("internal only");
   });
 });
 
