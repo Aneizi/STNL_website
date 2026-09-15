@@ -5429,3 +5429,126 @@ warnings in `public/deck/deck-stage.js`. `npm run build` passes and lists
   is tested at the claim-policy level, which is where the policy lives; the
   signature path needs GitHub. The owner's setup items are in
   `docs/hq/manual-setup.md` 2.11, with live checks L23 to L27.
+
+### Phase 8, round 2: what the 15 September review found
+
+An external review of phase 8 reproduced twelve failing checks across six
+findings, on the current worktree. Every one was real; none was disputed. The
+common shape of the two high-priority ones is worth writing down, because it
+is the mistake this phase was most likely to make and the acceptance
+checklist above did not catch it: **a check made before a message is queued is
+not a check made before it is sent.**
+
+**F1, queued reminders bypassed the check the plan actually asks for.**
+`prepareReminder` validated everything and then stored a finished body with
+`projectId: null`, which made `deliverable()` skip its project check entirely
+and left the team list frozen. The gap between queueing and sending is
+ordinary rather than a race: a deployment with no bot configured (which is
+where manual setup 2.9 still leaves this one) prepares reminders and delivers
+nothing until the bot exists, a retryable send backs off for up to half an
+hour, and the bot's own webhook drains the same queue on its own schedule. Six
+wrong deliveries were reproduced: a team that had updated, a message with
+nothing left to say, a reassigned project, a revoked capability, an archived
+edition, and a closed week going out through the webhook's drain.
+
+The fix is `lib/hq/reminder-dispatch.ts`. `outstandingForCaptain` is now the
+one definition of what a Captain still owes, called by `prepareReminder` and
+again by `deliverable()` immediately before every send attempt, where
+`reminderDispatchDecision` REBUILDS the body from its answer and writes the
+result onto the reminder record. It is a separate module from `./jobs` so the
+store can call it without a cycle, and the decision lives in the send path
+rather than in the job on purpose: a check the job makes protects only the
+job's own drain. The clock is now read per message rather than once when the
+pass began. `REMINDER_MAX_AGE_MS` is gone: with the body rebuilt, age no
+longer makes a reminder wrong, and dropping a three-hour-old one would discard
+a message that is still accurate. `expireEndedReminders` remains as
+housekeeping for a queue nobody drains.
+
+**F2, a relink could deliver into the previous account's chat.** Three gaps
+compounded: `revokeBotConsent` never cleared `chat_id`, `setBotConsent`
+rewrote `telegram_user_id` beside a chat the previous account had opened, and
+`bindBotChat`'s `DO UPDATE` set the chat without refreshing the identity
+beside it. `deliverable()` then checked only that SOME identity existed and
+that the chat id matched the queued one. Matching a chat id says where a
+message would go, never whose chat it is.
+`hq_telegram_bot_consent.chat_bound_telegram_user_id` records which verified
+identity opened the chat; `bindBotChat` is its only writer, both consent paths
+clear it when the identity changes, and `deliverableBotChat` and
+`deliverable()` compare it against the identity verified now.
+
+**F3, an inactive project still generated reminders.** The scan read the
+reporting pause and not `hq_project_statuses.counts_as_active`, which is
+already the active-team flag the Captain leaderboard counts on. Those are two
+separate states, and requiring an admin to pause reporting purely to stop
+notifications is the same trap as "archive the hackathon to stop the weekly
+prompts". Both the scan and `outstandingForCaptain` now join it. Historical
+outcomes are untouched: this changes who is notified, not what a week records.
+
+**F4, a retrying delivery was indistinguishable from an untouched one.**
+`reconcileReminderDeliveries` copied attempts and errors only once the
+outgoing row left `queued`, and `flushBotMessages` discarded the transport's
+`code` whenever `detail` was null, which is exactly the timeout case. So a
+reminder Telegram had rate limited twice read back as zero attempts and no
+reason, and an exhausted timeout was labelled "could not be sent" for a
+message that may well have arrived. `last_error` now stores `"<code>:
+<detail>"`, reconciliation copies attempts, the error and `next_attempt_at`
+while a message is still retrying, `hq_reminder_deliveries.next_attempt_at`
+keeps that readable after the queue row is purged, and
+`ReminderDeliveryView.deliveryUncertain` is derived from the code, kept
+separate from `state` and preserved through exhaustion. Admin renders "Trying
+again" and "Not confirmed" rather than collapsing both into a failure.
+
+**F5, a delayed closure rewrote history.** `closePeriod` persisted
+`status.captainUserId`, which is the CURRENT assignment, while
+`closeDuePeriods` is explicitly allowed to run late. A reassignment one minute
+after the week ended, with the job half an hour behind, recorded a Captain who
+never held the team during that week. It now resolves the responsible Captain
+from the assignment history at the period's own exclusive end, so a punctual
+run and a late one record the same person, and a project that ended the week
+unassigned records none.
+
+**F6, a reminder for one edition opened another's teams.** The runner already
+sent a separate message per edition, but its Add update button carried no
+edition and the bot reads a single current edition for everything.
+`hq_telegram_actions.hackathon_id` scopes a press, and every button minted
+during that press inherits it, so paging and picking a team stay inside the
+edition the message named. It grants nothing on its own: the board it opens is
+still only this account's own current assignments there.
+
+**The three implementation notes, also addressed.** The manual-run failure
+message claimed "nothing was half done" for a pass of separately committed
+steps, and now reports partial progress and says retrying is safe.
+`SEND_BUDGET_MS` stops a pass before `maxDuration` rather than letting the
+batch ceiling authorise two hundred sequential sends inside a sixty second
+budget. The admin reminder list gained a Show earlier reminders control over
+`loadMoreReminderDeliveries`.
+
+**Two test-harness bugs the fixes exposed, worth recording.** The repository's
+own `seedBotReach` bound a chat with no identity behind it, which after F2 is
+correctly not a destination; the fixture now records the binding the way
+`bindBotChat` does. And a test that marked every project status inactive
+leaked into every test after it, because the statuses are seeded once in
+`beforeAll`; `beforeEach` now resets them. The review's own suite hit both.
+
+**Verification.** `npm test` 1,409 tests in 57 files passing (round 1 closed
+at 1,392; 15 of the new cases are the review's reproductions adopted into
+`tests/hq/jobs.test.ts`, plus three the fixes suggested: an unbound chat
+before the new identity has messaged the bot, a week that ended unassigned,
+and uncertainty surviving retry exhaustion). `npx tsc --noEmit` clean.
+`npm run lint` 0 errors and the same 18 pre-existing warnings.
+`npm run build` passes. The review's own twelve assertions were rerun
+unmodified against the fixed code and all twelve pass; the only changes to
+their harness were the two fixture bugs above, neither of which touches an
+assertion.
+
+**Which migrations apply.** Still one `npm run hq:migrate`. Three additive
+columns, all `ADD COLUMN IF NOT EXISTS`:
+`hq_telegram_bot_consent.chat_bound_telegram_user_id`,
+`hq_telegram_actions.hackathon_id` and
+`hq_reminder_deliveries.next_attempt_at`. No table, constraint or index
+changed.
+
+**What the review did not establish, and neither does this.** No live
+Telegram, GitHub Actions, production database or deployed timeout test. The
+OIDC signature path still needs GitHub. Those remain manual setup 2.11 and
+live checks L23 to L27.

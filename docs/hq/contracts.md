@@ -829,7 +829,14 @@ permission.
    `authorizeProjectAction` rather than through a screen.
 4. **A callback identifier is an opaque server-side reference, and a button
    that touches a draft is pinned to that draft.** `hq_telegram_actions` holds
-   the meaning; `callback_data` holds a uuid. A reference is bound to one
+   the meaning; `callback_data` holds a uuid. Since phase 8 it also holds
+   `hackathon_id`, the edition the press is scoped to: the bot reads one
+   current edition for everything, which is right for somebody who opened the
+   menu and wrong for a button that arrived in a notification about a
+   different edition. Every button minted during a press inherits the edition
+   of the button that was pressed, so paging and picking a team stay inside
+   it. It grants nothing on its own, because the board it opens is still only
+   this account's own current assignments there. A reference is bound to one
    account and one chat and expires. A button that touches a draft
    additionally records `draft_id` and `draft_revision`, and `boundDraft`
    refuses unless both still match: `hq_telegram_drafts.id` changes when a new
@@ -870,11 +877,18 @@ permission.
    redelivers and the reply is rebuilt from state nothing destroyed.
 9. **A queued message is re-validated immediately before it is sent.**
    `flushBotMessages` checks the Telegram identity, the messaging consent, the
-   chat id and, when the row names a project, `authorizeProjectAction`. A
-   message queued while somebody was a Captain with messaging on is not
-   delivered after they turned it off, unlinked, moved chat or lost the
-   assignment; the row is recorded `skipped` with the reason. Phase 8's
-   reminder needs exactly this and reuses it untouched.
+   chat id, that the chat was opened BY the identity connected now, and, when
+   the row names a project, `authorizeProjectAction`. A message queued while
+   somebody was a Captain with messaging on is not delivered after they turned
+   it off, unlinked, relinked to a different Telegram account, moved chat or
+   lost the assignment; the row is recorded `skipped` with the reason.
+   The identity half of that is phase 8's correction: matching the chat id
+   alone said where a message would go, never whose chat it was, and
+   disconnecting Telegram left the chat on the row for a different account to
+   inherit. `hq_telegram_bot_consent.chat_bound_telegram_user_id` is what
+   makes the invariant checkable; `bindBotChat` is its only writer and both
+   consent paths clear it when the identity changes. Phase 8's reminder needs
+   more than this and adds a hook rather than a copy: see its own section.
 10. **Rows are claimed before they are sent.** One atomic update takes a
    bounded batch with an owner and an expiry (`FOR UPDATE SKIP LOCKED`), and
    only that owner may complete them, so two drains divide the queue instead
@@ -952,13 +966,20 @@ kind, no permission and no second definition of a week.
    each other both attempt it and only one gets a row back. The queued
    message carries the same four values as its `dedupe_key`, so even a bug
    past the first lock cannot produce a second message.
-3. **The scan is a hint; the transaction is the truth.** `prepareReminder`
-   re-reads the Captain capability, the current assignments and
-   `reportingStatus` inside the transaction that queues the message, and
-   builds the body from that read alone. A project reassigned since the scan
-   is not in the message, a team that updated an hour ago is not in it, and a
-   Captain with nothing left outstanding gets a recorded cancellation instead
-   of a message. Never build a notification from what a scan returned.
+3. **The scan is a hint, and so is the enqueue. The dispatch is the truth.**
+   `outstandingForCaptain` in `lib/hq/reminder-dispatch.ts` is the one
+   definition of what a Captain still owes, and it runs TWICE: once inside
+   `prepareReminder`'s transaction, and again inside `deliverable()`
+   immediately before every single send attempt, where the message BODY is
+   rebuilt from its answer. The review of 15 September 2026 is why: checks
+   made before the enqueue are not checks made before the send, and the gap
+   between the two is ordinary rather than a race (a deployment with no bot
+   yet queues reminders and delivers none; a retryable failure backs off for
+   half an hour; the bot's webhook drains the same queue on its own
+   schedule). Six deliveries were reproduced that were wrong by the time they
+   left. Never build a notification from what a scan returned, and never
+   send a body that was composed before the last thing that could invalidate
+   it.
 4. **A decision is recorded even when nothing is sent.** No Telegram
    identity, messaging turned off, no chat opened, capability revoked,
    nothing outstanding: each is a row with its own reason, shown in Admin
@@ -971,31 +992,42 @@ kind, no permission and no second definition of a week.
    unreachable Captain are facts about a message and are rendered as such;
    `tests/hq/jobs.test.ts` asserts that a permanently refused reminder leaves
    both teams' weeks exactly as they were.
-6. **Delivery is phase 7's, untouched.** `flushBotMessages` claims a bounded
-   batch, re-validates the recipient immediately before every send, honours
-   Telegram's `retry_after`, treats a timeout as uncertain and stops
-   permanently on a blocked bot. Phase 8 adds one statement,
-   `reconcileReminderDeliveries`, which copies that answer onto the reminder
-   row. There is no second retry policy and no second idea of what "sent"
-   means.
-7. **What `flushBotMessages` cannot re-check, the job drops.** That function
-   re-validates a person; it cannot re-validate a list of team names inside a
-   body it did not build. `expireStaleReminders` therefore runs immediately
-   before every drain and skips a queued reminder whose week has ended or
-   been closed, or which has waited longer than `REMINDER_MAX_AGE_MS`
-   (3 hours, comfortably past the queue's own bounded retry schedule). A
-   reminder is never delivered for a period that is already closed.
+6. **Delivery is still phase 7's, with one hook.** `flushBotMessages` claims
+   a bounded batch, re-validates the recipient immediately before every send,
+   honours Telegram's `retry_after`, treats a timeout as uncertain and stops
+   permanently on a blocked bot. Phase 8 added two things to it and no second
+   retry policy: `deliverable()` now recognises the reminder `kind` and
+   re-decides the whole message through `./reminder-dispatch`, and the clock
+   is read PER MESSAGE rather than once when the pass began. The decision
+   lives in the send path rather than in the job on purpose: a check the job
+   makes protects only the job's own drain, and there is more than one
+   consumer of that queue. `reconcileReminderDeliveries` copies the outcome
+   onto the reminder row.
+7. **There is no time-to-live, deliberately.** An earlier round had
+   `REMINDER_MAX_AGE_MS`, on the reasoning that a body nobody could
+   re-validate should not be delivered once it was old. Now that the body is
+   rebuilt at dispatch, age no longer makes a reminder wrong, and dropping a
+   three-hour-old one would discard a message that is still accurate and
+   still wanted. What remains is `expireEndedReminders`, which resolves a
+   queued reminder whose week is over WITHOUT waiting for somebody to try to
+   send it: a deployment with no bot never drains the queue, and "waiting to
+   send" for a week that ended is a worse thing for an admin to read than
+   "not sent, the week ended". It is housekeeping, not the check.
 8. **`created_at` on a reminder is written from the JOB's clock, not the
    database's.** It is the left-hand side of the staleness comparison whose
    right-hand side is the job's own instant; writing `now()` would compare two
    readings of two different clocks. Any later table a job writes and then
    compares against its own `atMs` owes the same treatment.
-9. **Closure is a job, and it is the plan's "failure to update is recorded
-   historically".** `closeDuePeriods` closes every period whose exclusive end
-   has passed, oldest first, through `closePeriod`, which was already
-   idempotent and already recorded the Captain at close. Archived editions are
-   included on purpose: archiving stops reminders, a week that ended is
-   history either way.
+9. **Closure is a job, and its answer must not depend on when it ran.**
+   `closeDuePeriods` closes every period whose exclusive end has passed,
+   oldest first, through `closePeriod`. Because that job is explicitly allowed
+   to be late, `closePeriod` resolves the responsible Captain from the
+   ASSIGNMENT HISTORY at the period's own boundary (assigned before the
+   exclusive end, not unassigned before it) rather than from whoever holds the
+   project when it runs. Reading the current assignment meant a reassignment
+   in the gap handed the previous week to a Captain who never held the team
+   during it, which the review reproduced. Archived editions are still closed:
+   archiving stops reminders, a week that ended is history either way.
 10. **The job endpoint is its own boundary, like the webhook.** Its own OIDC
     audience (`stnl-hq-jobs`) and its own workflow file (`hq-jobs.yml`), both
     checked; no cookie, no operator session, no member session, and no stored
@@ -1018,3 +1050,23 @@ kind, no permission and no second definition of a week.
 13. **`CAPTAIN_PATH` lives in `lib/hq/member-routes.ts`.** The bot's Open HQ
     buttons, the reminder's Open HQ button and `MEMBER_PUBLIC_PATHS` all read
     it from there; there is no second literal.
+14. **A delivery that got no answer is not a failure, and the record says so.**
+    The transport already told a timeout from a refusal; the row threw the
+    distinction away, because `last_error` stored Telegram's `detail` and a
+    timeout has none. It now stores `"<code>: <detail>"`, and
+    `ReminderDeliveryView.deliveryUncertain` is derived from the code, kept
+    separate from `state` and preserved through exhaustion: "could not be
+    sent" is a claim, and it is the wrong claim for a message that may well
+    have arrived. `reconcileReminderDeliveries` also copies attempts, the
+    error and `next_attempt_at` while a message is STILL retrying, so an
+    admin can tell "nobody has tried yet" from "Telegram asked us to wait".
+15. **One pass has a sending budget, not just a batch ceiling.** The endpoint
+    declares `maxDuration = 60` and every send carries its own 8 second
+    transport timeout, so the batch ceiling alone allowed a pass that could
+    not finish. `SEND_BUDGET_MS` stops it early with work left rather than
+    being killed halfway; the queue is drained by the next pass, and a
+    claimed row is released when its claim expires either way.
+16. **A manual run reports partial progress honestly.** A pass is a sequence
+    of separately committed steps, so a failure can leave weeks closed and
+    messages sent. The action says that and says retrying is safe, rather
+    than claiming nothing happened.

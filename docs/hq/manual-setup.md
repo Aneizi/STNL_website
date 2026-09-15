@@ -33,7 +33,12 @@ a Colosseum snapshot, backfilled from the existing importers) and an `exempt`
 column on `hq_reporting_outcomes`. Run the migration before the first deploy
 that carries them; nothing else about the deployment changes.
 
-Phase 8 adds one more table to the same migration, `hq_reminder_deliveries`
+Phase 8 adds one more table and three columns to the same migration:
+`hq_telegram_bot_consent.chat_bound_telegram_user_id` (which Telegram account
+opened the chat the bot delivers into), `hq_telegram_actions.hackathon_id`
+(which edition a bot button is scoped to) and
+`hq_reminder_deliveries.next_attempt_at`, all added on 15 September 2026 after
+an external review. Plus `hq_reminder_deliveries`
 (one row per Captain per week, recording whether that week's reminder was
 sent and why not when it was not). Additive and idempotent like the rest, and
 covered by the same single `npm run hq:migrate`.
