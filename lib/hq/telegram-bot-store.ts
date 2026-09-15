@@ -2,6 +2,7 @@ import "server-only";
 import type { Actor } from "./actor";
 import { authorizeProjectAction } from "./authz-decisions";
 import { builderDatabase, type BuilderQuery } from "./builder-db";
+import { reminderDispatchDecision, REMINDER_KIND } from "./reminder-dispatch";
 import type { TelegramSender } from "./telegram-bot-api";
 
 /**
@@ -139,21 +140,43 @@ export type BotChat = { userId: string; chatId: string; messagingEnabled: boolea
  * been created from `/hq/account` before the chat existed. It writes the chat
  * and nothing else: `messaging_enabled` stays exactly as the person left it,
  * so opening the chat is never mistaken for agreeing to be messaged.
+ *
+ * It also records WHICH verified Telegram identity opened the chat, and
+ * brings `telegram_user_id` up to date with it. The `DO UPDATE` used to set
+ * the chat alone, so a relinked account kept the previous account's Telegram
+ * id on the row and nothing could tell the two apart; `deliverableBotChat`
+ * and `deliverable()` compare the binding against the identity verified NOW,
+ * so a chat only ever receives messages for the account that opened it.
  */
 export async function bindBotChat(db: BuilderQuery, input: { userId: string; telegramUserId: string; chatId: string }): Promise<void> {
   await db.query(
-    `INSERT INTO hq_telegram_bot_consent (user_id, telegram_user_id, messaging_enabled, chat_id)
-     VALUES ($1, $2::bigint, false, $3::bigint)
-     ON CONFLICT (user_id) DO UPDATE SET chat_id = EXCLUDED.chat_id, updated_at = now()`,
+    `INSERT INTO hq_telegram_bot_consent (user_id, telegram_user_id, messaging_enabled, chat_id, chat_bound_telegram_user_id)
+     VALUES ($1, $2::bigint, false, $3::bigint, $2::bigint)
+     ON CONFLICT (user_id) DO UPDATE SET
+       chat_id = EXCLUDED.chat_id,
+       telegram_user_id = EXCLUDED.telegram_user_id,
+       chat_bound_telegram_user_id = EXCLUDED.chat_bound_telegram_user_id,
+       updated_at = now()`,
     [input.userId, input.telegramUserId, input.chatId],
   );
 }
 
-/** The chat to deliver into, or null when there is none or messaging is off. Phase 8's reminder reads this. */
+/**
+ * The chat to deliver into, or null when there is none, messaging is off, or
+ * the chat on file was opened by a Telegram account that is no longer the one
+ * connected to this HQ account.
+ *
+ * The join is the whole point: a chat id alone says where a message would go,
+ * never whose chat it is. Phase 8's reminder and `deliverable()` below both
+ * read through this rule.
+ */
 export async function deliverableBotChat(db: BuilderQuery, userId: string): Promise<BotChat | null> {
   const { rows } = await db.query(
-    `SELECT user_id, chat_id::text AS chat_id, messaging_enabled FROM hq_telegram_bot_consent
-     WHERE user_id = $1 AND messaging_enabled AND chat_id IS NOT NULL`,
+    `SELECT c.user_id, c.chat_id::text AS chat_id, c.messaging_enabled
+     FROM hq_telegram_bot_consent c
+     JOIN hq_auth_telegram_identity i
+       ON i.user_id = c.user_id AND i.telegram_user_id = c.chat_bound_telegram_user_id
+     WHERE c.user_id = $1 AND c.messaging_enabled AND c.chat_id IS NOT NULL`,
     [userId],
   );
   return rows.length ? { userId: String(rows[0].user_id), chatId: String(rows[0].chat_id), messagingEnabled: true } : null;
@@ -225,6 +248,8 @@ export type BotAction = {
   /** The composing session this button was rendered from, and the state it was rendered from. Both must still match. */
   draftId: string | null;
   draftRevision: number | null;
+  /** The edition this button is scoped to, or null for the account's default one. */
+  hackathonId: number | null;
 };
 
 export type NewBotAction = {
@@ -240,6 +265,7 @@ export type NewBotAction = {
   visibility?: "shared" | "sensitive" | null;
   draftId?: string | null;
   draftRevision?: number | null;
+  hackathonId?: number | null;
 };
 
 const toAction = (row: Record<string, unknown>): BotAction => ({
@@ -257,11 +283,12 @@ const toAction = (row: Record<string, unknown>): BotAction => ({
   singleUse: Boolean(row.single_use),
   draftId: row.draft_id == null ? null : String(row.draft_id),
   draftRevision: row.draft_revision == null ? null : Number(row.draft_revision),
+  hackathonId: row.hackathon_id == null ? null : Number(row.hackathon_id),
 });
 
 const ACTION_COLUMNS =
   "id::text AS id, user_id, chat_id::text AS chat_id, kind, project_id::text AS project_id, period_id::text AS period_id, " +
-  "entry_id::text AS entry_id, expected_version, page, cursor, visibility, single_use, draft_id::text AS draft_id, draft_revision";
+  "entry_id::text AS entry_id, expected_version, page, cursor, visibility, single_use, draft_id::text AS draft_id, draft_revision, hackathon_id";
 
 /**
  * Mints one opaque button reference, bound to the account and chat it was
@@ -273,8 +300,8 @@ export async function createBotAction(db: BuilderQuery, input: NewBotAction, now
   const bound = isDraftAction(input.kind);
   const expires = new Date(now + (bound ? WRITE_ACTION_TTL_MS : ACTION_TTL_MS)).toISOString();
   const { rows } = await db.query(
-    `INSERT INTO hq_telegram_actions (user_id, chat_id, kind, project_id, period_id, entry_id, expected_version, page, cursor, visibility, single_use, draft_id, draft_revision, expires_at)
-     VALUES ($1, $2::bigint, $3, $4::uuid, $5::uuid, $6::uuid, $7, $8, $9, $10, $11, $12::uuid, $13, $14::timestamptz) RETURNING ${ACTION_COLUMNS}`,
+    `INSERT INTO hq_telegram_actions (user_id, chat_id, kind, project_id, period_id, entry_id, expected_version, page, cursor, visibility, single_use, draft_id, draft_revision, expires_at, hackathon_id)
+     VALUES ($1, $2::bigint, $3, $4::uuid, $5::uuid, $6::uuid, $7, $8, $9, $10, $11, $12::uuid, $13, $14::timestamptz, $15) RETURNING ${ACTION_COLUMNS}`,
     [
       input.userId, input.chatId, input.kind,
       isUuid(input.projectId) ? input.projectId : null,
@@ -288,6 +315,7 @@ export async function createBotAction(db: BuilderQuery, input: NewBotAction, now
       isUuid(input.draftId) ? input.draftId : null,
       input.draftRevision ?? null,
       expires,
+      input.hackathonId ?? null,
     ],
   );
   return toAction(rows[0]);
@@ -601,13 +629,25 @@ type ClaimedMessage = {
   hackathonId: number | null;
 };
 
-/** Why a queued message was dropped instead of sent. Recorded on the row so an admin can see it. */
+/**
+ * Why a queued message was dropped instead of sent. Recorded on the row so an
+ * admin can see it. A reminder can additionally answer with any
+ * `ReminderSkipReason`, which is why this is widened to a string at the call
+ * site rather than being the only vocabulary.
+ */
 export type SendSkipReason =
   | "messaging_disabled"
   | "telegram_disconnected"
   | "chat_changed"
+  | "chat_not_bound"
   | "not_authorized"
   | "message_too_long";
+
+/**
+ * What the pre-send check decided: send this row, optionally with a body
+ * rebuilt from the state that exists now, or skip it with a reason.
+ */
+type DeliveryDecision = { ok: true; body?: string } | { ok: false; reason: string };
 
 /**
  * Whether this row may still be delivered, decided from the state that exists
@@ -620,24 +660,43 @@ export type SendSkipReason =
  * the last one is why phase 8's reminder can reuse this untouched: a
  * reassigned project must not appear in a message.
  */
-async function deliverable(db: BuilderQuery, message: ClaimedMessage): Promise<SendSkipReason | null> {
-  if (!message.userId) return null;
+async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: number): Promise<DeliveryDecision> {
+  if (!message.userId) return { ok: true };
   const { rows } = await db.query(
-    `SELECT c.messaging_enabled, c.chat_id::text AS chat_id, i.user_id AS identity
+    `SELECT c.messaging_enabled, c.chat_id::text AS chat_id, c.chat_bound_telegram_user_id::text AS bound_to,
+            i.user_id AS identity, i.telegram_user_id::text AS telegram_user_id
      FROM hq_telegram_bot_consent c
      LEFT JOIN hq_auth_telegram_identity i ON i.user_id = c.user_id
      WHERE c.user_id = $1`,
     [message.userId],
   );
-  if (!rows.length || !rows[0].identity) return "telegram_disconnected";
-  if (!rows[0].messaging_enabled) return "messaging_disabled";
+  if (!rows.length || !rows[0].identity) return { ok: false, reason: "telegram_disconnected" };
+  if (!rows[0].messaging_enabled) return { ok: false, reason: "messaging_disabled" };
   // A relink or a fresh chat gives a new chat id. The old row must not be
   // delivered into a chat the person has moved on from.
-  if (rows[0].chat_id == null || String(rows[0].chat_id) !== message.chatId) return "chat_changed";
-  if (!message.projectId || message.hackathonId == null) return null;
+  if (rows[0].chat_id == null || String(rows[0].chat_id) !== message.chatId) return { ok: false, reason: "chat_changed" };
+  // And the chat must be one the identity connected NOW actually opened.
+  // Matching the chat id alone says where a message would go, never whose
+  // chat it is: disconnecting Telegram and connecting a different account
+  // left the previous account's chat on the row, and a queued message went
+  // to the previous account's private chat.
+  if (rows[0].bound_to == null || String(rows[0].bound_to) !== String(rows[0].telegram_user_id)) {
+    return { ok: false, reason: "chat_not_bound" };
+  }
+
+  // A reminder names several projects, so the single-project check below has
+  // nothing to check. It is re-decided and REBUILT instead, against the state
+  // that exists at this instant, by the module that owns that decision. This
+  // runs for every consumer of the queue, the webhook's drain included.
+  if (message.kind === REMINDER_KIND) {
+    const decision = await reminderDispatchDecision(db, { outgoingId: message.id, atMs });
+    return decision.ok ? { ok: true, body: decision.body } : { ok: false, reason: decision.reason };
+  }
+
+  if (!message.projectId || message.hackathonId == null) return { ok: true };
   const actor: Actor = { kind: "member", id: message.userId, name: "", email: null, capabilities: new Set(), telegram: null };
   const decision = await authorizeProjectAction(actor, { projectId: message.projectId, hackathonId: message.hackathonId, action: "read" });
-  return decision.allowed ? null : "not_authorized";
+  return decision.allowed ? { ok: true } : { ok: false, reason: "not_authorized" };
 }
 
 /**
@@ -693,18 +752,29 @@ export async function flushBotMessages(
       projectId: row.project_id == null ? null : String(row.project_id),
       hackathonId: row.hackathon_id == null ? null : Number(row.hackathon_id),
     };
-    const skip = await deliverable(db, message);
-    if (skip) {
+    // A FRESH reading of the clock per message, not the one the caller took
+    // when the pass began: a pass that closes periods, prepares reminders and
+    // then sends up to two hundred messages, each with its own timeout, can
+    // be minutes older by the time it reaches this row.
+    const dispatchAt = options.now ?? Date.now();
+    const decision = await deliverable(db, message, dispatchAt);
+    if (!decision.ok) {
       await db.query(
         "UPDATE hq_telegram_outgoing SET state='skipped', skip_reason=$2, claimed_by=NULL, claim_expires_at=NULL WHERE id=$1::uuid AND claimed_by=$3",
-        [message.id, skip, owner],
+        [message.id, decision.reason, owner],
       );
       result.skipped += 1;
       continue;
     }
+    // The body as of this instant, which for a reminder is rebuilt rather
+    // than the one that was stored when it was queued.
+    const text = decision.body ?? message.body;
+    if (decision.body != null && decision.body !== message.body) {
+      await db.query("UPDATE hq_telegram_outgoing SET body=$2 WHERE id=$1::uuid AND claimed_by=$3", [message.id, decision.body, owner]);
+    }
     const outcome = await sender.sendMessage({
       chatId: message.chatId,
-      text: message.body,
+      text,
       parseMode: "HTML",
       ...(message.replyMarkup ? { replyMarkup: message.replyMarkup } : {}),
     });
@@ -727,8 +797,11 @@ export async function flushBotMessages(
       [
         message.id,
         giveUp ? (outcome.retryable ? "failed" : "skipped") : "queued",
-        // Telegram's own words, for an operator. Never rendered into a chat.
-        outcome.detail ? String(outcome.detail).slice(0, 300) : null,
+        // Telegram's own words, for an operator, PREFIXED WITH THE CODE.
+        // Never rendered into a chat. The code matters on its own: a timeout
+        // carries no detail at all, so recording only the detail threw away
+        // the one fact that says delivery is unknown rather than failed.
+        [outcome.code, outcome.detail ? String(outcome.detail) : null].filter(Boolean).join(": ").slice(0, 300) || null,
         giveUp && !outcome.retryable ? outcome.code : null,
         giveUp ? null : new Date(now + backoff).toISOString(),
         owner,

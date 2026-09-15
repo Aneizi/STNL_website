@@ -76,6 +76,15 @@ export async function setBotConsent(actor: Pick<MemberActor, "kind" | "id">, ena
        ON CONFLICT (user_id) DO UPDATE SET
          telegram_user_id = EXCLUDED.telegram_user_id,
          messaging_enabled = EXCLUDED.messaging_enabled,
+         -- A different Telegram account is a different destination. Agreeing
+         -- to be messaged says nothing about a chat the PREVIOUS account
+         -- opened, so the binding is dropped and has to be re-established by
+         -- the new account messaging the bot. Without this, disconnecting
+         -- Telegram, connecting a different account and turning messages back
+         -- on delivered into the old account's private chat, which an
+         -- external review reproduced on 15 September 2026.
+         chat_id = CASE WHEN hq_telegram_bot_consent.chat_bound_telegram_user_id IS DISTINCT FROM EXCLUDED.telegram_user_id THEN NULL ELSE hq_telegram_bot_consent.chat_id END,
+         chat_bound_telegram_user_id = CASE WHEN hq_telegram_bot_consent.chat_bound_telegram_user_id IS DISTINCT FROM EXCLUDED.telegram_user_id THEN NULL ELSE hq_telegram_bot_consent.chat_bound_telegram_user_id END,
          consented_at = CASE WHEN EXCLUDED.messaging_enabled THEN now() ELSE hq_telegram_bot_consent.consented_at END,
          revoked_at = CASE WHEN EXCLUDED.messaging_enabled THEN NULL ELSE now() END,
          updated_at = now()
@@ -95,6 +104,15 @@ export async function setBotConsent(actor: Pick<MemberActor, "kind" | "id">, ena
  * revoke, in which case no audit event is written either.
  */
 export async function revokeBotConsent(userId: string, db: BuilderQuery): Promise<boolean> {
+  // The chat binding goes with the identity, not with the consent: the
+  // identity that opened that chat is the one being removed, so the chat is
+  // no longer a destination this account has any claim to. Cleared
+  // unconditionally, because a row with messaging already off still carries a
+  // chat id that a later re-consent would otherwise inherit.
+  await db.query(
+    "UPDATE hq_telegram_bot_consent SET chat_id = NULL, chat_bound_telegram_user_id = NULL, updated_at = now() WHERE user_id = $1",
+    [userId],
+  );
   const { rows } = await db.query(
     `UPDATE hq_telegram_bot_consent SET messaging_enabled = false, revoked_at = now(), updated_at = now()
      WHERE user_id = $1 AND messaging_enabled RETURNING user_id`,

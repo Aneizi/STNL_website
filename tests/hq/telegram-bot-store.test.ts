@@ -64,9 +64,16 @@ afterAll(async () => { await pg.close(); });
 beforeEach(async () => {
   await pg.exec(`
     DELETE FROM hq_telegram_outgoing; DELETE FROM hq_telegram_drafts; DELETE FROM hq_telegram_actions;
-    DELETE FROM hq_telegram_updates; DELETE FROM hq_telegram_bot_consent; DELETE FROM hq_builder_profiles;
+    DELETE FROM hq_telegram_updates; DELETE FROM hq_telegram_bot_consent;
+    DELETE FROM hq_auth_telegram_identity; DELETE FROM hq_auth_user; DELETE FROM hq_builder_profiles;
   `);
   await rows("INSERT INTO hq_builder_profiles(id,email,name) VALUES($1,$2,'Bot account'),($3,$4,'Other account')", [USER, `${USER}@example.test`, OTHER, `${OTHER}@example.test`]);
+  // The verified Telegram identity behind the account. A chat is only a
+  // destination when the identity connected NOW is the one that opened it, so
+  // a fixture that binds a chat without an identity is not a deliverable
+  // account, which is what these tests are about.
+  await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES($1,'Bot account',$2,true)`, [USER, `${USER}@example.test`]);
+  await rows("INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id) VALUES($1,$2,$3::bigint)", [USER, `telegram:${CHAT}`, CHAT]);
 });
 
 describe("update receipts", () => {
