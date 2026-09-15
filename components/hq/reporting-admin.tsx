@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { showToast } from "@/components/hq/toast";
-import { runReportingJobsNow, type RunJobsResult } from "@/lib/hq/actions/jobs";
+import { loadMoreReminderDeliveries, runReportingJobsNow, type RunJobsResult } from "@/lib/hq/actions/jobs";
 import {
   applyReportingSchedule,
   saveReportingConfiguration,
@@ -53,6 +53,38 @@ const REMINDER_STATES: Record<ReminderDeliveryView["state"], string> = {
   failed: "Could not be sent",
 };
 
+/**
+ * The badge for one reminder. A delivery that ended without an answer from
+ * Telegram is not the same claim as one that failed: the message may well
+ * have arrived, and an admin deciding whether to chase a Captain needs to
+ * know which of the two they are looking at.
+ */
+function reminderBadge(reminder: ReminderDeliveryView): string {
+  if (reminder.deliveryUncertain && reminder.state !== "sent") {
+    return reminder.state === "queued" ? "Trying again" : "Not confirmed";
+  }
+  if (reminder.state === "queued" && reminder.attempts > 0) return "Trying again";
+  return REMINDER_STATES[reminder.state];
+}
+
+/** What is known about a delivery that has not landed, in a sentence. Empty when there is nothing to add. */
+function reminderProgress(reminder: ReminderDeliveryView): string {
+  const parts: string[] = [];
+  if (reminder.attempts > 0) parts.push(`${reminder.attempts} ${reminder.attempts === 1 ? "attempt" : "attempts"}`);
+  if (reminder.deliveryUncertain) {
+    parts.push(
+      reminder.state === "queued"
+        ? "the last one got no answer from Telegram, so it may or may not have arrived"
+        : "the attempts ran out without an answer from Telegram, so it may or may not have arrived",
+    );
+  }
+  if (reminder.state === "queued" && reminder.nextAttemptAt) {
+    parts.push(`next attempt ${new Date(reminder.nextAttemptAt).toLocaleString("en-GB", { hour12: false })}`);
+  }
+  if (!parts.length) return "";
+  return ` ${parts.join(", ")}.`;
+}
+
 const REMINDER_REASONS: Record<string, string> = {
   nothing_outstanding: "every assigned team had already updated, so there was nothing to send",
   no_assignments: "the Captain had no assigned teams by then",
@@ -69,7 +101,7 @@ const REMINDER_REASONS: Record<string, string> = {
 
 /** The reason line, which falls back to Telegram's own code rather than swallowing something we have no sentence for. */
 function reminderReason(reminder: ReminderDeliveryView): string {
-  if (!reminder.reason) return "";
+  if (!reminder.reason || reminder.state === "queued") return "";
   return REMINDER_REASONS[reminder.reason] ?? `Telegram refused it (${reminder.reason})`;
 }
 
@@ -115,6 +147,20 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
   const [reminders, setReminders] = useState(data.reminders);
   const [running, startRun] = useTransition();
   const [ranSummary, setRanSummary] = useState("");
+  const [reminderLimit, setReminderLimit] = useState(reminders.length);
+  const [loadingMore, startLoadMore] = useTransition();
+
+  const showMoreReminders = () =>
+    startLoadMore(async () => {
+      const next = reminderLimit + 50;
+      const result = await loadMoreReminderDeliveries(next);
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      setReminders(result.view.deliveries);
+      setReminderLimit(next);
+    });
 
   const runJobs = () =>
     startRun(async () => {
@@ -306,13 +352,20 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
                   {reminder.captainName}, week {reminder.periodSequence} ({periodRangeLabel(reminder.periodStartDate, reminder.periodEndDate)}).{" "}
                   {reminder.projectCount === 1 ? "1 team outstanding" : `${reminder.projectCount} teams outstanding`}.
                   {reason ? ` Not sent because ${reason}.` : ""}
-                  {reminder.attempts > 1 ? ` ${reminder.attempts} attempts.` : ""}
+                  {reminderProgress(reminder)}
                 </span>
-                <span className={styles.badge}>{REMINDER_STATES[reminder.state]}</span>
+                <span className={styles.badge}>{reminderBadge(reminder)}</span>
               </li>
             );
           })}
         </ul>
+      )}
+      {reminders.length >= reminderLimit && reminders.length > 0 && (
+        <div className={styles.actions}>
+          <button className={styles.secondary} type="button" onClick={showMoreReminders} disabled={loadingMore}>
+            {loadingMore ? "Loading…" : "Show earlier reminders"}
+          </button>
+        </div>
       )}
     </section>
   );

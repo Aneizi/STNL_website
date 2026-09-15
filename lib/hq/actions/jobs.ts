@@ -56,9 +56,28 @@ export async function runReportingJobsNow(): Promise<RunJobsResult> {
     summary = await runDueWork();
   } catch (error) {
     console.error("Manual HQ reporting jobs run failed", error);
-    return { ok: false, error: "The job could not finish. Nothing was half done: try again in a moment." };
+    // Honest about what a failure means. A pass is a sequence of separately
+    // committed steps: weeks may already be closed, reminders already
+    // recorded and messages already sent before it stopped. Every step is
+    // idempotent, which is why running it again is safe, and that is a
+    // different sentence from "nothing happened".
+    return {
+      ok: false,
+      error: "The job stopped partway. Anything it already finished is recorded below, and running it again picks up from there without repeating itself.",
+    };
   }
   const deliveries = await listReminderDeliveries(builderDatabase(), { hackathonId: hackathon.id });
   refreshHq();
   return { ok: true, summary, view: { botConfigured: isTelegramBotConfigured(), deliveries } };
+}
+
+/**
+ * More of the reminder history than the panel loads with, for an edition
+ * whose weeks have piled up. A read, like the page's own, gated the same way.
+ */
+export async function loadMoreReminderDeliveries(limit: number): Promise<{ ok: true; view: ReportingJobsView } | { ok: false; error: string }> {
+  await requireUser();
+  const hackathon = await requireHackathon();
+  const deliveries = await listReminderDeliveries(builderDatabase(), { hackathonId: hackathon.id, limit });
+  return { ok: true, view: { botConfigured: isTelegramBotConfigured(), deliveries } };
 }
