@@ -30,7 +30,10 @@ import {
   runDueWork,
 } from "@/lib/hq/jobs";
 import { createUpdate, ensureReportingPeriods, enableReporting, listReportingPeriods, pauseReporting, reportingStatus } from "@/lib/hq/reporting";
+import { handleTelegramUpdate } from "@/lib/hq/telegram-bot";
 import type { OutgoingMessage, TelegramSendOutcome, TelegramSender } from "@/lib/hq/telegram-bot-api";
+import { flushBotMessages } from "@/lib/hq/telegram-bot-store";
+import { setBotConsent } from "@/lib/hq/telegram-consent";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const OPERATOR_ID = "00000000-0000-4000-8000-0000000000b1";
@@ -102,10 +105,16 @@ async function seedBotReach(userId: string, telegramUserId: string, chatId = tel
      ON CONFLICT (user_id) DO NOTHING`,
     [userId, `telegram:${telegramUserId}`, telegramUserId],
   );
+  // `chat_bound_telegram_user_id` is what `bindBotChat` records when the
+  // person actually messages the bot: the identity that opened this chat. A
+  // fixture that sets a chat without it is a chat nobody opened, which is
+  // exactly the state a relink leaves behind and which must not be a
+  // destination.
   await rows(
-    `INSERT INTO hq_telegram_bot_consent(user_id,telegram_user_id,messaging_enabled,chat_id,consented_at)
-     VALUES($1,$2::bigint,$3,$4::bigint,now())
-     ON CONFLICT (user_id) DO UPDATE SET messaging_enabled = EXCLUDED.messaging_enabled, chat_id = EXCLUDED.chat_id`,
+    `INSERT INTO hq_telegram_bot_consent(user_id,telegram_user_id,messaging_enabled,chat_id,chat_bound_telegram_user_id,consented_at)
+     VALUES($1,$2::bigint,$3,$4::bigint,$2::bigint,now())
+     ON CONFLICT (user_id) DO UPDATE SET messaging_enabled = EXCLUDED.messaging_enabled,
+       chat_id = EXCLUDED.chat_id, chat_bound_telegram_user_id = EXCLUDED.chat_bound_telegram_user_id`,
     [userId, telegramUserId, messaging, chatId],
   );
 }
@@ -160,6 +169,9 @@ beforeEach(async () => {
     DELETE FROM hq_builder_profiles; DELETE FROM hq_auth_user;
     DELETE FROM hq_settings; DELETE FROM hq_hackathons;
   `);
+  // The statuses are seeded once in beforeAll, so a test that marks them
+  // inactive would otherwise leak into every test after it.
+  await rows("UPDATE hq_project_statuses SET counts_as_active = true");
   await rows(`INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES($1,'worlds-fair','Crypto Worlds Fair','2026-09-14','2026-10-12')`, [EDITION]);
   await rows(`INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES($1,'frontier','Frontier','2026-05-04','2026-05-31')`, [OTHER_EDITION]);
   await rows(`INSERT INTO hq_reporting_config(hackathon_id,final_period_start_date) VALUES($1,'2026-10-05')`, [EDITION]);
@@ -565,5 +577,211 @@ describe("listReminderDeliveries", () => {
     const { sender } = fakeSender();
     await runDueWork({ db, sender, now: NUDGE_1 });
     expect(JSON.stringify(await listReminderDeliveries(db, { hackathonId: EDITION }))).not.toContain("private worry");
+  });
+});
+
+/* ---------------------------------------------------------------------------
+ * What must still be true at the moment of transport
+ *
+ * The external review of 15 September 2026 reproduced every case below. They
+ * share one shape: `prepareReminder` runs, the message sits in the queue, the
+ * world changes, and only then is it sent. That gap is ordinary rather than a
+ * race. `runDueWork` with no transport (this deployment has no bot yet, which
+ * is exactly where item 2.9 leaves it) prepares a message and delivers
+ * nothing, and a retryable send failure backs off for up to half an hour, so
+ * the checks made before the enqueue are not the checks that matter.
+ * ------------------------------------------------------------------------ */
+
+/** Queues a reminder and deliberately does not deliver it. */
+async function queuedReminder() {
+  const period = await periodOne();
+  const result = await prepareReminder(db, { captainUserId: CAPTAIN, hackathonId: EDITION, periodId: period.id, atMs: NUDGE_1, hqOrigin: "https://hq.example.test" });
+  expect(result).toMatchObject({ ok: true, state: "queued" });
+}
+
+const updateTeam = async (projectId: string, atMs = NUDGE_1 + 1000) => {
+  const saved = await createUpdate(member(CAPTAIN, ["captain"]), { projectId, hackathonId: EDITION, body: "Updated after queueing.", atMs }, db);
+  expect(saved.ok).toBe(true);
+};
+
+/** Half an hour later, which is the scheduled interval, not a narrow window. */
+const LATER = NUDGE_1 + 30 * 60_000;
+
+describe("a queued reminder is rebuilt from current facts before it is sent", () => {
+  it("drops a team that updated while the message was waiting", async () => {
+    await queuedReminder();
+    await updateTeam(PROJECT_A);
+    const { sender, sent } = fakeSender();
+    await runDueWork({ db, sender, now: LATER });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).not.toContain("Alpha");
+    expect(sent[0].text).toContain("Beta");
+    expect((await deliveries())[0]).toMatchObject({ state: "sent", project_count: 1 });
+  });
+
+  it("cancels the message when every team updated while it was waiting", async () => {
+    await queuedReminder();
+    await updateTeam(PROJECT_A);
+    await updateTeam(PROJECT_B);
+    const { sender, sent } = fakeSender();
+    await runDueWork({ db, sender, now: LATER });
+    expect(sent).toEqual([]);
+    expect((await deliveries())[0]).toMatchObject({ state: "skipped", reason: "nothing_outstanding" });
+  });
+
+  it("never names a project the Captain lost while the message was waiting", async () => {
+    await queuedReminder();
+    await unassignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_A, hackathonId: EDITION });
+    const { sender, sent } = fakeSender();
+    await runDueWork({ db, sender, now: LATER });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).not.toContain("Alpha");
+  });
+
+  it("sends nothing after Captain access is revoked", async () => {
+    await queuedReminder();
+    await revokeCapability(db, { actor: { kind: "operator", id: OPERATOR_ID }, byOperatorId: OPERATOR_ID, userId: CAPTAIN, capability: "captain", reason: "review" });
+    const { sender, sent } = fakeSender();
+    await runDueWork({ db, sender, now: LATER });
+    expect(sent).toEqual([]);
+    expect((await deliveries())[0]).toMatchObject({ state: "skipped", reason: "capability_revoked" });
+  });
+
+  it("sends nothing for an edition archived while the message was waiting", async () => {
+    await queuedReminder();
+    await rows("UPDATE hq_hackathons SET archived_at = now() WHERE id = $1", [EDITION]);
+    const { sender, sent } = fakeSender();
+    await runDueWork({ db, sender, now: LATER });
+    expect(sent).toEqual([]);
+    expect((await deliveries())[0]).toMatchObject({ state: "skipped", reason: "edition_archived" });
+  });
+
+  it("holds on the webhook's own drain too, which never calls the job's sweep", async () => {
+    // The bot's webhook flushes the same queue after a save. It is a real
+    // second consumer, so the check cannot live in the job.
+    await queuedReminder();
+    const { sender, sent } = fakeSender();
+    await flushBotMessages(db, sender, { now: PERIOD_1_END + 60_000 });
+    expect(sent).toEqual([]);
+    expect((await deliveries())[0]).toMatchObject({ state: "skipped", reason: "period_over" });
+  });
+});
+
+describe("an inactive project stops reminders without a separate reporting pause", () => {
+  it("is left out of the scan", async () => {
+    await rows("UPDATE hq_project_statuses SET counts_as_active = false");
+    expect(await dueReminders(db, { atMs: NUDGE_1 })).toEqual([]);
+  });
+
+  it("is left out of a message that was queued before it went inactive", async () => {
+    await queuedReminder();
+    await rows("UPDATE hq_project_statuses SET counts_as_active = false");
+    const { sender, sent } = fakeSender();
+    await runDueWork({ db, sender, now: LATER });
+    expect(sent).toEqual([]);
+    expect((await deliveries())[0]).toMatchObject({ state: "skipped", reason: "nothing_outstanding" });
+  });
+});
+
+describe("the chat a reminder is delivered to belongs to the identity that is connected now", () => {
+  it("does not deliver to the previous Telegram account's chat after a relink", async () => {
+    await queuedReminder();
+    await setBotConsent({ kind: "member", id: CAPTAIN }, false);
+    // The identity swap is a fixture; the consent service either side of it is
+    // the real one. What it reproduces is the retained chat id.
+    await rows("UPDATE hq_auth_telegram_identity SET telegram_user_id = 7777, provider_subject = 'telegram:7777' WHERE user_id = $1", [CAPTAIN]);
+    await setBotConsent({ kind: "member", id: CAPTAIN }, true);
+    const { sender, sent } = fakeSender();
+    await runDueWork({ db, sender, now: LATER });
+    expect(sent).toEqual([]);
+    expect(await rows("SELECT chat_id FROM hq_telegram_bot_consent WHERE user_id = $1", [CAPTAIN])).toEqual([{ chat_id: null }]);
+  });
+
+  it("does not prepare a new reminder before the new identity has opened a chat", async () => {
+    await rows("UPDATE hq_auth_telegram_identity SET telegram_user_id = 7777, provider_subject = 'telegram:7777' WHERE user_id = $1", [CAPTAIN]);
+    await rows("UPDATE hq_telegram_bot_consent SET telegram_user_id = 7777 WHERE user_id = $1", [CAPTAIN]);
+    await rows("UPDATE hq_telegram_bot_consent SET chat_id = 5551 WHERE user_id = $1", [CAPTAIN]);
+    const period = await periodOne();
+    // The chat on the row was opened by 5551, not by the identity connected
+    // now, so it is not a destination.
+    const result = await prepareReminder(db, { captainUserId: CAPTAIN, hackathonId: EDITION, periodId: period.id, atMs: NUDGE_1 });
+    expect(result).toMatchObject({ ok: true, state: "skipped", reason: "chat_not_bound" });
+  });
+});
+
+describe("what an admin can see while a delivery is still in flight", () => {
+  it("shows the attempt and Telegram's reason for a rate limit that is still retrying", async () => {
+    const { sender } = fakeSender({ ok: false, retryable: true, code: "telegram_429", detail: "Too Many Requests", retryAfterSeconds: 60 });
+    await runDueWork({ db, sender, now: NUDGE_1 });
+    const [admin] = await listReminderDeliveries(db, { hackathonId: EDITION });
+    expect(admin.state).toBe("queued");
+    expect(admin.attempts).toBe(1);
+    expect(admin.lastError).toContain("Too Many Requests");
+    expect(admin.nextAttemptAt).not.toBeNull();
+  });
+
+  it("keeps a timeout readable as uncertain rather than as a failure", async () => {
+    const { sender } = fakeSender({ ok: false, retryable: true, code: "timeout", detail: null });
+    await runDueWork({ db, sender, now: NUDGE_1 });
+    const [admin] = await listReminderDeliveries(db, { hackathonId: EDITION });
+    expect(admin.lastError).toMatch(/timeout/i);
+    expect(admin.deliveryUncertain).toBe(true);
+  });
+
+  it("still reads as uncertain once the retries are exhausted", async () => {
+    const { sender } = fakeSender({ ok: false, retryable: true, code: "timeout", detail: null });
+    await runDueWork({ db, sender, now: NUDGE_1 });
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await rows("UPDATE hq_telegram_outgoing SET next_attempt_at = NULL WHERE state = 'queued'");
+      await runDueWork({ db, sender, now: NUDGE_1 + (attempt + 1) * 60_000 });
+    }
+    const [admin] = await listReminderDeliveries(db, { hackathonId: EDITION });
+    expect(admin.state).toBe("failed");
+    expect(admin.deliveryUncertain).toBe(true);
+  });
+});
+
+describe("a delayed closure records who was responsible during the week", () => {
+  it("does not hand the previous week to a Captain assigned after it ended", async () => {
+    await rows("UPDATE hq_captain_assignments SET assigned_at = $2::timestamptz WHERE project_id = $1::uuid", [PROJECT_A, "2026-09-13T22:00:00.000Z"]);
+    await unassignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_A, hackathonId: EDITION });
+    await seedAssignedCaptain(SECOND_CAPTAIN, PROJECT_A);
+    const afterEnd = new Date(PERIOD_1_END + 60_000).toISOString();
+    await rows("UPDATE hq_captain_assignments SET unassigned_at = $2::timestamptz WHERE project_id = $1::uuid AND captain_user_id = $3", [PROJECT_A, afterEnd, CAPTAIN]);
+    await rows("UPDATE hq_captain_assignments SET assigned_at = $2::timestamptz WHERE project_id = $1::uuid AND captain_user_id = $3", [PROJECT_A, afterEnd, SECOND_CAPTAIN]);
+    // The job is half an hour late, which must not change the answer.
+    await closeDuePeriods(db, { atMs: PERIOD_1_END + 30 * 60_000 });
+    expect(await rows("SELECT captain_user_id FROM hq_reporting_outcomes WHERE project_id = $1::uuid", [PROJECT_A])).toEqual([{ captain_user_id: CAPTAIN }]);
+  });
+
+  it("records no Captain for a week the project ended unassigned", async () => {
+    await rows("UPDATE hq_captain_assignments SET assigned_at = $2::timestamptz WHERE project_id = $1::uuid", [PROJECT_A, "2026-09-13T22:00:00.000Z"]);
+    await rows("UPDATE hq_captain_assignments SET unassigned_at = $2::timestamptz WHERE project_id = $1::uuid", [PROJECT_A, new Date(NUDGE_1).toISOString()]);
+    await closeDuePeriods(db, { atMs: PERIOD_1_END + 30 * 60_000 });
+    expect(await rows("SELECT captain_user_id FROM hq_reporting_outcomes WHERE project_id = $1::uuid", [PROJECT_A])).toEqual([{ captain_user_id: null }]);
+  });
+});
+
+describe("a reminder's Add update opens the edition it named", () => {
+  it("offers the second edition's team, not the default edition's", async () => {
+    await rows("UPDATE hq_hackathons SET start_date='2026-09-15', end_date='2026-10-12' WHERE id=$1", [OTHER_EDITION]);
+    await ensureReportingPeriods(db, OTHER_EDITION);
+    await seedProject(PROJECT_C, "Gamma", OTHER_EDITION);
+    await enrol(PROJECT_C, OTHER_EDITION);
+    await seedAssignedCaptain(CAPTAIN, PROJECT_C, OTHER_EDITION);
+    const period = (await listReportingPeriods(db, OTHER_EDITION))[0];
+    await prepareReminder(db, { captainUserId: CAPTAIN, hackathonId: OTHER_EDITION, periodId: period.id, atMs: NUDGE_1, hqOrigin: "https://hq.example.test" });
+
+    const [queued] = await rows("SELECT body, reply_markup FROM hq_telegram_outgoing");
+    expect(String(queued.body)).toContain("Gamma");
+    const markup = queued.reply_markup as { inline_keyboard: { text: string; callback_data?: string }[][] };
+    const button = markup.inline_keyboard.flat().find((entry) => entry.callback_data);
+    const response = await handleTelegramUpdate(
+      { update_id: 991, callback_query: { id: "cb991", from: { id: "5551" }, data: button!.callback_data, message: { message_id: 1, chat: { id: "5551", type: "private" } } } },
+      { db, now: NUDGE_1, hqOrigin: "https://hq.example.test" },
+    );
+    const labels = response.replies.flatMap((reply) => reply.keyboard.flat()).map((entry) => entry.text);
+    expect(labels).toContain("Gamma");
+    expect(labels).not.toContain("Alpha");
   });
 });
