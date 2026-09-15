@@ -89,8 +89,8 @@ exists yet and none should be created before that phase.
 | Record deletion | admin removal of a team and of a person | `lib/hq/record-deletion.ts`; operator actions in `lib/hq/actions/builders-admin.ts` (`deleteBuilderTeam`), `lib/hq/actions/people.ts` (`deletePerson`) and `lib/hq/actions/projects.ts` (`deleteProject`, which delegates here so there is one deletion, not two) | `teamRemovalImpact`, `deleteTeamRecord`, `personRemovalImpact`, `deletePersonRecord`. One transaction each, audited (`project.deleted`, `person.deleted`), real counts read before the destructive step and again inside it. Deleting a person NEVER deletes the `hq_builder_profiles` account behind them | 3 |
 | Reporting service | periods, eligibility, entries, revisions, completion, outcomes | `lib/hq/reporting.ts` (the one module a caller imports), `lib/hq/reporting-enrolment.ts` (schedule and eligibility, split out **only** so `builder-store.ts` can enrol a team inside the import transaction without `./authz -> ./actor -> ./member-auth -> ./builder-store` closing a cycle; everything it owns is re-exported unchanged), `lib/hq/reporting-periods.ts` (the pure generator, no `server-only`) | Schedule: `readReportingSchedule`, `listReportingPeriods`, `currentReportingPeriod`, `ensureReportingPeriods`, `previewReportingPeriods`. Eligibility: `reportingEligibility`, `listReportingEligibility`, `enableReporting`, `pauseReporting`. Entries: `createUpdate`, `editUpdate`, `voidUpdate`, `readAuthorizedUpdates`, `readRevisionHistory`, `MAX_BODY_LENGTH`. Status and outcomes: `reportingStatus`, `closePeriod`, `listPeriodOutcomes`, `correctOutcome`. Pure: `generateReportingPeriods`, `zonedDateTimeToUtc`, `addDays`, `periodForInstant` | 5, complete |
 | Reporting surfaces | the team, Captain and admin reporting screens and the actions behind them | `lib/hq/reporting-view.ts` (pure copy and presentation rules, client-safe), `lib/hq/reporting-contacts.ts` (the two opt-in contacts, no `./authz` import so operator queries reach it), `lib/hq/reporting-surface.ts` (the two member page reads), `lib/hq/actions/reporting.ts` (member gated), `lib/hq/actions/reporting-admin.ts` (operator gated, scanned by `tests/hq/operator-imports.test.ts`), `components/hq/reporting-member.tsx`, `components/hq/reporting-admin.tsx`, `components/hq/reporting-project-panel.tsx` | Member actions: `addReportingUpdate`, `editReportingUpdate`, `saveTeamContact`, `saveCaptainContact`. Operator actions: `previewReportingSchedule`, `applyReportingSchedule`, `saveReportingConfiguration`, `enableProjectReporting`, `setProjectReportingPaused`, `voidReportingUpdate`, `correctReportingOutcome`, `loadProjectReporting`, `loadEntryRevisions`. Pure: `statusLabel`, `periodRangeLabel`, `deadlineLabel`, `shouldPromptUpdate`, `promptDismissKey`, `byOutstandingFirst`, `ADD_UPDATE_MESSAGES`, `EDIT_UPDATE_MESSAGES`, `AUDIENCE_NOTES`, `normalizeContact`, `MAX_CONTACT_LENGTH`. Reads: `teamReportingPanel`, `captainReportingBoard`, `readTeamContact(s)`, `readCaptainContact(s)`. A phase that writes reporting copy adds it to `reporting-view.ts`, so the em dash and middot scan keeps covering it | 6, complete |
-| Telegram adapter | authenticated chat commands, drafts, delivery | `lib/hq/telegram-bot.ts`, `app/api/telegram/webhook/route.ts`, named only | decided in phase 7 | 7 |
-| Job runner | reminders, closures, bounded sync | `lib/hq/jobs.ts` named only, `lib/hq/github-actions-auth.ts` parameterised by audience and workflow | `prepareReminder`, with a separate OIDC audience and no shared privileges | 8 |
+| Telegram adapter | authenticated chat commands, drafts, delivery | `lib/hq/telegram-bot.ts` (the deterministic flow), `lib/hq/telegram-bot-view.ts` (pure copy, escaping and keyboards, client-safe like `reporting-view.ts`), `lib/hq/telegram-bot-store.ts` (receipts, callback references, drafts, the outgoing queue and the chat binding), `lib/hq/telegram-bot-api.ts` (the transport, the only module that holds the token), `lib/hq/telegram-webhook.ts` (the endpoint's own rules), `app/api/telegram/webhook/route.ts` (the address) | Flow: `handleTelegramUpdate(update, { db?, now?, hqOrigin? })` returning `{ replies, answer, queued, outcome }`. Endpoint: `handleTelegramWebhookRequest(request, deps?)`, `secretMatches`, `telegramUpdateSchema`, `readBoundedBody`, `MAX_WEBHOOK_BODY_BYTES`, `SECRET_HEADER`. Transport: `telegramBotConfig(env)`, `isTelegramBotConfigured`, `telegramSender(config)`, `redactBotUrl`, `TelegramSender`. Store: `claimTelegramUpdate` (leased, so an interrupted update is retried), `finishTelegramUpdate`, `bindBotChat`, `deliverableBotChat`, `botMessagingEnabled`, `createBotAction`, `readBotAction` (resolves, never consumes), `consumeBotAction` (inside the writing transaction), `isWriteAction`, `isDraftAction`, `readBotDraft`, `startBotDraft` (new generation), `advanceBotDraft` (same generation, next revision), `claimBotDraft` (the logical-save claim), `clearBotDraft`, `enqueueBotMessage`, `flushBotMessages` (claimed batches, consent re-checked before dispatch), `purgeExpiredBotState`. Identity: `telegramMemberActor(telegramUserId, db?)` in `lib/hq/actor.ts` over `findTelegramIdentityByTelegramUserId` in `lib/hq/identity.ts`. View: `escapeHtml`, `inlineKeyboard`, `packMessages`, `chunkForEscaped`, `TELEGRAM_TEXT_LIMIT`, `BOT_COPY`, `LABELS`, `previewMessages`, `savedMessage`, `periodChangedMessages`, `conflictMessages`, `refusalMessages`, `ownNoteMessages`, `projectMessage`, `projectListLine`, `weekLine`, `snippet`, `page` | 7, complete |
+| Job runner | reminders, closures, bounded sync | `lib/hq/jobs.ts` (the one module a caller imports), `lib/hq/github-actions-auth.ts` parameterised by audience and workflow (`ScheduledJob`, `isTrustedJobClaims`, `isTrustedJobRequest`), `app/api/cron/hq-jobs/route.ts`, `.github/workflows/hq-jobs.yml`, `lib/hq/actions/jobs.ts` (operator gated, the manual retry and the admin read) | `dueReminders`, `prepareReminder`, `expireStaleReminders`, `reconcileReminderDeliveries`, `purgeReminderDeliveries`, `closeDuePeriods`, `listReminderDeliveries`, `runDueWork`; constants `REMINDER_TYPE_WEEKLY`, `REMINDER_MAX_AGE_MS`, `REMINDER_RETENTION_MS`; the `ReminderSkipReason` vocabulary. Its own OIDC audience (`HQ_JOBS_AUDIENCE`, `stnl-hq-jobs`) and its own workflow file, no shared privileges and no stored secret. Delivery is phase 7's, untouched: `deliverableBotChat` names the chat, `enqueueBotMessage` with a reminder `dedupeKey` writes the message inside the job's transaction, and `flushBotMessages` sends it and records the result. Operator actions: `runReportingJobsNow`, `loadReminderDeliveries` | 8, complete |
 | Discovery and readiness | final submission readiness | named only | decided in phase 10 | 10 |
 
 Audit event kinds, so that later phases extend one vocabulary instead of
@@ -410,12 +410,12 @@ The approved project fallback image:
 The plan's original path, `assets/hq-project-fallback.png`, does not exist at the
 repository root. Phase 3 copied the source above to the target path.
 
-## Handoff to phase 7 and later
+## Handoff to phase 10 and later
 
-Phases 0, 1, 2, 3, 4, 5 and 6 are complete. **Phase 7 (the STNL Telegram bot)
-is next**, then phase 8 and phase 10; there is no phase 9. This section is
-what a later phase needs to start without re-reading the whole log. The
-per-task detail is in `docs/hq/implementation-log.md`.
+Phases 0, 1, 2, 3, 4, 5, 6, 7 and 8 are complete. **Phase 10 (the final
+submission period) is next**, then phase 11; there is no phase 9. This
+section is what a later phase needs to start without re-reading the whole
+log. The per-task detail is in `docs/hq/implementation-log.md`.
 
 ### Interfaces available now
 
@@ -479,6 +479,23 @@ per-task detail is in `docs/hq/implementation-log.md`.
   rather than a rule of its own.
 - **Colosseum integration and deletion (phase 3, complete).** See the two rows
   in the module map above, and the sections below.
+- **Telegram bot (phase 7, complete).** `handleTelegramUpdate` in
+  `lib/hq/telegram-bot.ts` is the flow; `lib/hq/telegram-bot-store.ts` is the
+  durable state, and three of its functions are phase 8's delivery path
+  (`deliverableBotChat`, `enqueueBotMessage`, `flushBotMessages`);
+  `lib/hq/telegram-bot-api.ts` is the only module that holds the token;
+  `telegramMemberActor` in `lib/hq/actor.ts` is the second admitted actor
+  origin. See the module-map row and the section at the end of this file.
+- **Job runner (phase 8, complete).** `lib/hq/jobs.ts` is the one module to
+  import: `runDueWork` is one whole pass, and `dueReminders`,
+  `prepareReminder`, `expireStaleReminders`, `reconcileReminderDeliveries`,
+  `closeDuePeriods`, `purgeReminderDeliveries` and `listReminderDeliveries`
+  are its parts. `closePeriod` now has a production caller.
+  `lib/hq/github-actions-auth.ts` takes a `ScheduledJob` (`LUMA_SYNC_JOB`,
+  `HQ_JOBS_JOB`), so a third scheduled job is a constant rather than a second
+  claim policy. A phase that wants scheduled work adds its own audience and
+  its own workflow file and calls it from `runDueWork`, rather than adding a
+  timer of its own.
 
 ### What phase 3 settled, and what a later phase must not undo
 
@@ -767,15 +784,237 @@ Actions behind them. It added no table.
    `previewReportingPeriods`'s plan and every week it must not move, with the
    reason and the counts; applying is a separate press. `saveReportingConfiguration`
    deliberately does not regenerate the periods, for the same reason.
-8. **`closePeriod` still has no production caller, and no admin button.**
-   Closing a period is phase 8's scheduled, idempotent job.
+8. **`closePeriod` had no production caller when phase 6 shipped.** It has
+   one since phase 8: `closeDuePeriods` in `lib/hq/jobs.ts`, on the scheduled
+   pass. There is still no admin close button, deliberately.
    `reportingStatus` computes the same answer live for a week that has ended
-   and not been closed, so every screen is already honest about a missed week.
-9. **`nudge_at` is computed and stored per period but nothing sends anything.**
-   Delivery is phase 8's; the weekday and time are now editable in Admin
-   rather than only in the database.
+   and not been closed, so every screen was already honest about a missed week
+   before the job existed, and still is between two runs.
+9. **`nudge_at` is computed and stored per period.** Phase 6 sent nothing
+   with it; since phase 8 it is what `dueReminders` reads to decide a
+   reminder is due, and the weekday and time stay editable in Admin rather
+   than only in the database.
 10. **The member pages have not been reached through a real sign-in**, because
     `BETTER_AUTH_URL`/`BETTER_AUTH_SECRET` are still the owner's outstanding
     setup item. Their components were checked in a browser against real rows
     at desktop and phone width, and `tests/hq/reporting-team-page.test.ts`
     renders the real page. What is unverified is the sign-in path into them.
+
+### What phase 7 settled, and what phase 8 and later inherit
+
+Phase 7 built the deterministic Telegram bot: four tables, one column, five
+modules and one route. It added no reporting rule, no audit kind and no
+permission.
+
+1. **The bot owns nothing.** Every write goes through `createUpdate` /
+   `editUpdate` in `lib/hq/reporting.ts` with `source: "telegram"`, which is
+   the only thing that differs from an HQ save. Every read goes through
+   `captainReportingBoard`, `readAuthorizedUpdates` or `readOwnUpdates`.
+   `tests/hq/telegram-bot.test.ts` asserts the consequences rather than the
+   intention: a bot save completes the week, writes one revision, and a
+   sensitive note reaches the team as `Updated` and nothing else.
+2. **A verified Telegram identity is the second admitted actor origin.**
+   `telegramMemberActor(telegramUserId, db?)` in `lib/hq/actor.ts` builds the
+   same `MemberActor` a session would, from `hq_auth_telegram_identity` read
+   on every update. It grants nothing on its own. The plan's rule holds
+   exactly: an actor id comes from a validated session or a verified Telegram
+   identity, never from a payload. Unlinking Telegram deletes that row, so the
+   next message resolves to null with nothing else to revoke.
+3. **Identity, messaging permission and Captain access are three separate
+   facts, checked in that order on every update.** Connected but not
+   permitted gets the Turn on bot messages button and no project data.
+   Permitted but not a Captain gets a sentence about how to get access and no
+   project data. Refusing bot messages changes nothing about website access,
+   and `tests/hq/telegram-bot.test.ts` asserts that through
+   `authorizeProjectAction` rather than through a screen.
+4. **A callback identifier is an opaque server-side reference, and a button
+   that touches a draft is pinned to that draft.** `hq_telegram_actions` holds
+   the meaning; `callback_data` holds a uuid. A reference is bound to one
+   account and one chat and expires. A button that touches a draft
+   additionally records `draft_id` and `draft_revision`, and `boundDraft`
+   refuses unless both still match: `hq_telegram_drafts.id` changes when a new
+   compose replaces the old one, and `revision` increments on every change.
+   Without that pinning, Save meant "whatever draft exists now", so a Save
+   pressed on a replaced preview saved a different team's text and two
+   previews of one draft both saved. An external review on 15 September 2026
+   reproduced all three.
+5. **Three deduplications, because there are three duplicates.**
+   `hq_telegram_updates` keyed on Telegram's own `update_id` catches a
+   redelivered webhook; `consumeBotAction` catches a second press of one
+   button; `claimBotDraft` catches two different buttons that mean the same
+   logical save. The last two run inside the saving transaction, which is what
+   makes them roll back with it.
+6. **A receipt distinguishes finished from interrupted, and an interrupted
+   update is retried.** `claimTelegramUpdate` takes a LEASE. `done` is
+   terminal; a live lease means another invocation has it; `failed`, or a
+   lease that has expired, means the previous attempt died and the work must
+   be picked up again, bounded by `MAX_UPDATE_ATTEMPTS`. Treating a crashed
+   attempt as a completed duplicate is what silently lost an update to one
+   transient database error. Retrying is only safe because of rule 7.
+7. **A save is one transaction.** `consumeBotAction`, `claimBotDraft`,
+   `createUpdate` / `editUpdate`, the post-write `reportingStatus` read and
+   `enqueueBotMessage` all commit together, through the handle
+   `db.transaction` hands the callback. Nothing survives alone: not an entry
+   with no confirmation, not a consumed button with no entry, not a deleted
+   draft with no save. A refusal from the reporting service throws
+   `SaveAborted`, which rolls the whole thing back, which is precisely what
+   lets `period_changed` and `conflict` keep the person's words on screen and
+   still offer a working follow-up button.
+8. **The outgoing queue is for messages that carry news, and it never carries
+   an update body.** The save confirmation is enqueued inside the saving
+   transaction; menus and previews are sent directly, because a failed send is
+   answered by pressing the button again. That split is also the privacy rule,
+   and a test asserts the note body is absent from `hq_telegram_outgoing`.
+   A direct send that fails RETRYABLY does not acknowledge the update: the
+   receipt is marked `failed` and the webhook answers 502, so Telegram
+   redelivers and the reply is rebuilt from state nothing destroyed.
+9. **A queued message is re-validated immediately before it is sent.**
+   `flushBotMessages` checks the Telegram identity, the messaging consent, the
+   chat id and, when the row names a project, `authorizeProjectAction`. A
+   message queued while somebody was a Captain with messaging on is not
+   delivered after they turned it off, unlinked, moved chat or lost the
+   assignment; the row is recorded `skipped` with the reason. Phase 8's
+   reminder needs exactly this and reuses it untouched.
+10. **Rows are claimed before they are sent.** One atomic update takes a
+   bounded batch with an owner and an expiry (`FOR UPDATE SKIP LOCKED`), and
+   only that owner may complete them, so two drains divide the queue instead
+   of both sending the same row. A claim that expires releases the row. This
+   prevents the ordinary concurrent-worker duplicate; it does not promise
+   exactly-once delivery, because a claim expiring after Telegram accepted a
+   message is a genuine unknown.
+11. **A timeout is uncertain, not failed.** `flushBotMessages` leaves a
+   timed-out send `queued` with its attempt counted and a backoff in
+   `next_attempt_at`, honours Telegram's own `retry_after`, stops permanently
+   on a blocked bot (`skipped`, with Telegram's words kept for an operator),
+   and gives up after `MAX_SEND_ATTEMPTS`.
+12. **Splitting belongs to the view, never to the transport.**
+   `packMessages` builds whole, correctly escaped messages within
+   `TELEGRAM_TEXT_LIMIT`, chunking a body BEFORE escaping so a cut can never
+   fall inside an entity or a surrogate pair, and putting the fixed parts that
+   follow a body into a message of their own so the audience line survives.
+   The transport refuses an over-length message (`message_too_long`) rather
+   than slicing HTML, which used to cut `&amp;` in half and drop a closing
+   `</blockquote>`. A long note therefore arrives as several replies, with the
+   keyboard on the last.
+13. **Copy lives in `lib/hq/telegram-bot-view.ts` and reuses the reporting
+   words.** A week's dates, the two status words, each audience and each
+   service refusal all come from `reporting-view.ts`, so the bot and the
+   screens cannot describe the same week differently.
+   `tests/hq/telegram-bot-view.test.ts` runs the same em dash and middot scan.
+14. **Escaping is total.** Every message goes out with `parse_mode: "HTML"`
+   and every interpolated value passes through `escapeHtml` first, including
+   project names from Colosseum, team contacts and update bodies.
+15. **My notes opens a note, it does not summarise one.** The list shows a
+   snippet and a Read button per note; `note.open` renders the whole body
+   through `packMessages`, and Rewrite appears only when the project is still
+   this Captain's and `readAuthorizedUpdates` still says the entry is theirs
+   to change. Paged on `readOwnUpdates`' own keyset cursor, carried on the
+   action row, not a capped set re-read on every press. For a team the account
+   no longer holds this is the only route to their own note, so a 220
+   character summary made everything after it unreachable.
+16. **The webhook is its own boundary.** A dedicated secret header compared in
+    constant time, a body read in BYTES and abandoned mid-stream past the cap,
+    a validated schema, and no cookie or session of either kind. An
+    unconfigured deployment answers 503 rather than opening a way in, the same
+    honest unavailability `/api/auth/*` gives.
+    `tests/hq/auth-boundary.test.ts` scans for all of it.
+17. **Phase 7 added no pointer at `hq_projects`.** `hq_telegram_drafts` and
+    `hq_telegram_actions` carry a plain `project_id` uuid with no foreign key,
+    for the reasons written in `lib/hq/record-deletion.ts`'s header and in
+    `scripts/hq/builder-schema.sql`. A phase that adds a table which is a
+    record rather than chat state still owes the deletion functions a row.
+18. **Nothing in the bot is scheduled.** It only ever reacts to an inbound
+    update, and that is still true. What changed in phase 8 is that something
+    else calls into it on a timer: `runDueWork` enqueues a reminder, drains
+    the queue through `flushBotMessages` and calls `purgeExpiredBotState`,
+    which sweeps only receipts recorded `done`, so a retry still waiting for
+    Telegram is never swept out from under itself.
+
+### What phase 8 settled, and what phase 10 and later inherit
+
+Phase 8 built the job runner: one table, one module, one route, one workflow,
+one operator action and one admin panel. It added no reporting rule, no audit
+kind, no permission and no second definition of a week.
+
+1. **Nothing schedules itself.** `dueReminders` answers "what is due AT THIS
+   INSTANT" from the stored periods, and a period's `nudge_at` opens a
+   WINDOW (`nudge_at <= now < ends_at`) rather than naming a moment. That is
+   what makes the plan's "do not rely on ... one exact cron invocation" true
+   in practice: the workflow runs every half hour, a run that never happens
+   catches up later the same day, and a run that happens ten times finds
+   nothing due nine of them. A phase that wants scheduled work of its own
+   expresses it the same way, as a query over stored state, and calls it from
+   `runDueWork`.
+2. **One reminder per Captain, per edition, per period, per type, enforced by
+   an index and not by a check.** `hq_reminder_deliveries` is unique on those
+   four columns and `prepareReminder`'s first statement is
+   `INSERT ... ON CONFLICT DO NOTHING RETURNING`, so two passes running over
+   each other both attempt it and only one gets a row back. The queued
+   message carries the same four values as its `dedupe_key`, so even a bug
+   past the first lock cannot produce a second message.
+3. **The scan is a hint; the transaction is the truth.** `prepareReminder`
+   re-reads the Captain capability, the current assignments and
+   `reportingStatus` inside the transaction that queues the message, and
+   builds the body from that read alone. A project reassigned since the scan
+   is not in the message, a team that updated an hour ago is not in it, and a
+   Captain with nothing left outstanding gets a recorded cancellation instead
+   of a message. Never build a notification from what a scan returned.
+4. **A decision is recorded even when nothing is sent.** No Telegram
+   identity, messaging turned off, no chat opened, capability revoked,
+   nothing outstanding: each is a row with its own reason, shown in Admin
+   under Weekly reporting. That is the plan's "record a skipped delivery
+   reason and show it in HQ", and it is also why the table exists rather than
+   a query over `hq_telegram_outgoing`, which only ever holds messages
+   somebody decided to send.
+5. **None of it is ever a weekly status.** The weekly vocabulary is two
+   words, Updated and Not updated. A blocked bot, a rate limit and an
+   unreachable Captain are facts about a message and are rendered as such;
+   `tests/hq/jobs.test.ts` asserts that a permanently refused reminder leaves
+   both teams' weeks exactly as they were.
+6. **Delivery is phase 7's, untouched.** `flushBotMessages` claims a bounded
+   batch, re-validates the recipient immediately before every send, honours
+   Telegram's `retry_after`, treats a timeout as uncertain and stops
+   permanently on a blocked bot. Phase 8 adds one statement,
+   `reconcileReminderDeliveries`, which copies that answer onto the reminder
+   row. There is no second retry policy and no second idea of what "sent"
+   means.
+7. **What `flushBotMessages` cannot re-check, the job drops.** That function
+   re-validates a person; it cannot re-validate a list of team names inside a
+   body it did not build. `expireStaleReminders` therefore runs immediately
+   before every drain and skips a queued reminder whose week has ended or
+   been closed, or which has waited longer than `REMINDER_MAX_AGE_MS`
+   (3 hours, comfortably past the queue's own bounded retry schedule). A
+   reminder is never delivered for a period that is already closed.
+8. **`created_at` on a reminder is written from the JOB's clock, not the
+   database's.** It is the left-hand side of the staleness comparison whose
+   right-hand side is the job's own instant; writing `now()` would compare two
+   readings of two different clocks. Any later table a job writes and then
+   compares against its own `atMs` owes the same treatment.
+9. **Closure is a job, and it is the plan's "failure to update is recorded
+   historically".** `closeDuePeriods` closes every period whose exclusive end
+   has passed, oldest first, through `closePeriod`, which was already
+   idempotent and already recorded the Captain at close. Archived editions are
+   included on purpose: archiving stops reminders, a week that ended is
+   history either way.
+10. **The job endpoint is its own boundary, like the webhook.** Its own OIDC
+    audience (`stnl-hq-jobs`) and its own workflow file (`hq-jobs.yml`), both
+    checked; no cookie, no operator session, no member session, and no stored
+    secret of any kind. `tests/hq/auth-boundary.test.ts` scans for all of it,
+    including that the workflow references no `secrets.`. The admin Run now
+    button is the second, session-authenticated door to the same function, and
+    it is deliberately NOT a per-Captain resend: re-queueing a refused message
+    by hand is how "avoid aggressive retries that spam Captains" gets broken.
+11. **Retention is documented in constants and swept on every pass.**
+    `purgeExpiredBotState` (phase 7's drafts, actions, finished receipts and
+    old deliveries) and `purgeReminderDeliveries` (`REMINDER_RETENTION_MS`,
+    180 days, and only for weeks that are closed). Reporting outcomes and
+    audit history are separate and are never swept.
+12. **`hq_reminder_deliveries` names no project.** It counts them.
+    `lib/hq/record-deletion.ts`'s header says why: a reminder is a statement
+    about a Captain's week, and a deleted team's name must not outlive the
+    team inside a history table. That is also why phase 8 needed no change to
+    either deletion function, which the contract above requires a phase adding
+    a table to decide explicitly rather than by omission.
+13. **`CAPTAIN_PATH` lives in `lib/hq/member-routes.ts`.** The bot's Open HQ
+    buttons, the reminder's Open HQ button and `MEMBER_PUBLIC_PATHS` all read
+    it from there; there is no second literal.

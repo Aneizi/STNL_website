@@ -6,13 +6,45 @@ Colosseum integration, and what is already covered by automated tests.
 This file is tracked and it is the authoritative list. It contains variable
 **names** only. Never paste a key, secret, token or connection string in here.
 
-**Final for phases 0, 1, 2 and 4.** Every item below is either finished in
-code, waiting on the owner, or a live check that only the owner can run.
-Phase 4 (Captain invitations, assignments and the leaderboard) added no new
-environment variable; it added one live check, item L12 below. The remaining
-phases — 3, 5, 6, 7, 8, 10 and 11; the owner removed phase 9 and the plan
-does not renumber around the gap — will add to this file; nothing in it is
-removed as phases land, only moved between the three groups.
+**Current through phase 8.** Every item below is either finished in code,
+waiting on the owner, or a live check that only the owner can run. Phase 4
+(Captain invitations, assignments and the leaderboard) added no new
+environment variable; it added one live check, item L12 below. Phases 3, 5 and
+6 (the Colosseum import, weekly reporting and the reporting dashboards) added
+no new environment variable either; their setup is the reporting items further
+down. **Phase 7 (the Telegram bot) is the first phase since phase 2 to add
+variables**: `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET`, both
+server-side only, and both covered by item 2.9, which is rewritten below with
+the exact steps. **Phase 8 (the Wednesday reminders and period closure)
+adds no environment variable and no secret at all**: the scheduled job
+authenticates with a short-lived GitHub OIDC token minted per run, so there is
+nothing to store or rotate. What it does need from you is item 2.11, which is
+one deploy and one look at a workflow run. The remaining phases (10 and 11;
+the owner removed phase 9 and the plan does not renumber around the gap) will
+add to this file; nothing in it is removed as phases land, only moved between
+the three groups.
+
+Phases 0 to 6 were reviewed on 15 September 2026 and the findings were fixed
+on the same branch. Two of those fixes change the database and are applied by
+`npm run hq:migrate` like every other schema change: `hq_reporting_pause_intervals`
+(the history behind a pause, so lifting one does not turn the weeks it covered
+into missed weeks), `hq_project_ownership` (HQ project ownership independent of
+a Colosseum snapshot, backfilled from the existing importers) and an `exempt`
+column on `hq_reporting_outcomes`. Run the migration before the first deploy
+that carries them; nothing else about the deployment changes.
+
+Phase 8 adds one more table to the same migration, `hq_reminder_deliveries`
+(one row per Captain per week, recording whether that week's reminder was
+sent and why not when it was not). Additive and idempotent like the rest, and
+covered by the same single `npm run hq:migrate`.
+
+Phase 7 adds four tables and one column to the same migration
+(`hq_telegram_updates`, `hq_telegram_actions`, `hq_telegram_drafts`,
+`hq_telegram_outgoing`, and `chat_id` on `hq_telegram_bot_consent`), all
+additive and all idempotent. The same single `npm run hq:migrate` covers
+them. **Run it even if you are not setting the bot up yet:** the tables are
+harmless when empty, and running the migration once is simpler than
+remembering to run it later.
 
 ## How to read this list
 
@@ -53,8 +85,9 @@ sessions working while Telegram is unreachable") asserts it.
 | Local `setup/hq/auth.env.template` | Stale, gitignored, must be regenerated | Nothing in production. It misleads the next person who reads it |
 | Colosseum edition mapping | **Not configured**, but the value is verified: id `7`, slug `crypto-worlds-fair` (item 2.6) | Every self-service import: phase 3 answers "Superteam NL has not confirmed this hackathon's Colosseum edition yet" until it is typed into Admin |
 | Project fallback image | Done in code; an optional smaller copy is yours if you want it | Nothing |
-| Telegram bot messaging | **Not configured** | Phase 7 only. Nothing before then |
+| Telegram bot (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, the registered webhook) | **Not configured** | The Telegram bot only. The webhook answers 503 and every website surface, weekly reporting included, is unaffected |
 | Reporting schedule for this edition (item 2.10) | **Not configured**, and the value is agreed: final period starts `2026-10-05`. Since phase 6 it is set in Admin under Weekly reporting, not in SQL | Nothing breaks without it, but the 5 to 12 October window would be a weekly period plus a stray day instead of one submission-focus period |
+| Scheduled reporting jobs (item 2.11) | Code and workflow are in the repository; nothing has run, because they only run from `main` on the deployed site | The Wednesday Captain reminders and automatic period closure. Everything on the website keeps working; a week that ends stays honest either way, because the dashboards compute a missed week live until the job records it |
 | Local dev environment | Absent | Running the app locally. Tests need none of it |
 
 ---
@@ -436,24 +469,141 @@ env -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test
 
 **Code-level checks:** none for the local environment itself.
 
-## 2.9 Telegram bot messaging
+## 2.9 The Telegram bot
 
-**Status: Not configured.** Phase 7 work. Nothing before phase 7 depends on it,
-and there is nothing for you to do yet.
+**Status: Not configured.** Phase 7 built the bot; this item is what makes it
+exist in the world. Nothing else in HQ depends on it: with these variables
+unset the webhook answers 503 and the website, weekly reporting included, is
+completely unaffected.
 
-**Variables:** `TELEGRAM_BOT_TOKEN`, plus the webhook URL you register with
-Telegram.
+**Variables:** `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET`. Both are
+server-side only. Neither may be `NEXT_PUBLIC_`, and neither belongs in this
+file, in a commit, in a screenshot or in a support message.
 
-**What exists today.** The account page collects the decision (the Bot messages
-section on `/hq/account`, stored in `hq_telegram_bot_consent` by
-`lib/hq/telegram-consent.ts`). `tests/hq/member-auth-telegram.test.ts` asserts
-that it is separate from the connection, that declining keeps website access,
-and that disconnecting Telegram revokes it. **There is no delivery:** nothing
-reads the row to send a message, no chat id is stored, no webhook exists, and no
-test claims otherwise.
+There is also `TELEGRAM_API_BASE`, an override for a self-hosted Bot API
+server. **Leave it unset.**
 
-**Rule that outlives phase 7.** Permission to message someone is collected
-separately from Telegram sign-in, and one never implies the other.
+**A note on the two Telegram things.** These are not the same as item 2.3.
+Item 2.3 is Telegram *login* (`TELEGRAM_LOGIN_CLIENT_ID`,
+`TELEGRAM_LOGIN_CLIENT_SECRET`, the Login Widget callback), which is how
+somebody signs into HQ in a browser. This item is the *bot*, which is how a
+Captain reports from a chat. They can use the same BotFather bot, and doing so
+is simpler, but the credentials are different values set up in different
+places. Doing one does not do the other.
+
+### What to do, in this order
+
+**1. Create the bot, or reuse the one from item 2.3.** In Telegram, message
+`@BotFather`, send `/newbot`, and give it a name and a username ending in
+`bot`. BotFather replies with the **bot token**. That token is the credential:
+anyone holding it is the bot.
+
+**2. Leave group privacy enabled.** `/setprivacy` → Enable is BotFather's
+default and is what you want: with privacy enabled the bot does not receive
+ordinary group messages at all. The bot refuses to do reporting in a group
+chat regardless (it answers one sentence and shows nothing about any team),
+so this is a second line rather than the only one. Do not disable it.
+
+**3. Generate a webhook secret.** Any value of 16 to 256 characters using
+`A-Z a-z 0-9 _ -`. Generate it, do not invent it by hand:
+
+```
+openssl rand -base64 32 | tr -d '=+/' | cut -c1-48
+```
+
+Keep the output somewhere safe for the next two steps. It is a password.
+
+**4. Set both variables in Vercel**, for Production and Preview, as plain
+(not public) environment variables:
+
+```
+vercel env add TELEGRAM_BOT_TOKEN production
+vercel env add TELEGRAM_WEBHOOK_SECRET production
+```
+
+Redeploy afterwards, because environment variables are read at runtime by the
+deployment that holds them.
+
+**5. Register the webhook with Telegram.** One call, from your own machine.
+Substitute your token, your deployed origin and the secret from step 3:
+
+```
+curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
+  -H "content-type: application/json" \
+  -d '{"url":"https://<your-domain>/api/telegram/webhook",
+       "secret_token":"<TELEGRAM_WEBHOOK_SECRET>",
+       "allowed_updates":["message","callback_query"],
+       "drop_pending_updates":true}'
+```
+
+Expect `{"ok":true,"result":true,"description":"Webhook was set"}`.
+
+`allowed_updates` keeps Telegram from sending update types the bot ignores.
+`drop_pending_updates` throws away anything queued from before setup; use it
+on the first registration only.
+
+**Your shell history now contains the bot token.** Clear it, or run the call
+from a shell with history disabled. This is the one step where the credential
+is easy to leave lying around.
+
+**6. Check it, with `getWebhookInfo`:**
+
+```
+curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
+```
+
+Expect your URL, `"has_custom_certificate":false`, `"pending_update_count":0`
+and **no** `last_error_message`. A `last_error_message` of "Wrong response from
+the webhook: 401 Unauthorized" means the secret in Vercel and the secret you
+registered do not match. "503" means the deployment cannot see the variables:
+redeploy after adding them.
+
+**7. Run the migration**, if you have not already: `npm run hq:migrate`. The
+bot writes to four tables that do not exist until you do.
+
+**8. Say hello.** Open the bot in Telegram and send `/start`. What you should
+see depends on the account, and each of these is the bot working correctly:
+
+| Your account | What you get |
+|---|---|
+| Telegram not connected to any HQ account | An explanation and one Open HQ button. No team, no week, nothing about HQ's contents |
+| Connected, bot messages not turned on | A request to turn them on, and a button that does it |
+| Connected and permitted, no Captain access | How to get Captain access. No project is named |
+| Connected, permitted, a Captain | The menu: My projects, Add update, My notes, Open HQ |
+
+**Rotating the token later.** Set the new value in Vercel, redeploy, then run
+`setWebhook` again with the new token and the same secret. Revoke the old token
+with BotFather (`/revoke`) once the new one works. Rotating the secret is the
+same, without BotFather.
+
+### What exists in code
+
+The account page collects the messaging decision (the Bot messages section on
+`/hq/account`, stored in `hq_telegram_bot_consent` by
+`lib/hq/telegram-consent.ts`), and phase 7 added the chat id beside it. The bot
+itself is `lib/hq/telegram-bot.ts` over `lib/hq/reporting.ts`, the same
+reporting service the website writes through, and the webhook is
+`app/api/telegram/webhook/route.ts` over `lib/hq/telegram-webhook.ts`.
+
+**Code-level checks (134 cases, none of which needs a credential):**
+`tests/hq/telegram-bot.test.ts`, `tests/hq/telegram-bot-store.test.ts`,
+`tests/hq/telegram-bot-view.test.ts` and `tests/hq/telegram-webhook.test.ts`.
+They cover the identity binding, the three gates, sensitive notes, duplicate
+presses and webhook retries, stale buttons after reassignment, revocation and
+unlinking, expired drafts, escaping and the delivery outcomes, plus the
+failure cases an external review found on 15 September 2026: an interrupted
+save that has to be finished by Telegram's retry, a save and its confirmation
+rolled back together, a Save pressed on a preview that has since been
+replaced, two drains of the outgoing queue running at once, a queued message
+whose recipient has since turned messaging off, and a note long enough to
+need more than one Telegram message. They run against a real schema with only
+the Telegram transport stubbed. **None of them is evidence that a live bot
+works**, which is what the live checks below are for.
+
+**Rules that outlive this item.** Permission to message someone is collected
+separately from Telegram sign-in, and one never implies the other. The bot
+never acquires a permission of its own: it reads the identity, the messaging
+decision, the Captain capability and the assignment on every single update.
 
 ---
 
@@ -462,6 +612,11 @@ separately from Telegram sign-in, and one never implies the other.
 None of these can be run from a checkout, and none of them has been run. Each
 names the group 2 item it depends on. Report them as done only after you have
 actually seen the result.
+
+Phase 7 added eight: **L15 to L22**, in "The Telegram bot, after item 2.9" at
+the end of this file. Phase 8 added five: **L23 to L27**, in "The scheduled
+reporting jobs, after item 2.11", also at the end. L11 and L13 are done;
+everything else here is pending.
 
 ## 2.10 Reporting schedule for this edition
 
@@ -493,6 +648,13 @@ hackathon dates to the weeks**, which is what writes the periods; the panel
 names any week it will not move because teams have already reported against
 it, before you press it.
 
+If the panel says the change would leave a gap or an overlap between the
+weeks, nothing is written at all: a week that already holds updates keeps its
+own dates, and if the weeks around it would move away from it there would be a
+day belonging to no week (or to two), which an update written on that day
+would have nowhere to go. The panel names the two weeks and the days between
+them. Change the hackathon dates again rather than trying to apply it twice.
+
 The same row, as SQL, for reference:
 
 ```sql
@@ -511,10 +673,19 @@ Two optional columns on the same row, both also on that Admin panel:
   disabled (item 2.6), so `projectSubmissionEndDate` cannot be fetched. Leave
   it NULL until you know the real value. HQ's reporting window never changes
   the external deadline either way.
+
+  Type it as the clock reads **in the campaign timezone**, which the field's
+  own label names: since 15 September 2026 the form both shows and reads the
+  value in that zone rather than in whichever zone the server happens to run
+  in, so 23:59 on 12 October means 23:59 in Amsterdam wherever it is entered
+  from. The SQL above is the exception, as SQL always is: a `timestamptz`
+  literal there needs its own offset, for example `'2026-10-12 23:59+02'`.
 - `nudge_weekday` and `nudge_time` — the **Reminder day** and **Reminder time**
   fields, defaulting to Wednesday and 12:00 local, which is the agreed
-  reminder slot. Change them here rather than in bot code; phase 8 reads this
-  row. Nothing sends anything yet.
+  reminder slot. Change them here rather than in bot code: phase 8's job reads
+  this row, and a change takes effect for every week whose reminder has not
+  been recorded yet. Changing them does not resend a reminder that already
+  went out.
 
 **How to verify.** The Admin panel lists the stored weeks directly: expect
 "Week 1: 14 to 20 September", "Week 2: 21 to 27 September", "Week 3: 28
@@ -536,6 +707,92 @@ silently relabel a week people have already reported in: a period that holds
 an entry or an outcome, or that has been closed, is left alone and reported as
 a conflict instead. Phase 6's Admin screen shows those conflicts before the
 change; today, a date edit simply leaves such periods as they are.
+
+## 2.11 The scheduled reporting jobs
+
+**Status:** the code, the endpoint and the workflow are in this repository and
+nothing has run. They only run from `main`, on the deployed site, so this item
+is a merge, a deploy, a migration and one look at a workflow run.
+
+**Variables: none, and no secret of any kind.** This is the point of the
+approach. GitHub mints a short-lived OIDC token for each workflow run and
+`/api/cron/hq-jobs` verifies it against GitHub's public keys, so there is
+nothing to paste into Vercel, nothing to rotate and nothing that can leak from
+a log. It is the same pattern the Luma sync has used since before this plan,
+with its own audience and its own workflow file so neither job's identity
+opens the other's endpoint.
+
+**What it does.** Every half hour it asks the database what is due right now:
+Wednesday reminders to Captains with teams that still owe an update, closure
+of any reporting week whose end has passed, and the retention sweep of expired
+bot drafts and old job rows. Nothing depends on one exact invocation landing
+at noon: a run that is late, delayed or skipped entirely catches up on the
+next one, as long as the reporting week is still open.
+
+### What has to be true first
+
+1. **`npm run hq:migrate` has been run** against production, so
+   `hq_reminder_deliveries` exists. The job writes there on every pass.
+2. **Item 2.10 is done.** With no stored reporting periods there is no nudge
+   instant and nothing is ever due.
+3. **Item 2.9 is done**, if you want messages actually delivered. Without the
+   bot the job still decides and records every reminder, and Admin shows them
+   as waiting to send; the moment the bot is configured, the waiting ones go
+   out on the next pass.
+4. **This branch is merged to `main` and deployed.** The claim policy pins the
+   repository, its numeric id, its owner id, the ref `refs/heads/main` and the
+   workflow file `.github/workflows/hq-jobs.yml`. A run from a branch, a fork
+   or a renamed repository is refused with 401 by design.
+
+### What to do, in this order
+
+**1. Check the production URL in the workflow.** `.github/workflows/hq-jobs.yml`
+calls `https://nl.superteam.fun/api/cron/hq-jobs`. If the production domain is
+anything else, change that line; it is the only address in the file.
+
+**2. Merge and deploy.** Scheduled workflows only run from the default branch,
+and the endpoint only exists on a deployment that carries it.
+
+**3. Check that GitHub Actions is enabled for the repository**, under
+Settings, Actions, General. Note that GitHub disables `schedule` triggers on a
+repository with no activity for about sixty days and emails the owner when it
+does; if reminders ever stop for no visible reason, that is the first thing to
+look at.
+
+**4. Run it once by hand.** Actions, "HQ reporting jobs", Run workflow. That
+is the authenticated manual retry, and it is also the check: the run should
+succeed and its log should end with a small JSON object of counts. It carries
+no Captain, no chat id, no project name and no update text by construction.
+
+**5. Confirm from inside HQ.** Admin, Weekly reporting, under **Wednesday
+Captain reminders**. Before the first Wednesday it will say no reminder has
+been recorded yet, which is correct. The **Run the reminder and closure job
+now** button on that panel is the same pass, triggered by your own admin
+session, for when you would rather not wait for the schedule or go to GitHub.
+
+**6. On the first Wednesday after noon Amsterdam time**, open that panel again
+and read the list. Each row names a Captain, the week, how many of their teams
+were outstanding, and what happened to the message.
+
+### Two things that are deliberately not offered
+
+- **There is no per-Captain "send it again" button.** A message Telegram
+  refused permanently, or that ran out of attempts, stays refused with its
+  reason on screen. Re-queueing one by hand is exactly how an automated
+  reminder turns into spam, so what you get instead is the reason and the
+  ability to fix the underlying problem for next week.
+- **There is no Vercel Cron entry**, and none should be added. The
+  GitHub Actions route needs no stored secret and no plan-tier cron
+  allowance, and it is the pattern already in use for the Luma sync. Two
+  schedulers on the same endpoint would be harmless (every pass is
+  idempotent) and would only double the noise.
+
+### One Vercel setting to be aware of
+
+If Deployment Protection (Vercel Authentication) is ever turned on for
+production, it sits in front of every route including this one, and the
+workflow will start failing with an HTML login page instead of JSON. The Luma
+sync would fail the same way, so if both stop at once, that is where to look.
 
 ## Email, after item 2.2
 
@@ -634,3 +891,100 @@ change; today, a date edit simply leaves such periods as they are.
   without it — but it is the one thing between the code and the plan's
   privacy requirement for this route, so it should be checked once before
   invitation links are sent out for real.
+
+## The Telegram bot, after item 2.9
+
+None of these has been run, and none of them can be run from a checkout: there
+is no bot, no token and no webhook. Run them in order; each one tells you
+something the one before it does not.
+
+- **L15.** `getWebhookInfo` returns your URL with no `last_error_message` and
+  `pending_update_count` at 0. This is the only check that proves the secret
+  in Vercel and the secret you gave `setWebhook` are the same value. A 401
+  there means they are not.
+- **L16.** From a Telegram account that is **not** connected to any HQ
+  account, send `/start`. Expect the explanation and one Open HQ button, and
+  confirm that no team name, week or status appears. This is the check that
+  the bot exposes nothing to a stranger who finds it.
+- **L17.** From a connected Captain account with bot messages turned **off**,
+  send `/start`, press Turn on bot messages, then confirm on `/hq/account`
+  that the Bot messages setting now reads as on. This proves the two facts are
+  separate and that the bot can join them only with the person's press.
+- **L18.** As a Captain, add an update end to end: `/start`, Add update, pick
+  a team, type one sentence, check the preview says "Shared with the team",
+  press Save. Then open `/hq/captain` in a browser and confirm the same
+  update is there, that the week reads **Updated**, and that the entry shows
+  as coming from Telegram. This is the plan's "HQ and bot create/edit
+  operations have identical behavior", checked against a real chat rather
+  than a stub.
+- **L19.** Repeat L18, but press Make it sensitive before saving. Then sign in
+  as a member of that team and confirm the team page shows the week as
+  Updated and **shows no note, no preview and no count**. This is the privacy
+  contract's most load-bearing line, and it is worth seeing with your own
+  eyes once.
+- **L20.** Block the bot in Telegram, then have somebody save an update on
+  that Captain's team from the website, and confirm that the Captain's access
+  to `/hq/captain` is completely unaffected. Unblock afterwards. The plan
+  requires that a blocked bot never costs somebody their website access.
+
+- **L21.** Write an update long enough to need two Telegram messages (a few
+  thousand characters), and confirm the preview arrives complete, with the
+  "Shared with the team" line still at the end and the Save button under it.
+  Then save it and confirm the whole text is on `/hq/captain`.
+- **L22.** Prepare a preview for one team, then without saving it prepare a
+  preview for a second team, then scroll back and press Save on the first.
+  Expect "That button is no longer good", and confirm afterwards that neither
+  team received an update. This is the one failure a stubbed test can only
+  approximate.
+
+**One thing to expect and not be alarmed by.** A Captain who is also on the
+roster of a team they captain is not offered the sensitive option for that
+team. That is the rule working: a Captain cannot use the capability to hide an
+update from their own teammates.
+
+**If something goes wrong.** `hq_telegram_updates` records every update the
+deployment accepted and how it ended; `hq_telegram_outgoing` records every
+message the bot tried to send, the attempt count, a skip reason and Telegram's
+own error text. Neither table stores the text of anybody's update. Those two
+are the first place to look, before the Vercel logs.
+
+## The scheduled reporting jobs, after item 2.11
+
+None of these can be run from a checkout. Each needs the workflow actually
+running against the deployed site, and L24 to L26 additionally need item 2.9,
+because they are about a message arriving in a real chat.
+
+- **L23.** Run the workflow by hand (Actions, "HQ reporting jobs", Run
+  workflow) and confirm it succeeds and returns a JSON object of counts.
+  Then read the run's log and confirm it contains **no Captain name, no chat
+  id, no project name and no update text**. This is the one check that the
+  endpoint's response shape holds in the real world; everything else about
+  the job is asserted in `tests/hq/jobs.test.ts`.
+- **L24.** On the first Wednesday after 12:00 Amsterdam time, confirm that a
+  Captain with an outstanding team receives exactly one message, that it names
+  only their own outstanding teams, and that it carries no note text and no
+  mention of a sensitive note. Then confirm in Admin, Weekly reporting, that
+  the row for that Captain reads **Sent**.
+- **L25.** Before the same Wednesday, have every team of a second Captain post
+  its update. Confirm that Captain receives **nothing**, and that Admin shows
+  their row as **Not sent** because every assigned team had already updated.
+  This is the plan's "if all projects have updated since the job was queued,
+  cancel the message", seen end to end.
+- **L26.** Press the reminder's **Add update** button in Telegram and confirm
+  it opens the bot's team list and that saving from there marks the week
+  Updated on `/hq/captain`. Then press the same button again the following
+  day and confirm it answers "That button is no longer good" rather than doing
+  anything, which is the 24 hour expiry working.
+- **L27.** On the Monday after a reporting week ends, confirm in Admin,
+  Weekly reporting, that the week now reads **Closed**, and that a team which
+  did not update still reads as a missed week after somebody adds a late
+  entry to it. The late entry should be visible and labelled late; the missed
+  week should not change.
+
+**If reminders stop arriving.** Look in this order: the Actions tab (a
+disabled schedule after sixty days of repository inactivity is the most likely
+cause, and GitHub emails about it); Admin, Weekly reporting, where every
+decision the job made is recorded with its reason; then
+`hq_telegram_outgoing`, which records every message the bot tried to send, the
+attempt count, a skip reason and Telegram's own error text. None of those
+three stores the text of anybody's update.
