@@ -1,15 +1,13 @@
 import "server-only";
 import type { Actor } from "./actor";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
-import { listActiveCapabilities } from "./capabilities";
-import { listAssignments } from "./captains";
 import { HQ_JOBS_AUDIENCE } from "./github-actions-auth";
 import { memberAuthOrigin } from "./member-auth-config";
 import { CAPTAIN_PATH } from "./member-routes";
+import { outstandingForCaptain, REMINDER_KIND, type ReminderSkipReason } from "./reminder-dispatch";
 import {
   closePeriod,
   periodColumns,
-  reportingStatus,
   toDay,
   toIso,
   toPeriod,
@@ -72,42 +70,31 @@ import { inlineKeyboard, openHqButton, reminderMessage, LABELS, type Keyboard } 
 /** The one reminder type there is today. An open vocabulary on the row, pinned here, where the only writer reads it. */
 export const REMINDER_TYPE_WEEKLY = "weekly_nudge";
 
-/**
- * How long a queued reminder may wait for Telegram before it is dropped
- * rather than delivered.
- *
- * A reminder is a statement about the week it was built in, and its project
- * list is only true for as long as nothing moves: `flushBotMessages`
- * re-validates the recipient immediately before every send, but it cannot
- * re-validate a list of team names inside a body somebody else composed. So a
- * reminder that has been waiting longer than the queue's own bounded retry
- * schedule could plausibly take is dropped, and the honest record of that is
- * a skip an admin can see. Comfortably longer than the five attempts and
- * their backoff in ./telegram-bot-store.
- */
-export const REMINDER_MAX_AGE_MS = 3 * 60 * 60_000;
-
 /** How long a resolved reminder record is kept. Reporting outcomes and audit history are separate and are not swept. */
 export const REMINDER_RETENTION_MS = 180 * 24 * 60 * 60_000;
 
-/** How many queued messages one pass may send, in batches of `FLUSH_BATCH`. Bounded, so a pass has an end. */
+/** How many queued messages one drain takes at a time. */
 const FLUSH_BATCH = 25;
+/** The hard ceiling on one pass, whatever the clock says. */
 const MAX_FLUSH_BATCHES = 8;
-
 /**
- * Why a reminder was recorded but not delivered. Every one of these is shown
- * to an admin as it is; none of them ever becomes a project's weekly status,
- * because the weekly vocabulary is two words and this is not one of them.
+ * How long one pass may spend sending before it stops and leaves the rest for
+ * the next one.
+ *
+ * The endpoint declares `maxDuration = 60`, and every send carries its own
+ * 8 second transport timeout, so a pass that took the batch ceiling literally
+ * could attempt two hundred sequential sends and be killed halfway through.
+ * Being killed is survivable, because a claimed row is released when its
+ * claim expires and nothing is lost, but it wastes the invocation and delays
+ * every remaining message by a whole scheduler interval. Stopping short on
+ * purpose is better: the queue is drained by the next pass, fifteen minutes
+ * later at worst, and each pass finishes cleanly.
  */
-export type ReminderSkipReason =
-  | "nothing_outstanding"
-  | "no_assignments"
-  | "capability_revoked"
-  | "telegram_disconnected"
-  | "messaging_disabled"
-  | "no_chat"
-  | "period_over"
-  | "too_old";
+const SEND_BUDGET_MS = 40_000;
+
+/** Re-exported so a caller reads the vocabulary from the module it imports. Defined beside the check that produces it. */
+export type { ReminderSkipReason };
+export { REMINDER_KIND };
 
 /** A reminder the stored schedule says is due for one Captain in one edition. */
 export type DueReminder = {
@@ -153,6 +140,14 @@ export async function dueReminders(
      FROM hq_reporting_periods p
      JOIN hq_hackathons h ON h.id = p.hackathon_id AND h.archived_at IS NULL
      JOIN hq_projects pr ON pr.hackathon_id = p.hackathon_id
+     -- The project's own health, the same flag the Captain leaderboard counts
+     -- on. The plan stops reminders "on paused/inactive projects", and those
+     -- are two separate states here: the reporting pause below is an admin's
+     -- explicit decision, this is whether the project is still a going
+     -- concern. Reading only the pause meant an admin had to pause reporting
+     -- purely to stop notifications for a team that was already marked
+     -- inactive.
+     JOIN hq_project_statuses st ON st.id = pr.status_id AND st.counts_as_active
      JOIN hq_captain_assignments a ON a.project_id = pr.id AND a.unassigned_at IS NULL AND a.captain_user_id IS NOT NULL
      JOIN hq_reporting_eligibility e ON e.project_id = pr.id AND e.paused_at IS NULL AND e.eligible_from < p.ends_at
      WHERE p.closed_at IS NULL AND p.nudge_at IS NOT NULL
@@ -178,7 +173,8 @@ export type PrepareReminderResult =
 /** Why a Captain cannot be messaged right now, told apart so the record says which of the three it was. */
 async function botReachFailure(tx: BuilderQuery, userId: string): Promise<ReminderSkipReason> {
   const { rows } = await tx.query(
-    `SELECT c.messaging_enabled, c.chat_id, i.user_id IS NOT NULL AS has_identity
+    `SELECT c.messaging_enabled, c.chat_id, c.chat_bound_telegram_user_id::text AS bound_to,
+            i.user_id IS NOT NULL AS has_identity, i.telegram_user_id::text AS telegram_user_id
      FROM hq_builder_profiles b
      LEFT JOIN hq_telegram_bot_consent c ON c.user_id = b.id
      LEFT JOIN hq_auth_telegram_identity i ON i.user_id = b.id
@@ -188,10 +184,13 @@ async function botReachFailure(tx: BuilderQuery, userId: string): Promise<Remind
   const row = rows[0];
   if (!row || !row.has_identity) return "telegram_disconnected";
   if (!row.messaging_enabled) return "messaging_disabled";
-  // Connected and permitted, so the only thing left is that the person has
-  // never opened the chat: a consent row written from /hq/account before they
-  // ever messaged the bot has nowhere to deliver to.
-  return "no_chat";
+  // A consent row written from /hq/account before the person ever messaged
+  // the bot has nowhere to deliver to at all.
+  if (row.chat_id == null) return "no_chat";
+  // There is a chat, but the account connected now is not the one that opened
+  // it. A different Telegram account's private chat is not a destination this
+  // account can be reached at, whatever the consent row says.
+  return String(row.bound_to ?? "") === String(row.telegram_user_id ?? "") ? "no_chat" : "chat_not_bound";
 }
 
 /**
@@ -275,21 +274,16 @@ export async function prepareReminder(
       return { ok: true, state: "skipped", deliveryId, reason };
     };
 
-    if (!(await listActiveCapabilities(input.captainUserId, tx)).includes("captain")) return skip("capability_revoked");
-
-    const assignments = await listAssignments(tx, { hackathonId: input.hackathonId, captainUserId: input.captainUserId });
-    if (!assignments.length) return skip("no_assignments");
-
-    const projectIds = assignments.map((assignment) => assignment.projectId);
-    const statuses = await reportingStatus(tx, { hackathonId: input.hackathonId, projectIds, atMs, includeHistory: true });
-    const outstanding = statuses
-      .filter((status) => {
-        const week = status.history.find((candidate) => candidate.periodId === period.id);
-        return week != null && !week.exempt && !week.completed && !status.paused;
-      })
-      .map((status) => status.projectName)
-      .sort((a, b) => a.localeCompare(b));
-    if (!outstanding.length) return skip("nothing_outstanding");
+    // The same computation the send path runs again immediately before every
+    // attempt, from ./reminder-dispatch, so preparing and dispatching cannot
+    // disagree about what "outstanding" means.
+    const outstanding = await outstandingForCaptain(tx, {
+      captainUserId: input.captainUserId,
+      hackathonId: input.hackathonId,
+      periodId: period.id,
+      atMs,
+    });
+    if (!outstanding.ok) return skip(outstanding.reason);
 
     const chat = await deliverableBotChat(tx, input.captainUserId);
     if (!chat) return skip(await botReachFailure(tx, input.captainUserId));
@@ -299,17 +293,24 @@ export async function prepareReminder(
     // HQ". The button is an opaque reference bound to this account and chat
     // like every other one, so pressing it runs the bot's three gates again
     // rather than trusting the message it came from.
-    const action = await createBotAction(tx, { userId: input.captainUserId, chatId: chat.chatId, kind: "compose.page", page: 0 }, atMs);
+    // Bound to the edition this reminder is about, so a Captain working two
+    // hackathons is not silently shown the default edition's teams when they
+    // press it.
+    const action = await createBotAction(
+      tx,
+      { userId: input.captainUserId, chatId: chat.chatId, kind: "compose.page", page: 0, hackathonId: input.hackathonId },
+      atMs,
+    );
     const keyboard: Keyboard = [
       [{ text: LABELS.addUpdate, callbackId: action.id }],
       openHqButton(hqOrigin ? `${hqOrigin}${CAPTAIN_PATH}` : null),
     ].filter((row) => row.length);
 
-    const body = reminderMessage({ editionName, period, projectNames: outstanding });
+    const body = reminderMessage({ editionName, period, projectNames: outstanding.projectNames });
     const outgoingId = await enqueueBotMessage(tx, {
       chatId: chat.chatId,
       userId: input.captainUserId,
-      kind: "reminder",
+      kind: REMINDER_KIND,
       body,
       replyMarkup: inlineKeyboard(keyboard),
       // Captain, edition, period and type: the plan's reminder key, and the
@@ -317,46 +318,48 @@ export async function prepareReminder(
       // record cannot disagree about what one reminder is.
       dedupeKey: `reminder:${reminderType}:${input.captainUserId}:${input.hackathonId}:${period.id}`,
       // Deliberately no project id. A reminder is about several projects, so
-      // `flushBotMessages`' single-project re-check has nothing to check;
-      // the list is re-validated here instead, and its staleness by
-      // `expireStaleReminders` below.
+      // the single-project re-check in `flushBotMessages` has nothing to
+      // check; `deliverable()` recognises the reminder kind and re-decides
+      // the whole message through ./reminder-dispatch instead, which is the
+      // check that runs for every consumer of the queue.
       projectId: null,
       hackathonId: input.hackathonId,
     });
     await tx.query(
       "UPDATE hq_reminder_deliveries SET outgoing_id=$2::uuid, project_count=$3, updated_at=now() WHERE id=$1::uuid",
-      [deliveryId, outgoingId, outstanding.length],
+      [deliveryId, outgoingId, outstanding.projectNames.length],
     );
-    return { ok: true, state: "queued", deliveryId, projects: outstanding.length };
+    return { ok: true, state: "queued", deliveryId, projects: outstanding.projectNames.length };
   });
 }
 
 /**
- * Drops a queued reminder that can no longer be honest: its week has ended or
- * been closed, or it has waited longer than `REMINDER_MAX_AGE_MS`.
+ * Resolves a queued reminder whose week is over, without waiting for somebody
+ * to try to send it.
  *
- * This is the half of "recheck immediately before sending" that
- * `flushBotMessages` cannot do. That function re-reads the person (identity,
- * consent, chat) before every send and will not deliver to somebody who has
- * changed their mind, but the project names are inside a body it did not
- * build. Rather than deliver a list that may have moved on, a reminder that
- * has been waiting too long is skipped and the reason is recorded. Run
- * immediately before the drain, so the only gap left is the drain itself.
+ * This is NOT the correctness check. `deliverable()` re-decides and rebuilds
+ * every reminder immediately before every attempt, so a message whose week
+ * has ended is refused there whichever consumer of the queue reaches it. What
+ * this adds is the answer for a reminder nobody tries to send at all: a
+ * deployment with no bot configured never drains the queue, and a row sitting
+ * at "waiting to send" for a week that ended is a worse thing for an admin to
+ * read than "not sent, the week ended".
+ *
+ * There used to be a time-to-live here as well. It is gone on purpose: now
+ * that the body is rebuilt at dispatch, age no longer makes a reminder wrong,
+ * and dropping a three-hour-old one would discard a message that is still
+ * accurate and still wanted.
  */
-export async function expireStaleReminders(db: BuilderQuery, atMs: number = Date.now()): Promise<number> {
-  const at = new Date(atMs).toISOString();
-  const stale = new Date(atMs - REMINDER_MAX_AGE_MS).toISOString();
+export async function expireEndedReminders(db: BuilderQuery, atMs: number = Date.now()): Promise<number> {
   const { rows } = await db.query(
     `UPDATE hq_telegram_outgoing o
-       SET state='skipped',
-           skip_reason = CASE WHEN p.ends_at <= $1::timestamptz OR p.closed_at IS NOT NULL THEN 'period_over' ELSE 'too_old' END,
-           claimed_by=NULL, claim_expires_at=NULL
+       SET state='skipped', skip_reason='period_over', claimed_by=NULL, claim_expires_at=NULL
      FROM hq_reminder_deliveries d
      JOIN hq_reporting_periods p ON p.id = d.period_id
      WHERE o.id = d.outgoing_id AND o.state = 'queued' AND d.state = 'queued'
-       AND (p.ends_at <= $1::timestamptz OR p.closed_at IS NOT NULL OR d.created_at <= $2::timestamptz)
+       AND (p.ends_at <= $1::timestamptz OR p.closed_at IS NOT NULL)
      RETURNING o.id::text AS id`,
-    [at, stale],
+    [new Date(atMs).toISOString()],
   );
   return rows.length;
 }
@@ -378,10 +381,20 @@ export async function reconcileReminderDeliveries(db: BuilderQuery): Promise<num
        provider_message_id = o.provider_message_id,
        attempts = o.attempts,
        last_error = o.last_error,
+       next_attempt_at = o.next_attempt_at,
        resolved_at = CASE WHEN o.state <> 'queued' THEN now() ELSE d.resolved_at END,
        updated_at = now()
      FROM hq_telegram_outgoing o
-     WHERE o.id = d.outgoing_id AND d.state = 'queued' AND o.state <> 'queued'
+     WHERE o.id = d.outgoing_id AND d.state = 'queued'
+       -- A message still queued is copied too, not only a finished one. This
+       -- clause used to require a finished outgoing row, so a reminder that
+       -- Telegram had rate limited twice read back to an admin as untouched:
+       -- zero attempts, no reason, nothing to distinguish it from one nobody
+       -- had tried yet.
+       AND (o.state <> 'queued'
+            OR d.attempts IS DISTINCT FROM o.attempts
+            OR d.last_error IS DISTINCT FROM o.last_error
+            OR d.next_attempt_at IS DISTINCT FROM o.next_attempt_at)
      RETURNING d.id::text AS id`,
   );
   return rows.length;
@@ -465,11 +478,30 @@ export type ReminderDeliveryView = {
   projectCount: number;
   providerMessageId: string | null;
   attempts: number;
-  /** Telegram's own words about a failure, kept for an operator. Never rendered into a chat. */
+  /** Telegram's own code and words about a failure, kept for an operator. Never rendered into a chat. */
   lastError: string | null;
+  /** When the queue will try again, or null when it is not waiting on one. */
+  nextAttemptAt: string | null;
+  /**
+   * The last attempt ended without an answer: a timeout or a network failure,
+   * where Telegram may or may not have accepted the message.
+   *
+   * Kept separate from `state` on purpose and preserved through exhaustion.
+   * "Could not be sent" is a claim, and it is the wrong claim for a message
+   * that may well have arrived; an admin deciding whether to chase a Captain
+   * needs to know which of the two they are looking at.
+   */
+  deliveryUncertain: boolean;
   createdAt: string;
   resolvedAt: string | null;
 };
+
+/** Transport codes that mean "we do not know", from `lib/hq/telegram-bot-api.ts`. */
+const UNCERTAIN_CODES = new Set(["timeout", "network"]);
+
+/** Whether the recorded failure was an unanswered one. `last_error` is written as "<code>: <detail>", or just "<code>". */
+const isUncertain = (lastError: unknown): boolean =>
+  lastError != null && UNCERTAIN_CODES.has(String(lastError).split(":")[0].trim());
 
 const toDeliveryView = (row: Record<string, unknown>): ReminderDeliveryView => ({
   id: String(row.id),
@@ -491,6 +523,8 @@ const toDeliveryView = (row: Record<string, unknown>): ReminderDeliveryView => (
   providerMessageId: row.provider_message_id == null ? null : String(row.provider_message_id),
   attempts: Number(row.attempts),
   lastError: row.last_error == null ? null : String(row.last_error),
+  nextAttemptAt: row.next_attempt_at == null ? null : toIso(row.next_attempt_at),
+  deliveryUncertain: isUncertain(row.last_error),
   createdAt: toIso(row.created_at),
   resolvedAt: row.resolved_at == null ? null : toIso(row.resolved_at),
 });
@@ -504,7 +538,7 @@ export async function listReminderDeliveries(
   const { rows } = await db.query(
     `SELECT d.id::text AS id, d.captain_user_id, b.name AS captain_name, d.hackathon_id, d.period_id::text AS period_id,
             p.sequence, p.start_date, p.end_date, d.reminder_type, d.due_at, d.state, d.reason, d.project_count,
-            d.provider_message_id, d.attempts, d.last_error, d.created_at, d.resolved_at
+            d.provider_message_id, d.attempts, d.last_error, d.next_attempt_at, d.created_at, d.resolved_at
      FROM hq_reminder_deliveries d
      JOIN hq_reporting_periods p ON p.id = d.period_id
      LEFT JOIN hq_builder_profiles b ON b.id = d.captain_user_id
@@ -520,8 +554,12 @@ export type JobRunSummary = {
   at: string;
   closures: { closed: number; periods: ClosedPeriod[] };
   reminders: { due: number; queued: number; skipped: number; alreadyRecorded: number; expired: number; reconciled: number };
-  /** Null when this deployment has no Telegram bot configured; the messages stay queued for a pass that does. */
-  delivery: FlushResult | null;
+  /**
+   * Null when this deployment has no Telegram bot configured; the messages
+   * stay queued for a pass that does. `stoppedOnBudget` means the pass ran
+   * out of its sending budget with work left, which the next pass picks up.
+   */
+  delivery: (FlushResult & { stoppedOnBudget?: boolean }) | null;
   purged: PurgeResult & { reminders: number };
 };
 
@@ -575,19 +613,33 @@ export async function runDueWork(
     else skipped += 1;
   }
 
-  const expired = await expireStaleReminders(db, now);
+  const expired = await expireEndedReminders(db, now);
 
-  let delivery: FlushResult | null = null;
+  let delivery: (FlushResult & { stoppedOnBudget?: boolean }) | null = null;
   const sender = options.sender !== undefined ? options.sender : isTelegramBotConfigured() ? telegramSender(telegramBotConfig()!) : null;
   if (sender) {
     delivery = { sent: 0, failed: 0, retrying: 0, skipped: 0 };
+    // The wall clock, not the injected `now`: the budget is about how long
+    // this invocation has actually been running, which a fixed test instant
+    // says nothing about.
+    const began = Date.now();
     for (let batch = 0; batch < MAX_FLUSH_BATCHES; batch += 1) {
-      const result = await flushBotMessages(db, sender, { limit: FLUSH_BATCH, now });
+      const result = await flushBotMessages(db, sender, {
+        limit: FLUSH_BATCH,
+        // Only forward a caller-supplied instant. Left to itself,
+        // `flushBotMessages` reads the clock per message, which is what makes
+        // the dispatch check current rather than as old as this pass.
+        ...(options.now != null ? { now: options.now } : {}),
+      });
       delivery.sent += result.sent;
       delivery.failed += result.failed;
       delivery.retrying += result.retrying;
       delivery.skipped += result.skipped;
       if (result.sent + result.failed + result.retrying + result.skipped < FLUSH_BATCH) break;
+      if (Date.now() - began >= SEND_BUDGET_MS) {
+        delivery.stoppedOnBudget = true;
+        break;
+      }
     }
   }
 

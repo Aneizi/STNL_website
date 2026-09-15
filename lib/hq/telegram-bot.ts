@@ -152,6 +152,13 @@ type Session = {
   chatId: string;
   hqOrigin: string | null;
   updateId: number;
+  /**
+   * The edition this press is scoped to, or null for the account's default
+   * one. Set from the pressed button, and inherited by every button minted
+   * during the press, so a notification about one hackathon cannot open
+   * another one's teams. Null for a message, which is always the default.
+   */
+  hackathonId: number | null;
 };
 
 const NOTHING: BotOutcome = { replies: [], answer: null, queued: false, outcome: "ignored" };
@@ -183,7 +190,14 @@ async function button(session: Session, text: string, action: Omit<Parameters<ty
   if (isDraftAction(action.kind) && !action.draftId) {
     throw new Error(`the ${action.kind} button must be bound to a draft`);
   }
-  const row = await createBotAction(session.db, { ...action, userId: session.actor.id, chatId: session.chatId }, session.now);
+  // The edition travels with the press: a button minted while answering a
+  // reminder about one hackathon stays inside that hackathon, and one minted
+  // from the ordinary menu carries null and means "the default one".
+  const row = await createBotAction(
+    session.db,
+    { hackathonId: session.hackathonId, ...action, userId: session.actor.id, chatId: session.chatId },
+    session.now,
+  );
   return { text, callbackId: row.id };
 }
 
@@ -222,7 +236,11 @@ const toSummary = (card: CaptainReportingCard): ProjectSummary => ({
  * same team at the top.
  */
 async function loadBoard(session: Session): Promise<{ hackathonId: number; cards: CaptainReportingCard[] } | null> {
-  const hackathonId = await builderStore().currentHackathonId();
+  // The edition the press named, when it named one. `captainReportingBoard`
+  // reads only this account's own current assignments in it, so an edition
+  // arriving on a callback grants nothing: a Captain with no assignments
+  // there gets an empty board, exactly as they would from the menu.
+  const hackathonId = session.hackathonId ?? (await builderStore().currentHackathonId());
   if (hackathonId === null) return null;
   const board = await captainReportingBoard(session.actor, hackathonId, session.db);
   const cards = [...board.cards].sort((a, b) =>
@@ -370,7 +388,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, context: BotC
     };
   }
 
-  const session: Session = { db, now, actor, chatId, hqOrigin, updateId: update.update_id };
+  const session: Session = { db, now, actor, chatId, hqOrigin, updateId: update.update_id, hackathonId: null };
   await bindBotChat(db, { userId: actor.id, telegramUserId: String(from.id), chatId });
 
   // Permission to be messaged, read now rather than remembered. The one thing
@@ -530,6 +548,9 @@ async function boundDraft(session: Session, action: BotAction): Promise<BotDraft
 type Dispatched = Omit<BotOutcome, "answer">;
 
 async function dispatch(session: Session, action: BotAction, callbackId: string): Promise<Dispatched> {
+  // Scope the whole press to the edition the pressed button was minted for.
+  session.hackathonId = action.hackathonId;
+
   // Every button that touches a draft is checked against the live draft
   // first, in one place, so no handler below can forget.
   if (isDraftAction(action.kind)) {

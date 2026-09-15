@@ -889,7 +889,13 @@ export type PeriodOutcome = {
   /** The project was paused when this period closed, so the period was excused rather than missed. */
   exempt: boolean;
   entryId: string | null;
-  /** The Captain at close, null for unassigned. History: reassigning later does not change it. */
+  /**
+   * The Captain responsible when the week ENDED, null when the project ended
+   * the week unassigned. History: neither a later reassignment nor a late
+   * closure changes it, which is why it is resolved from the assignment
+   * history at the period's boundary rather than from whoever holds the
+   * project when the closing job happens to run.
+   */
   captainUserId: string | null;
   closedAt: string;
   /** An admin's later correction of a mistaken outcome, or null. The effective answer is this when set, `completed` otherwise. */
@@ -931,11 +937,13 @@ export type ClosePeriodResult =
  * stored outcomes unchanged.
  *
  * The outcome records the factual on-time answer and the Captain responsible
- * at close, both as history: a late entry added afterwards is marked `late`
- * and never counted here, a reassignment later does not rewrite
+ * when the week ended, both as history: a late entry added afterwards is
+ * marked `late` and never counted here, a reassignment later does not rewrite
  * `captain_user_id`, and an admin who believes an outcome is wrong corrects
  * it through `correctOutcome`, which writes beside the original rather than
- * over it.
+ * over it. Because the closing job may run long after the week ended, the
+ * Captain is read from the assignment history at the period's own boundary,
+ * so a delayed run and a punctual one record the same person.
  */
 export async function closePeriod(
   db: BuilderDatabase | BuilderQuery,
@@ -966,6 +974,33 @@ export async function closePeriod(
     );
     const entryByProject = new Map(firstEntries.map((row) => [String(row.project_id), String(row.id)]));
 
+    // Who was responsible WHEN THE WEEK ENDED, from the assignment history,
+    // not whoever happens to hold the project when this runs.
+    //
+    // `closePeriod` is called by a scheduled job that is explicitly allowed to
+    // be late: phase 8's runner closes any week whose end has passed, so a
+    // missed run closes it half an hour, or a day, afterwards. Reading the
+    // CURRENT assignment made the answer depend on that delay, and a
+    // reassignment in the gap handed the previous week to a Captain who never
+    // held the team during it. An external review reproduced that on
+    // 15 September 2026.
+    //
+    // The boundary rule: assigned strictly before the period's exclusive end,
+    // and not unassigned before it. A Captain who took the team over after the
+    // week ended is not responsible for it, and a project that ended the week
+    // unassigned records no Captain at all.
+    const { rows: responsible } = await tx.query(
+      `SELECT DISTINCT ON (a.project_id) a.project_id::text AS project_id, a.captain_user_id
+       FROM hq_captain_assignments a
+       JOIN hq_projects p ON p.id = a.project_id AND p.hackathon_id = $2
+       WHERE a.captain_user_id IS NOT NULL
+         AND a.assigned_at < $1::timestamptz
+         AND (a.unassigned_at IS NULL OR a.unassigned_at >= $1::timestamptz)
+       ORDER BY a.project_id, a.assigned_at DESC`,
+      [period.endsAt, period.hackathonId],
+    );
+    const captainAtEnd = new Map(responsible.map((row) => [String(row.project_id), String(row.captain_user_id)]));
+
     for (const status of statuses) {
       const row = eligibility.get(status.projectId);
       // A project that entered reporting after this period ended was never
@@ -981,7 +1016,7 @@ export async function closePeriod(
       await tx.query(
         `INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis, exempt, entry_id, captain_user_id)
          VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::uuid, $7) ON CONFLICT (period_id, project_id) DO NOTHING`,
-        [period.id, status.projectId, state.completed, state.basis, exempt, entryByProject.get(status.projectId) ?? null, status.captainUserId],
+        [period.id, status.projectId, state.completed, state.basis, exempt, entryByProject.get(status.projectId) ?? null, captainAtEnd.get(status.projectId) ?? null],
       );
     }
     await tx.query("UPDATE hq_reporting_periods SET closed_at = now() WHERE id = $1::uuid AND closed_at IS NULL", [period.id]);
