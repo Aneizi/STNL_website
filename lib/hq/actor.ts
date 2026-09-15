@@ -1,8 +1,9 @@
 import "server-only";
 import { cache } from "react";
 import { currentUser, requireUser } from "./auth";
+import { builderDatabase, type BuilderQuery } from "./builder-db";
 import { listActiveCapabilities, type Capability } from "./capabilities";
-import { getTelegramIdentity } from "./identity";
+import { findTelegramIdentityByTelegramUserId, getTelegramIdentity, verifiedLoginEmail } from "./identity";
 import { currentMember, requireMember, type MemberSessionUser } from "./member-auth";
 
 /**
@@ -79,4 +80,44 @@ export async function requireMemberActor(next?: string): Promise<MemberActor> {
 export async function requireOperatorActor(): Promise<OperatorActor> {
   const user = await requireUser();
   return { kind: "operator", id: user.id, displayName: user.displayName };
+}
+
+/**
+ * The member actor behind a Telegram user id, for the bot (phase 7).
+ *
+ * The plan's other admitted origin: "An actor ID must come from a validated
+ * session or verified Telegram identity, never a submitted form field." There
+ * is no session in a webhook, so the identity row IS the validation, and it
+ * is read fresh on every update rather than carried in chat state. Unlinking
+ * Telegram deletes that row, so the very next message from that chat resolves
+ * to null and the bot has nothing to revoke separately.
+ *
+ * Everything else is identical to a signed-in member actor, deliberately:
+ * the same capability read, the same `verifiedLoginEmail` rule (so a
+ * Telegram-only account still has `email: null` and its internal placeholder
+ * never reaches anything), and the same `capabilities` set that exists for
+ * presentation only, because ./authz reads the grants again at decision time.
+ *
+ * Returns null for an unknown Telegram user, and for an identity row whose
+ * account has since been removed. It grants nothing on its own: every read
+ * and every write the bot makes still goes through `authorizeProjectAction`.
+ */
+export async function telegramMemberActor(telegramUserId: string, db: BuilderQuery = builderDatabase()): Promise<MemberActor | null> {
+  const identity = await findTelegramIdentityByTelegramUserId(telegramUserId, db);
+  if (!identity) return null;
+  const { rows } = await db.query(
+    `SELECT u.id, u.name, u.email, u."emailVerified" AS verified
+     FROM hq_auth_user u JOIN hq_builder_profiles b ON b.id = u.id WHERE u.id = $1`,
+    [identity.userId],
+  );
+  if (!rows.length) return null;
+  const row = rows[0];
+  return {
+    kind: "member",
+    id: String(row.id),
+    name: String(row.name ?? ""),
+    email: verifiedLoginEmail({ email: row.email == null ? null : String(row.email), emailVerified: Boolean(row.verified) }),
+    capabilities: new Set(await listActiveCapabilities(String(row.id), db)),
+    telegram: { userId: identity.telegramUserId },
+  };
 }

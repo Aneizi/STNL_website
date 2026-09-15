@@ -23,6 +23,13 @@ const INVITE_PATH_PREFIX = "/hq/invite/";
 const JOIN_PATH_PREFIX = "/hq/join/";
 
 /**
+ * The Captain board. Named because three places link to it from outside the
+ * page itself (the bot's Open HQ buttons, phase 8's reminder and the list
+ * below), and a fourth literal would be a fourth chance to disagree.
+ */
+export const CAPTAIN_PATH = "/hq/captain";
+
+/**
  * Every member page. An entry ending in "/" names a subtree whose next and
  * last segment is a single id (a team's project id, an invitation token);
  * every other entry is matched exactly. The invitation continuation path is
@@ -45,7 +52,11 @@ export const MEMBER_PUBLIC_PATHS = [
   "/hq/account/connect-telegram",
   "/hq/account/disconnect-telegram",
   "/hq/account/add-email",
-  "/hq/captain",
+  CAPTAIN_PATH,
+  // The Captain's own notes, kept reachable after a reassignment: the page
+  // returns nothing but what this account wrote itself, so it is not a way
+  // back into a former team's records.
+  `${CAPTAIN_PATH}/notes`,
   INVITE_PATH_PREFIX,
 ] as const;
 

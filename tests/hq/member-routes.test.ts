@@ -13,7 +13,7 @@ const ORIGIN = "https://hq.invalid";
 /** Where the proxy sends a cookie-less request, or null when it lets it through. */
 const bounce = (pathname: string) => proxy(new NextRequest(`${ORIGIN}${pathname}`)).headers.get("location");
 
-const MEMBER_PAGES = ["/hq/signin", "/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain"];
+const MEMBER_PAGES = ["/hq/signin", "/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain", "/hq/captain/notes"];
 const DYNAMIC_MEMBER_PAGES = ["/hq/team/00000000-0000-4000-8000-00000000000a", "/hq/team/1234-abcd", "/hq/invite/abc", "/hq/invite/tok_en-42", "/hq/join/917F94-8CE496-4D2C7A-4C70F1"];
 const OPERATOR_PAGES = ["/hq", "/hq/admin", "/hq/people", "/hq/projects", "/hq/partners", "/hq/partners/abc", "/hq/events", "/hq/links", "/hq/demo", "/hq/select", "/hq/change-password", "/hq/api/search"];
 
