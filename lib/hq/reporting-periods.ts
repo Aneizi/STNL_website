@@ -125,6 +125,28 @@ export function zonedDateTimeToUtc(date: string, time: string, timezone: string)
   return new Date(naive - zoneOffsetMs(new Date(guess), timezone));
 }
 
+/**
+ * The inverse of `zonedDateTimeToUtc`: an instant as the wall clock reads in
+ * a zone, "YYYY-MM-DDTHH:MM" — the value a `datetime-local` input takes and
+ * shows.
+ *
+ * A stored `timestamptz` sliced to sixteen characters is UTC, not the
+ * campaign's clock, so a deadline saved as 23:59 in Amsterdam reads back as
+ * 21:59 and would be saved again two hours earlier on the next edit. The
+ * round trip only closes when both halves name the same zone, which is why
+ * this exists beside the function that goes the other way.
+ */
+export function utcToZonedDateTime(instant: Date | string | number, timezone: string): string {
+  const at = instant instanceof Date ? instant : new Date(instant);
+  if (!Number.isFinite(at.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(at);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
 /** Local midnight that begins `date`, as a UTC instant. */
 const localMidnight = (date: string, timezone: string) => zonedDateTimeToUtc(date, "00:00", timezone);
 

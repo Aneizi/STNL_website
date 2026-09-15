@@ -1,7 +1,7 @@
 import "server-only";
 import type { MemberActor } from "./actor";
 import { authorizeProjectAction, type ProjectAction } from "./authz";
-import { loadProjectEdition } from "./authz-sql";
+import { loadProjectEdition, loadTeamMembership } from "./authz-sql";
 import { builderDatabase } from "./builder-db";
 import { builderStore } from "./builder-store";
 import type { BuilderTeam } from "./builder-types";
@@ -50,6 +50,41 @@ async function decide(actor: MemberActor, request: TeamRequest): Promise<"allowe
 /** The team when the decision allows `action` for this actor, else null. */
 export async function authorizedTeam(actor: MemberActor, request: TeamRequest): Promise<BuilderTeam | null> {
   return (await decide(actor, request)) === "allowed" ? builderStore().teamById(request.projectId) : null;
+}
+
+/**
+ * An HQ project with no Colosseum snapshot behind it, as its own member may
+ * see it: an operator created it from a Request help submission, so it has a
+ * name, an edition and a Captain, and no roster, project link or submission
+ * status because it genuinely has none yet.
+ *
+ * Separate from `memberTeamView` rather than a nullable version of it. The
+ * decision is the same one (`authorizeProjectAction`, which now reads HQ
+ * ownership), and what differs is only what there is to show.
+ */
+export type MemberProjectView = {
+  id: string;
+  name: string;
+  edition: { id: number; name: string };
+  membership: { role: "owner" | "member" };
+  captain: { displayName: string; contact: string | null } | null;
+};
+
+export async function memberProjectView(actor: MemberActor, projectId: string): Promise<MemberProjectView | null> {
+  if ((await decide(actor, { projectId, action: "read" })) !== "allowed") return null;
+  const db = builderDatabase();
+  const project = await builderStore().projectById(projectId);
+  if (!project) return null;
+  const membership = await loadTeamMembership(db, { userId: actor.id, projectId });
+  const captain = await currentCaptainOfProject(db, projectId);
+  const contact = captain ? await readCaptainContact(db, captain.captainUserId) : null;
+  return {
+    id: project.id,
+    name: project.name,
+    edition: { id: project.hackathonId, name: project.hackathonName },
+    membership: { role: membership?.role ?? "member" },
+    captain: captain ? { displayName: captain.captainName, contact } : null,
+  };
 }
 
 /**

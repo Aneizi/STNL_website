@@ -5,6 +5,7 @@ import type { Actor } from "../actor";
 import { requireUser, type HqUser } from "../auth";
 import { loadEntry, loadProjectEdition } from "../authz-sql";
 import { builderDatabase } from "../builder-db";
+import { BuilderError } from "../builder-types";
 import { requireHackathon } from "../hackathon";
 import {
   correctOutcome,
@@ -15,6 +16,7 @@ import {
   pauseReporting,
   previewReportingPeriods,
   readAuthorizedUpdates,
+  readReportingSchedule,
   readRevisionHistory,
   reportingStatus,
   voidUpdate,
@@ -25,6 +27,7 @@ import {
   type ReportingPeriodPlan,
   type ReportingRevision,
 } from "../reporting";
+import { zonedDateTimeToUtc } from "../reporting-periods";
 import type { ActionResult } from "../types";
 import { inHackathon, refreshHq } from "./util";
 
@@ -52,6 +55,13 @@ import { inHackathon, refreshHq } from "./util";
 const uuid = z.string().uuid();
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const reasonSchema = z.string().trim().min(3).max(500);
+/** What a `datetime-local` field submits: a wall clock with no offset. The seconds a browser may append are ignored. */
+const LOCAL_DATE_TIME = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?$/;
+/** The same fallback `readReportingSchedule` uses when an edition has no timezone setting of its own. */
+const CAMPAIGN_TIMEZONE_FALLBACK = "Europe/Amsterdam";
+/** How many updates, and how many saved versions, one admin read returns before the rest go behind a cursor. */
+const ADMIN_PAGE = 50;
+const REVISION_PAGE = 25;
 
 /** The authenticated operator as the reporting service takes them. The gate is the `requireUser()` its caller already ran. */
 const operatorActor = (user: HqUser): Actor => ({ kind: "operator", id: user.id, displayName: user.displayName });
@@ -81,11 +91,29 @@ export async function previewReportingSchedule(): Promise<{ ok: true; schedule: 
   return { ok: true, schedule: { hackathonId: hackathon.id, plan } };
 }
 
-/** Writes the previewed change. Conflicts are returned again, because `ensureReportingPeriods` refuses to move those weeks either. */
+/**
+ * Writes the previewed change.
+ *
+ * Conflicts come back again, because `ensureReportingPeriods` refuses to move
+ * those weeks either, and so does `blocked`: a change that would leave a day
+ * belonging to no week, or to two, is refused as a whole rather than half
+ * applied, and the screen says which weeks it fell between. The counts still
+ * describe the change that was refused, so the sentence an admin reads is
+ * about what they asked for.
+ */
 export async function applyReportingSchedule(): Promise<{ ok: true; schedule: ReportingScheduleView } | { ok: false; error: string }> {
   await requireUser();
   const hackathon = await requireHackathon();
-  const plan = await ensureReportingPeriods(builderDatabase(), hackathon.id);
+  let plan;
+  try {
+    plan = await ensureReportingPeriods(builderDatabase(), hackathon.id);
+  } catch (error) {
+    // The one error the service raises here is the guarded write finding
+    // someone reported against a week mid-apply, which rolls the whole
+    // transaction back. It has a sentence of its own; anything else does not.
+    if (error instanceof BuilderError) return { ok: false, error: error.message };
+    throw error;
+  }
   refreshHq();
   return { ok: true, schedule: { hackathonId: hackathon.id, plan } };
 }
@@ -112,14 +140,25 @@ export async function saveReportingConfiguration(input: {
     })
     .safeParse(input);
   if (!parsed.success) return { ok: false, error: "Check the reporting settings and try again." };
+  // The deadline is typed as a wall clock with no offset (the `datetime-local`
+  // input has none to give), so the zone it is read in has to be named
+  // explicitly. `new Date(value)` would read it in the SERVER's zone, which
+  // means the same typed value stores a different instant depending on where
+  // the process runs: "2026-10-12T23:59" entered by an Amsterdam admin
+  // becomes 23:59 UTC on a UTC host, two hours past the deadline they meant.
+  // The campaign timezone is the one every other time-of-day decision here
+  // already uses, and the form shows and takes the value in it.
+  const schedule = await readReportingSchedule(builderDatabase(), hackathon.id);
+  const timezone = schedule?.timezone ?? CAMPAIGN_TIMEZONE_FALLBACK;
   const deadline = parsed.data.officialSubmissionDeadline.trim();
-  if (deadline && !Number.isFinite(Date.parse(deadline))) {
+  const deadlineParts = LOCAL_DATE_TIME.exec(deadline);
+  if (deadline && !deadlineParts) {
     return { ok: false, error: "That submission deadline is not a date and time we can read." };
   }
   await writeReportingConfig(builderDatabase(), {
     hackathonId: hackathon.id,
     finalPeriodStartDate: parsed.data.finalPeriodStartDate || null,
-    officialSubmissionDeadline: deadline ? new Date(deadline).toISOString() : null,
+    officialSubmissionDeadline: deadlineParts ? zonedDateTimeToUtc(deadlineParts[1], deadlineParts[2], timezone).toISOString() : null,
     nudgeWeekday: parsed.data.nudgeWeekday,
     nudgeTime: parsed.data.nudgeTime,
   });
@@ -215,6 +254,8 @@ export type ProjectReportingDetail = {
   /** Every week of the edition with this project's state in it, newest first on screen. */
   history: PeriodStatus[];
   entries: ReportingEntryView[];
+  /** Where the next page of updates starts, or null at the end. The panel's Load more carries it back through `loadMoreProjectUpdates`. */
+  entriesCursor: string | null;
   /** The persisted outcomes of the weeks that have been closed, so a correction shows what was recorded and what it now reads as. */
   outcomes: PeriodOutcome[];
   /** Whether the project is in reporting at all, so the panel offers Add to reporting rather than an empty list. */
@@ -246,7 +287,7 @@ export async function loadProjectReporting(projectId: string): Promise<
   const actor = operatorActor(user);
   const [statuses, page] = await Promise.all([
     reportingStatus(db, { hackathonId: hackathon.id, projectIds: [projectId], includeHistory: true }),
-    readAuthorizedUpdates(actor, { projectId, hackathonId: hackathon.id, limit: 50 }),
+    readAuthorizedUpdates(actor, { projectId, hackathonId: hackathon.id, limit: ADMIN_PAGE }),
   ]);
   const status = statuses[0];
   const closed = (status?.history ?? []).filter((period) => period.closed);
@@ -259,6 +300,7 @@ export async function loadProjectReporting(projectId: string): Promise<
       projectId,
       history: status?.history ?? [],
       entries: page.entries,
+      entriesCursor: page.nextCursor,
       outcomes,
       enrolled: Boolean(status),
       paused: Boolean(status?.paused),
@@ -268,14 +310,47 @@ export async function loadProjectReporting(projectId: string): Promise<
   };
 }
 
-/** One update's saved versions. Operators only, per the permission contract; a member never sees a prior version at all. */
-export async function loadEntryRevisions(entryId: string): Promise<
-  { ok: true; revisions: ReportingRevision[] } | { ok: false; error: string }
+/**
+ * The next page of one project's updates. The panel starts at
+ * `loadProjectReporting`'s first page and continues here, rather than stopping
+ * at the first page and discarding the cursor: an admin's "full history"
+ * stopped being full the moment a project passed fifty updates.
+ */
+export async function loadMoreProjectUpdates(input: { projectId: string; cursor: string }): Promise<
+  { ok: true; entries: ReportingEntryView[]; nextCursor: string | null } | { ok: false; error: string }
 > {
   const user = await requireUser();
   const hackathon = await requireHackathon();
-  if (!uuid.safeParse(entryId).success) return { ok: false, error: "That update is no longer there." };
-  const entry = inHackathon(await loadEntry(builderDatabase(), entryId), hackathon.id);
+  const parsed = z.object({ projectId: uuid, cursor: z.string().max(200) }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "That project is no longer there." };
+  if (!(await projectInEdition(parsed.data.projectId, hackathon.id))) return { ok: false, error: "That project is no longer there." };
+  const page = await readAuthorizedUpdates(operatorActor(user), {
+    projectId: parsed.data.projectId, hackathonId: hackathon.id, limit: ADMIN_PAGE, cursor: parsed.data.cursor,
+  });
+  return { ok: true, entries: page.entries, nextCursor: page.nextCursor };
+}
+
+/**
+ * One update's saved versions, a page at a time. Operators only, per the
+ * permission contract; a member never sees a prior version at all.
+ *
+ * `afterVersion` is the version the caller already has, and the table's own
+ * `(entry_id, version)` key is the cursor, so the panel can walk an entry with
+ * more than a hundred versions instead of silently stopping at the service
+ * default. Bodies stay here and are never joined into a list read.
+ */
+export async function loadEntryRevisions(entryId: string, afterVersion = 0): Promise<
+  { ok: true; revisions: ReportingRevision[]; nextAfterVersion: number | null } | { ok: false; error: string }
+> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = z.object({ entryId: uuid, afterVersion: z.number().int().min(0).max(1_000_000) }).safeParse({ entryId, afterVersion });
+  if (!parsed.success) return { ok: false, error: "That update is no longer there." };
+  const entry = inHackathon(await loadEntry(builderDatabase(), parsed.data.entryId), hackathon.id);
   if (!entry) return { ok: false, error: "That update is no longer there." };
-  return { ok: true, revisions: await readRevisionHistory(operatorActor(user), { entryId }) };
+  const revisions = await readRevisionHistory(operatorActor(user), {
+    entryId: parsed.data.entryId, afterVersion: parsed.data.afterVersion, limit: REVISION_PAGE,
+  });
+  const last = revisions[revisions.length - 1];
+  return { ok: true, revisions, nextAfterVersion: revisions.length === REVISION_PAGE && last ? last.version : null };
 }

@@ -34,21 +34,45 @@ import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } 
  *   which is SET NULL. `hq_team_invites` cascades from the onboarding row.
  *   Phase 5's reporting tables were added after this list was first written
  *   and are included here now: `hq_reporting_eligibility`,
+ *   `hq_reporting_pause_intervals` (its pause history),
  *   `hq_reporting_entries` (and through it `hq_reporting_entry_revisions`)
- *   and `hq_reporting_outcomes`, every one CASCADE. Cascading is right for
+ *   and `hq_reporting_outcomes`, every one CASCADE. `hq_project_ownership`
+ *   (HQ ownership, 15 September 2026) cascades the same way, and
+ *   `hq_project_import_requests.project_id` is SET NULL so a help request
+ *   survives the project it became. Cascading is right for
  *   all four: a team's updates, its revision history, whether it was in
  *   reporting at all and what each week recorded are statements ABOUT that
  *   team, and none of them means anything once the team is gone — unlike an
  *   award, which outlives its winner. `hq_reporting_periods` is deliberately
  *   NOT touched: the periods belong to the edition, not to any one project,
  *   and the other teams still report against them.
+ *   Phase 7 (the Telegram bot) added four tables and DELIBERATELY pointed
+ *   none of them here. `hq_telegram_drafts` and `hq_telegram_actions` carry a
+ *   `project_id`, but as a plain uuid with no foreign key, the same shape
+ *   `hq_reporting_entries.author_id` uses: both are transient chat state with
+ *   an expiry of minutes to a day, every read of either re-authorizes against
+ *   the live project so a row pointing at a deleted one grants exactly
+ *   nothing, and `purgeExpiredBotState` removes them on its own. Naming them
+ *   here would put somebody's half-typed message into a confirmation that is
+ *   supposed to be about the team's records. `hq_telegram_updates` and
+ *   `hq_telegram_outgoing` never reference a project at all.
+ *   Phase 8 (the reminder and closure jobs) added `hq_reminder_deliveries`
+ *   and deliberately pointed it at none of the three. It references the Captain's
+ *   account, the edition and the reporting period, and it counts the teams a
+ *   reminder named without naming them: a reminder is a statement about a
+ *   Captain's week, not about any one team, and a deleted team's name must
+ *   not outlive the team inside a history table. Deleting a team therefore
+ *   leaves the reminder record intact and correct (its count describes what
+ *   was outstanding on the day), and the confirmation stays about the team's
+ *   own records.
  * - at `hq_people`: `hq_scores.judge_id` (CASCADE).
  * - at `hq_crm_persons`: `hq_people.person_id` and
  *   `hq_project_members.person_id` (both SET NULL — detachment, not
  *   cascade), and `hq_crm_persons.builder_user_id`, which is the link to the
  *   account and disappears with the person row, never with the account.
  *
- * **Nothing points at a person or a CRM person from the reporting tables**,
+ * **Nothing points at a person or a CRM person from the reporting tables or
+ * from the reminder deliveries**,
  * which is why `deletePersonRecord` needed no change for phase 5 and is
  * stated here rather than left to be rediscovered. An entry's author is
  * `author_kind`/`author_id` with no foreign key — the same shape

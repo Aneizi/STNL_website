@@ -74,20 +74,41 @@ export async function loadProjectEdition(db: BuilderQuery, projectId: string): P
 }
 
 /**
- * The account's verified membership of the project, or null. Checked per
- * call against `hq_project_onboarding` (owner, verification) and
- * `hq_project_members` (joined roster rows); nothing about the project is
- * revealed when there is no membership.
+ * The account's membership of the project, or null. Nothing about the project
+ * is revealed when there is no membership.
+ *
+ * Two sources, checked per call:
+ *
+ * - `hq_project_ownership`, the HQ owner, falling back to
+ *   `hq_project_onboarding.owner_user_id` where there is no ownership row.
+ *   The onboarding row cannot exist without a Colosseum `external_id`, so
+ *   ownership of a project an admin created by hand from a help request had
+ *   nowhere to live and its builders had no way into it at all (the plan's
+ *   "Model HQ project ownership independently of a successful external
+ *   snapshot"). Existing importers were backfilled into the new table and
+ *   `importTeam` writes it alongside the onboarding row, so an imported
+ *   team's owner is unchanged; the COALESCE is what makes that true even for
+ *   an onboarding row written by something other than `importTeam`, such as a
+ *   seed or a fixture, rather than stranding its owner.
+ * - `hq_project_members`, a joined roster row, as before.
+ *
+ * `verification` still decides for an IMPORTED project: an owner or roster
+ * member of a claim that is pending or rejected has no membership, which is
+ * the window `checkCaptainConflict` in ./captains.ts covers separately. A
+ * project with no onboarding row has no claim to verify and is not held to a
+ * verification state it can never have.
  */
 export async function loadTeamMembership(db: BuilderQuery, input: { userId: string; projectId: string }): Promise<TeamMembership | null> {
   if (!isRecordId(input.projectId)) return null;
   const { rows } = await db.query(
-    `SELECT o.project_id::text AS project_id, p.hackathon_id,
-       CASE WHEN o.owner_user_id = $1 THEN 'owner' ELSE 'member' END AS role
-     FROM hq_project_onboarding o JOIN hq_projects p ON p.id = o.project_id
-     WHERE o.project_id = $2::uuid AND o.verification = 'verified'
-       AND (o.owner_user_id = $1
-         OR EXISTS (SELECT 1 FROM hq_project_members m WHERE m.project_id = o.project_id AND m.builder_user_id = $1))`,
+    `SELECT p.id::text AS project_id, p.hackathon_id,
+       CASE WHEN COALESCE(w.owner_user_id, o.owner_user_id) = $1 THEN 'owner' ELSE 'member' END AS role
+     FROM hq_projects p
+     LEFT JOIN hq_project_ownership w ON w.project_id = p.id
+     LEFT JOIN hq_project_onboarding o ON o.project_id = p.id
+     WHERE p.id = $2::uuid AND (o.project_id IS NULL OR o.verification = 'verified')
+       AND (COALESCE(w.owner_user_id, o.owner_user_id) = $1
+         OR EXISTS (SELECT 1 FROM hq_project_members m WHERE m.project_id = p.id AND m.builder_user_id = $1))`,
     [input.userId, input.projectId],
   );
   if (!rows.length) return null;

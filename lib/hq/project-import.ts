@@ -161,6 +161,60 @@ export async function importColosseumTeam(
   }
 }
 
+/**
+ * Fetch, gate, attach: the same journey `importColosseumTeam` makes, ending
+ * on a project HQ already has instead of on a new one.
+ *
+ * The plan's "Later source reconciliation attaches the real source ID without
+ * replacing the HQ project or its history": a project an admin created from a
+ * help request keeps its id, its ownership, its Captain and every weekly
+ * update it has already collected, and gains the Colosseum snapshot and the
+ * roster. Every gate the import path applies applies here too, checked
+ * against the response body rather than assumed, so a hand-created project
+ * cannot be used to attach a project from another edition or another country.
+ */
+export async function attachColosseumSource(
+  input: { projectId: string; hackathonId: number; url: string; operatorId: string },
+  fetcher: ColosseumFetch = fetch,
+): Promise<ImportOutcome> {
+  const store = builderStore();
+  const editionRow = await store.hackathon(input.hackathonId);
+  const edition: EditionMapping = {
+    hackathonId: editionRow.id, externalId: editionRow.externalId, externalSlug: editionRow.externalSlug,
+    projectsOpen: editionRow.projectsOpen, projectsAvailableAt: editionRow.projectsAvailableAt,
+  };
+  if (edition.externalId == null) return refusal("edition_not_configured");
+
+  let project;
+  try {
+    project = await fetchColosseumProject(input.url, fetcher);
+  } catch (error) {
+    if (error instanceof ColosseumApiError) return { ok: false, ...importFailureFor(error) };
+    throw error;
+  }
+  // `projectsOpen` is the self-service import window and is deliberately not
+  // re-checked here: this is an operator attaching a source to a project HQ
+  // already owns, not a new team entering through the public route.
+  if (!isNetherlands(project.country)) return refusal("not_dutch");
+  if (project.hackathon.id !== edition.externalId) return refusal("wrong_edition");
+  if (await store.importedProject(input.hackathonId, project.externalId)) return refusal("already_imported");
+
+  try {
+    await store.attachSourceToProject({
+      projectId: input.projectId,
+      hackathonId: input.hackathonId,
+      project,
+      projectUrl: `https://colosseum.com/arena/projects/explore/${project.slug}`,
+      operatorId: input.operatorId,
+    });
+    return { ok: true, projectId: input.projectId };
+  } catch (error) {
+    if (error instanceof ImportRefusedError) return refusal(error.reason);
+    if (error instanceof BuilderError) return { ok: false, reason: "unavailable", message: error.message };
+    throw error;
+  }
+}
+
 function refusal(reason: ImportRefusal): ImportOutcome {
   return { ok: false, reason, message: new ImportRefusedError(reason).message };
 }

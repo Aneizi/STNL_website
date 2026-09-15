@@ -5,6 +5,7 @@ import { z } from "zod";
 import { requireMemberActor } from "../actor";
 import { getActorCapabilities } from "../authz";
 import { builderDatabase } from "../builder-db";
+import { builderStore } from "../builder-store";
 import { authorizedTeam, TEAM_NOT_AVAILABLE } from "../member-teams";
 import {
   MAX_CONTACT_LENGTH,
@@ -16,6 +17,9 @@ import {
   createUpdate,
   editUpdate,
   MAX_BODY_LENGTH,
+  readAuthorizedUpdates,
+  readOwnUpdates,
+  type OwnReportingEntry,
   type ReportingEntryView,
   type ReportingPeriod,
 } from "../reporting";
@@ -54,6 +58,8 @@ const hackathonIdSchema = z.number().int().positive();
 const bodySchema = z.string().max(MAX_BODY_LENGTH + 1);
 const visibilitySchema = z.enum(["shared", "sensitive"]);
 const contactSchema = z.string().max(MAX_CONTACT_LENGTH + 50);
+/** The page size the member screens read, matching `lib/hq/reporting-surface.ts`'s first page so Load more continues rather than restarts. */
+const RECENT_UPDATES = 10;
 
 function refresh() {
   revalidatePath("/hq", "layout");
@@ -135,6 +141,48 @@ export async function editReportingUpdate(input: EditUpdateActionInput): Promise
     return { ok: false, reason: "conflict", error: EDIT_UPDATE_MESSAGES.conflict, current: result.current ?? null };
   }
   return { ok: false, reason: result.reason, error: EDIT_UPDATE_MESSAGES[result.reason] };
+}
+
+/** A page of updates, as the two member screens ask for the next one. */
+export type UpdatePageResult = { entries: ReportingEntryView[]; nextCursor: string | null };
+
+/**
+ * The next page of one project's updates, or one week of them.
+ *
+ * The screens page through this rather than showing a first page and a
+ * sentence saying the rest exist: an author can only edit an update they can
+ * see, so "only the most recent are shown" was a limit on editing as much as
+ * on reading. The service is the gate, as everywhere else here:
+ * `readAuthorizedUpdates` applies the audience in SQL and answers a reader
+ * with no claim on the project with an empty page, so a guessed id returns
+ * the same nothing an empty project does.
+ */
+export async function loadTeamUpdates(input: {
+  projectId: string;
+  hackathonId: number;
+  cursor?: string;
+  periodId?: string;
+}): Promise<UpdatePageResult> {
+  const actor = await requireMemberActor();
+  const parsed = z
+    .object({ projectId: uuid, hackathonId: hackathonIdSchema, cursor: z.string().max(200).optional(), periodId: uuid.optional() })
+    .safeParse(input);
+  if (!parsed.success) return { entries: [], nextCursor: null };
+  return readAuthorizedUpdates(actor, { ...parsed.data, limit: RECENT_UPDATES });
+}
+
+/**
+ * The account's own updates for the current edition, newest first and
+ * read-only: `readOwnUpdates` requires a live `captain` capability and
+ * selects nothing but rows this account authored, so a reassigned Captain
+ * keeps their own sensitive notes without regaining anything of the team's.
+ */
+export async function loadOwnUpdates(input: { cursor?: string } = {}): Promise<{ entries: OwnReportingEntry[]; nextCursor: string | null }> {
+  const actor = await requireMemberActor();
+  const parsed = z.object({ cursor: z.string().max(200).optional() }).safeParse(input);
+  const hackathonId = await builderStore().currentHackathonId();
+  if (!parsed.success || hackathonId === null) return { entries: [], nextCursor: null };
+  return readOwnUpdates(actor, { hackathonId, cursor: parsed.data.cursor, limit: RECENT_UPDATES });
 }
 
 export type ContactResult = { ok: true; contact: string | null } | { ok: false; error: string };

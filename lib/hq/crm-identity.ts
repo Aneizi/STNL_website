@@ -85,6 +85,62 @@ export async function ensurePersonForRosterMember(db: BuilderQuery, input: { col
 }
 
 /**
+ * Refuses an identity change that would make an account a participant in a
+ * project it currently captains.
+ *
+ * "A Captain cannot be assigned to a team they participate in" is an
+ * invariant, not a rule about one direction of travel. `assignCaptain`
+ * enforces it going one way, by refusing to assign an account that resolves
+ * to a roster row of the project, and `redeemInvite` enforces it going
+ * another, by refusing to let a Captain claim a seat on their own project.
+ * The third way in was here: attaching a roster person to an account leaves
+ * the account's existing Captain assignment untouched, and the assignment
+ * lock `assignCaptain` takes cannot help, because that transaction is long
+ * finished. So the same question is asked once more, at the moment the
+ * relationship is actually created.
+ *
+ * Refused rather than repaired: silently ending an assignment would be an
+ * unaudited Captain change made by a CRM correction, and which of the two is
+ * wrong is the operator's call. The projects are named so the operator knows
+ * which assignment to move first.
+ *
+ * What serialises this against a concurrent `assignCaptain` is the person
+ * row, not this read: `checkCaptainConflict` there locks every CRM person on
+ * the project's roster FOR UPDATE, and the callers below already hold
+ * FOR UPDATE on the person being corrected, which is by definition one of
+ * them. So the two orderings meet on a lock both already take, and this stays
+ * a plain read.
+ */
+async function assertNoCaptainConflict(tx: BuilderQuery, input: { userId: string; personIds: string[] }): Promise<void> {
+  const personIds = [...new Set(input.personIds.filter(Boolean))];
+  if (!personIds.length) return;
+  const { rows } = await tx.query(
+    `SELECT p.name FROM hq_projects p
+     WHERE EXISTS (SELECT 1 FROM hq_captain_assignments a
+                   WHERE a.project_id = p.id AND a.captain_user_id = $1 AND a.unassigned_at IS NULL)
+       AND EXISTS (SELECT 1 FROM hq_project_members m WHERE m.project_id = p.id AND m.person_id = ANY($2::uuid[]))
+     ORDER BY p.name`,
+    [input.userId, personIds],
+  );
+  if (!rows.length) return;
+  const names = rows.map((row) => String(row.name)).join(", ");
+  throw new BuilderError(
+    `This account is the current Captain of ${names}, and this change would also make it a member of that team. Reassign the Captain first, then make the correction.`,
+  );
+}
+
+/** Every CRM person a set of people is about, plus whichever persons the target account already carries roster rows through. */
+async function rosterPersonsOf(tx: BuilderQuery, personIds: string[]): Promise<string[]> {
+  const ids = [...new Set(personIds.filter(Boolean))];
+  if (!ids.length) return [];
+  const { rows } = await tx.query(
+    "SELECT DISTINCT person_id::text AS person_id FROM hq_project_members WHERE person_id = ANY($1::uuid[])",
+    [ids],
+  );
+  return rows.map((row) => String(row.person_id));
+}
+
+/**
  * Links a person to a public account and stamps the account's People cards
  * that do not carry a person yet. Refuses, without writing, when the person
  * already belongs to a different account or the account to a different
@@ -103,6 +159,10 @@ export async function linkPersonToAccount(db: BuilderQuery | BuilderDatabase, in
     if (!accounts.length) throw new BuilderError("This account no longer exists.");
     const { rows: others } = await tx.query("SELECT 1 FROM hq_crm_persons WHERE builder_user_id=$1 AND id<>$2", [input.userId, input.personId]);
     if (others.length) throw new BuilderError("This account is already linked to another person.");
+    // The person's roster rows become this account's the moment the link is
+    // written, so the participant-and-Captain invariant is checked here,
+    // before anything is.
+    await assertNoCaptainConflict(tx, { userId: input.userId, personIds: await rosterPersonsOf(tx, [input.personId]) });
     await stampAccountCards(tx, { personId: input.personId, userId: input.userId });
     await tx.query("UPDATE hq_crm_persons SET builder_user_id=$1,updated_at=now() WHERE id=$2", [input.userId, input.personId]);
   });
@@ -198,6 +258,15 @@ export async function correctPersonMatch(
       const { rows: accounts } = await tx.query("SELECT name FROM hq_builder_profiles WHERE id=$1", [input.toUserId]);
       if (!accounts.length) throw new BuilderError("This account no longer exists.");
       const { rows: own } = await tx.query("SELECT id FROM hq_crm_persons WHERE builder_user_id=$1 FOR UPDATE", [input.toUserId]);
+      // Both branches below end with `toUserId` carrying this person's roster
+      // rows: the link branch by pointing the person at the account, the merge
+      // branch by re-pointing every roster row onto the account's own person.
+      // Either way the account ends up a participant in whatever those rows
+      // belong to, so the check covers both persons before either is written.
+      await assertNoCaptainConflict(tx, {
+        userId: input.toUserId,
+        personIds: await rosterPersonsOf(tx, [input.personId, ...own.map((row) => String(row.id))]),
+      });
       if (!own.length) {
         await linkPersonToAccount(tx, { personId: input.personId, userId: input.toUserId });
         const { rows: unlinked } = await tx.query("SELECT id::text AS id FROM hq_people WHERE builder_user_id=$1 AND person_id IS NULL", [input.toUserId]);

@@ -34,6 +34,45 @@ import {
 /** The number of recent updates a member screen shows before the rest go behind a cursor. */
 const RECENT_UPDATES = 10;
 
+/**
+ * A week as a TEAM may be told about it.
+ *
+ * Deliberately not `PeriodStatus`. That shape carries `entries` (a count of
+ * every qualifying entry in the week, a Captain's sensitive notes included),
+ * `latestEntryAt` and `basis` ("entry" or "submission"), and the panel below
+ * is handed whole to a client component, so every one of those fields is
+ * serialized into the page whether or not anything renders it. The entry list
+ * already withholds another author's sensitive note in SQL; a count and a
+ * timestamp beside it would hand back exactly what the list withheld, and a
+ * team could read off how many hidden notes its Captain wrote and when.
+ *
+ * What is left is what the screen actually says: which week it is, when it
+ * runs, and whether it is done. `completed` stays, because a sensitive note
+ * completing the week is the documented rule the team is told about
+ * ("it still completes the week"); how it was completed is not.
+ */
+export type TeamPeriodView = {
+  periodId: string;
+  periodSequence: number;
+  /** Inclusive local dates, what the screen prints. */
+  startDate: string;
+  endDate: string;
+  /** The open/closed comparison the prompt makes. Nothing about who wrote what. */
+  startsAt: string;
+  endsAt: string;
+  completed: boolean;
+};
+
+const toTeamPeriod = (period: PeriodStatus): TeamPeriodView => ({
+  periodId: period.periodId,
+  periodSequence: period.periodSequence,
+  startDate: period.startDate,
+  endDate: period.endDate,
+  startsAt: period.startsAt,
+  endsAt: period.endsAt,
+  completed: period.completed,
+});
+
 export type TeamReportingPanel = {
   projectId: string;
   hackathonId: number;
@@ -42,12 +81,13 @@ export type TeamReportingPanel = {
   /** False for a team that is not in weekly reporting yet; the screen says so rather than showing an empty week. */
   enrolled: boolean;
   paused: boolean;
-  current: PeriodStatus | null;
+  current: TeamPeriodView | null;
   missedPeriods: number;
-  history: PeriodStatus[];
+  history: TeamPeriodView[];
   /** The updates this viewer may read, newest first. Never a sensitive note that is not their own, and never a voided one. */
   entries: ReportingEntryView[];
-  hasMore: boolean;
+  /** The next page's cursor, or null at the end. The screen's Load more carries it back through `loadTeamUpdates`. */
+  nextCursor: string | null;
   /** The team's preferred contact, which its lead sets and its Captain reads. */
   teamContact: string | null;
 };
@@ -77,21 +117,91 @@ export async function teamReportingPanel(
     timezone: schedule?.timezone ?? "Europe/Amsterdam",
     enrolled: Boolean(status),
     paused: Boolean(status?.paused),
-    current: status?.current ?? null,
+    current: status?.current ? toTeamPeriod(status.current) : null,
     missedPeriods: status?.missedPeriods ?? 0,
-    history: status?.history ?? [],
+    history: (status?.history ?? []).map(toTeamPeriod),
     entries: page.entries,
-    hasMore: page.nextCursor !== null,
+    nextCursor: page.nextCursor,
     teamContact: contacts.get(input.projectId) ?? null,
   };
 }
 
+/**
+ * One of the account's own teams as the HQ home page shows it: whose week it
+ * is, whether it is done and when it is due.
+ *
+ * The plan's login experience is "prompt for the weekly update", and until
+ * this the prompt lived only on the team detail screen: someone who signed in
+ * and stayed on the dashboard saw a verification badge and an Open team
+ * button, and nothing at all about the update they owed. The same team-facing
+ * week shape as everywhere else, so the home page cannot see more of a
+ * Captain's sensitive notes than the team page does.
+ */
+export type MemberWeekSummary = {
+  projectId: string;
+  projectName: string;
+  hackathonId: number;
+  /** The campaign timezone of that project's edition, so the prompt's day is the campaign's. */
+  timezone: string;
+  enrolled: boolean;
+  paused: boolean;
+  current: TeamPeriodView | null;
+  missedPeriods: number;
+};
+
+/**
+ * The week for each of the account's own projects, in one grouped read per
+ * edition rather than one per project: `reportingStatus` already takes a set
+ * of project ids, and a person's teams are a handful at most.
+ */
+export async function memberWeekSummaries(
+  projects: readonly { id: string; name: string; hackathonId: number }[],
+  db: BuilderQuery = builderDatabase(),
+): Promise<MemberWeekSummary[]> {
+  if (!projects.length) return [];
+  const editions = [...new Set(projects.map((project) => project.hackathonId))];
+  const reads = await Promise.all(editions.map(async (hackathonId) => {
+    const ids = projects.filter((project) => project.hackathonId === hackathonId).map((project) => project.id);
+    const [schedule, statuses] = await Promise.all([
+      readReportingSchedule(db, hackathonId),
+      reportingStatus(db, { hackathonId, projectIds: ids }),
+    ]);
+    return { hackathonId, timezone: schedule?.timezone ?? "Europe/Amsterdam", statuses };
+  }));
+  const byEdition = new Map(reads.map((read) => [read.hackathonId, read]));
+  return projects.map((project) => {
+    const read = byEdition.get(project.hackathonId);
+    const status = read?.statuses.find((row) => row.projectId === project.id);
+    return {
+      projectId: project.id,
+      projectName: project.name,
+      hackathonId: project.hackathonId,
+      timezone: read?.timezone ?? "Europe/Amsterdam",
+      enrolled: Boolean(status),
+      paused: Boolean(status?.paused),
+      current: status?.current ? toTeamPeriod(status.current) : null,
+      missedPeriods: status?.missedPeriods ?? 0,
+    };
+  });
+}
+
 export type CaptainReportingCard = {
+  /** The service's own row, for the page's ordering and its project identity. Never handed to a client component whole. */
   status: ProjectReportingStatus;
+  /** The open week and every stored week, in the same team-facing shape the team page uses. */
+  current: TeamPeriodView | null;
+  weeks: TeamPeriodView[];
   /** The team's preferred contact, or null when its lead has not set one. */
   teamContact: string | null;
-  /** The newest update this Captain may read, for the card's summary. Null when there is none they may see. */
-  latest: ReportingEntryView | null;
+  /**
+   * The updates this Captain may read on this project, newest first: a page,
+   * not only the newest one. A card that carried a single entry left every
+   * earlier note with no control to open or edit it the moment a teammate
+   * posted a newer one, which is the access the plan promises its authors.
+   */
+  entries: ReportingEntryView[];
+  /** The next page's cursor, or null at the end. The card's Load more carries it back through `loadTeamUpdates`. */
+  nextCursor: string | null;
 };
 
 export type CaptainReportingBoard = {
@@ -127,12 +237,12 @@ export async function captainReportingBoard(
 
   const projectIds = assignments.map((assignment) => assignment.projectId);
   const [statuses, contacts] = await Promise.all([
-    reportingStatus(db, { hackathonId, projectIds }),
+    reportingStatus(db, { hackathonId, projectIds, includeHistory: true }),
     readTeamContacts(db, projectIds),
   ]);
   const statusBy = new Map(statuses.map((status) => [status.projectId, status]));
-  const latest = await Promise.all(
-    projectIds.map((projectId) => readAuthorizedUpdates(actor, { projectId, hackathonId, limit: 1 }, db)),
+  const pages = await Promise.all(
+    projectIds.map((projectId) => readAuthorizedUpdates(actor, { projectId, hackathonId, limit: RECENT_UPDATES }, db)),
   );
 
   const cards: CaptainReportingCard[] = [];
@@ -155,8 +265,11 @@ export async function captainReportingBoard(
         missedPeriods: 0,
         history: [],
       },
+      current: status?.current ? toTeamPeriod(status.current) : null,
+      weeks: (status?.history ?? []).map(toTeamPeriod),
       teamContact: contacts.get(assignment.projectId) ?? null,
-      latest: latest[index].entries[0] ?? null,
+      entries: pages[index].entries,
+      nextCursor: pages[index].nextCursor,
     });
   });
   return { hackathonId, timezone, cards, captainContact };

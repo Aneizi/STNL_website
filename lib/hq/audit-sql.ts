@@ -33,6 +33,14 @@ export const AUDIT_EVENT_KINDS = [
   // event; the two deletions are operator-only and are the reason an admin
   // can remove a record without the removal itself disappearing with it.
   "project.imported",
+  // A project an operator created by hand, and the Colosseum snapshot later
+  // attached to that same project. Both added 15 September 2026 for the
+  // plan's Request help fallback: a project that cannot be fetched yet still
+  // needs an owner, and attaching the source afterwards must be visible as
+  // what it is — the same HQ project gaining its external id, never a new
+  // project replacing it.
+  "project.created",
+  "project.source_attached",
   "project.deleted",
   "person.deleted",
   // Phase 5. Reporting content itself is never audited — a note body belongs

@@ -49,6 +49,27 @@ export async function getTelegramIdentity(userId: string): Promise<TelegramIdent
   return rows.length ? toIdentity(rows[0]) : null;
 }
 
+/**
+ * The account a Telegram user id belongs to, or null.
+ *
+ * The bot's identity binding, and the only one it has: a webhook payload
+ * names a Telegram user, and this row is what turns that into an HQ account.
+ * Read on every update rather than remembered, so unlinking Telegram closes
+ * the bot on the next message with nothing else to revoke.
+ *
+ * `telegramUserId` is a string here as everywhere else and is cast to bigint
+ * in the query; a value that is not a run of digits is refused before the
+ * cast, so a malformed payload is a miss rather than a database error.
+ */
+export async function findTelegramIdentityByTelegramUserId(
+  telegramUserId: string,
+  db: BuilderQuery = builderDatabase(),
+): Promise<TelegramIdentity | null> {
+  if (!/^\d{1,19}$/.test(String(telegramUserId ?? ""))) return null;
+  const { rows } = await db.query(`SELECT ${COLUMNS} FROM hq_auth_telegram_identity WHERE telegram_user_id = $1::bigint`, [telegramUserId]);
+  return rows.length ? toIdentity(rows[0]) : null;
+}
+
 export async function hasTelegramIdentity(userId: string): Promise<boolean> {
   const { rows } = await builderDatabase().query(`SELECT 1 FROM hq_auth_telegram_identity WHERE user_id = $1`, [userId]);
   return rows.length > 0;

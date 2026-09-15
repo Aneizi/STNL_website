@@ -1,6 +1,7 @@
 import "server-only";
 import { recordAuditEvent } from "./audit";
 import { atomically, type BuilderDatabase, type BuilderQuery } from "./builder-db";
+import { BuilderError } from "./builder-types";
 import {
   generateReportingPeriods,
   periodForInstant,
@@ -34,7 +35,7 @@ const DEFAULT_NUDGE_TIME = "12:00";
 
 export const toIso = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
 /** A `date` column as an ISO day. The pg driver hands back a Date at local midnight, so the UTC slice would be the wrong day in a negative offset. */
-const toDay = (value: unknown): string => {
+export const toDay = (value: unknown): string => {
   if (value instanceof Date) {
     return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
   }
@@ -170,7 +171,18 @@ export const toPeriod = (row: Record<string, unknown>): ReportingPeriod => ({
   closedAt: row.closed_at == null ? null : toIso(row.closed_at),
 });
 
-export const PERIOD_COLUMNS = "id::text AS id, hackathon_id, sequence, mode, start_date, end_date, starts_at, ends_at, nudge_at, closed_at";
+/**
+ * The period row's columns, optionally qualified by a table alias. A join
+ * that brings `hq_hackathons` or `hq_projects` alongside makes `id`,
+ * `start_date` and `end_date` ambiguous, so phase 8's job queries pass their
+ * alias rather than restating the list with a prefix.
+ */
+export const periodColumns = (alias = ""): string => {
+  const p = alias ? `${alias}.` : "";
+  return `${p}id::text AS id, ${p}hackathon_id, ${p}sequence, ${p}mode, ${p}start_date, ${p}end_date, ${p}starts_at, ${p}ends_at, ${p}nudge_at, ${p}closed_at`;
+};
+
+export const PERIOD_COLUMNS = periodColumns();
 
 /** The edition's stored periods, in order. Read-only: nothing is generated here. */
 export async function listReportingPeriods(db: BuilderQuery, hackathonId: number): Promise<ReportingPeriod[]> {
@@ -204,6 +216,21 @@ export type ReportingPeriodConflict = {
   outcomes: number;
 };
 
+/**
+ * Why the schedule a change would leave behind is not one a campaign can run
+ * on. `gap` is a day inside the campaign that belongs to no period at all,
+ * `overlap` a day that belongs to two, and `missing_sequence` a hole in the
+ * numbering. Each names the pair of weeks it falls between.
+ */
+export type ReportingScheduleProblem = {
+  kind: "gap" | "overlap" | "missing_sequence";
+  /** The earlier of the two weeks, or 0 when the numbering itself is wrong from the start. */
+  sequence: number;
+  /** The last day of the earlier week and the first day of the later one, for the sentence an admin reads. */
+  beforeEndDate: string | null;
+  afterStartDate: string | null;
+};
+
 export type ReportingPeriodPlan = {
   /** The periods as they stand (after the write, for `ensureReportingPeriods`; unchanged, for the preview). */
   periods: ReportingPeriod[];
@@ -212,6 +239,15 @@ export type ReportingPeriodPlan = {
   removed: number;
   /** Stored periods the change would have moved or dropped but must not. Show these to an admin before a live schedule change. */
   conflicts: ReportingPeriodConflict[];
+  /**
+   * True when nothing is written (or, in the preview, would be written)
+   * because the result would not be a continuous schedule. `added`,
+   * `updated` and `removed` still describe what was proposed, so an admin
+   * sees the change that was refused rather than three zeros.
+   */
+  blocked: boolean;
+  /** Why it was refused. Empty whenever `blocked` is false. */
+  problems: ReportingScheduleProblem[];
 };
 
 type StoredPeriod = ReportingPeriod & { entries: number; outcomes: number };
@@ -226,6 +262,18 @@ async function storedPeriods(db: BuilderQuery, hackathonId: number): Promise<Sto
   );
   return rows.map((row) => ({ ...toPeriod(row), entries: Number(row.entries ?? 0), outcomes: Number(row.outcomes ?? 0) }));
 }
+
+/**
+ * The protection the conflict check makes, as a SQL predicate on the period
+ * row being written: nothing has been reported against it. Used in the UPDATE
+ * and DELETE themselves so the guarantee is the statement's, not only the
+ * arithmetic's.
+ */
+const UNREPORTED_PERIOD =
+  "NOT EXISTS (SELECT 1 FROM hq_reporting_entries e WHERE e.period_id = hq_reporting_periods.id)"
+  + " AND NOT EXISTS (SELECT 1 FROM hq_reporting_outcomes o WHERE o.period_id = hq_reporting_periods.id)";
+
+const RECONCILE_RACE = "Someone reported against a week while the schedule was being applied. Nothing was changed. Look at the weeks again and apply once more.";
 
 /** A stored period nobody has reported against and that is not closed may be moved; anything else is history. */
 function lockReason(period: StoredPeriod): ReportingPeriodConflictReason | null {
@@ -274,12 +322,90 @@ function planPeriods(stored: StoredPeriod[], generated: GeneratedPeriod[]) {
   return { add, update, remove, conflicts };
 }
 
+/**
+ * The windows the plan would leave stored, in sequence order: a protected
+ * period keeps its own dates, a movable one takes the generated ones, a
+ * removed one is gone and an added one is new. This is what gets validated,
+ * because "every individual change is safe" is not the same statement as
+ * "the schedule that results is a schedule".
+ */
+type ProjectedPeriod = { sequence: number; startDate: string; endDate: string; startsAt: string; endsAt: string };
+
+function projectSchedule(stored: StoredPeriod[], plan: ReturnType<typeof planPeriods>): ProjectedPeriod[] {
+  const moved = new Map(plan.update.map(({ stored: row, generated }) => [row.id, generated]));
+  const dropped = new Set(plan.remove.map((row) => row.id));
+  const kept: ProjectedPeriod[] = [];
+  for (const row of stored) {
+    if (dropped.has(row.id)) continue;
+    const to = moved.get(row.id) ?? row;
+    kept.push({ sequence: row.sequence, startDate: to.startDate, endDate: to.endDate, startsAt: to.startsAt, endsAt: to.endsAt });
+  }
+  for (const period of plan.add) {
+    kept.push({ sequence: period.sequence, startDate: period.startDate, endDate: period.endDate, startsAt: period.startsAt, endsAt: period.endsAt });
+  }
+  return kept.sort((a, b) => a.sequence - b.sequence);
+}
+
+/**
+ * Whether a set of periods is still one continuous campaign: numbered 1..n
+ * with no hole, and with each week's exclusive end exactly the next week's
+ * start, so every day of the campaign belongs to exactly one week.
+ *
+ * Reconciliation matches a stored period to a generated one by `sequence` and
+ * decides each one on its own. That is right for deciding what may move, and
+ * not enough for deciding what may be written: a protected week keeping its
+ * old dates while the week after it moves leaves a day that belongs to no
+ * week (or, moving the other way, a day that belongs to two). Nothing
+ * downstream has an answer for such a day — `periodForInstant` returns null
+ * for the first and the earlier period for the second — so the whole change
+ * is refused rather than half applied.
+ */
+function scheduleProblems(periods: ProjectedPeriod[]): ReportingScheduleProblem[] {
+  const problems: ReportingScheduleProblem[] = [];
+  periods.forEach((period, index) => {
+    if (period.sequence !== index + 1) {
+      problems.push({ kind: "missing_sequence", sequence: index === 0 ? 0 : periods[index - 1].sequence, beforeEndDate: index === 0 ? null : periods[index - 1].endDate, afterStartDate: period.startDate });
+      return;
+    }
+    if (index === 0) return;
+    const previous = periods[index - 1];
+    const ends = Date.parse(previous.endsAt);
+    const starts = Date.parse(period.startsAt);
+    if (ends === starts) return;
+    problems.push({
+      kind: ends < starts ? "gap" : "overlap",
+      sequence: previous.sequence,
+      beforeEndDate: previous.endDate,
+      afterStartDate: period.startDate,
+    });
+  });
+  return problems;
+}
+
+/** The plan, with the schedule it would leave behind already judged. Shared by the preview and the write so the two can never disagree. */
+function judgePlan(stored: StoredPeriod[], generated: GeneratedPeriod[]) {
+  const plan = planPeriods(stored, generated);
+  const changes = plan.add.length + plan.update.length + plan.remove.length;
+  // A no-op reconciliation is never refused: an edition whose stored weeks
+  // are already discontinuous (nothing here can produce that, but a hand-run
+  // statement could) must not stop every later enrolment from working.
+  const problems = changes ? scheduleProblems(projectSchedule(stored, plan)) : [];
+  return { ...plan, changes, problems, blocked: problems.length > 0 };
+}
+
+const withoutCounts = (stored: StoredPeriod[]): ReportingPeriod[] =>
+  stored.map(({ entries: _entries, outcomes: _outcomes, ...period }) => period);
+
 /** The read-only half of `ensureReportingPeriods`: what a live schedule change would do, for the admin confirmation the plan requires. */
 export async function previewReportingPeriods(db: BuilderQuery, hackathonId: number): Promise<ReportingPeriodPlan> {
   const schedule = await readReportingSchedule(db, hackathonId);
   const stored = await storedPeriods(db, hackathonId);
-  const plan = planPeriods(stored, schedule ? generateReportingPeriods(schedule) : []);
-  return { periods: stored.map(({ entries: _entries, outcomes: _outcomes, ...period }) => period), added: plan.add.length, updated: plan.update.length, removed: plan.remove.length, conflicts: plan.conflicts };
+  const plan = judgePlan(stored, schedule ? generateReportingPeriods(schedule) : []);
+  return {
+    periods: withoutCounts(stored),
+    added: plan.add.length, updated: plan.update.length, removed: plan.remove.length,
+    conflicts: plan.conflicts, blocked: plan.blocked, problems: plan.problems,
+  };
 }
 
 /**
@@ -294,9 +420,37 @@ export async function previewReportingPeriods(db: BuilderQuery, hackathonId: num
  */
 export async function ensureReportingPeriods(db: BuilderDatabase | BuilderQuery, hackathonId: number): Promise<ReportingPeriodPlan> {
   return atomically(db, async (tx) => {
+    // The first statement, before anything is read or decided: every one of
+    // this edition's period rows, locked in sequence order for the rest of
+    // the transaction.
+    //
+    // Without it, counting a period's entries and then deleting the period
+    // are two separate moments with a window between them. An entry saved in
+    // that window is inserted against a row this transaction has already
+    // decided is empty, and the delete then takes it, and its revision
+    // history, out with the period through the foreign keys. The lock closes
+    // the window at the database rather than in the arithmetic: an insert
+    // into `hq_reporting_entries` needs a KEY SHARE lock on the period row it
+    // references, which this FOR UPDATE holds, so a concurrent save either
+    // commits before the counts below are read (and the period comes back as
+    // a conflict) or waits, finds the row gone and refuses. `createUpdate`
+    // takes the matching FOR SHARE on its chosen period for the same reason.
+    //
+    // Sequence order keeps two concurrent reconciliations of one edition
+    // deadlock free between themselves; `closePeriod` locks a single period
+    // row and reaches for nothing this holds, so there is no cycle with it.
+    await tx.query("SELECT id FROM hq_reporting_periods WHERE hackathon_id = $1 ORDER BY sequence FOR UPDATE", [hackathonId]);
     const schedule = await readReportingSchedule(tx, hackathonId);
-    if (!schedule) return { periods: [], added: 0, updated: 0, removed: 0, conflicts: [] };
-    const plan = planPeriods(await storedPeriods(tx, hackathonId), generateReportingPeriods(schedule));
+    if (!schedule) return { periods: [], added: 0, updated: 0, removed: 0, conflicts: [], blocked: false, problems: [] };
+    const stored = await storedPeriods(tx, hackathonId);
+    const plan = judgePlan(stored, generateReportingPeriods(schedule));
+    const counts = { added: plan.add.length, updated: plan.update.length, removed: plan.remove.length };
+    // Refused as a whole, not week by week: see `scheduleProblems`. The
+    // proposed counts are still reported, because "this is the change that
+    // was refused" is the sentence the admin screen has to write.
+    if (plan.blocked) {
+      return { periods: withoutCounts(stored), ...counts, conflicts: plan.conflicts, blocked: true, problems: plan.problems };
+    }
     for (const period of plan.add) {
       await tx.query(
         `INSERT INTO hq_reporting_periods (hackathon_id, sequence, mode, start_date, end_date, starts_at, ends_at, nudge_at)
@@ -305,19 +459,31 @@ export async function ensureReportingPeriods(db: BuilderDatabase | BuilderQuery,
         [hackathonId, period.sequence, period.mode, period.startDate, period.endDate, period.startsAt, period.endsAt, period.nudgeAt],
       );
     }
-    for (const { stored, generated } of plan.update) {
-      await tx.query(
+    // The same protection the plan applied, restated as a condition on the
+    // write itself. Under the lock above these can no longer fail, and they
+    // are still here: a period that holds reporting must not be moved or
+    // removed by a schedule change, and that rule belongs in the statement
+    // that would break it rather than only in the arithmetic that precedes
+    // it. A guard that does fire means the lock was not held, so the
+    // transaction is rolled back rather than left half applied.
+    for (const { stored: row, generated } of plan.update) {
+      const { rows } = await tx.query(
         `UPDATE hq_reporting_periods SET mode=$2, start_date=$3::date, end_date=$4::date, starts_at=$5::timestamptz, ends_at=$6::timestamptz, nudge_at=$7::timestamptz
-         WHERE id=$1::uuid AND closed_at IS NULL`,
-        [stored.id, generated.mode, generated.startDate, generated.endDate, generated.startsAt, generated.endsAt, generated.nudgeAt],
+         WHERE id=$1::uuid AND closed_at IS NULL AND ${UNREPORTED_PERIOD} RETURNING id`,
+        [row.id, generated.mode, generated.startDate, generated.endDate, generated.startsAt, generated.endsAt, generated.nudgeAt],
       );
+      if (!rows.length) throw new BuilderError(RECONCILE_RACE);
     }
     for (const period of plan.remove) {
-      await tx.query("DELETE FROM hq_reporting_periods WHERE id=$1::uuid AND closed_at IS NULL", [period.id]);
+      const { rows } = await tx.query(
+        `DELETE FROM hq_reporting_periods WHERE id=$1::uuid AND closed_at IS NULL AND ${UNREPORTED_PERIOD} RETURNING id`,
+        [period.id],
+      );
+      if (!rows.length) throw new BuilderError(RECONCILE_RACE);
     }
     return {
       periods: await listReportingPeriods(tx, hackathonId),
-      added: plan.add.length, updated: plan.update.length, removed: plan.remove.length, conflicts: plan.conflicts,
+      ...counts, conflicts: plan.conflicts, blocked: false, problems: [],
     };
   });
 }
@@ -327,6 +493,14 @@ export async function ensureReportingPeriods(db: BuilderDatabase | BuilderQuery,
  * project itself, so a caller never has to look up an onboarding row that may
  * not exist just to label the row it is about to show.
  */
+/**
+ * One pause a project has been through, open (`resumedAt: null`) while it is
+ * the current one. Kept because `paused_at` alone answers only "right now":
+ * resuming clears it, and every week the exemption covered would otherwise
+ * become an accountable, missing week the moment the pause ended.
+ */
+export type ReportingPause = { pausedAt: string; resumedAt: string | null };
+
 export type ReportingEligibility = {
   projectId: string;
   projectName: string;
@@ -337,13 +511,26 @@ export type ReportingEligibility = {
   /** Paused by an admin: future periods stop counting, closed outcomes stay exactly as recorded. */
   paused: boolean;
   pausedAt: string | null;
+  /** Every pause, oldest first, the open one included. What `accountable` in ./reporting reads. */
+  pauses: ReportingPause[];
 };
 
 const ELIGIBILITY_SELECT =
   `SELECT e.project_id::text AS project_id, p.name AS project_name, e.hackathon_id,
      EXISTS (SELECT 1 FROM hq_project_onboarding o WHERE o.project_id = e.project_id) AS imported,
-     e.eligible_from, e.paused_at
+     e.eligible_from, e.paused_at,
+     COALESCE((SELECT json_agg(json_build_object('pausedAt', i.paused_at, 'resumedAt', i.resumed_at) ORDER BY i.paused_at)
+               FROM hq_reporting_pause_intervals i WHERE i.project_id = e.project_id), '[]'::json) AS pauses
    FROM hq_reporting_eligibility e JOIN hq_projects p ON p.id = e.project_id`;
+
+/** The aggregated pause rows, whether the driver hands them back parsed or as text. */
+const toPauses = (value: unknown): ReportingPause[] => {
+  const rows = typeof value === "string" ? JSON.parse(value) : value;
+  if (!Array.isArray(rows)) return [];
+  return rows
+    .filter((row): row is { pausedAt: unknown; resumedAt: unknown } => row != null && typeof row === "object")
+    .map((row) => ({ pausedAt: toIso(row.pausedAt), resumedAt: row.resumedAt == null ? null : toIso(row.resumedAt) }));
+};
 
 const toEligibility = (row: Record<string, unknown>): ReportingEligibility => ({
   projectId: String(row.project_id),
@@ -353,6 +540,7 @@ const toEligibility = (row: Record<string, unknown>): ReportingEligibility => ({
   eligibleFrom: toIso(row.eligible_from),
   paused: row.paused_at != null,
   pausedAt: row.paused_at == null ? null : toIso(row.paused_at),
+  pauses: toPauses(row.pauses),
 });
 
 export async function reportingEligibility(db: BuilderQuery, projectId: string): Promise<ReportingEligibility | null> {
@@ -364,6 +552,14 @@ export async function reportingEligibility(db: BuilderQuery, projectId: string):
 export async function listReportingEligibility(db: BuilderQuery, hackathonId: number): Promise<ReportingEligibility[]> {
   const { rows } = await db.query(`${ELIGIBILITY_SELECT} WHERE e.hackathon_id = $1 ORDER BY p.name`, [hackathonId]);
   return rows.map(toEligibility);
+}
+
+/** Ends the project's open pause, if it has one. Both ways out of a pause go through here so neither can leave the interval open. */
+async function closeOpenPause(tx: BuilderQuery, input: { projectId: string; operatorId: string | null }): Promise<void> {
+  await tx.query(
+    "UPDATE hq_reporting_pause_intervals SET resumed_at = now(), resumed_by_user_id = $2::uuid WHERE project_id = $1::uuid AND resumed_at IS NULL",
+    [input.projectId, input.operatorId],
+  );
 }
 
 export type ReportingEligibilityResult =
@@ -405,6 +601,10 @@ export async function enableReporting(
       [input.projectId, input.hackathonId, input.operatorId ?? null],
     );
     const created = Boolean(inserted[0]?.created);
+    // Re-enabling is the other way out of a pause, so it closes the open
+    // interval exactly as `pauseReporting` does. Leaving it open here would
+    // exempt every week from now on from a pause that has ended.
+    await closeOpenPause(tx, { projectId: input.projectId, operatorId: input.operatorId ?? null });
     await ensureReportingPeriods(tx, input.hackathonId);
     if (input.operatorId) {
       await recordAuditEvent(tx, {
@@ -434,10 +634,25 @@ export async function pauseReporting(
   return atomically(db, async (tx) => {
     const { rows } = await tx.query(
       `UPDATE hq_reporting_eligibility SET paused_at = CASE WHEN $3 THEN COALESCE(paused_at, now()) ELSE NULL END, updated_at = now()
-       WHERE project_id = $1::uuid AND hackathon_id = $2 RETURNING project_id`,
+       WHERE project_id = $1::uuid AND hackathon_id = $2 RETURNING project_id, paused_at`,
       [input.projectId, input.hackathonId, input.paused],
     );
     if (!rows.length) return { ok: false, reason: "not_found" };
+    // The history twin of the column above, written in the same transaction:
+    // the pause opens an interval at the same instant the column records, and
+    // the resume closes it. Both are idempotent, so pausing an already paused
+    // project opens no second interval and resuming a running one closes
+    // nothing.
+    if (input.paused) {
+      await tx.query(
+        `INSERT INTO hq_reporting_pause_intervals (project_id, hackathon_id, paused_at, paused_by_user_id, reason)
+         SELECT $1::uuid, $2, $3::timestamptz, $4::uuid, $5
+         WHERE NOT EXISTS (SELECT 1 FROM hq_reporting_pause_intervals i WHERE i.project_id = $1::uuid AND i.resumed_at IS NULL)`,
+        [input.projectId, input.hackathonId, toIso(rows[0].paused_at), input.operatorId, input.reason ?? null],
+      );
+    } else {
+      await closeOpenPause(tx, { projectId: input.projectId, operatorId: input.operatorId });
+    }
     await recordAuditEvent(tx, {
       kind: "reporting.eligibility_changed",
       actor: { kind: "operator", id: input.operatorId },

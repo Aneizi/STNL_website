@@ -92,10 +92,19 @@ export {
   listReportingEligibility,
   listReportingPeriods,
   pauseReporting,
+  // The period row's own column list and its two readers, so a caller that
+  // selects a period itself (phase 8's job runner does, to find the weeks
+  // whose nudge or end has passed) reads it through the same three
+  // definitions this module does rather than restating the columns.
+  PERIOD_COLUMNS,
+  periodColumns,
   previewReportingPeriods,
   readReportingConfig,
   readReportingSchedule,
   reportingEligibility,
+  toDay,
+  toIso,
+  toPeriod,
   writeReportingConfig,
 } from "./reporting-enrolment";
 export type {
@@ -103,9 +112,11 @@ export type {
   ReportingEligibility,
   ReportingEligibilityResult,
   ReportingPeriod,
+  ReportingPause,
   ReportingPeriodConflict,
   ReportingPeriodConflictReason,
   ReportingPeriodPlan,
+  ReportingScheduleProblem,
 } from "./reporting-enrolment";
 export type { GeneratedPeriod, ReportingPeriodMode, ReportingSchedule } from "./reporting-periods";
 
@@ -294,7 +305,22 @@ export async function createUpdate(
     if (!input.periodId && input.expectedPeriodId && input.expectedPeriodId !== period.id) {
       return { ok: false, reason: "period_changed", currentPeriod: open };
     }
-    const late = period.closedAt != null || atMs >= Date.parse(period.endsAt);
+    // The chosen period, locked for the rest of this transaction before a row
+    // is written against it. `ensureReportingPeriods` holds FOR UPDATE on
+    // every period of an edition while it reconciles the schedule, so this
+    // either waits for that reconciliation and then finds the row gone (the
+    // save is refused, and the text is still in the composer) or holds the
+    // row and makes the reconciliation wait, which then counts this entry and
+    // leaves the week exactly where it is. Without it the entry is inserted
+    // against a period a concurrent delete has already decided is empty, and
+    // the cascade takes the entry and its revisions with the period.
+    const { rows: locked } = await tx.query(
+      `SELECT ${PERIOD_COLUMNS} FROM hq_reporting_periods WHERE id = $1::uuid FOR SHARE`,
+      [period.id],
+    );
+    if (!locked.length) return { ok: false, reason: "period_not_found" };
+    const current = toPeriod(locked[0]);
+    const late = current.closedAt != null || atMs >= Date.parse(current.endsAt);
     const { rows } = await tx.query(
       `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility, source, late)
        VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8) RETURNING id::text AS id`,
@@ -304,7 +330,7 @@ export async function createUpdate(
     await appendRevision(tx, { entryId, version: 1, body: checked.body, visibility, editor: writer });
     const entry = await readEntryView(tx, entryId, actor, loaders, true);
     if (!entry) return { ok: false, reason: "not_authorized" };
-    return { ok: true, entry, period, completesPeriod: !late && period.closedAt == null };
+    return { ok: true, entry, period: current, completesPeriod: !late && current.closedAt == null };
   });
 }
 
@@ -525,6 +551,63 @@ export async function readAuthorizedUpdates(
   return { entries, nextCursor: rows.length > limit && last ? `${toIso(last.submitted_at)}|${String(last.id)}` : null };
 }
 
+/** One of the caller's own updates, with the project it belongs to so a list of them reads as something other than loose text. */
+export type OwnReportingEntry = ReportingEntryView & { projectName: string };
+
+export type OwnReportingEntryPage = { entries: OwnReportingEntry[]; nextCursor: string | null };
+
+/**
+ * Everything this member wrote in one edition, newest first, read-only.
+ *
+ * The author-only half of the permission contract, which `entryAudience` has
+ * always stated ("the author keeps a read-only view while their Captain
+ * capability is active") and which nothing could reach:
+ * `readAuthorizedUpdates` decides `read` on the PROJECT first and answers an
+ * empty page when that fails, so a Captain who was reassigned lost their own
+ * sensitive notes along with the team's records. This is the path that does
+ * not ask about the project at all.
+ *
+ * What it is not: a way back into the former team. Only rows this account
+ * authored are selected, every one of them is returned `canEdit: false`
+ * whatever the project now says, and no other team record is read. A current
+ * `captain` capability is still required, because these notes exist only
+ * because the account held it; losing the capability closes the page.
+ *
+ * Keyset paged on `(submitted_at, id)`, like the project list, and no
+ * revision is joined.
+ */
+export async function readOwnUpdates(
+  actor: Actor,
+  input: { hackathonId: number; limit?: number; cursor?: string },
+  db: BuilderQuery = builderDatabase(),
+): Promise<OwnReportingEntryPage> {
+  if (actor.kind !== "member") return { entries: [], nextCursor: null };
+  if (!(await listActiveCapabilities(actor.id, db)).includes("captain")) return { entries: [], nextCursor: null };
+  const limit = Math.max(1, Math.min(MAX_PAGE, Math.floor(input.limit ?? DEFAULT_PAGE)));
+  const values: unknown[] = [input.hackathonId, actor.id];
+  // `pr` is the period ENTRY_SELECT already joins, and it carries the
+  // edition: no second join, and no project read inside the page.
+  const where = ["pr.hackathon_id = $1", "e.author_kind = 'member'", "e.author_id = $2", "e.voided_at IS NULL"];
+  if (input.cursor) {
+    const [at, id] = String(input.cursor).split("|");
+    values.push(at, id);
+    where.push(`(e.submitted_at, e.id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`);
+  }
+  values.push(limit + 1);
+  const { rows } = await db.query(
+    `WITH own AS (
+       ${ENTRY_SELECT} WHERE ${where.join(" AND ")} ORDER BY e.submitted_at DESC, e.id DESC LIMIT $${values.length}
+     )
+     SELECT own.*, p.name AS own_project_name FROM own JOIN hq_projects p ON p.id::text = own.project_id
+     ORDER BY own.submitted_at DESC, own.id DESC`,
+    values,
+  );
+  const page = rows.slice(0, limit);
+  const entries = page.map((row) => ({ ...toEntryView(row, actor, false), projectName: String(row.own_project_name) }));
+  const last = page[page.length - 1];
+  return { entries, nextCursor: rows.length > limit && last ? `${toIso(last.submitted_at)}|${String(last.id)}` : null };
+}
+
 export type ReportingRevision = {
   entryId: string;
   version: number;
@@ -591,6 +674,12 @@ export type PeriodStatus = {
   entries: number;
   latestEntryAt: string | null;
   closed: boolean;
+  /**
+   * The project was not being counted for this period: it was paused. Never
+   * a missed week, whatever `completed` says. Recorded on the outcome at
+   * close, and derived live from the pause history before then.
+   */
+  exempt: boolean;
 };
 
 /**
@@ -632,14 +721,30 @@ type EntryTally = { entries: number; latestEntryAt: string | null; firstEntryId:
 
 /**
  * Whether a project was accountable for a period: it had entered reporting
- * before the period ended, and was not paused before it ended. A project that
- * joined mid-campaign therefore has no missed weeks before it arrived ("no
- * missed weeks are fabricated before a team's reporting start"), and a pause
- * stops future obligations without touching what is already recorded.
+ * before the period ended, and was not under a pause when it ended. Its
+ * negation is what `PeriodStatus.exempt` and the outcome's `exempt` column
+ * both mean. A project
+ * that joined mid-campaign therefore has no missed weeks before it arrived
+ * ("no missed weeks are fabricated before a team's reporting start"), and a
+ * pause stops future obligations without touching what is already recorded.
+ *
+ * The pause half reads the recorded intervals rather than the current
+ * `paused_at`, because that column says only whether the project is paused
+ * right now. While a pause is open the two agree exactly: the open interval
+ * began before the period's end and has not ended, which is what
+ * `pausedAt < endsAt` used to mean. What the intervals add is the answer
+ * after the resume, where the column has nothing left to say and every week
+ * of the exemption would otherwise turn into a missed week the moment
+ * reporting started again. A week that both began and ended inside the
+ * project's running time is accountable however many pauses surround it.
  */
-const accountable = (eligibility: ReportingEligibility, period: ReportingPeriod) =>
-  Date.parse(eligibility.eligibleFrom) < Date.parse(period.endsAt)
-  && (eligibility.pausedAt == null || Date.parse(eligibility.pausedAt) >= Date.parse(period.endsAt));
+const accountable = (eligibility: ReportingEligibility, period: ReportingPeriod) => {
+  if (Date.parse(eligibility.eligibleFrom) >= Date.parse(period.endsAt)) return false;
+  const ends = Date.parse(period.endsAt);
+  return !eligibility.pauses.some(
+    (pause) => Date.parse(pause.pausedAt) < ends && (pause.resumedAt == null || Date.parse(pause.resumedAt) >= ends),
+  );
+};
 
 /**
  * Whether a confirmed Colosseum submission satisfies the final period.
@@ -702,7 +807,7 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
       [input.hackathonId, projectIds],
     ),
     db.query(
-      `SELECT o.project_id::text AS project_id, o.period_id::text AS period_id, o.completed, o.corrected_completed, o.basis, o.entry_id::text AS entry_id
+      `SELECT o.project_id::text AS project_id, o.period_id::text AS period_id, o.completed, o.corrected_completed, o.basis, o.exempt, o.entry_id::text AS entry_id
        FROM hq_reporting_outcomes o JOIN hq_reporting_periods p ON p.id = o.period_id
        WHERE p.hackathon_id = $1 AND o.project_id = ANY($2::uuid[])`,
       [input.hackathonId, projectIds],
@@ -741,18 +846,21 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
       const isAccountable = accountable(project, period);
       const live: PeriodStatus["basis"] = tally ? "entry" : submissionSatisfies(period, submission, officialDeadline) ? "submission" : "none";
       const recorded = outcome
-        ? { completed: Boolean(outcome.corrected_completed ?? outcome.completed), basis: toBasis(outcome.basis) }
-        : { completed: live !== "none", basis: live };
+        ? { completed: Boolean(outcome.corrected_completed ?? outcome.completed), basis: toBasis(outcome.basis), exempt: Boolean(outcome.exempt) }
+        // Before closure the pause history answers it; afterwards the row
+        // does, which is what stops a lifted pause from turning into missed
+        // weeks.
+        : { completed: live !== "none", basis: live, exempt: !isAccountable };
       const status: PeriodStatus = {
         periodId: period.id, periodSequence: period.sequence, mode: period.mode,
         startDate: period.startDate, endDate: period.endDate, startsAt: period.startsAt, endsAt: period.endsAt, nudgeAt: period.nudgeAt,
-        completed: recorded.completed, basis: recorded.basis,
+        completed: recorded.completed, basis: recorded.basis, exempt: recorded.exempt,
         entries: tally?.entries ?? 0, latestEntryAt: tally?.latestEntryAt ?? null,
         closed: period.closedAt != null,
       };
       history.push(status);
       if (Date.parse(period.startsAt) <= atMs && atMs < Date.parse(period.endsAt)) current = status;
-      else if (Date.parse(period.endsAt) <= atMs && isAccountable && !status.completed) missed += 1;
+      else if (Date.parse(period.endsAt) <= atMs && !status.exempt && !status.completed) missed += 1;
     }
     return {
       projectId: project.projectId, projectName: project.projectName, hackathonId: project.hackathonId,
@@ -778,6 +886,8 @@ export type PeriodOutcome = {
   /** The factual on-time outcome recorded at close. Never rewritten. */
   completed: boolean;
   basis: "entry" | "submission" | "none";
+  /** The project was paused when this period closed, so the period was excused rather than missed. */
+  exempt: boolean;
   entryId: string | null;
   /** The Captain at close, null for unassigned. History: reassigning later does not change it. */
   captainUserId: string | null;
@@ -792,7 +902,7 @@ const toBasis = (value: unknown): PeriodOutcome["basis"] => (value === "entry" |
 
 const toOutcome = (row: Record<string, unknown>): PeriodOutcome => ({
   periodId: String(row.period_id), projectId: String(row.project_id),
-  completed: Boolean(row.completed), basis: toBasis(row.basis),
+  completed: Boolean(row.completed), basis: toBasis(row.basis), exempt: Boolean(row.exempt),
   entryId: row.entry_id == null ? null : String(row.entry_id),
   captainUserId: row.captain_user_id == null ? null : String(row.captain_user_id),
   closedAt: toIso(row.closed_at),
@@ -801,7 +911,7 @@ const toOutcome = (row: Record<string, unknown>): PeriodOutcome => ({
 });
 
 const OUTCOME_COLUMNS =
-  "period_id::text AS period_id, project_id::text AS project_id, completed, basis, entry_id::text AS entry_id, captain_user_id, closed_at, corrected_completed, correction_reason";
+  "period_id::text AS period_id, project_id::text AS project_id, completed, basis, exempt, entry_id::text AS entry_id, captain_user_id, closed_at, corrected_completed, correction_reason";
 
 export async function listPeriodOutcomes(db: BuilderQuery, periodId: string): Promise<PeriodOutcome[]> {
   const { rows } = await db.query(`SELECT ${OUTCOME_COLUMNS} FROM hq_reporting_outcomes WHERE period_id = $1::uuid ORDER BY project_id`, [periodId]);
@@ -840,7 +950,11 @@ export async function closePeriod(
     if (atMs < Date.parse(period.endsAt)) return { ok: false, reason: "not_ended" };
     if (period.closedAt) {
       const stored = await listPeriodOutcomes(tx, period.id);
-      return { ok: true, alreadyClosed: true, outcomes: stored, completed: stored.filter((o) => o.completed).length, missed: stored.filter((o) => !o.completed).length };
+      return {
+        ok: true, alreadyClosed: true, outcomes: stored,
+        completed: stored.filter((outcome) => outcome.completed && !outcome.exempt).length,
+        missed: stored.filter((outcome) => !outcome.completed && !outcome.exempt).length,
+      };
     }
 
     const statuses = await reportingStatus(tx, { hackathonId: period.hackathonId, atMs, includeHistory: true });
@@ -854,25 +968,37 @@ export async function closePeriod(
 
     for (const status of statuses) {
       const row = eligibility.get(status.projectId);
-      if (!row || !accountable(row, period)) continue;
+      // A project that entered reporting after this period ended was never
+      // part of it and gets no row at all; one that was in reporting but
+      // paused gets a row that says so. Closure used to skip the paused one
+      // as well, which left nothing recording that the week had been
+      // excused: the moment the pause was lifted, the same closed week read
+      // back as accountable and missing.
+      if (!row || Date.parse(row.eligibleFrom) >= Date.parse(period.endsAt)) continue;
       const state = status.history.find((candidate) => candidate.periodId === period.id);
       if (!state) continue;
+      const exempt = !accountable(row, period);
       await tx.query(
-        `INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis, entry_id, captain_user_id)
-         VALUES ($1::uuid, $2::uuid, $3, $4, $5::uuid, $6) ON CONFLICT (period_id, project_id) DO NOTHING`,
-        [period.id, status.projectId, state.completed, state.basis, entryByProject.get(status.projectId) ?? null, status.captainUserId],
+        `INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis, exempt, entry_id, captain_user_id)
+         VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::uuid, $7) ON CONFLICT (period_id, project_id) DO NOTHING`,
+        [period.id, status.projectId, state.completed, state.basis, exempt, entryByProject.get(status.projectId) ?? null, status.captainUserId],
       );
     }
     await tx.query("UPDATE hq_reporting_periods SET closed_at = now() WHERE id = $1::uuid AND closed_at IS NULL", [period.id]);
     const outcomes = await listPeriodOutcomes(tx, period.id);
-    const completed = outcomes.filter((outcome) => outcome.completed).length;
+    const completed = outcomes.filter((outcome) => outcome.completed && !outcome.exempt).length;
+    // An excused week is neither completed nor missed: counting it as missed
+    // here would put a paused team into the very number the pause exists to
+    // keep them out of.
+    const missed = outcomes.filter((outcome) => !outcome.completed && !outcome.exempt).length;
+    const exempt = outcomes.filter((outcome) => outcome.exempt).length;
     await recordAuditEvent(tx, {
       kind: "reporting.period_closed",
       actor: auditActor(input.actor),
       hackathonId: period.hackathonId,
-      metadata: { periodId: period.id, sequence: period.sequence, mode: period.mode, projects: outcomes.length, completed, missed: outcomes.length - completed },
+      metadata: { periodId: period.id, sequence: period.sequence, mode: period.mode, projects: outcomes.length, completed, missed, exempt },
     });
-    return { ok: true, alreadyClosed: false, outcomes, completed, missed: outcomes.length - completed };
+    return { ok: true, alreadyClosed: false, outcomes, completed, missed };
   });
 }
 

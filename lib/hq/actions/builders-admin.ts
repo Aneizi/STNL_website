@@ -3,8 +3,11 @@
 import { z } from "zod";
 import { requireUser } from "../auth";
 import { builderDatabase } from "../builder-db";
+import { builderStore } from "../builder-store";
+import { BuilderError } from "../builder-types";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
+import { attachColosseumSource } from "../project-import";
 import { deleteTeamRecord } from "../record-deletion";
 import type { ActionResult } from "../types";
 import { refreshHq } from "./util";
@@ -143,6 +146,60 @@ export async function resolveBuilderImportRequest(requestId: string): Promise<Ac
     ) SELECT id FROM changed
   `;
   if (!rows.length) return { ok: false, error: "Request not found in this hackathon." };
+  refreshHq();
+  return { ok: true };
+}
+
+/**
+ * The plan's fallback for a project Colosseum cannot return yet: an admin
+ * creates the HQ project by hand, owned by the account that asked for help.
+ *
+ * "Model HQ project ownership independently of a successful external
+ * snapshot ... Do not invent external IDs, and do not mark an unavailable
+ * source Submitted." So this writes an `hq_projects` row and an
+ * `hq_project_ownership` row and nothing else: no fabricated external id, no
+ * claimed project URL, no submission status. The requesting account can then
+ * open the project, write its weekly updates and be given a Captain, which is
+ * the access the request was asking for; what it does not get is a roster or
+ * a Colosseum link, because there is not one yet.
+ *
+ * The request is resolved and records which project it became, so a second
+ * press cannot create a second project for it.
+ */
+export async function createProjectFromImportRequest(input: { requestId: string; name: string }): Promise<ActionResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = z.object({ requestId: uuid, name: z.string().trim().min(2).max(200) }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Give the project a name of at least two characters." };
+  try {
+    const created = await builderStore().createProjectForRequest({
+      requestId: parsed.data.requestId, hackathonId: hackathon.id, name: parsed.data.name, operatorId: user.id,
+    });
+    if (!created) return { ok: false, error: "Request not found in this hackathon." };
+  } catch (error) {
+    return { ok: false, error: error instanceof BuilderError ? error.message : "Could not create this project." };
+  }
+  refreshHq();
+  return { ok: true };
+}
+
+/**
+ * The other half of the fallback: the Colosseum project has become
+ * available, and its snapshot is attached to the HQ project that already
+ * exists rather than a second project being imported beside it.
+ *
+ * The HQ project id, its ownership, its Captain assignment and every weekly
+ * update it has collected all survive, because it is the same project.
+ */
+export async function attachColosseumProject(input: { projectId: string; url: string }): Promise<ActionResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = z.object({ projectId: uuid, url: signupUrl }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Use an HTTPS Colosseum project URL." };
+  const outcome = await attachColosseumSource({
+    projectId: parsed.data.projectId, hackathonId: hackathon.id, url: parsed.data.url, operatorId: user.id,
+  });
+  if (!outcome.ok) return { ok: false, error: outcome.message };
   refreshHq();
   return { ok: true };
 }

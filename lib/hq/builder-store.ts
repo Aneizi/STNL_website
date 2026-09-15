@@ -274,6 +274,15 @@ export class BuilderStore {
           JSON.stringify(snapshot.raw), user.id, lead.username],
       );
       if (!created.length) throw new ImportRefusedError('already_imported');
+      // HQ ownership, written beside the snapshot rather than read out of it.
+      // `loadTeamMembership` reads this table, so a project an admin created
+      // by hand from a help request and an imported one have the same owner
+      // record; nothing here depends on the Colosseum external id any more.
+      await db.query(
+        `INSERT INTO hq_project_ownership(project_id,hackathon_id,owner_user_id,source) VALUES($1::uuid,$2,$3,'import')
+         ON CONFLICT (project_id) DO NOTHING`,
+        [id, input.hackathonId, user.id],
+      );
       await upsertRoster(db, { projectId: id, hackathonId: input.hackathonId, members: project.members });
       await enroll(db, user, input.hackathonId);
       // "A team enters reporting as soon as its HQ import succeeds" (plan
@@ -296,6 +305,130 @@ export class BuilderStore {
       });
       await db.query(`INSERT INTO hq_activity(hackathon_id,message) VALUES($1,$2)`, [input.hackathonId, `${project.name} imported from Colosseum`]);
       return id;
+    });
+  }
+
+  /**
+   * The hand-made half of the plan's Request help route: an operator creates
+   * the HQ project for an account whose Colosseum project cannot be fetched
+   * yet, and that account owns it.
+   *
+   * "Model HQ project ownership independently of a successful external
+   * snapshot ... Do not invent external IDs, and do not mark an unavailable
+   * source Submitted." So there is no `hq_project_onboarding` row here at
+   * all: no external id is fabricated to satisfy its NOT NULL column, no
+   * `project_url` is claimed and no submission status is written. The project
+   * is an ordinary `hq_projects` row with an `hq_project_ownership` row
+   * beside it, which is exactly what `loadTeamMembership` reads, so its owner
+   * can open it, write weekly updates and be given a Captain like anyone
+   * else. What it does not have is a roster, a Colosseum link and a
+   * submission badge, because it genuinely does not have those yet.
+   *
+   * Tied to the request, in the request's own transaction: the request is
+   * resolved and points at the project it became, and the unique index on
+   * that column means a second press finds the request already answered
+   * rather than creating a second project for it.
+   */
+  async createProjectForRequest(input: {
+    requestId: string; hackathonId: number; name: string; operatorId: string;
+  }): Promise<{ projectId: string; ownerUserId: string } | null> {
+    return this.db.transaction(async db => {
+      const { rows: requests } = await db.query(
+        `SELECT r.id, r.user_id, r.project_id, b.name AS owner_name, b.contact_email, b.email
+         FROM hq_project_import_requests r JOIN hq_builder_profiles b ON b.id = r.user_id
+         WHERE r.id=$1::uuid AND r.hackathon_id=$2 FOR UPDATE OF r`,
+        [input.requestId, input.hackathonId],
+      );
+      if (!requests.length) return null;
+      const request = requests[0];
+      if (request.project_id != null) throw new BuilderError('This request already has a project. Open it from Projects instead.');
+      const ownerUserId = String(request.user_id);
+
+      const id = randomUUID();
+      const { rows: status } = await db.query(`INSERT INTO hq_project_statuses(slug,label,color,counts_as_active,sort)
+        VALUES('onboarding','Onboarding','accent',true,100) ON CONFLICT(slug) DO UPDATE SET slug=EXCLUDED.slug RETURNING id`);
+      const { rows: forecast } = await db.query(`INSERT INTO hq_project_forecasts(slug,label,color,sort)
+        VALUES('unassessed','Not assessed','muted',100) ON CONFLICT(slug) DO UPDATE SET slug=EXCLUDED.slug RETURNING id`);
+      await db.query(`INSERT INTO hq_projects(id,hackathon_id,name,lead_name,status_id,forecast_id,last_check_in)
+        VALUES($1,$2,$3,$4,$5,$6,current_date)`, [id, input.hackathonId, input.name, String(request.owner_name), status[0].id, forecast[0].id]);
+      await db.query(`INSERT INTO hq_project_ownership(project_id,hackathon_id,owner_user_id,source,created_by_user_id)
+        VALUES($1::uuid,$2,$3,'admin',$4::uuid)`, [id, input.hackathonId, ownerUserId, input.operatorId]);
+      await db.query(`UPDATE hq_project_import_requests SET status='resolved',project_id=$2::uuid WHERE id=$1::uuid`, [input.requestId, id]);
+      // The owner is enrolled in the edition the way an importer is, so the
+      // project shows up on their dashboard and their People card exists.
+      await enroll(db, { id: ownerUserId, name: String(request.owner_name), email: realEmail(request.email) ?? '' }, input.hackathonId);
+      await recordAuditEvent(db, {
+        kind: 'project.created',
+        actor: { kind: 'operator', id: input.operatorId },
+        hackathonId: input.hackathonId,
+        projectId: id,
+        subjectUserId: ownerUserId,
+        metadata: { requestId: input.requestId, name: input.name, source: 'admin' },
+      });
+      await db.query(`INSERT INTO hq_activity(hackathon_id,user_id,message) VALUES($1,$2::uuid,$3)`,
+        [input.hackathonId, input.operatorId, `${input.name} created by hand from a project help request`]);
+      return { projectId: id, ownerUserId };
+    });
+  }
+
+  /**
+   * The other half: the Colosseum project becomes available, and its snapshot
+   * is attached to the HQ project that already exists.
+   *
+   * "Later source reconciliation attaches the real source ID without
+   * replacing the HQ project or its history." So the onboarding row is
+   * written against the project id that is already there: the Captain
+   * assignment, the weekly reporting, the entries and the audit trail all
+   * keep pointing at the same project, because it is the same project. The
+   * owner stays whoever `hq_project_ownership` says; `owner_user_id` on the
+   * onboarding row is written from it rather than from whoever ran this.
+   *
+   * Refuses a project that already has a source, and a Colosseum project
+   * already imported elsewhere in the edition — the same unique
+   * `(hackathon_id, external_id)` key that makes a double import safe.
+   */
+  async attachSourceToProject(input: {
+    projectId: string; hackathonId: number; project: ImportedProject; projectUrl: string; operatorId: string;
+  }): Promise<void> {
+    const { project } = input;
+    await this.db.transaction(async db => {
+      const { rows: owners } = await db.query(
+        `SELECT w.owner_user_id FROM hq_project_ownership w JOIN hq_projects p ON p.id=w.project_id
+         WHERE w.project_id=$1::uuid AND p.hackathon_id=$2 FOR UPDATE OF w`,
+        [input.projectId, input.hackathonId],
+      );
+      if (!owners.length) throw new BuilderError('This project has no HQ owner to attach a Colosseum project to.');
+      const ownerUserId = String(owners[0].owner_user_id);
+      const snapshot = toSnapshotFields(project);
+      const lead = project.members[0];
+      const { rows: created } = await db.query(
+        `INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,project_url,slug,description,country,category,tracks,
+           twitter_handle,website,repo_link,presentation_link,technical_demo_link,pitch_video_link,demo_video_link,image_url,
+           external_hackathon_id,external_hackathon_slug,external_hackathon_name,submitted_at,completion_is_complete,completion_missing_count,
+           submission_status,source_status,source_checked_at,raw,owner_user_id,verification,stage,lead_username)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21::timestamptz,$22,$23,$24,'ok',now(),$25::jsonb,$26,'verified','idea',$27)
+         ON CONFLICT (hackathon_id, external_id) DO NOTHING RETURNING project_id`,
+        [input.projectId, input.hackathonId, project.externalId, input.projectUrl, snapshot.slug, snapshot.description, snapshot.country,
+          snapshot.category, snapshot.tracks, snapshot.twitterHandle, snapshot.website, snapshot.repoLink, snapshot.presentationLink,
+          snapshot.technicalDemoLink, snapshot.pitchVideoLink, snapshot.demoVideoLink, snapshot.imageUrl,
+          snapshot.externalHackathonId, snapshot.externalHackathonSlug, snapshot.externalHackathonName, snapshot.submittedAt,
+          snapshot.completionIsComplete, snapshot.completionMissingCount,
+          interpretSubmission({ checked: true, submittedAt: snapshot.submittedAt }),
+          JSON.stringify(snapshot.raw), ownerUserId, lead.username],
+      );
+      if (!created.length) throw new BuilderError('That Colosseum project is already in HQ for this hackathon, or this project already has one.');
+      await db.query('UPDATE hq_projects SET name=$2 WHERE id=$1::uuid', [input.projectId, snapshot.name]);
+      await upsertRoster(db, { projectId: input.projectId, hackathonId: input.hackathonId, members: project.members });
+      await recordAuditEvent(db, {
+        kind: 'project.source_attached',
+        actor: { kind: 'operator', id: input.operatorId },
+        hackathonId: input.hackathonId,
+        projectId: input.projectId,
+        subjectUserId: ownerUserId,
+        metadata: { externalId: project.externalId, externalHackathonId: project.hackathon.id, rosterSize: project.members.length },
+      });
+      await db.query(`INSERT INTO hq_activity(hackathon_id,user_id,message) VALUES($1,$2::uuid,$3)`,
+        [input.hackathonId, input.operatorId, `${snapshot.name} linked to its Colosseum project`]);
     });
   }
 
@@ -363,10 +496,57 @@ export class BuilderStore {
     return rows.map(toTeam);
   }
 
-  /** Whether teams() would return anything, without loading a team or its roster: the menu asks only this, on every member request. */
+  /**
+   * Whether teams() or ownedProjects() would return anything, without loading
+   * a team or its roster: the menu asks only this, on every member request.
+   *
+   * `hq_project_ownership` is checked as well as the imported claims, because
+   * a project an admin created by hand from a help request is the account's
+   * team too. Its `source` is not consulted: an imported project has a row
+   * here as well, and the question is only whether this account has anything
+   * at all.
+   */
   async hasTeams(userId: string): Promise<boolean> {
-    const { rows } = await this.db.query(`SELECT EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE ${OWN_TEAM}) AS found`, [userId]);
+    const { rows } = await this.db.query(
+      `SELECT (EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE ${OWN_TEAM})
+        OR EXISTS(SELECT 1 FROM hq_project_ownership w WHERE w.owner_user_id=$1)) AS found`,
+      [userId],
+    );
     return Boolean(rows[0].found);
+  }
+
+  /**
+   * The account's HQ projects that have no Colosseum snapshot yet: the ones
+   * an operator created from a Request help submission.
+   *
+   * Deliberately a separate, smaller shape rather than a `BuilderTeam` with
+   * empty strings in it. A `BuilderTeam` is the normalized Colosseum record,
+   * and this project genuinely has none: no project URL, no roster, no
+   * submission status. Saying so with a different type is honest; filling
+   * those fields with placeholders would make every reader of `BuilderTeam`
+   * responsible for spotting them.
+   */
+  async ownedProjects(userId: string): Promise<{ id: string; name: string; hackathonId: number; hackathonName: string }[]> {
+    const { rows } = await this.db.query(
+      `SELECT p.id::text AS id, p.name, p.hackathon_id, h.name AS hackathon_name
+       FROM hq_project_ownership w JOIN hq_projects p ON p.id=w.project_id JOIN hq_hackathons h ON h.id=p.hackathon_id
+       WHERE w.owner_user_id=$1 AND NOT EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE o.project_id=w.project_id)
+       ORDER BY w.created_at DESC`,
+      [userId],
+    );
+    return rows.map(row => ({ id: String(row.id), name: String(row.name), hackathonId: Number(row.hackathon_id), hackathonName: String(row.hackathon_name) }));
+  }
+
+  /** One such project by id, with no relationship filter. Only for a caller that has already authorized the reader, like teamById above. */
+  async projectById(projectId: string): Promise<{ id: string; name: string; hackathonId: number; hackathonName: string } | null> {
+    const { rows } = await this.db.query(
+      `SELECT p.id::text AS id, p.name, p.hackathon_id, h.name AS hackathon_name
+       FROM hq_projects p JOIN hq_hackathons h ON h.id=p.hackathon_id WHERE p.id=$1::uuid`,
+      [projectId],
+    );
+    return rows.length
+      ? { id: String(rows[0].id), name: String(rows[0].name), hackathonId: Number(rows[0].hackathon_id), hackathonName: String(rows[0].hackathon_name) }
+      : null;
   }
 
   async team(userId: string, id: string) {
