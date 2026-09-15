@@ -6,7 +6,7 @@ import { TeamReporting } from '@/components/hq/reporting-member';
 import styles from '@/components/hq/builder-shell.module.css';
 import { requireMemberActor } from '@/lib/hq/actor';
 import { nowMs } from '@/lib/hq/format';
-import { memberTeamView } from '@/lib/hq/member-teams';
+import { memberProjectView, memberTeamView } from '@/lib/hq/member-teams';
 import { teamReportingPanel } from '@/lib/hq/reporting-surface';
 export const metadata:Metadata={title:'Your team'};
 export const dynamic='force-dynamic';
@@ -15,7 +15,23 @@ export default async function TeamPage({params}:{params:Promise<{id:string}>}){
   const actor=await requireMemberActor(`/hq/team/${encodeURIComponent(id)}`);
   // The central decision, then the member's view and nothing wider. Every denial is this same not-found page.
   const team=await memberTeamView(actor,id);
-  if(!team)notFound();
+  // A project an operator created from a Request help submission has no
+  // Colosseum snapshot, so there is no BuilderTeam to build a team view from
+  // and `memberTeamView` answers null. It is still this account's project,
+  // with the same weekly reporting and the same Captain, so it gets the same
+  // page with the imported half left out rather than a not-found.
+  if(!team){
+    const project=await memberProjectView(actor,id);
+    if(!project)notFound();
+    const panel=await teamReportingPanel(actor,{projectId:project.id,hackathonId:project.edition.id});
+    return <BuilderShell back='/hq/dashboard'><h1>{project.name}</h1>
+      <p>Superteam NL set this project up for you by hand, because it could not be read from Colosseum yet. Once it can be, they will link it here and your teammates, your project link and your Colosseum details will appear. Nothing you write below is affected by that.</p>
+      <p>{project.captain
+        ?<>Your Captain is {project.captain.displayName}.{project.captain.contact?` Reach them at ${project.captain.contact}.`:' They have not shared a way to reach them yet.'}</>
+        :'No Captain assigned yet. You can still add your updates.'}</p>
+      <TeamReporting panel={panel} teamName={project.name} isLead={project.membership.role==='owner'} nowMs={nowMs()}/>
+    </BuilderShell>;
+  }
   // A successful import is a usable team straight away: there is no pending
   // or awaiting-approval state to show any more. The only rows that can
   // still be anything but 'verified' are legacy claims from before the

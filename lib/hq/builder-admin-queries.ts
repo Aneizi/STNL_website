@@ -9,6 +9,7 @@ import {
 import type { SubmissionStatus } from "./colosseum-snapshot";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
+import { listReminderDeliveries, type ReminderDeliveryView } from "./jobs";
 import { operatorQuery } from "./queries";
 import { teamRemovalImpacts, type TeamRemovalImpact } from "./record-deletion";
 import { readCaptainContacts } from "./reporting-contacts";
@@ -22,6 +23,7 @@ import {
   type ReportingPeriodPlan,
   type ReportingSchedule,
 } from "./reporting";
+import { isTelegramBotConfigured } from "./telegram-bot-api";
 import type { CaptainLeaderboardView } from "./view-models";
 
 export type OnboardingConfig = {
@@ -81,6 +83,9 @@ export type BuilderImportRequest = AccountLogin & {
   projectUrl: string;
   note: string;
   status: "pending" | "resolved";
+  /** The HQ project an admin created for this request, or null while there is none. */
+  projectId: string | null;
+  projectName: string | null;
 };
 
 export type BuilderProjectReview = {
@@ -237,7 +242,8 @@ export async function getBuilderProjectReviews() {
         JOIN hq_builder_profiles b ON b.id = o.owner_user_id ${LOGIN_JOIN}
         WHERE o.hackathon_id = $1
         ORDER BY (o.verification = 'pending') DESC, o.high_potential DESC, o.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
-    sql.query(`SELECT r.id, b.name, r.project_url, r.note, r.status, ${LOGIN_COLUMNS}
+    sql.query(`SELECT r.id, b.name, r.project_url, r.note, r.status, r.project_id::text AS project_id,
+          (SELECT p.name FROM hq_projects p WHERE p.id = r.project_id) AS project_name, ${LOGIN_COLUMNS}
         FROM hq_project_import_requests r JOIN hq_builder_profiles b ON b.id = r.user_id ${LOGIN_JOIN}
         WHERE r.hackathon_id = $1
         ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
@@ -267,6 +273,8 @@ export async function getBuilderProjectReviews() {
     importRequests: requests.map((row) => ({
       id: String(row.id), name: String(row.name), ...login(row),
       projectUrl: String(row.project_url), note: String(row.note), status: row.status as BuilderImportRequest["status"],
+      projectId: row.project_id == null ? null : String(row.project_id),
+      projectName: row.project_name == null ? null : String(row.project_name),
     } satisfies BuilderImportRequest)),
   };
 }
@@ -292,17 +300,34 @@ export type ReportingAdminData = {
   /** How many projects are in weekly reporting, and how many of those are paused. */
   enrolled: number;
   paused: number;
+  /**
+   * What happened to each Wednesday reminder in this edition, newest first
+   * (phase 8). The plan's "expose the delivery state to admins for
+   * inspection" and "record a skipped delivery reason and show it in HQ":
+   * names, weeks, counts and outcomes, and no update text of any kind.
+   */
+  reminders: ReminderDeliveryView[];
+  /**
+   * Whether this deployment has a Telegram bot configured at all. False means
+   * reminders are still decided and recorded, and nothing is delivered, which
+   * is a different sentence from "nobody was reachable".
+   */
+  botConfigured: boolean;
 };
+
+/** How many reminders the admin panel shows before the rest stay in the table. */
+const REMINDER_PAGE = 30;
 
 export async function getReportingAdminData(): Promise<ReportingAdminData> {
   await requireUser();
   const hackathon = await requireHackathon();
   const db = operatorQuery();
-  const [schedule, config, plan, statuses] = await Promise.all([
+  const [schedule, config, plan, statuses, reminders] = await Promise.all([
     readReportingSchedule(db, hackathon.id),
     readReportingConfig(db, hackathon.id),
     previewReportingPeriods(db, hackathon.id),
     reportingStatus(db, { hackathonId: hackathon.id }),
+    listReminderDeliveries(db, { hackathonId: hackathon.id, limit: REMINDER_PAGE }),
   ]);
   return {
     hackathonId: hackathon.id,
@@ -312,6 +337,8 @@ export async function getReportingAdminData(): Promise<ReportingAdminData> {
     plan,
     enrolled: statuses.length,
     paused: statuses.filter((status) => status.paused).length,
+    reminders,
+    botConfigured: isTelegramBotConfigured(),
   };
 }
 

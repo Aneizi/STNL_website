@@ -6,6 +6,7 @@ import {
   correctReportingOutcome,
   enableProjectReporting,
   loadEntryRevisions,
+  loadMoreProjectUpdates,
   loadProjectReporting,
   setProjectReportingPaused,
   voidReportingUpdate,
@@ -76,9 +77,29 @@ function CaptainLines({ captainName, reach }: { captainName: string; reach: Capt
   );
 }
 
+/**
+ * An entry's saved versions, on demand and a page at a time.
+ *
+ * Bodies stay out of every list read, so this is a separate call; and it
+ * continues, because an entry edited more times than one page holds still has
+ * a full history and an admin still has to be able to reach it.
+ */
 function Revisions({ entryId }: { entryId: string }) {
   const [revisions, setRevisions] = useState<ReportingRevision[] | null>(null);
+  const [after, setAfter] = useState<number | null>(null);
   const [pending, start] = useTransition();
+
+  const load = (from: number) =>
+    start(async () => {
+      const result = await loadEntryRevisions(entryId, from);
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      setRevisions([...(from ? revisions ?? [] : []), ...result.revisions]);
+      setAfter(result.nextAfterVersion);
+    });
+
   if (revisions) {
     return (
       <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0 }}>
@@ -90,22 +111,18 @@ function Revisions({ entryId }: { entryId: string }) {
           </li>
         ))}
         {revisions.length === 0 && <li style={{ fontSize: 12, color: "var(--label-3)" }}>No saved versions.</li>}
+        {after != null && (
+          <li>
+            <button type="button" style={{ ...smallButton, marginTop: 6 }} disabled={pending} onClick={() => load(after)}>
+              {pending ? "Loading…" : "More saved versions"}
+            </button>
+          </li>
+        )}
       </ul>
     );
   }
   return (
-    <button
-      type="button"
-      style={{ ...smallButton, marginTop: 6 }}
-      disabled={pending}
-      onClick={() =>
-        start(async () => {
-          const result = await loadEntryRevisions(entryId);
-          if (result.ok) setRevisions(result.revisions);
-          else showToast(result.error);
-        })
-      }
-    >
+    <button type="button" style={{ ...smallButton, marginTop: 6 }} disabled={pending} onClick={() => load(0)}>
       {pending ? "Loading…" : "Saved versions"}
     </button>
   );
@@ -182,6 +199,7 @@ export function ProjectReportingPanel({
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
   const [pending, start] = useTransition();
+  const [more, startMore] = useTransition();
 
   useEffect(() => {
     let live = true;
@@ -194,6 +212,21 @@ export function ProjectReportingPanel({
       live = false;
     };
   }, [projectId, reload]);
+
+  // The rest of the updates, on request. The first read returns a page and a
+  // cursor; discarding the cursor here would have made "every update" mean
+  // "the newest fifty".
+  const loadMoreUpdates = (cursor: string) =>
+    startMore(async () => {
+      const result = await loadMoreProjectUpdates({ projectId, cursor });
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      setDetail((current) =>
+        current ? { ...current, entries: [...current.entries, ...result.entries], entriesCursor: result.nextCursor } : current,
+      );
+    });
 
   const refresh = () => setReload((value) => value + 1);
   const outcomeFor = (periodId: string) => detail?.outcomes.find((outcome) => outcome.periodId === periodId);
@@ -268,6 +301,10 @@ export function ProjectReportingPanel({
                 <span style={{ fontWeight: 600 }}>Week {period.periodSequence}</span>{" "}
                 <span style={{ color: "var(--label-2)" }}>{periodRangeLabel(period.startDate, period.endDate)}</span>{" "}
                 <span style={{ color: period.completed ? "var(--green)" : "var(--label-2)" }}>{statusLabel(period.completed)}</span>
+                {/* An excused week is not a missed one: the project was
+                    paused, and the pause is recorded on the closed week so
+                    lifting it later cannot turn the week into a miss. */}
+                {period.exempt ? <span style={{ color: "var(--label-3)" }}> (paused, not counted)</span> : null}
                 {period.closed ? <span style={{ color: "var(--label-3)" }}> (closed)</span> : null}
                 {outcome?.correctionReason ? (
                   <div style={{ fontSize: 12, color: "var(--label-3)" }}>
@@ -297,6 +334,11 @@ export function ProjectReportingPanel({
               {!entry.voided && <VoidUpdate entryId={entry.id} onDone={refresh} />}
             </div>
           ))}
+          {detail.entriesCursor && (
+            <button type="button" style={{ ...smallButton, marginTop: 8 }} disabled={more} onClick={() => loadMoreUpdates(detail.entriesCursor!)}>
+              {more ? "Loading…" : "Older updates"}
+            </button>
+          )}
           </div>
           </div>
         </>

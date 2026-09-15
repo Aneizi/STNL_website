@@ -2,6 +2,7 @@
 
 import { useRef, useState, useSyncExternalStore, useTransition, type FormEvent, type ReactNode } from "react";
 import {
+  attachColosseumProject, createProjectFromImportRequest,
   deleteBuilderTeam, markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
   updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
@@ -505,11 +506,33 @@ export function BuilderProjectReviews({ projects, importRequests }: {
       </section>
       <section className={styles.section} aria-labelledby="import-requests-title">
         <h2 id="import-requests-title">Import requests</h2>
-        <p>Projects that Colosseum could not return. Help the builder complete the import before marking the request resolved.</p>
+        <p>
+          Projects that Colosseum could not return. Create the HQ project here and the account that asked gets its team page, its weekly updates and a
+          Captain straight away; when Colosseum can return the project, link it to that same project rather than importing a second one.
+        </p>
         {importRequests.length === 0 && <p>No import requests need attention.</p>}
         {importRequests.map((request) => <article className={styles.row} key={request.id}>
           <div className={styles.rowHeader}><h3>{request.name}</h3><span className={styles.badge}>{request.status}</span></div>
           <p>{loginLabel(request)}</p><p><a href={projectHref(request.projectUrl)} target="_blank" rel="noopener noreferrer">{request.projectUrl}</a></p><p>{request.note}</p>
+          {/* Creating the project is what actually answers the request: no
+              Colosseum id is invented for it, and nothing about it is marked
+              submitted. Linking the source later keeps this same project. */}
+          {request.projectId
+            ? <>
+                <p>HQ project: {request.projectName}. It has no Colosseum project linked yet.</p>
+                <ActionForm action={(data) => attachColosseumProject({ projectId: request.projectId!, url: String(data.get("url") ?? "") })}>
+                  <div className={styles.grid}>
+                    <label className={styles.field}>Colosseum project URL<input name="url" type="url" defaultValue={request.projectUrl} required /></label>
+                  </div>
+                  <div className={styles.actions}><button className={styles.secondary} type="submit">Link this Colosseum project</button></div>
+                </ActionForm>
+              </>
+            : <ActionForm action={(data) => createProjectFromImportRequest({ requestId: request.id, name: String(data.get("name") ?? "") })}>
+                <div className={styles.grid}>
+                  <label className={styles.field}>Project name in HQ<input name="name" defaultValue={""} maxLength={200} required /></label>
+                </div>
+                <div className={styles.actions}><button className={styles.secondary} type="submit">Create the HQ project</button></div>
+              </ActionForm>}
           {request.status === "pending" && <ActionForm action={() => resolveBuilderImportRequest(request.id)}>
             <div className={styles.actions}><button className={styles.secondary} type="submit">Mark resolved</button></div>
           </ActionForm>}

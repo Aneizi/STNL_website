@@ -5,10 +5,12 @@ import { useState, useSyncExternalStore, useTransition } from "react";
 import {
   addReportingUpdate,
   editReportingUpdate,
+  loadTeamUpdates,
   saveCaptainContact,
   saveTeamContact,
 } from "@/lib/hq/actions/reporting";
-import type { PeriodStatus, ReportingEntryView, ReportingPeriod } from "@/lib/hq/reporting";
+import type { ReportingEntryView, ReportingPeriod } from "@/lib/hq/reporting";
+import type { TeamPeriodView, TeamReportingPanel } from "@/lib/hq/reporting-surface";
 import {
   AUDIENCE_NOTES,
   MAX_CONTACT_LENGTH,
@@ -38,9 +40,14 @@ import styles from "./builder-shell.module.css";
  *   is saved now. Both are shown together, the unsaved text is never
  *   discarded, and saving again is an explicit choice.
  *
- * No sensitive note the viewer did not write ever reaches this file: the
- * audience is applied in SQL, so there is nothing here to hide and no hidden
- * count or preview to show.
+ * No sensitive note the viewer did not write ever reaches this file, and
+ * nothing about one does either. The audience is applied in SQL, and the
+ * weeks arrive as `TeamPeriodView` rather than the service's own
+ * `PeriodStatus`, which carries an entry count, a latest-entry timestamp and
+ * the completion's basis. A client component is handed its props whether it
+ * renders them or not, so a field this file does not use is still a field the
+ * browser receives; the only way not to send one is not to put it in the
+ * shape.
  */
 
 const MAX_BODY = 4000;
@@ -50,7 +57,7 @@ function ErrorText({ error }: { error: string }) {
 }
 
 /** "14 to 21 September", with the day the week is due beside it. */
-function WeekLine({ period }: { period: PeriodStatus | ReportingPeriod }) {
+function WeekLine({ period }: { period: { startDate: string; endDate: string } }) {
   return (
     <>
       {periodRangeLabel(period.startDate, period.endDate)}. Due by the end of {deadlineLabel(period.endDate)}.
@@ -187,7 +194,7 @@ function Composer({
 }: {
   projectId: string;
   hackathonId: number;
-  period: PeriodStatus | null;
+  period: TeamPeriodView | null;
   canMarkSensitive: boolean;
   label: string;
 }) {
@@ -261,6 +268,92 @@ function Composer({
   );
 }
 
+/**
+ * A project's updates: the first page from the server, then every later page
+ * on request, and a week picker over the stored weeks.
+ *
+ * The list is what an author edits through, so a first page with a sentence
+ * saying the rest exist was also a limit on editing: the moment a teammate
+ * posted a newer update, an earlier one had no control on the screen at all.
+ * Both continuations go through `loadTeamUpdates`, which is the same
+ * audience-applying service read the page did, so a later page can never
+ * contain something the first page would have withheld.
+ *
+ * Choosing a week reloads rather than filters what is already here: the
+ * entries in hand are only the newest page, so filtering them would answer
+ * "no updates" for a week whose updates simply had not been fetched.
+ */
+function UpdateList({
+  projectId,
+  hackathonId,
+  initial,
+  initialCursor,
+  weeks,
+  canMarkSensitive,
+}: {
+  projectId: string;
+  hackathonId: number;
+  initial: ReportingEntryView[];
+  initialCursor: string | null;
+  /** Every stored week, newest first on screen, for the picker. Empty hides it. */
+  weeks: TeamPeriodView[];
+  canMarkSensitive: boolean;
+}) {
+  const [entries, setEntries] = useState(initial);
+  const [cursor, setCursor] = useState(initialCursor);
+  const [week, setWeek] = useState("");
+  const [error, setError] = useState("");
+  const [pending, start] = useTransition();
+
+  const load = (periodId: string, from: string | null, replace: boolean) =>
+    start(async () => {
+      setError("");
+      const page = await loadTeamUpdates({ projectId, hackathonId, periodId: periodId || undefined, cursor: from ?? undefined });
+      setEntries(replace ? page.entries : [...entries, ...page.entries]);
+      setCursor(page.nextCursor);
+    });
+
+  const chooseWeek = (value: string) => {
+    setWeek(value);
+    if (!value) {
+      setEntries(initial);
+      setCursor(initialCursor);
+      return;
+    }
+    load(value, null, true);
+  };
+
+  const ordered = [...weeks].sort((a, b) => b.periodSequence - a.periodSequence);
+
+  return (
+    <>
+      {ordered.length > 1 && (
+        <label className={styles.field}>
+          Which week to show
+          <select value={week} onChange={(event) => chooseWeek(event.target.value)} disabled={pending}>
+            <option value="">The most recent updates</option>
+            {ordered.map((period) => (
+              <option key={period.periodId} value={period.periodId}>
+                Week {period.periodSequence}, {periodRangeLabel(period.startDate, period.endDate)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {entries.length === 0 && !pending && <p>{NO_UPDATES_YET}</p>}
+      {entries.map((entry) => <Entry key={entry.id} entry={entry} canMarkSensitive={canMarkSensitive} />)}
+      <ErrorText error={error} />
+      {cursor && (
+        <div className={styles.actions}>
+          <button type="button" className={styles.secondary} disabled={pending} onClick={() => load(week, cursor, false)}>
+            {pending ? "Loading" : "Show older updates"}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 /** localStorage, read defensively: a private window or blocked site data simply means the prompt was never dismissed. */
 function readDismissed(key: string): boolean {
   try {
@@ -293,7 +386,7 @@ const notDismissedOnServer = () => false;
  * Completion is what ends it for good, because completion is a fact about
  * the week rather than a preference.
  */
-function Prompt({ projectId, period, teamName }: { projectId: string; period: PeriodStatus; teamName: string }) {
+function Prompt({ projectId, period, teamName }: { projectId: string; period: TeamPeriodView; teamName: string }) {
   const key = promptDismissKey(projectId, period.periodId);
   // `useSyncExternalStore` is React's seam for reading a value that is not
   // React's own. Reading localStorage during render, or setting state from an
@@ -377,7 +470,7 @@ function ContactField({
 }
 
 /** The week's headline: Updated or Not updated, the dates, and any weeks already missed. */
-function WeekSummary({ current, missedPeriods, paused }: { current: PeriodStatus | null; missedPeriods: number; paused: boolean }) {
+function WeekSummary({ current, missedPeriods, paused }: { current: TeamPeriodView | null; missedPeriods: number; paused: boolean }) {
   const missed = missedLabel(missedPeriods);
   if (paused) {
     return (
@@ -404,18 +497,8 @@ function WeekSummary({ current, missedPeriods, paused }: { current: PeriodStatus
 }
 
 export type TeamReportingProps = {
-  panel: {
-    projectId: string;
-    hackathonId: number;
-    timezone: string;
-    enrolled: boolean;
-    paused: boolean;
-    current: PeriodStatus | null;
-    missedPeriods: number;
-    entries: ReportingEntryView[];
-    hasMore: boolean;
-    teamContact: string | null;
-  };
+  /** Exactly what `teamReportingPanel` composed: the team-facing week shape, never the service's own. */
+  panel: TeamReportingPanel;
   teamName: string;
   /** Whether this viewer is the team lead, who sets the team's preferred contact. */
   isLead: boolean;
@@ -451,9 +534,14 @@ export function TeamReporting({ panel, teamName, isLead, nowMs }: TeamReportingP
             </div>
           )}
           <h3>Updates</h3>
-          {panel.entries.length === 0 && <p>{NO_UPDATES_YET}</p>}
-          {panel.entries.map((entry) => <Entry key={entry.id} entry={entry} canMarkSensitive={false} />)}
-          {panel.hasMore && <p>Only the most recent updates are shown here.</p>}
+          <UpdateList
+            projectId={panel.projectId}
+            hackathonId={panel.hackathonId}
+            initial={panel.entries}
+            initialCursor={panel.nextCursor}
+            weeks={panel.history}
+            canMarkSensitive={false}
+          />
           {isLead && (
             <ContactField
               label="How your Captain should reach the team"
@@ -472,11 +560,15 @@ export type CaptainCardProps = {
   projectId: string;
   projectName: string;
   hackathonId: number;
-  current: PeriodStatus | null;
+  current: TeamPeriodView | null;
+  /** Every stored week, for the card's week picker. */
+  weeks: TeamPeriodView[];
   missedPeriods: number;
   paused: boolean;
   teamContact: string | null;
-  latest: ReportingEntryView | null;
+  /** This Captain's readable updates on the project, newest first, and where the next page starts. */
+  entries: ReportingEntryView[];
+  nextCursor: string | null;
   timezone: string;
   nowMs: number;
   /** The imported detail, when the project has an imported team behind it. */
@@ -492,14 +584,15 @@ export function CaptainProjectCard(props: CaptainCardProps) {
       <WeekSummary current={props.current} missedPeriods={props.missedPeriods} paused={props.paused} />
       {prompt && props.current && <Prompt projectId={props.projectId} period={props.current} teamName={props.projectName} />}
       <p>{props.teamContact ? `Team contact: ${props.teamContact}` : "This team has not shared a contact yet."}</p>
-      {props.latest ? (
-        <>
-          <h3>Latest update</h3>
-          <Entry entry={props.latest} canMarkSensitive />
-        </>
-      ) : (
-        <p>{NO_UPDATES_YET}</p>
-      )}
+      <h3>Updates</h3>
+      <UpdateList
+        projectId={props.projectId}
+        hackathonId={props.hackathonId}
+        initial={props.entries}
+        initialCursor={props.nextCursor}
+        weeks={props.weeks}
+        canMarkSensitive
+      />
       {!props.paused && props.current && (
         <div id={`update-${props.projectId}`}>
           <Composer

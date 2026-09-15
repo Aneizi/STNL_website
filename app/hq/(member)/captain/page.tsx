@@ -89,11 +89,13 @@ export default async function CaptainPage() {
             projectId={card.status.projectId}
             projectName={card.status.projectName}
             hackathonId={card.status.hackathonId}
-            current={card.status.current}
+            current={card.current}
+            weeks={card.weeks}
             missedPeriods={card.status.missedPeriods}
             paused={card.status.paused}
             teamContact={card.teamContact}
-            latest={card.latest}
+            entries={card.entries}
+            nextCursor={card.nextCursor}
             timezone={board?.timezone ?? "Europe/Amsterdam"}
             nowMs={at}
           >
@@ -101,6 +103,11 @@ export default async function CaptainPage() {
           </CaptainProjectCard>
         );
       })}
+
+      <p>
+        <Link className={styles.inlineLink} href="/hq/captain/notes">Everything you have written</Link>
+        {" "}stays yours, including on teams you are no longer assigned to.
+      </p>
 
       {cards.length > 0 && (
         <section aria-labelledby="captain-contact-title">

@@ -2,13 +2,16 @@
 
 import { useState, useTransition } from "react";
 import { showToast } from "@/components/hq/toast";
+import { runReportingJobsNow, type RunJobsResult } from "@/lib/hq/actions/jobs";
 import {
   applyReportingSchedule,
   saveReportingConfiguration,
   type ReportingScheduleView,
 } from "@/lib/hq/actions/reporting-admin";
 import type { ReportingAdminData } from "@/lib/hq/builder-admin-queries";
-import type { ReportingPeriodConflict } from "@/lib/hq/reporting";
+import type { ReportingPeriodConflict, ReportingScheduleProblem } from "@/lib/hq/reporting";
+import { utcToZonedDateTime } from "@/lib/hq/reporting-periods";
+import type { ReminderDeliveryView } from "@/lib/hq/jobs";
 import { periodRangeLabel } from "@/lib/hq/reporting-view";
 import styles from "./builder-admin.module.css";
 
@@ -36,6 +39,40 @@ const WEEKDAYS = [
   { value: 7, label: "Sunday" },
 ];
 
+/**
+ * What each recorded reminder outcome means, in a sentence rather than a
+ * code. Every one of these is about the MESSAGE, never about the week: a
+ * Captain nobody could reach does not make a team's week anything other than
+ * Updated or Not updated, which is the plan's "visible to admins without
+ * becoming new weekly project statuses".
+ */
+const REMINDER_STATES: Record<ReminderDeliveryView["state"], string> = {
+  queued: "Waiting to send",
+  sent: "Sent",
+  skipped: "Not sent",
+  failed: "Could not be sent",
+};
+
+const REMINDER_REASONS: Record<string, string> = {
+  nothing_outstanding: "every assigned team had already updated, so there was nothing to send",
+  no_assignments: "the Captain had no assigned teams by then",
+  capability_revoked: "Captain access had been removed",
+  telegram_disconnected: "the Captain has not connected Telegram",
+  messaging_disabled: "the Captain has bot messages turned off",
+  no_chat: "the Captain has never opened a chat with the bot",
+  chat_changed: "the Captain moved to a new chat with the bot",
+  not_authorized: "the Captain no longer holds the team it named",
+  period_over: "the week ended before Telegram accepted it",
+  too_old: "it waited too long to still be accurate",
+  message_too_long: "the message was too long for Telegram",
+};
+
+/** The reason line, which falls back to Telegram's own code rather than swallowing something we have no sentence for. */
+function reminderReason(reminder: ReminderDeliveryView): string {
+  if (!reminder.reason) return "";
+  return REMINDER_REASONS[reminder.reason] ?? `Telegram refused it (${reminder.reason})`;
+}
+
 const CONFLICT_REASONS: Record<ReportingPeriodConflict["reason"], string> = {
   has_entries: "teams have already written updates in it",
   has_outcomes: "its result is already recorded",
@@ -49,14 +86,55 @@ function planSummary(plan: ReportingAdminData["plan"]): string {
   if (plan.updated) parts.push(`move ${plan.updated} week${plan.updated === 1 ? "" : "s"}`);
   if (plan.removed) parts.push(`remove ${plan.removed} week${plan.removed === 1 ? "" : "s"}`);
   if (!parts.length) return "The stored weeks already match the hackathon dates. Applying would change nothing.";
-  return `Applying the hackathon dates would ${parts.join(", ")}.`;
+  const change = `Applying the hackathon dates would ${parts.join(", ")}.`;
+  return plan.blocked ? `${change} It is refused, because of what it would leave behind.` : change;
+}
+
+/**
+ * Why a change is refused, in days rather than in the word "discontinuous".
+ * A week that already holds updates keeps its own dates whatever the hackathon
+ * dates say, and the weeks around it do not, so the two can end up leaving a
+ * day in no week at all or a day in two.
+ */
+function problemLine(problem: ReportingScheduleProblem): string {
+  if (problem.kind === "overlap") {
+    return `Week ${problem.sequence} would still run to ${problem.beforeEndDate}, and the week after it would already have started on ${problem.afterStartDate}. Those days would belong to two weeks at once.`;
+  }
+  if (problem.kind === "gap") {
+    return `Week ${problem.sequence} would end on ${problem.beforeEndDate} and the next week would not start until ${problem.afterStartDate}. The days in between would belong to no week, so an update written on one of them would have nowhere to go.`;
+  }
+  return "The weeks would no longer be numbered one after another.";
 }
 
 export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
   const [plan, setPlan] = useState(data.plan);
+  const timezone = data.schedule?.timezone ?? "Europe/Amsterdam";
   const [applying, startApply] = useTransition();
   const [saving, startSave] = useTransition();
   const [saved, setSaved] = useState("");
+  const [reminders, setReminders] = useState(data.reminders);
+  const [running, startRun] = useTransition();
+  const [ranSummary, setRanSummary] = useState("");
+
+  const runJobs = () =>
+    startRun(async () => {
+      setRanSummary("");
+      const result: RunJobsResult = await runReportingJobsNow();
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      setReminders(result.view.deliveries);
+      const { closures, reminders: counts, delivery } = result.summary;
+      const parts = [
+        `${counts.due} reminder${counts.due === 1 ? "" : "s"} were due`,
+        `${counts.queued} prepared`,
+        `${counts.skipped} not sent`,
+        `${closures.closed} week${closures.closed === 1 ? "" : "s"} closed`,
+      ];
+      if (delivery) parts.push(`${delivery.sent} delivered`);
+      setRanSummary(`${parts.join(", ")}.`);
+    });
 
   const apply = () =>
     startApply(async () => {
@@ -66,6 +144,10 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
         return;
       }
       setPlan(result.schedule.plan);
+      if (result.schedule.plan.blocked) {
+        showToast("Nothing was changed. These dates would leave a gap or an overlap between the weeks; see below.");
+        return;
+      }
       showToast(
         result.schedule.plan.conflicts.length
           ? `Applied. ${result.schedule.plan.conflicts.length} week${result.schedule.plan.conflicts.length === 1 ? " was" : "s were"} left exactly as recorded.`
@@ -101,6 +183,14 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
 
       <h3>Before you change the dates</h3>
       <p>{planSummary(plan)}</p>
+      {plan.problems.length > 0 && (
+        <>
+          <p>Nothing is written while this is true. Change the hackathon dates again, or leave them, and the stored weeks stay exactly as they are.</p>
+          <ul className={styles.roster} aria-label="Why these dates cannot be applied">
+            {plan.problems.map((problem, index) => <li key={`${problem.kind}-${problem.sequence}-${index}`}><span>{problemLine(problem)}</span></li>)}
+          </ul>
+        </>
+      )}
       {plan.conflicts.length > 0 && (
         <>
           <p>
@@ -154,8 +244,16 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
               <input name="finalStart" type="date" defaultValue={data.config.finalPeriodStartDate ?? ""} />
             </label>
             <label className={styles.field}>
-              Colosseum submission deadline (optional)
-              <input name="officialDeadline" type="datetime-local" defaultValue={(data.config.officialSubmissionDeadline ?? "").slice(0, 16)} />
+              {`Colosseum submission deadline, in ${timezone} (optional)`}
+              {/* Shown and taken in the campaign timezone, both ways through
+                  the same pair of functions: a datetime-local field carries no
+                  offset, so slicing the stored UTC string would show the wrong
+                  clock and save it back two hours out on the next edit. */}
+              <input
+                name="officialDeadline"
+                type="datetime-local"
+                defaultValue={data.config.officialSubmissionDeadline ? utcToZonedDateTime(data.config.officialSubmissionDeadline, timezone) : ""}
+              />
             </label>
             <label className={styles.field}>
               Reminder day
@@ -170,8 +268,10 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
           </div>
           <p className={styles.muted}>
             The final period merges the last weeks into one submission-focused window that runs to the hackathon&apos;s end date. The Colosseum
-            deadline is that platform&apos;s own cutoff and never moves these weeks; it only decides whether a submission counted as on time.
-            The reminder day and time are stored for the Telegram reminders, which are not sending yet.
+            deadline is that platform&apos;s own cutoff and never moves these weeks; it only decides whether a submission counted as on time. Type
+            it as the clock reads in {timezone}, which is how it is shown above and how it is stored.
+            The reminder day and time decide when the Wednesday Captain reminder goes out, and a change takes effect for every week whose
+            reminder has not been recorded yet.
           </p>
           <div className={styles.actions}>
             <button className={styles.secondary} type="submit">Save reporting settings</button>
@@ -179,6 +279,41 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
         </fieldset>
         {(saving || saved) && <div className={styles.feedback} role="status">{saving ? "Saving…" : saved}</div>}
       </form>
+
+      <h3>Wednesday Captain reminders</h3>
+      <p>
+        {`Reminders go to Captains only, on ${WEEKDAYS.find((day) => day.value === data.config.nudgeWeekday)?.label ?? "the day set above"} at ${data.config.nudgeTime} ${timezone}, naming just the teams that still owe an update that week. Teams and admins are never messaged automatically.`}
+      </p>
+      <p>
+        {data.botConfigured
+          ? "The scheduled job runs every half hour and works out what is outstanding when it runs, so a late or missed run catches up on its own. Run it now if you would rather not wait."
+          : "This deployment has no Telegram bot configured, so reminders are worked out and recorded here and nothing is delivered. Set the bot up and the waiting messages go out on the next run."}
+      </p>
+      <div className={styles.actions}>
+        <button className={styles.secondary} type="button" onClick={runJobs} disabled={running}>
+          {running ? "Running…" : "Run the reminder and closure job now"}
+        </button>
+      </div>
+      {(running || ranSummary) && <div className={styles.feedback} role="status">{running ? "Running…" : ranSummary}</div>}
+      {reminders.length === 0 && <p>No reminder has been recorded for this hackathon yet.</p>}
+      {reminders.length > 0 && (
+        <ul className={styles.roster} aria-label="Reminder history">
+          {reminders.map((reminder) => {
+            const reason = reminderReason(reminder);
+            return (
+              <li key={reminder.id}>
+                <span>
+                  {reminder.captainName}, week {reminder.periodSequence} ({periodRangeLabel(reminder.periodStartDate, reminder.periodEndDate)}).{" "}
+                  {reminder.projectCount === 1 ? "1 team outstanding" : `${reminder.projectCount} teams outstanding`}.
+                  {reason ? ` Not sent because ${reason}.` : ""}
+                  {reminder.attempts > 1 ? ` ${reminder.attempts} attempts.` : ""}
+                </span>
+                <span className={styles.badge}>{REMINDER_STATES[reminder.state]}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }

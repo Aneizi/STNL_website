@@ -14,12 +14,14 @@ const mocks = vi.hoisted(() => ({
   currentActor: vi.fn(),
   requireMemberActor: vi.fn(),
   teams: vi.fn(),
+  ownedProjects: vi.fn(),
   hasTeams: vi.fn(),
   currentHackathonId: vi.fn(),
   teamById: vi.fn(),
   leaderboard: vi.fn(),
   listAssignments: vi.fn(),
   captainReportingBoard: vi.fn(),
+  memberWeekSummaries: vi.fn(),
   builderDatabase: vi.fn(),
   pathname: "/hq/dashboard",
 }));
@@ -36,6 +38,7 @@ vi.mock("@/lib/hq/member-auth", () => ({ currentMember: vi.fn(), requireMember: 
 vi.mock("@/lib/hq/builder-store", () => ({
   builderStore: () => ({
     teams: mocks.teams,
+    ownedProjects: mocks.ownedProjects,
     hasTeams: mocks.hasTeams,
     currentHackathonId: mocks.currentHackathonId,
     teamById: mocks.teamById,
@@ -51,7 +54,7 @@ vi.mock("@/lib/hq/captains", () => ({ leaderboard: mocks.leaderboard, listAssign
 // The captain page's reporting half (phase 6). tests/hq/captain-page.test.ts
 // drives the same page against real rows; here it is stubbed, like the two
 // reads above, so this file stays a unit test of the shell and the gate.
-vi.mock("@/lib/hq/reporting-surface", () => ({ captainReportingBoard: mocks.captainReportingBoard }));
+vi.mock("@/lib/hq/reporting-surface", () => ({ captainReportingBoard: mocks.captainReportingBoard, memberWeekSummaries: mocks.memberWeekSummaries }));
 // The icon package ships its source; the pages here render markup, not icons.
 vi.mock("symbols-react", () => ({ IconArrowRight: (props: Record<string, unknown>) => createElement("svg", props) }));
 
@@ -193,8 +196,11 @@ describe("the captain page", () => {
           eligibleFrom: "2026-01-01T00:00:00.000Z", paused: false, captainUserId: "acct-1",
           submissionStatus: "not_checked", current: null, missedPeriods: 0, history: [],
         },
+        current: null,
+        weeks: [],
         teamContact: null,
-        latest: null,
+        entries: [],
+        nextCursor: null,
       }],
     });
     mocks.teamById.mockResolvedValue({
@@ -226,7 +232,12 @@ describe("the captain page", () => {
 });
 
 describe("the dashboard", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.teams.mockResolvedValue([]); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.teams.mockResolvedValue([]);
+    mocks.ownedProjects.mockResolvedValue([]);
+    mocks.memberWeekSummaries.mockResolvedValue([]);
+  });
 
   it("offers Connect Telegram to an account without a Telegram identity, pointing at the account page", async () => {
     mocks.requireMemberActor.mockResolvedValue(member());
