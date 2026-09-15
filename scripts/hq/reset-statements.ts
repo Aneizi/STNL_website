@@ -34,13 +34,38 @@ export const CLEAR_TABLES = [
   "hq_reporting_entry_revisions",
   "hq_reporting_outcomes",
   "hq_reporting_entries",
+  // The pause history belongs with the eligibility row it is the history of:
+  // clearing one and keeping the other would leave a project with recorded
+  // exemptions and nothing that was ever paused.
+  "hq_reporting_pause_intervals",
   "hq_reporting_eligibility",
+  // Wednesday reminder decisions (phase 8). One row per Captain, edition and
+  // week, and every one of them points at a period of the edition being
+  // emptied: the cascade from hq_reporting_periods below would take them
+  // anyway, and keeping them while the weeks they name are gone would leave
+  // an admin reading a reminder history for weeks that no longer exist. What
+  // the bot actually sent survives in hq_telegram_outgoing, which is KEEP,
+  // below, for the same reason the processed-update ledger is.
+  "hq_reminder_deliveries",
   "hq_reporting_periods",
+  // Telegram bot chat state (phase 7). Both rows point at a project or a
+  // period of the edition being emptied, both expire on their own within
+  // minutes, and neither is a record of anything: a draft is text somebody
+  // has not saved yet and an action row is what one button in one chat
+  // means. Clearing them costs a person at most a half-written message they
+  // would have lost to the expiry anyway. The processed-update ledger and
+  // the delivery history are KEEP, below, for the opposite reason.
+  "hq_telegram_drafts",
+  "hq_telegram_actions",
   // Imported Colosseum teams and their invite codes belong to the project
   // rows below; the cascade from hq_projects already emptied them before they
   // were named here.
   "hq_team_invites",
   "hq_project_onboarding",
+  // HQ project ownership is per project, like the onboarding row beside it,
+  // and goes with the projects below whether that ownership came from an
+  // import or from an admin creating the project by hand.
+  "hq_project_ownership",
   "hq_project_members",
   "hq_partner_exchange",
   "hq_partner_contacts",
@@ -84,9 +109,20 @@ export const KEEP_TABLES = [
   // keeps them the same way it keeps the grant itself (task T4.1).
   "hq_captain_invitations",
   "hq_captain_invitation_redemptions",
-  // Whether the account agreed to bot messages: a standing decision by the
-  // person, not an edition's CRM, so it survives like a login (task T2.3).
+  // Whether the account agreed to bot messages, and the private chat the bot
+  // talks to them in (phase 7 added the chat id to this row): a standing
+  // decision by the person, not an edition's CRM, so it survives like a
+  // login (task T2.3).
   "hq_telegram_bot_consent",
+  // Which Telegram updates have already been handled (phase 7). Kept because
+  // it is the only thing standing between a redelivered update id and a
+  // second run of whatever that update asked for: clearing it would reopen a
+  // window the table exists to close. It is a ledger, not an edition's CRM.
+  "hq_telegram_updates",
+  // What the bot sent, tried to send, or could not send, per account. Kept
+  // for the same reason hq_audit_events is: it is account-level delivery
+  // history that phase 8 shows admins, and it never carries an update body.
+  "hq_telegram_outgoing",
   // Per-edition Colosseum mapping and toggles, typed into Admin: settings,
   // like hq_settings.
   "hq_hackathon_onboarding",

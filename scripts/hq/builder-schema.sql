@@ -509,6 +509,22 @@ CREATE TABLE IF NOT EXISTS hq_reporting_outcomes (
 );
 CREATE INDEX IF NOT EXISTS hq_reporting_outcomes_project_idx ON hq_reporting_outcomes (project_id);
 
+-- Whether the project was EXEMPT from this period rather than accountable for
+-- it, added 15 September 2026 with the pause history above.
+--
+-- Closure used to skip a paused project entirely, writing no row at all. That
+-- left nothing saying the week had been excused, so once the pause ended and
+-- `paused_at` was cleared, the next status read looked at a closed week with
+-- no outcome and counted it as accountable and missing: a pause that turned
+-- into missed weeks the moment it was lifted. Recording the exemption at
+-- close, beside the factual outcome, is what makes a closed week's answer
+-- final — the same reasoning as `completed` itself never being rewritten.
+--
+-- `completed` and `basis` still record what actually happened in the week (a
+-- paused team that wrote an update anyway did write one); `exempt` is the
+-- separate statement that the week was not being counted against them.
+ALTER TABLE hq_reporting_outcomes ADD COLUMN IF NOT EXISTS exempt boolean NOT NULL DEFAULT false;
+
 -- ---------------------------------------------------------------------------
 -- Phase 6: the two contacts the reporting dashboards show.
 --
@@ -541,3 +557,379 @@ CREATE INDEX IF NOT EXISTS hq_reporting_outcomes_project_idx ON hq_reporting_out
 -- `FROM hq_builder_profiles`.
 ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS team_contact text;
 ALTER TABLE hq_builder_profiles ADD COLUMN IF NOT EXISTS captain_contact text;
+
+-- ---------------------------------------------------------------------------
+-- Pause history, added 15 September 2026 after the phase 0-6 review.
+--
+-- `hq_reporting_eligibility.paused_at` says whether a project is paused RIGHT
+-- NOW, which is all a screen needs and all the status read used to have. It
+-- cannot answer "was this project paused in the week that just closed?",
+-- because resuming clears it: the pause's duration was lost, and the next
+-- status read then counted every week of the exemption as accountable and
+-- missing. A pause that quietly turns into missed weeks the moment it ends is
+-- not a pause.
+--
+-- So the intervals are kept beside it, one row per pause, closed by the
+-- resume that ended it. `accountable()` in lib/hq/reporting.ts reads these
+-- rather than the single column: a period is exempt when some interval had
+-- begun before the period's exclusive end and had not ended by it. For a
+-- project paused right now that is exactly what the single column meant, so
+-- nothing about live behaviour changes; what is new is that the exemption
+-- survives the resume, and that repeated pauses each keep their own window.
+--
+-- The column stays as the current-state marker every reader already uses, and
+-- the open interval (`resumed_at IS NULL`) is its history twin: the partial
+-- unique index below is what keeps the two from drifting into two open pauses
+-- for one project.
+CREATE TABLE IF NOT EXISTS hq_reporting_pause_intervals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid NOT NULL REFERENCES hq_projects(id) ON DELETE CASCADE,
+  hackathon_id int NOT NULL REFERENCES hq_hackathons(id) ON DELETE CASCADE,
+  paused_at timestamptz NOT NULL,
+  resumed_at timestamptz,
+  paused_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  resumed_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  reason text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT hq_reporting_pause_window_check CHECK (resumed_at IS NULL OR resumed_at >= paused_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS hq_reporting_pause_open_idx ON hq_reporting_pause_intervals (project_id) WHERE resumed_at IS NULL;
+CREATE INDEX IF NOT EXISTS hq_reporting_pause_project_idx ON hq_reporting_pause_intervals (project_id, paused_at);
+
+-- A database that was already carrying a live pause keeps it: the open
+-- interval is opened at the pause's own instant, not at migration time, so
+-- the weeks it already covered stay covered. Nothing can be reconstructed for
+-- a pause that was already resumed before this table existed; those weeks
+-- were already counted and are left exactly as they were recorded.
+INSERT INTO hq_reporting_pause_intervals (project_id, hackathon_id, paused_at)
+SELECT e.project_id, e.hackathon_id, e.paused_at FROM hq_reporting_eligibility e
+WHERE e.paused_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM hq_reporting_pause_intervals i WHERE i.project_id = e.project_id AND i.resumed_at IS NULL);
+
+-- ---------------------------------------------------------------------------
+-- HQ project ownership, added 15 September 2026 after the phase 0-6 review.
+--
+-- The plan's Request help route (phase 3: "If an unsubmitted project cannot
+-- yet be fetched, keep a Request help route usable ... so an admin can create
+-- or link the HQ project by hand. Model HQ project ownership independently of
+-- a successful external snapshot, backfilling existing owners from
+-- onboarding") needs an owner that does not live on the Colosseum snapshot.
+-- Until this table, `hq_project_onboarding.owner_user_id` was the only
+-- ownership there was, and that row cannot exist without an `external_id`, so
+-- a hand-created project could be given a Captain and weekly reporting while
+-- its own builders had no way in at all.
+--
+-- One row per project, the account that owns it in HQ, and where that
+-- ownership came from: `import` for a successful Colosseum import (backfilled
+-- below, and written by `importTeam` from then on) and `admin` for a project
+-- an operator created from a help request. `loadTeamMembership`
+-- (lib/hq/authz-sql.ts) reads this table for the owner half of membership, so
+-- the two sources are one rule rather than two.
+--
+-- Attaching a Colosseum snapshot later adds the onboarding row to THIS
+-- project id and leaves this row alone, which is the plan's "later source
+-- reconciliation attaches the real source ID without replacing the HQ project
+-- or its history". No external id is ever invented to make that possible.
+CREATE TABLE IF NOT EXISTS hq_project_ownership (
+  project_id uuid PRIMARY KEY REFERENCES hq_projects(id) ON DELETE CASCADE,
+  hackathon_id int NOT NULL REFERENCES hq_hackathons(id) ON DELETE CASCADE,
+  owner_user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
+  source text NOT NULL DEFAULT 'import' CONSTRAINT hq_project_ownership_source_check CHECK (source IN ('import','admin')),
+  created_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS hq_project_ownership_owner_idx ON hq_project_ownership (owner_user_id);
+
+INSERT INTO hq_project_ownership (project_id, hackathon_id, owner_user_id, source, created_at)
+SELECT o.project_id, o.hackathon_id, o.owner_user_id, 'import', o.created_at FROM hq_project_onboarding o
+ON CONFLICT (project_id) DO NOTHING;
+
+-- Which help request a hand-created project answers, so the admin screen can
+-- show the request and the project it became together, and so a second press
+-- cannot create a second project for the same request.
+ALTER TABLE hq_project_import_requests ADD COLUMN IF NOT EXISTS project_id uuid REFERENCES hq_projects(id) ON DELETE SET NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS hq_project_import_requests_project_idx ON hq_project_import_requests (project_id) WHERE project_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- The STNL Telegram bot (phase 7).
+--
+-- The bot is an alternate interface to the SAME reporting service the website
+-- writes through (lib/hq/reporting.ts). Nothing below stores a permission, a
+-- completion rule or a copy of an update: an entry still lives in
+-- hq_reporting_entries with `source = 'telegram'`, and that column is the only
+-- difference between a save made here and one made on the website.
+--
+-- What these four tables hold is chat state, and chat state only: which
+-- Telegram update has already been processed, which button press means what,
+-- what someone has typed but not yet saved, and which message still has to go
+-- out. All four are written only by lib/hq/telegram-bot-store.ts.
+
+-- Which private chat the bot talks to this account in. It belongs beside the
+-- messaging decision rather than beside the identity: a chat id exists only
+-- because the person opened the bot, and it is worthless without the consent
+-- row next to it. Phase 8 reads it to deliver the Wednesday reminder.
+--
+-- Nullable, because the consent row can be written from /hq/account before
+-- the person has ever opened the chat. A NULL chat id is "connected, no chat
+-- yet", which a sender treats exactly like consent withheld: there is nowhere
+-- to send.
+ALTER TABLE hq_telegram_bot_consent ADD COLUMN IF NOT EXISTS chat_id bigint;
+
+-- Every Telegram update this deployment has accepted, by Telegram's own
+-- update_id. Telegram retries a delivery it did not get a 200 for, so the
+-- same update_id can arrive more than once; the PRIMARY KEY is what makes the
+-- second arrival a no-op instead of a second saved entry.
+--
+-- Durable rather than process memory, per the plan: a serverless deployment
+-- has no shared memory between invocations, so an in-process set would
+-- deduplicate nothing in production.
+--
+-- `state` is the receipt's own lifecycle, not the update's meaning, and only
+-- 'done' is terminal. A row is claimed as 'processing' under a LEASE; the
+-- handler sets 'done' when it finished, or 'failed' when it did not. A
+-- delivery that arrives while a live lease is held is left alone, because an
+-- overlapping delivery is a duplicate rather than a reason to run the handler
+-- twice. A row whose lease has expired, or which is recorded as 'failed', is
+-- re-claimable: Telegram retries anything it did not get a 200 for, and a
+-- receipt that treated a crashed attempt as a success would swallow the
+-- retry and lose the person's action for good. `attempts` is what stops that
+-- becoming a loop.
+--
+-- Re-claiming is only safe because the handler's own writes are atomic: the
+-- callback consumption, the reporting write and the durable confirmation all
+-- commit in ONE transaction (see lib/hq/telegram-bot.ts), so an interrupted
+-- attempt leaves nothing behind to be repeated.
+--
+-- Nothing of the update's content is stored ("Do not retain full raw webhook
+-- bodies as general-purpose logs").
+CREATE TABLE IF NOT EXISTS hq_telegram_updates (
+  update_id bigint PRIMARY KEY,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  state text NOT NULL DEFAULT 'processing' CONSTRAINT hq_telegram_updates_state_check CHECK (state IN ('processing','done','failed')),
+  attempts int NOT NULL DEFAULT 1,
+  last_error text,
+  completed_at timestamptz,
+  lease_expires_at timestamptz
+);
+ALTER TABLE hq_telegram_updates ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz;
+CREATE INDEX IF NOT EXISTS hq_telegram_updates_state_idx ON hq_telegram_updates (state, received_at);
+
+-- What a button press means. Telegram's callback_data travels in the chat and
+-- comes back from the client, so it can never be the instruction itself: the
+-- keyboard carries an opaque id and the instruction lives here, bound to the
+-- account and the chat it was built for ("Callback identifiers are opaque
+-- server-side references bound to the user and operation").
+--
+-- `single_use` separates the two kinds. A navigation press (open a project,
+-- page a list) is idempotent and stays usable until it expires, because an
+-- inline keyboard remains in the chat history and people scroll back to it. A
+-- press that WRITES (save, confirm the new week, confirm sharing a note) is
+-- claimed exactly once by a conditional UPDATE, which is what stops a
+-- double-tap or a Telegram retry that arrives under a new update_id from
+-- creating two entries.
+--
+-- `project_id`, `period_id` and `entry_id` are plain uuids with no foreign
+-- key, deliberately. These rows are transient chat state with an expiry, not
+-- records of a team: every read re-authorizes against the live project, so a
+-- row left pointing at a deleted project grants exactly nothing, and keeping
+-- them out of hq_projects' dependency graph keeps a Delete team confirmation
+-- about the team's own records rather than about someone's half-typed
+-- message. Same reasoning as hq_reporting_entries.author_id having no key.
+CREATE TABLE IF NOT EXISTS hq_telegram_actions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
+  chat_id bigint NOT NULL,
+  kind text NOT NULL,
+  project_id uuid,
+  period_id uuid,
+  entry_id uuid,
+  expected_version int,
+  page int NOT NULL DEFAULT 0,
+  visibility text CONSTRAINT hq_telegram_actions_visibility_check CHECK (visibility IS NULL OR visibility IN ('shared','sensitive')),
+  single_use boolean NOT NULL DEFAULT false,
+  draft_id uuid,
+  draft_revision int,
+  cursor text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  consumed_at timestamptz,
+  consumed_update_id bigint
+);
+-- Which draft generation the button was built from. A button that touches a
+-- draft is worthless the moment that draft changes underneath it: an inline
+-- keyboard stays in the chat forever, so Save on a preview from ten minutes
+-- ago must not save whatever draft happens to exist now. `draft_id` pins the
+-- composing session and `draft_revision` pins the state it was rendered
+-- from, and the flow requires BOTH to match before it acts. Without this a
+-- Save from a replaced preview saved a different team's text.
+ALTER TABLE hq_telegram_actions ADD COLUMN IF NOT EXISTS draft_id uuid;
+ALTER TABLE hq_telegram_actions ADD COLUMN IF NOT EXISTS draft_revision int;
+-- The keyset cursor a Next button continues from, so a list pages through the
+-- reporting service's own cursor rather than re-reading a capped set on every
+-- press.
+ALTER TABLE hq_telegram_actions ADD COLUMN IF NOT EXISTS cursor text;
+CREATE INDEX IF NOT EXISTS hq_telegram_actions_user_idx ON hq_telegram_actions (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS hq_telegram_actions_expiry_idx ON hq_telegram_actions (expires_at);
+CREATE INDEX IF NOT EXISTS hq_telegram_actions_draft_idx ON hq_telegram_actions (draft_id) WHERE draft_id IS NOT NULL;
+
+-- What someone has typed and not yet saved. One draft per account and chat,
+-- so opening a second project replaces the first rather than leaving two
+-- half-written updates racing for the same Save button.
+--
+-- The plan's required fields are all here and all explicit: project, period,
+-- step, version and expiry. `period_id` is what binds the draft to its week,
+-- so a save that crossed midnight is caught by the reporting service's own
+-- `expectedPeriodId` check rather than silently landing in a different week;
+-- `expected_version` does the same for an edit.
+--
+-- `body` is the one place a member's unsaved text lives outside
+-- hq_reporting_entries, and it is transient by design: every row carries
+-- `expires_at`, `purgeExpiredBotState` removes them, and nothing else reads
+-- the column. Ids follow the no-foreign-key rule described above.
+CREATE TABLE IF NOT EXISTS hq_telegram_drafts (
+  user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
+  chat_id bigint NOT NULL,
+  -- The composing session, and the state it is in. One draft per chat means
+  -- the primary key cannot identify WHICH draft a button meant, so these two
+  -- do: `id` changes when a new compose replaces the old one, `revision`
+  -- increments on every change to the draft. Every button that touches a
+  -- draft records both, and the flow refuses unless both still match, which
+  -- is what makes a Save from a replaced or re-rendered preview a no-op
+  -- rather than a write against somebody else's text.
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  revision int NOT NULL DEFAULT 1,
+  step text NOT NULL CONSTRAINT hq_telegram_drafts_step_check CHECK (step IN ('awaiting_text','preview')),
+  project_id uuid NOT NULL,
+  hackathon_id int NOT NULL,
+  period_id uuid,
+  entry_id uuid,
+  expected_version int,
+  visibility text NOT NULL DEFAULT 'shared' CONSTRAINT hq_telegram_drafts_visibility_check CHECK (visibility IN ('shared','sensitive')),
+  body text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (user_id, chat_id)
+);
+ALTER TABLE hq_telegram_drafts ADD COLUMN IF NOT EXISTS id uuid NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE hq_telegram_drafts ADD COLUMN IF NOT EXISTS revision int NOT NULL DEFAULT 1;
+CREATE INDEX IF NOT EXISTS hq_telegram_drafts_expiry_idx ON hq_telegram_drafts (expires_at);
+
+-- The outgoing message queue, for the messages that must not be lost.
+--
+-- "Where needed", per the plan, and needed means exactly one thing: a message
+-- whose loss would leave someone not knowing whether their write landed. The
+-- save confirmation is queued inside the saving transaction, so it either
+-- commits with the entry or does not exist. Menus, project lists and the
+-- preview are sent directly and are never queued: they carry no news, and a
+-- failed send is answered by pressing the button again.
+--
+-- That split is also the privacy rule. A preview repeats what someone typed,
+-- a sensitive note included; a confirmation says which week is now Updated
+-- and nothing else. Because only the second kind is queued, NO ENTRY BODY IS
+-- EVER WRITTEN TO THIS TABLE, and tests/hq/telegram-bot.test.ts asserts it.
+--
+-- `dedupe_key` is what makes an at-least-once delivery attempt at-most-once
+-- per event: the save confirmation keys on the entry and its version, and
+-- phase 8's reminder will key on Captain, edition, period and type.
+CREATE TABLE IF NOT EXISTS hq_telegram_outgoing (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  chat_id bigint NOT NULL,
+  user_id text REFERENCES hq_builder_profiles(id) ON DELETE SET NULL,
+  kind text NOT NULL,
+  body text NOT NULL,
+  reply_markup jsonb,
+  dedupe_key text UNIQUE,
+  state text NOT NULL DEFAULT 'queued' CONSTRAINT hq_telegram_outgoing_state_check CHECK (state IN ('queued','sent','failed','skipped')),
+  attempts int NOT NULL DEFAULT 0,
+  last_error text,
+  provider_message_id bigint,
+  skip_reason text,
+  -- Who this row is about, read again immediately before the send. A queued
+  -- message is not a licence: between the enqueue and the drain somebody can
+  -- turn bot messages off, unlink Telegram, start a new chat or lose the
+  -- assignment the message names, and the sender has to notice all four.
+  -- Phase 8's reminder needs exactly the same check, which is why it lives on
+  -- the row rather than in the one caller that has it today.
+  project_id uuid,
+  hackathon_id int,
+  -- The claim. A drain takes a bounded batch by setting these, sends outside
+  -- the database transaction, and only the claim's owner may complete it, so
+  -- two drains running at once cannot both send the same row. The claim
+  -- expires, so a worker that dies mid-send releases its rows instead of
+  -- stranding them.
+  claimed_at timestamptz,
+  claim_expires_at timestamptz,
+  claimed_by text,
+  -- When this row may next be attempted. Telegram's own `retry_after` is
+  -- written here rather than discarded, so a rate limit is respected instead
+  -- of hammered.
+  next_attempt_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  sent_at timestamptz
+);
+ALTER TABLE hq_telegram_outgoing ADD COLUMN IF NOT EXISTS project_id uuid;
+ALTER TABLE hq_telegram_outgoing ADD COLUMN IF NOT EXISTS hackathon_id int;
+ALTER TABLE hq_telegram_outgoing ADD COLUMN IF NOT EXISTS claimed_at timestamptz;
+ALTER TABLE hq_telegram_outgoing ADD COLUMN IF NOT EXISTS claim_expires_at timestamptz;
+ALTER TABLE hq_telegram_outgoing ADD COLUMN IF NOT EXISTS claimed_by text;
+ALTER TABLE hq_telegram_outgoing ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz;
+CREATE INDEX IF NOT EXISTS hq_telegram_outgoing_state_idx ON hq_telegram_outgoing (state, created_at);
+CREATE INDEX IF NOT EXISTS hq_telegram_outgoing_claim_idx ON hq_telegram_outgoing (state, next_attempt_at, claim_expires_at) WHERE state = 'queued';
+
+-- One reminder, per Captain, per edition, per reporting period, per reminder
+-- type (phase 8). The unique key across those four columns is what makes an
+-- at-least-once scheduler at-most-once per event: two overlapping job runs
+-- both try to insert, one wins the index and the other finds the decision
+-- already recorded, so a second message is never built.
+--
+-- The row is the DECISION, not the message. It is written in the same
+-- transaction as the queued message it names (`outgoing_id`), so a reminder
+-- that was recorded always has a message behind it and a message that was
+-- queued always has a record in front of it. A reminder that is not sent is
+-- recorded just as durably, with its reason: no Telegram identity, messaging
+-- turned off, no private chat opened, the Captain capability revoked, or
+-- nothing outstanding to remind them about. That is the plan's "record a
+-- skipped delivery reason and show it in HQ", and it is why this table exists
+-- rather than a query over hq_telegram_outgoing, which only ever holds
+-- messages somebody decided to send.
+--
+-- NO PROJECT ID AND NO UPDATE TEXT. `project_count` is how many teams were
+-- outstanding at the moment the message was built, which is what an admin
+-- needs; naming the projects would put a pointer to hq_projects in a history
+-- table and would make a deleted team's name outlive the team. The names live
+-- in the message body on hq_telegram_outgoing, which is purged on its own
+-- retention, and nowhere else.
+--
+-- `reminder_type` deliberately carries no CHECK constraint. Adding a value to
+-- one later would mean a drop-and-add pair running on every future migration
+-- (docs/hq/contracts.md, migration conventions), and the vocabulary is
+-- already pinned in lib/hq/jobs.ts where the only writer reads it.
+CREATE TABLE IF NOT EXISTS hq_reminder_deliveries (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  captain_user_id text NOT NULL REFERENCES hq_builder_profiles(id) ON DELETE CASCADE,
+  hackathon_id int NOT NULL REFERENCES hq_hackathons(id) ON DELETE CASCADE,
+  period_id uuid NOT NULL REFERENCES hq_reporting_periods(id) ON DELETE CASCADE,
+  reminder_type text NOT NULL DEFAULT 'weekly_nudge',
+  -- The period's own nudge instant, kept on the row so that an admin reading
+  -- the history sees when it was due even after a schedule edit moved the
+  -- period it belongs to.
+  due_at timestamptz NOT NULL,
+  state text NOT NULL DEFAULT 'queued' CONSTRAINT hq_reminder_deliveries_state_check CHECK (state IN ('queued','sent','skipped','failed')),
+  reason text,
+  project_count int NOT NULL DEFAULT 0,
+  -- The queued message this decision produced, as a plain uuid with no
+  -- foreign key: deliveries are kept far longer than the outgoing rows they
+  -- point at, and a purge of the queue must not take the record of the
+  -- reminder with it.
+  outgoing_id uuid,
+  provider_message_id bigint,
+  attempts int NOT NULL DEFAULT 0,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  resolved_at timestamptz,
+  UNIQUE (captain_user_id, hackathon_id, period_id, reminder_type)
+);
+CREATE INDEX IF NOT EXISTS hq_reminder_deliveries_edition_idx ON hq_reminder_deliveries (hackathon_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS hq_reminder_deliveries_open_idx ON hq_reminder_deliveries (period_id) WHERE state = 'queued';

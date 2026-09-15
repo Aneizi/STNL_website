@@ -154,6 +154,10 @@ async function seedEverything() {
   await run(`INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ('${invitation}', 'builder-1')`);
   await run(`INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id)
              VALUES ('${project}', 'builder-1', '${user}')`);
+  // HQ ownership of the project, which an import writes and an admin writes
+  // for a hand-created project; per project, so it goes with the project.
+  await run(`INSERT INTO hq_project_ownership (project_id, hackathon_id, owner_user_id, source)
+             VALUES ('${project}', '${hackathon}', 'builder-1', 'import') ON CONFLICT (project_id) DO NOTHING`);
   // Weekly reporting (phase 5): the edition's schedule settings, which are
   // Admin configuration and survive, and a full chain of reporting rows for
   // the project, which are the edition's CRM and do not.
@@ -163,6 +167,10 @@ async function seedEverything() {
      VALUES ('${hackathon}', 1, 'weekly', '2026-09-14', '2026-09-20', '2026-09-13T22:00:00Z', '2026-09-20T22:00:00Z', now()) RETURNING id`,
   );
   await run(`INSERT INTO hq_reporting_eligibility (project_id, hackathon_id) VALUES ('${project}', '${hackathon}')`);
+  // A pause that has already ended: the history half of the eligibility row,
+  // which goes with it rather than outliving the project it exempted.
+  await run(`INSERT INTO hq_reporting_pause_intervals (project_id, hackathon_id, paused_at, resumed_at)
+             VALUES ('${project}', '${hackathon}', '2026-09-15T00:00:00Z', '2026-09-22T00:00:00Z')`);
   const entry = await id(
     `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body)
      VALUES ('${project}', '${period}', 'member', 'builder-1', 'Shipped the importer') RETURNING id`,
@@ -171,6 +179,21 @@ async function seedEverything() {
              VALUES ('${entry}', 1, 'Shipped the importer', 'shared', 'member', 'builder-1')`);
   await run(`INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis, entry_id, captain_user_id)
              VALUES ('${period}', '${project}', true, 'entry', '${entry}', 'builder-1')`);
+  // The Telegram bot's chat state (phase 7). The draft and the callback
+  // action point at the edition's project and go with it; the processed
+  // update ledger and the delivery history are account-level and survive,
+  // the way the consent row above does.
+  await run(`INSERT INTO hq_telegram_drafts (user_id, chat_id, step, project_id, hackathon_id, period_id, expires_at)
+             VALUES ('builder-1', 7000000000123, 'awaiting_text', '${project}', '${hackathon}', '${period}', now() + interval '20 minutes')`);
+  await run(`INSERT INTO hq_telegram_actions (user_id, chat_id, kind, project_id, expires_at)
+             VALUES ('builder-1', 7000000000123, 'project.open', '${project}', now() + interval '1 day')`);
+  await run(`INSERT INTO hq_telegram_updates (update_id, state, completed_at) VALUES (900001, 'done', now())`);
+  await run(`INSERT INTO hq_telegram_outgoing (chat_id, user_id, kind, body, state, sent_at)
+             VALUES (7000000000123, 'builder-1', 'update.saved', 'Saved. Week 1 is Updated.', 'sent', now())`);
+  // The Wednesday reminder decision (phase 8), which names one of the
+  // edition's weeks and goes with it.
+  await run(`INSERT INTO hq_reminder_deliveries (captain_user_id, hackathon_id, period_id, reminder_type, due_at, state, project_count)
+             VALUES ('builder-1', '${hackathon}', '${period}', 'weekly_nudge', '2026-09-16T10:00:00Z', 'sent', 2)`);
 }
 
 beforeEach(async () => {
