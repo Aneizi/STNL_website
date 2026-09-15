@@ -1,0 +1,61 @@
+name: HQ reporting jobs
+
+# Due Wednesday Captain reminders, reporting period closure and the retention
+# sweep. Nothing here decides when a reminder is due: the endpoint reads the
+# stored reporting periods and the campaign timezone and works out what is
+# outstanding at the instant it runs. This workflow only has to run OFTEN
+# ENOUGH, which is why a missed run, a delayed run or two overlapping runs all
+# cost nothing.
+#
+# No secret is stored for this job. GitHub mints a short-lived OIDC token per
+# run with the audience below, and the endpoint verifies it against GitHub's
+# JWKS and against this exact workflow file on main.
+
+on:
+  schedule:
+    # Every 30 minutes, at 07 and 37 past, away from the top of the hour where
+    # GitHub's own scheduler is busiest and runs are delayed the most. The
+    # reminder is due at 12:00 Europe/Amsterdam, so the worst case is a
+    # reminder about half an hour late, and a run that never happens at all
+    # still catches up later the same day.
+    - cron: "7,37 * * * *"
+  # The authenticated manual retry. Admins also have a Run now button inside
+  # HQ; this one is for somebody with repository access and no HQ session.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hq-reporting-jobs
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Run the due HQ reporting work
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          oidc_response="$(
+            curl --fail-with-body --silent --show-error \
+              -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=stnl-hq-jobs"
+          )"
+          oidc_token="$(jq -er '.value' <<<"${oidc_response}")"
+          echo "::add-mask::${oidc_token}"
+
+          # The response is counts only, by construction: no Captain, no chat
+          # id, no project name and no update text reaches this log.
+          curl --fail-with-body --silent --show-error \
+            --retry 2 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --max-time 65 \
+            -H "Authorization: Bearer ${oidc_token}" \
+            -H "Accept: application/json" \
+            https://nl.superteam.fun/api/cron/hq-jobs
