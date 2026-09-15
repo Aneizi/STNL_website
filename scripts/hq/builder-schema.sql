@@ -674,6 +674,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS hq_project_import_requests_project_idx ON hq_p
 -- yet", which a sender treats exactly like consent withheld: there is nowhere
 -- to send.
 ALTER TABLE hq_telegram_bot_consent ADD COLUMN IF NOT EXISTS chat_id bigint;
+-- WHICH verified Telegram identity opened the chat above. Written only by
+-- `bindBotChat`, from the identity on the update it is handling, and cleared
+-- whenever the connected identity changes. Without it, "the chat on this row"
+-- and "the account connected to HQ right now" were two facts nothing
+-- compared: disconnecting Telegram left the chat id in place, reconnecting a
+-- DIFFERENT Telegram account rewrote telegram_user_id beside it, and a
+-- reminder queued for the old account was delivered into the old account's
+-- private chat. An external review reproduced that on 15 September 2026.
+-- Clearing chat_id on both paths fixes the observed case; this column is what
+-- makes the invariant checkable rather than dependent on every future writer
+-- remembering to clear it.
+ALTER TABLE hq_telegram_bot_consent ADD COLUMN IF NOT EXISTS chat_bound_telegram_user_id bigint;
 
 -- Every Telegram update this deployment has accepted, by Telegram's own
 -- update_id. Telegram retries a delivery it did not get a 200 for, so the
@@ -768,6 +780,15 @@ ALTER TABLE hq_telegram_actions ADD COLUMN IF NOT EXISTS draft_revision int;
 -- reporting service's own cursor rather than re-reading a capped set on every
 -- press.
 ALTER TABLE hq_telegram_actions ADD COLUMN IF NOT EXISTS cursor text;
+-- Which edition this button is scoped to, or NULL for the account's default
+-- one. The bot picks a single current edition for every read, which is right
+-- for somebody who opened the menu themselves and wrong for a button that
+-- came from a notification about a DIFFERENT edition: phase 8's reminder
+-- names one hackathon's teams, and before this its Add update button opened
+-- the default hackathon's instead. Every button minted during a press
+-- inherits the edition of the button that was pressed, so paging and picking
+-- a team stay inside the edition the message was about.
+ALTER TABLE hq_telegram_actions ADD COLUMN IF NOT EXISTS hackathon_id int;
 CREATE INDEX IF NOT EXISTS hq_telegram_actions_user_idx ON hq_telegram_actions (user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS hq_telegram_actions_expiry_idx ON hq_telegram_actions (expires_at);
 CREATE INDEX IF NOT EXISTS hq_telegram_actions_draft_idx ON hq_telegram_actions (draft_id) WHERE draft_id IS NOT NULL;
@@ -931,5 +952,11 @@ CREATE TABLE IF NOT EXISTS hq_reminder_deliveries (
   resolved_at timestamptz,
   UNIQUE (captain_user_id, hackathon_id, period_id, reminder_type)
 );
+-- When the queue will try again, copied from the outgoing row so the record
+-- stays readable after that row is purged on its own shorter retention. An
+-- admin looking at a reminder that has not arrived needs to tell "nobody has
+-- tried yet" from "Telegram asked us to wait a minute", and before this the
+-- two looked identical.
+ALTER TABLE hq_reminder_deliveries ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz;
 CREATE INDEX IF NOT EXISTS hq_reminder_deliveries_edition_idx ON hq_reminder_deliveries (hackathon_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS hq_reminder_deliveries_open_idx ON hq_reminder_deliveries (period_id) WHERE state = 'queued';
