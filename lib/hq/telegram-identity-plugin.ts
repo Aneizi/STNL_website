@@ -204,10 +204,11 @@ function databaseHooks(): DatabaseHooks {
          * because this pool is a different connection and could not see the
          * uncommitted user the row references.
          */
-        before: async (account) => {
+        before: async (account, context) => {
           if (!isTelegram(account)) return;
           const identity = identityFromAccount(account);
           if (!identity) {
+            log(context).warn("hq-telegram-identity: incomplete identity");
             throw new APIError("BAD_REQUEST", { code: "telegram_identity_incomplete", message: "Telegram did not return a usable identity. Try again." });
           }
           const holder = await findTelegramIdentityConflict(identity);

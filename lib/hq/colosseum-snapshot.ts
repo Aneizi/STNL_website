@@ -69,11 +69,11 @@ export function interpretSubmission(input: { checked: boolean; submittedAt: stri
 }
 
 /** Whether a submission timestamp beat the edition's deadline. Null when either side is unknown. */
-export function submittedOnTime(submittedAt: string | null, submissionEnd: string | null): boolean | null {
+export function submittedOnTime(submittedAt: string | null, submissionEnd: string | null, exclusiveEnd = false): boolean | null {
   if (!submittedAt || !submissionEnd) return null;
   const at = Date.parse(submittedAt);
   const end = Date.parse(submissionEnd);
-  return Number.isFinite(at) && Number.isFinite(end) ? at <= end : null;
+  return Number.isFinite(at) && Number.isFinite(end) ? (exclusiveEnd ? at < end : at <= end) : null;
 }
 
 /** The normalized columns one Colosseum snapshot writes onto `hq_project_onboarding`. */

@@ -42,6 +42,7 @@ export async function GET(request: Request) {
       closed: summary.closures.closed,
       reminders: summary.reminders,
       delivery: summary.delivery,
+      submissions: summary.submissions,
       purged: summary.purged,
     });
   } catch (error) {

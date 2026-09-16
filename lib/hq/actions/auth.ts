@@ -165,5 +165,5 @@ export async function changePassword(
 
 export async function logout() {
   await destroySession();
-  redirect("/hq/login");
+  redirect("/hq/admin/login");
 }

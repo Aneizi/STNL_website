@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertProjectHackathon,
   ColosseumApiError,
+  colosseumProjectUrl,
   fetchColosseumProject,
   fetchEditionSubmissionWindow,
   parseColosseumProjectUrl,
@@ -45,6 +46,29 @@ describe("Colosseum project links", () => {
   });
 
   it.each([
+    "https://colosseum.com/arena/projects/nihilium-recovery",
+    "https://colosseum.com/arena/projects/nihilium-recovery/",
+    "  https://colosseum.com/arena/projects/nihilium-recovery/?utm_source=telegram#team  ",
+    "https://colosseum.com/arena/projects/nihilium-recovery?slug=other&type=OTHER",
+    "https://colosseum.com/arena/projects/explore/nihilium-recovery",
+    "https://colosseum.com/arena/projects/explore/nihilium-recovery/?utm_source=share#team",
+  ])("parses the shared link %s before constructing the API request", async (url) => {
+    expect(parseColosseumProjectUrl(url)).toBe("nihilium-recovery");
+    expect(colosseumProjectUrl(parseColosseumProjectUrl(url))).toBe("https://colosseum.com/arena/projects/nihilium-recovery");
+    const fetcher = mockFetch([json(projectResponse({ slug: "nihilium-recovery" }))]);
+    const result = await fetchColosseumProject(url, fetcher);
+    expect(result.slug).toBe("nihilium-recovery");
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(String(fetcher.mock.calls[0][0])).toBe("https://api.colosseum.com/api/project?slug=nihilium-recovery&type=HACKATHON");
+  });
+
+  it("keeps a legacy project whose slug is explore distinct from the directory when saving its link", () => {
+    const saved = colosseumProjectUrl(parseColosseumProjectUrl("https://colosseum.com/arena/projects/explore/explore"));
+    expect(saved).toBe("https://colosseum.com/arena/projects/explore/explore");
+    expect(parseColosseumProjectUrl(saved)).toBe("explore");
+  });
+
+  it.each([
     `http://colosseum.com/arena/projects/explore/${projectSlug}`,
     `https://colosseum.com.evil.test/arena/projects/explore/${projectSlug}`,
     `https://colosseum.com@evil.test/arena/projects/explore/${projectSlug}`,
@@ -58,6 +82,21 @@ describe("Colosseum project links", () => {
     "https://colosseum.com/arena/projects/explore/with space",
     `https://colosseum.com/arena/projects/explore/${projectSlug}/extra`,
     "https://colosseum.com/arena/projects/explore/",
+    "https://colosseum.com/arena/projects/explore",
+    "https://colosseum.com/arena/projects/",
+    "https://colosseum.com/arena/projects/nihilium-recovery/extra",
+    "https://colosseum.com/arena/projects/nihilium-recovery%2fother",
+    "https://colosseum.com/arena/projects/../projects/nihilium-recovery",
+    "https://colosseum.com/arena/projects/./nihilium-recovery",
+    "https://colosseum.com/arena/projects/%2e/nihilium-recovery",
+    "https://colosseum.com/arena/projects/explore/%2E%2E/nihilium-recovery",
+    "https://colosseum.com/arena/projects/explore/.%2e/nihilium-recovery",
+    "https://colosseum.com/arena/projects/explore/%2e./nihilium-recovery",
+    "https://colosseum.com.evil.test/arena/projects/nihilium-recovery",
+    "https://colosseum.com@evil.test/arena/projects/nihilium-recovery",
+    "https://evil@colosseum.com/arena/projects/nihilium-recovery",
+    "https://colosseum.com:444/arena/projects/nihilium-recovery",
+    "http://colosseum.com/arena/projects/nihilium-recovery",
     projectSlug,
   ])("rejects unsafe or unsupported link %s before fetching", async (url) => {
     const fetcher = mockFetch([]);

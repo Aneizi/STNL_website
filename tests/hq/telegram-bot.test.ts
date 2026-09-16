@@ -35,7 +35,7 @@ import {
 } from "@/lib/hq/reporting";
 import type { TelegramBotConfig, TelegramSender } from "@/lib/hq/telegram-bot-api";
 import { handleTelegramUpdate, type BotOutcome, type TelegramUpdate } from "@/lib/hq/telegram-bot";
-import { flushBotMessages, readBotDraft } from "@/lib/hq/telegram-bot-store";
+import { createBotAction, enqueueBotMessage, flushBotMessages, MAX_SEND_ATTEMPTS, readBotDraft } from "@/lib/hq/telegram-bot-store";
 import { TELEGRAM_TEXT_LIMIT } from "@/lib/hq/telegram-bot-view";
 import { setBotConsent } from "@/lib/hq/telegram-consent";
 import { handleTelegramWebhookRequest, SECRET_HEADER } from "@/lib/hq/telegram-webhook";
@@ -150,6 +150,11 @@ async function seedAccount(id: string, name: string) {
 }
 
 async function connectTelegram(userId: string, telegramUserId: string) {
+  await rows(
+    `INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org',$2,'telegram',$3)
+     ON CONFLICT (id) DO UPDATE SET "accountId"=EXCLUDED."accountId"`,
+    [`telegram-${userId}`, `tg-${telegramUserId}`, userId],
+  );
   await rows(
     `INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id) VALUES($1,$2,$3::bigint)
      ON CONFLICT (user_id) DO UPDATE SET telegram_user_id = EXCLUDED.telegram_user_id`,
@@ -313,6 +318,21 @@ describe("permissions", () => {
 });
 
 describe("adding an update", () => {
+  it("keeps composing and My notes in the edition named by the reminder", async () => {
+    await rows("INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES(82,'default-edition','Earlier edition',current_date-10,current_date+30)");
+    const action = await createBotAction(db, { userId: CAPTAIN, chatId: CHAT, kind: "compose.page", hackathonId: EDITION });
+    const list = await run(callbackUpdate(CAPTAIN_TELEGRAM, action.id));
+    await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(list, "Vault Team")));
+    const preview = await run(messageUpdate(CAPTAIN_TELEGRAM, "Text for the reminder's edition"));
+    expect(preview.outcome).toBe("preview");
+    expect((await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")))).outcome).toBe("saved");
+    expect((await rows("SELECT p.hackathon_id FROM hq_reporting_entries e JOIN hq_reporting_periods p ON p.id=e.period_id"))[0].hackathon_id).toBe(EDITION);
+    const notesAction = await createBotAction(db, { userId: CAPTAIN, chatId: CHAT, kind: "notes.page", hackathonId: EDITION });
+    const notes = await run(callbackUpdate(CAPTAIN_TELEGRAM, notesAction.id));
+    expect(allText(notes)).toContain("Text for the reminder");
+    const opened = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(notes, "Read")));
+    expect(opened.outcome).toBe("note");
+  });
   it("saves through the same reporting service the website uses, and completes the week", async () => {
     const { preview } = await composeTo("Vault Team", "Met the team, shipping the swap flow this week.");
     expect(preview.outcome).toBe("preview");
@@ -372,6 +392,18 @@ describe("adding an update", () => {
 });
 
 describe("sensitive notes", () => {
+  it("packs a My notes page whose names and snippets expand during HTML escaping", async () => {
+    await rows("UPDATE hq_projects SET name=$2 WHERE id=$1", [PROJECT, '"'.repeat(120)]);
+    for (let index = 0; index < 4; index += 1) {
+      const result = await createUpdate(member(CAPTAIN, ["captain"]), { projectId: PROJECT, hackathonId: EDITION, body: '"'.repeat(160), visibility: "shared", source: "hq" }, db);
+      expect(result.ok).toBe(true);
+    }
+    const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
+    const notes = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "My notes")));
+    expect(notes.replies.length).toBeGreaterThan(1);
+    expect(notes.replies.every((reply) => reply.text.length <= TELEGRAM_TEXT_LIMIT)).toBe(true);
+    expect(buttons(notes).filter((button) => button.text.startsWith("Read"))).toHaveLength(4);
+  });
   it("offers the sensitive audience to the assigned Captain and saves it restricted", async () => {
     const { preview } = await composeTo("Vault Team", "The lead is stretched thin, I am watching it.");
     const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive")));
@@ -749,6 +781,35 @@ describe("a button belongs to one draft, and to one state of it", () => {
 });
 
 describe("one transaction around a save", () => {
+  it("rebuilds the text preview and Save controls after its Telegram send fails", async () => {
+    const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
+    const list = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "Add update")));
+    await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(list, "Vault Team")));
+    const update = messageUpdate(CAPTAIN_TELEGRAM, "Keep this draft and its controls");
+    const refusing: TelegramSender = { sendMessage: async () => ({ ok: false, retryable: true, code: "telegram_500", detail: null }), answerCallbackQuery: async () => {} };
+    expect((await handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender: refusing })).status).toBe(502);
+    const sent: Parameters<TelegramSender["sendMessage"]>[0][] = [];
+    const sender: TelegramSender = { sendMessage: async (message) => { sent.push(message); return { ok: true, messageId: 1 }; }, answerCallbackQuery: async () => {} };
+    const retry = await handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender });
+    expect(retry.status).toBe(200);
+    expect(sent.some((message) => message.text.includes("Keep this draft and its controls"))).toBe(true);
+    const keyboard = sent.at(-1)?.replyMarkup as { inline_keyboard: { text: string; callback_data: string }[][] };
+    const save = keyboard.inline_keyboard.flat().find((button) => button.text === "Save");
+    expect(save).toBeDefined();
+    expect((await run(callbackUpdate(CAPTAIN_TELEGRAM, save!.callback_data))).outcome).toBe("saved");
+  });
+
+  it("rebuilds changed visibility after a failed preview without applying the toggle twice", async () => {
+    const { preview } = await composeTo("Vault Team", "Keep the sensitive audience");
+    const update = callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive"));
+    const refusing: TelegramSender = { sendMessage: async () => ({ ok: false, retryable: true, code: "telegram_500", detail: null }), answerCallbackQuery: async () => {} };
+    expect((await handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender: refusing })).status).toBe(502);
+    const sender = countingSender();
+    const retry = await handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender: sender.sender });
+    expect(retry.body).toMatchObject({ outcome: "preview" });
+    expect(await readBotDraft(db, { userId: CAPTAIN, chatId: CHAT })).toMatchObject({ visibility: "sensitive", revision: 3 });
+    expect(sender.calls.join("\n")).toContain("Keep the sensitive audience");
+  });
   /**
    * A handle that fails the first query matching `fragment`, INSIDE the
    * transaction as well as outside it.
@@ -839,6 +900,65 @@ describe("one transaction around a save", () => {
 });
 
 describe("escaping and delivery", () => {
+  it("claims only what it can send within the invocation deadline", async () => {
+    await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
+    for (let index = 0; index < 4; index += 1) {
+      await enqueueBotMessage(db, { chatId: CHAT, userId: CAPTAIN, kind: "test", body: `message ${index}` });
+    }
+    const base = Date.now();
+    let wall = base;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => wall);
+    try {
+      const sender: TelegramSender = { sendMessage: async () => { wall += 7_000; return { ok: true, messageId: 1 }; }, answerCallbackQuery: async () => {} };
+      expect(await flushBotMessages(db, sender, { deadlineMs: base + 20_000 })).toMatchObject({ sent: 2, stoppedOnBudget: true });
+      const queued = await rows("SELECT attempts, claimed_by FROM hq_telegram_outgoing WHERE state='queued'");
+      expect(queued).toHaveLength(2);
+      expect(queued.every((row) => row.attempts === 0 && row.claimed_by === null)).toBe(true);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("resolves a final delivery attempt interrupted by worker death as uncertain", async () => {
+    const id = await enqueueBotMessage(db, { chatId: CHAT, userId: CAPTAIN, kind: "test", body: "Unknown delivery" });
+    await rows("UPDATE hq_telegram_outgoing SET attempts=$2, claimed_by='dead-worker', claim_expires_at=now()-interval '1 second' WHERE id=$1", [id, MAX_SEND_ATTEMPTS]);
+    const sender = countingSender();
+    expect(await flushBotMessages(db, sender.sender)).toMatchObject({ failed: 1 });
+    expect(sender.calls).toHaveLength(0);
+    expect((await rows("SELECT state,last_error FROM hq_telegram_outgoing WHERE id=$1", [id]))[0]).toMatchObject({ state: "failed", last_error: expect.stringContaining("network:") });
+  });
+
+  it("measures retry_after from Telegram's response, after the request latency", async () => {
+    await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
+    await enqueueBotMessage(db, { chatId: CHAT, userId: CAPTAIN, kind: "test", body: "Rate limited" });
+    const base = Date.now();
+    let wall = base;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => wall);
+    try {
+      const sender: TelegramSender = { sendMessage: async () => { wall += 5_000; return { ok: false, retryable: true, code: "telegram_429", detail: null, retryAfterSeconds: 30 }; }, answerCallbackQuery: async () => {} };
+      await flushBotMessages(db, sender, { limit: 1 });
+      const [queued] = await rows("SELECT next_attempt_at FROM hq_telegram_outgoing");
+      expect((queued.next_attempt_at as Date).getTime()).toBe(base + 35_000);
+    } finally { clock.mockRestore(); }
+  });
+
+  it("stops delivery when provider unlink succeeded but identity cleanup did not", async () => {
+    const { preview } = await composeTo("Vault Team", "Saved before unlink");
+    await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")));
+    await rows('DELETE FROM hq_auth_account WHERE "userId"=$1', [CAPTAIN]);
+    const sender = countingSender();
+    await flushBotMessages(db, sender.sender);
+    expect(sender.calls).toHaveLength(0);
+    expect((await rows("SELECT skip_reason FROM hq_telegram_outgoing"))[0].skip_reason).toBe("telegram_disconnected");
+  });
+
+  it("does not deliver account history after its recipient account is deleted", async () => {
+    const { preview } = await composeTo("Vault Team", "Saved before account deletion");
+    await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")));
+    await rows("DELETE FROM hq_builder_profiles WHERE id=$1", [CAPTAIN]);
+    const sender = countingSender();
+    await flushBotMessages(db, sender.sender);
+    expect(sender.calls).toHaveLength(0);
+    expect((await rows("SELECT state,skip_reason FROM hq_telegram_outgoing"))[0]).toMatchObject({ state: "skipped", skip_reason: "telegram_disconnected" });
+  });
   it("escapes markup in a project name and in a note body", async () => {
     await rows("UPDATE hq_projects SET name = $2 WHERE id = $1::uuid", [PROJECT, "<b>Vault</b> & Co"]);
     const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));

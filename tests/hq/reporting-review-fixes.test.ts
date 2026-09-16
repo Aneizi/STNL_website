@@ -136,7 +136,7 @@ describe("finding 1: reconciliation never removes a week that holds reporting", 
 
     // An update saved in the fourth week, committed, exactly as a team would.
     const saved = await createUpdate(member("owner-1"), {
-      projectId: PROJECT, hackathonId: EDITION, body: "Week four", periodId: fourth.id,
+      projectId: PROJECT, hackathonId: EDITION, body: "Week four", periodId: fourth.id, atMs: Date.parse(fourth.startsAt),
     }, db);
     expect(saved.ok).toBe(true);
 

@@ -55,7 +55,7 @@ describe("the continuation page", () => {
     mocks.currentMember.mockResolvedValue(null);
     const html = await render();
     expect(html).toContain("Captain access");
-    expect(html).toMatch(/<a[^>]*href="\/hq\/signin\?next=%2Fhq%2Finvite%2Fcontinue"[^>]*>Sign in to continue<\/a>/);
+    expect(html).toMatch(/<a[^>]*href="\/hq\/login\?next=%2Fhq%2Finvite%2Fcontinue"[^>]*>Sign in to continue<\/a>/);
     expect(html).not.toContain("data-testid=\"accept-form\"");
   });
 

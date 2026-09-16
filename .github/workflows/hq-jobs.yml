@@ -15,9 +15,9 @@ on:
   schedule:
     # Every 30 minutes, at 07 and 37 past, away from the top of the hour where
     # GitHub's own scheduler is busiest and runs are delayed the most. The
-    # reminder is due at 12:00 Europe/Amsterdam, so the worst case is a
-    # reminder about half an hour late, and a run that never happens at all
-    # still catches up later the same day.
+    # reminder is due at 12:00 Europe/Amsterdam. The next successful run
+    # handles it; GitHub can delay or skip scheduled runs, so delivery time
+    # is not guaranteed by this interval.
     - cron: "7,37 * * * *"
   # The authenticated manual retry. Admins also have a Run now button inside
   # HQ; this one is for somebody with repository access and no HQ session.

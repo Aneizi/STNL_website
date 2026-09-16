@@ -69,12 +69,18 @@ export type GeneratedPeriod = {
 
 const DAY_MS = 86_400_000;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME = /^(\d{2}):(\d{2})$/;
+const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+export function isCalendarDate(value: string): boolean {
+  if (!DATE.test(value)) return false;
+  const at = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(at) && new Date(at).toISOString().slice(0, 10) === value;
+}
 
 /** Calendar-day arithmetic on an ISO date, done in UTC so no local offset or clock change can shift the day. */
 export function addDays(iso: string, days: number): string {
   const at = Date.parse(`${iso}T00:00:00Z`);
-  if (!Number.isFinite(at)) throw new RangeError(`Not an ISO date: ${iso}`);
+  if (!isCalendarDate(iso)) throw new RangeError(`Not an ISO date: ${iso}`);
   return new Date(at + days * DAY_MS).toISOString().slice(0, 10);
 }
 
@@ -116,7 +122,7 @@ function zoneOffsetMs(instant: Date, timezone: string): number {
  * jumped to.
  */
 export function zonedDateTimeToUtc(date: string, time: string, timezone: string): Date {
-  if (!DATE.test(date)) throw new RangeError(`Not an ISO date: ${date}`);
+  if (!isCalendarDate(date)) throw new RangeError(`Not an ISO date: ${date}`);
   const match = TIME.exec(time);
   if (!match) throw new RangeError(`Not an HH:MM time: ${time}`);
   const naive = Date.parse(`${date}T${match[1]}:${match[2]}:00Z`);
@@ -158,11 +164,11 @@ const localMidnight = (date: string, timezone: string) => zonedDateTimeToUtc(dat
  */
 function periodDateRanges(schedule: ReportingSchedule): { mode: ReportingPeriodMode; startDate: string; endDate: string }[] {
   const { startDate, endDate } = schedule;
-  if (!DATE.test(startDate) || !DATE.test(endDate) || daysBetween(startDate, endDate) < 0) return [];
+  if (!isCalendarDate(startDate) || !isCalendarDate(endDate) || daysBetween(startDate, endDate) < 0) return [];
   // A final start outside the campaign is not a schedule anyone can act on,
   // so it is ignored rather than clamped: clamping would silently relabel
   // every week as the submission period, or none of it, on a typo.
-  const finalStart = schedule.finalPeriodStartDate && DATE.test(schedule.finalPeriodStartDate)
+  const finalStart = schedule.finalPeriodStartDate && isCalendarDate(schedule.finalPeriodStartDate)
     && daysBetween(startDate, schedule.finalPeriodStartDate) >= 0
     && daysBetween(schedule.finalPeriodStartDate, endDate) >= 0
     ? schedule.finalPeriodStartDate

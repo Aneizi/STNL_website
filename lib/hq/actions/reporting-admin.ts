@@ -1,23 +1,29 @@
 "use server";
 
 import { z } from "zod";
+import { ColosseumApiError, fetchEditionSubmissionWindow } from "@/lib/colosseum-api";
 import type { Actor } from "../actor";
 import { requireUser, type HqUser } from "../auth";
 import { loadEntry, loadProjectEdition } from "../authz-sql";
 import { builderDatabase } from "../builder-db";
+import { builderStore } from "../builder-store";
 import { BuilderError } from "../builder-types";
 import { requireHackathon } from "../hackathon";
 import {
   correctOutcome,
+  createUpdate,
+  editUpdate,
   enableReporting,
   ensureReportingPeriods,
   listPeriodOutcomes,
   listReportingPeriods,
+  MAX_BODY_LENGTH,
   pauseReporting,
   previewReportingPeriods,
   readAuthorizedUpdates,
   readReportingSchedule,
   readRevisionHistory,
+  recordColosseumDeadline,
   reportingStatus,
   voidUpdate,
   writeReportingConfig,
@@ -27,7 +33,17 @@ import {
   type ReportingPeriodPlan,
   type ReportingRevision,
 } from "../reporting";
-import { zonedDateTimeToUtc } from "../reporting-periods";
+import { isCalendarDate, zonedDateTimeToUtc } from "../reporting-periods";
+import {
+  listSubmissionReconciliations,
+  readSubmissionReconciliations,
+  readSubmissionSnapshots,
+  type ProjectSubmissionSnapshot,
+  type SubmissionReconciliation,
+} from "../submission";
+import { isMaterialKey } from "../submission-readiness";
+import { ADD_UPDATE_MESSAGES, EDIT_UPDATE_MESSAGES } from "../reporting-view";
+import type { AddUpdateInput, AddUpdateResult, EditUpdateActionInput, EditUpdateActionResult } from "./reporting";
 import type { ActionResult } from "../types";
 import { inHackathon, refreshHq } from "./util";
 
@@ -53,12 +69,32 @@ import { inHackathon, refreshHq } from "./util";
  */
 
 const uuid = z.string().uuid();
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const isoDate = z.string().refine(isCalendarDate);
 const reasonSchema = z.string().trim().min(3).max(500);
 /** What a `datetime-local` field submits: a wall clock with no offset. The seconds a browser may append are ignored. */
 const LOCAL_DATE_TIME = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?$/;
 /** The same fallback `readReportingSchedule` uses when an edition has no timezone setting of its own. */
 const CAMPAIGN_TIMEZONE_FALLBACK = "Europe/Amsterdam";
+/** The floor on automatic submission checks, matching the CHECK constraint on the column. */
+const MIN_SUBMISSION_REFRESH_MINUTES = 15;
+
+/**
+ * Why HQ could not read the edition's deadline, one sentence per cause. The
+ * same rule imports follow: no failure collapses into a generic message, and
+ * Colosseum's own words are never shown.
+ */
+const DEADLINE_READ_MESSAGES: Record<string, string> = {
+  INVALID_URL: "That Colosseum edition id is not one we can ask about.",
+  NOT_FOUND: "Colosseum does not know that edition id. Check it under Builder onboarding.",
+  RATE_LIMITED: "Colosseum asked us to slow down. Try again in a few minutes.",
+  TIMED_OUT: "Colosseum did not answer in time. Try again in a moment.",
+  UNREACHABLE: "We could not reach Colosseum. Try again in a moment.",
+  INVALID_RESPONSE: "Colosseum answered with something we could not read.",
+  SOURCE_REJECTED: "Colosseum refused the request. Its project directory for this edition is most likely still closed.",
+  UNAVAILABLE: "Colosseum is not answering right now. Try again in a moment.",
+  WRONG_HACKATHON: "Colosseum answered about a different edition.",
+};
+
 /** How many updates, and how many saved versions, one admin read returns before the rest go behind a cursor. */
 const ADMIN_PAGE = 50;
 const REVISION_PAGE = 25;
@@ -70,6 +106,49 @@ const operatorActor = (user: HqUser): Actor => ({ kind: "operator", id: user.id,
 async function projectInEdition(projectId: string, hackathonId: number) {
   const edition = await loadProjectEdition(builderDatabase(), projectId);
   return inHackathon(edition, hackathonId);
+}
+
+/** Operators use the same entry service and version conflicts as members. */
+export async function addAdminReportingUpdate(input: Omit<AddUpdateInput, "hackathonId">): Promise<AddUpdateResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = z.object({
+    projectId: uuid, body: z.string().max(MAX_BODY_LENGTH + 1),
+    visibility: z.enum(["shared", "sensitive"]).optional(),
+    expectedPeriodId: uuid.optional(), periodId: uuid.optional(),
+  }).safeParse(input);
+  if (!parsed.success) return { ok: false, reason: "not_authorized", error: ADD_UPDATE_MESSAGES.not_authorized };
+  const result = await createUpdate(operatorActor(user), { ...parsed.data, hackathonId: hackathon.id, source: "hq" });
+  if (result.ok) {
+    refreshHq();
+    return { ok: true, entry: result.entry, completesPeriod: result.completesPeriod };
+  }
+  if (result.reason === "period_changed") {
+    return { ok: false, reason: "period_changed", error: ADD_UPDATE_MESSAGES.period_changed, currentPeriod: result.currentPeriod ?? null };
+  }
+  return { ok: false, reason: result.reason, error: ADD_UPDATE_MESSAGES[result.reason] };
+}
+
+export async function editAdminReportingUpdate(input: EditUpdateActionInput): Promise<EditUpdateActionResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = z.object({
+    entryId: uuid, body: z.string().max(MAX_BODY_LENGTH + 1).optional(),
+    visibility: z.enum(["shared", "sensitive"]).optional(),
+    expectedVersion: z.number().int().positive(), confirmAudienceChange: z.boolean().optional(),
+  }).safeParse(input);
+  if (!parsed.success || !inHackathon(await loadEntry(builderDatabase(), parsed.data.entryId), hackathon.id)) {
+    return { ok: false, reason: "not_found", error: EDIT_UPDATE_MESSAGES.not_found };
+  }
+  const result = await editUpdate(operatorActor(user), parsed.data);
+  if (result.ok) {
+    refreshHq();
+    return result;
+  }
+  if (result.reason === "conflict") {
+    return { ok: false, reason: "conflict", error: EDIT_UPDATE_MESSAGES.conflict, current: result.current ?? null };
+  }
+  return { ok: false, reason: result.reason, error: EDIT_UPDATE_MESSAGES[result.reason] };
 }
 
 export type ReportingScheduleView = {
@@ -128,15 +207,24 @@ export async function saveReportingConfiguration(input: {
   officialSubmissionDeadline: string;
   nudgeWeekday: number;
   nudgeTime: string;
+  /** Phase 10: which submission materials this edition asks for. Anything in neither list stays Unknown on every screen. */
+  requiredMaterials?: string[];
+  optionalMaterials?: string[];
+  /** Minutes between automatic submission checks during the final period. Empty or zero turns them off. */
+  submissionRefreshMinutes?: number | null;
 }): Promise<ActionResult> {
   await requireUser();
   const hackathon = await requireHackathon();
+  const materials = z.array(z.string().max(60)).max(20).optional();
   const parsed = z
     .object({
       finalPeriodStartDate: z.union([isoDate, z.literal("")]),
       officialSubmissionDeadline: z.string().max(40),
       nudgeWeekday: z.number().int().min(1).max(7),
-      nudgeTime: z.string().regex(/^\d{2}:\d{2}$/),
+      nudgeTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+      requiredMaterials: materials,
+      optionalMaterials: materials,
+      submissionRefreshMinutes: z.number().int().min(0).max(10_080).nullish(),
     })
     .safeParse(input);
   if (!parsed.success) return { ok: false, error: "Check the reporting settings and try again." };
@@ -155,15 +243,96 @@ export async function saveReportingConfiguration(input: {
   if (deadline && !deadlineParts) {
     return { ok: false, error: "That submission deadline is not a date and time we can read." };
   }
+  if (schedule && parsed.data.finalPeriodStartDate
+    && (parsed.data.finalPeriodStartDate < schedule.startDate || parsed.data.finalPeriodStartDate > schedule.endDate)) {
+    return { ok: false, error: "The final period must start within this hackathon's reporting dates." };
+  }
+  let officialSubmissionDeadline: string | null = null;
+  try {
+    if (deadlineParts) officialSubmissionDeadline = zonedDateTimeToUtc(deadlineParts[1], deadlineParts[2], timezone).toISOString();
+  } catch {
+    return { ok: false, error: "That submission deadline is not a valid date and time." };
+  }
+  // An interval below the column's floor would be a rate-limit incident
+  // rather than a setting, so it is refused here with its own sentence rather
+  // than by the CHECK constraint. Zero and empty both mean off.
+  const refresh = parsed.data.submissionRefreshMinutes;
+  if (refresh != null && refresh > 0 && refresh < MIN_SUBMISSION_REFRESH_MINUTES) {
+    return { ok: false, error: `Automatic submission checks cannot run more often than every ${MIN_SUBMISSION_REFRESH_MINUTES} minutes.` };
+  }
+  // An unrecognised material key is dropped rather than refused: the arrays
+  // are configuration, and a key left behind by a renamed material must not
+  // make the whole form unsaveable.
+  const keys = (values: string[] | undefined) => (values === undefined ? undefined : values.filter(isMaterialKey));
   await writeReportingConfig(builderDatabase(), {
     hackathonId: hackathon.id,
     finalPeriodStartDate: parsed.data.finalPeriodStartDate || null,
-    officialSubmissionDeadline: deadlineParts ? zonedDateTimeToUtc(deadlineParts[1], deadlineParts[2], timezone).toISOString() : null,
+    officialSubmissionDeadline,
     nudgeWeekday: parsed.data.nudgeWeekday,
     nudgeTime: parsed.data.nudgeTime,
+    ...(keys(parsed.data.requiredMaterials) !== undefined ? { requiredMaterials: keys(parsed.data.requiredMaterials) } : {}),
+    ...(keys(parsed.data.optionalMaterials) !== undefined ? { optionalMaterials: keys(parsed.data.optionalMaterials) } : {}),
+    ...(refresh !== undefined ? { submissionRefreshMinutes: refresh ? refresh : null } : {}),
   });
   refreshHq();
   return { ok: true };
+}
+
+/**
+ * Reads the edition's own submission deadline from Colosseum and records it.
+ *
+ * `fetchEditionSubmissionWindow` is phase 3's one reader of
+ * `projectSubmissionEndDate`, and this is its first production caller. It
+ * asks about the EXTERNAL edition id an admin configured under Builder
+ * onboarding; there is no constant here and none anywhere else.
+ *
+ * Every failure keeps its own sentence, the rule imports have followed since
+ * phase 3, and none of them erases what is already stored: an edition whose
+ * project directory is still disabled answers 400, which is a fact about
+ * Colosseum's directory and not about the deadline an admin may already have
+ * typed in.
+ */
+export async function readColosseumDeadline(): Promise<{ ok: true; deadline: string | null } | { ok: false; error: string }> {
+  await requireUser();
+  const hackathon = await requireHackathon();
+  const edition = await builderStore().hackathon(hackathon.id);
+  if (edition.externalId == null) {
+    return { ok: false, error: "Set this hackathon's Colosseum edition id under Builder onboarding first." };
+  }
+  const checkedAt = new Date().toISOString();
+  try {
+    const window = await fetchEditionSubmissionWindow(edition.externalId);
+    const config = await recordColosseumDeadline(builderDatabase(), {
+      hackathonId: hackathon.id,
+      deadline: window?.submissionEnd ?? null,
+      checkedAt,
+    });
+    refreshHq();
+    if (!window) return { ok: false, error: "Colosseum does not list that edition, so it has no submission deadline to read." };
+    if (!window.submissionEnd) return { ok: false, error: "Colosseum lists that edition but has not published a submission deadline for it yet." };
+    return { ok: true, deadline: config.officialSubmissionDeadline };
+  } catch (error) {
+    if (error instanceof ColosseumApiError) {
+      await recordColosseumDeadline(builderDatabase(), { hackathonId: hackathon.id, deadline: null, checkedAt });
+      refreshHq();
+      return { ok: false, error: DEADLINE_READ_MESSAGES[error.code] };
+    }
+    throw error;
+  }
+}
+
+/**
+ * The edition's submission reconciliations, for the admin panel. Evidence
+ * about a closed final period: which projects HQ has confirmed, which it
+ * could not reach, and which weeks were corrected because the evidence
+ * arrived late.
+ */
+export async function loadSubmissionReconciliations(): Promise<
+  { ok: true; rows: SubmissionReconciliation[] } | { ok: false; error: string }
+> {
+  await requireUser();
+  const hackathon = await requireHackathon();
+  return { ok: true, rows: await listSubmissionReconciliations(builderDatabase(), { hackathonId: hackathon.id }) };
 }
 
 /** Puts a project the admin tracks manually into weekly reporting. Idempotent, and it never moves an existing start. */
@@ -263,6 +432,10 @@ export type ProjectReportingDetail = {
   paused: boolean;
   missedPeriods: number;
   current: PeriodStatus | null;
+  /** The project's Colosseum snapshot, when it has one. Phase 10's "checking submission status", for one project. */
+  submission: ProjectSubmissionSnapshot | null;
+  /** What the closing reconciliation established, or has not been able to. Empty before the final period closes. */
+  reconciliations: SubmissionReconciliation[];
 };
 
 /**
@@ -285,9 +458,11 @@ export async function loadProjectReporting(projectId: string): Promise<
   if (!(await projectInEdition(projectId, hackathon.id))) return { ok: false, error: "That project is no longer there." };
   const db = builderDatabase();
   const actor = operatorActor(user);
-  const [statuses, page] = await Promise.all([
+  const [statuses, page, snapshots, reconciliations] = await Promise.all([
     reportingStatus(db, { hackathonId: hackathon.id, projectIds: [projectId], includeHistory: true }),
     readAuthorizedUpdates(actor, { projectId, hackathonId: hackathon.id, limit: ADMIN_PAGE }),
+    readSubmissionSnapshots(db, [projectId]),
+    readSubmissionReconciliations(db, { projectIds: [projectId] }),
   ]);
   const status = statuses[0];
   const closed = (status?.history ?? []).filter((period) => period.closed);
@@ -306,6 +481,8 @@ export async function loadProjectReporting(projectId: string): Promise<
       paused: Boolean(status?.paused),
       missedPeriods: status?.missedPeriods ?? 0,
       current: status?.current ?? null,
+      submission: snapshots.get(projectId) ?? null,
+      reconciliations,
     },
   };
 }

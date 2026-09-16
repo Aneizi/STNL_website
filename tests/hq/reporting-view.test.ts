@@ -18,6 +18,7 @@ import {
   EDIT_UPDATE_MESSAGES,
   MAX_CONTACT_LENGTH,
   missedLabel,
+  mergeUpdatePages,
   NO_UPDATES_YET,
   normalizeContact,
   periodRangeLabel,
@@ -31,6 +32,22 @@ import {
 } from "@/lib/hq/reporting-view";
 
 const AMSTERDAM = "Europe/Amsterdam";
+
+describe("updates after saves and page refreshes", () => {
+  const old = { id: "old", version: 1, submittedAt: "2026-09-14T10:00:00Z", body: "Before" };
+  const latest = { id: "new", version: 1, submittedAt: "2026-09-15T10:00:00Z", body: "Today" };
+  it("shows a new first-page update while retaining already loaded older entries", () => {
+    expect(mergeUpdatePages([old], [latest])).toEqual([latest, old]);
+  });
+  it("replaces a saved entry once, without losing older pages or reversing a newer edit", () => {
+    const edited = { ...old, version: 2, body: "After" };
+    expect(mergeUpdatePages([latest, old], [edited])).toEqual([latest, edited]);
+    expect(mergeUpdatePages([latest, edited], [old, latest])).toEqual([latest, edited]);
+  });
+  it("uses a stable ID order when timestamps tie, matching the server cursor", () => {
+    expect(mergeUpdatePages([old], [{ ...old, id: "z" }]).map((entry) => entry.id)).toEqual(["z", "old"]);
+  });
+});
 
 /** The plan's first week: 14 to 21 September 2026, in Europe/Amsterdam. */
 const WEEK_ONE = {
@@ -194,6 +211,12 @@ describe("the copy rule", () => {
       "components/hq/reporting-member.tsx",
       "components/hq/reporting-admin.tsx",
       "components/hq/reporting-project-panel.tsx",
+      // Phase 10's final period. Its copy lives in its own pure module
+      // rather than in ./reporting-view, so the scan is extended to it
+      // instead: the contract's rule is that reporting copy stays inside
+      // this scan, and what matters is that it is covered.
+      "lib/hq/submission-readiness.ts",
+      "components/hq/submission-focus.tsx",
     ]) {
       // Comments are prose for the next reader, not interface copy, so only
       // the quoted and JSX text is scanned.

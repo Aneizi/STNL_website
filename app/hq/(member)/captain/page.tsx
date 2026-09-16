@@ -64,17 +64,20 @@ export default async function CaptainPage() {
   const store = builderStore();
   const hackathonId = await store.currentHackathonId();
   const db = builderDatabase();
+  // One request instant, read before the board and passed into it, so the
+  // week the board decided, the final period it decided was open and the
+  // prompt this page renders all answer to the same moment.
+  const at = nowMs();
   const [board, ranking] = hackathonId === null
     ? [null, []]
     : await Promise.all([
-        captainReportingBoard(actor, hackathonId, db),
+        captainReportingBoard(actor, hackathonId, db, at),
         leaderboard(db, hackathonId, actor.id),
       ]);
   // The imported detail, where there is any. One lookup per assigned project,
   // and null is a perfectly good answer for a project the CRM created.
   const cards = [...(board?.cards ?? [])].sort((a, b) => byOutstandingFirst(a.status, b.status));
   const teams = await Promise.all(cards.map((card) => store.teamById(card.status.projectId)));
-  const at = nowMs();
 
   return (
     <BuilderShell>
@@ -96,6 +99,7 @@ export default async function CaptainPage() {
             teamContact={card.teamContact}
             entries={card.entries}
             nextCursor={card.nextCursor}
+            submissionFocus={card.submissionFocus}
             timezone={board?.timezone ?? "Europe/Amsterdam"}
             nowMs={at}
           >

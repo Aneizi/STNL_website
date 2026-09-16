@@ -218,6 +218,14 @@ export async function correctPersonMatch(
     );
     if (!persons.length) throw new BuilderError("This person is no longer in the CRM.");
     const fromUserId = persons[0].builder_user_id == null ? null : String(persons[0].builder_user_id);
+    // A team link may connect an unclaimed roster identity to its redeemer.
+    // Moving a person away from another account remains an operator action,
+    // because that move also changes cards and roster links in other teams.
+    if (input.actor.kind !== "operator"
+      && (input.actor.kind !== "member" || input.toUserId !== input.actor.id
+        || (fromUserId !== null && fromUserId !== input.actor.id))) {
+      throw new BuilderError("This roster identity is already linked to another HQ account. Ask an admin to check the match before joining.");
+    }
     const result: PersonMatchCorrection = {
       changed: false, personId: input.personId, fromUserId, toUserId: input.toUserId,
       survivingPersonId: input.personId, mergedPersonId: null, replacementPersonId: null, deletedPersonId: null,

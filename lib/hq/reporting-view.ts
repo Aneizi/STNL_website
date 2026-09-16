@@ -19,6 +19,15 @@ const MONTHS = [
 
 const DAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
+/** Merge refreshed/saved updates with already loaded pages, without duplicates or reverting a newer edit. */
+export function mergeUpdatePages<T extends { id: string; version: number; submittedAt: string }>(current: readonly T[], incoming: readonly T[]): T[] {
+  const byId = new Map(current.map((entry) => [entry.id, entry]));
+  for (const entry of incoming) {
+    if ((byId.get(entry.id)?.version ?? 0) <= entry.version) byId.set(entry.id, entry);
+  }
+  return [...byId.values()].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt) || b.id.localeCompare(a.id));
+}
+
 /**
  * How long a contact line may be: longer than any handle, email or short
  * line someone would type, short enough that a card never has to truncate a

@@ -5,6 +5,7 @@ import { showToast } from "@/components/hq/toast";
 import { loadMoreReminderDeliveries, runReportingJobsNow, type RunJobsResult } from "@/lib/hq/actions/jobs";
 import {
   applyReportingSchedule,
+  readColosseumDeadline,
   saveReportingConfiguration,
   type ReportingScheduleView,
 } from "@/lib/hq/actions/reporting-admin";
@@ -13,6 +14,8 @@ import type { ReportingPeriodConflict, ReportingScheduleProblem } from "@/lib/hq
 import { utcToZonedDateTime } from "@/lib/hq/reporting-periods";
 import type { ReminderDeliveryView } from "@/lib/hq/jobs";
 import { periodRangeLabel } from "@/lib/hq/reporting-view";
+import type { SubmissionReconciliation } from "@/lib/hq/submission";
+import { MATERIAL_KEYS, MATERIAL_LABELS } from "@/lib/hq/submission-readiness";
 import styles from "./builder-admin.module.css";
 
 /**
@@ -138,6 +141,44 @@ function problemLine(problem: ReportingScheduleProblem): string {
   return "The weeks would no longer be numbered one after another.";
 }
 
+/**
+ * What HQ has established about each team's Colosseum submission after the
+ * final period closed.
+ *
+ * Three answers, never collapsed into two. Confirmed and on time is a fact.
+ * Confirmed and late is also a fact, and the week it belongs to stays exactly
+ * as it was recorded. "Not established" is the third, and it is what an
+ * outage produces: HQ could not reach Colosseum, so it claims nothing, and
+ * the job keeps trying on every later pass.
+ */
+function SubmissionReconciliations({ rows }: { rows: SubmissionReconciliation[] }) {
+  if (rows.length === 0) {
+    return <p>Nothing to reconcile yet. Rows appear here once the final submission period has closed.</p>;
+  }
+  return (
+    <ul className={styles.roster} aria-label="Submission reconciliation">
+      {rows.map((row) => (
+        <li key={`${row.periodId}:${row.projectId}`}>
+          <span>
+            {row.state === "pending"
+              ? `Not established yet. ${row.attempts} ${row.attempts === 1 ? "attempt" : "attempts"} so far${row.lastError ? ", the last one did not get through" : ""}. Nothing has been recorded against the team.`
+              : row.submissionStatus === "submitted"
+                ? row.onTime
+                  ? `Submitted on time${row.submittedAt ? ` on ${row.submittedAt.slice(0, 10)}` : ""}.${row.outcomeCorrected ? " The recorded period was corrected to Updated, with an audit event." : ""}`
+                  : `Submitted after the deadline${row.submittedAt ? ` on ${row.submittedAt.slice(0, 10)}` : ""}. The recorded period is unchanged.`
+                : row.submissionStatus === "not_submitted"
+                  ? "Colosseum has no submission for this team."
+                  : "Colosseum answered, but had nothing to say about a submission."}
+          </span>
+          <span className={styles.badge}>
+            {row.state === "pending" ? "Not established" : row.submissionStatus === "submitted" ? (row.onTime ? "On time" : "Late") : "No submission"}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
   const [plan, setPlan] = useState(data.plan);
   const timezone = data.schedule?.timezone ?? "Europe/Amsterdam";
@@ -149,6 +190,18 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
   const [ranSummary, setRanSummary] = useState("");
   const [reminderLimit, setReminderLimit] = useState(reminders.length);
   const [loadingMore, startLoadMore] = useTransition();
+  const [readingDeadline, startDeadline] = useTransition();
+  const [deadlineNote, setDeadlineNote] = useState("");
+
+  // Colosseum's own cutoff, read from the edition's listing envelope rather
+  // than typed. A failure keeps its own sentence and never erases a deadline
+  // an admin already entered.
+  const readDeadline = () =>
+    startDeadline(async () => {
+      setDeadlineNote("");
+      const result = await readColosseumDeadline();
+      setDeadlineNote(result.ok ? "Read from Colosseum and saved. Reload to see it in the field above." : result.error);
+    });
 
   const showMoreReminders = () =>
     startLoadMore(async () => {
@@ -171,7 +224,7 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
         return;
       }
       setReminders(result.view.deliveries);
-      const { closures, reminders: counts, delivery } = result.summary;
+      const { closures, reminders: counts, delivery, submissions } = result.summary;
       const parts = [
         `${counts.due} reminder${counts.due === 1 ? "" : "s"} were due`,
         `${counts.queued} prepared`,
@@ -179,6 +232,12 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
         `${closures.closed} week${closures.closed === 1 ? "" : "s"} closed`,
       ];
       if (delivery) parts.push(`${delivery.sent} delivered`);
+      if (submissions.refreshed.attempted) parts.push(`${submissions.refreshed.refreshed} submission check${submissions.refreshed.refreshed === 1 ? "" : "s"} refreshed`);
+      if (submissions.reconciled.attempted) {
+        parts.push(`${submissions.reconciled.resolved} submission${submissions.reconciled.resolved === 1 ? "" : "s"} confirmed`);
+        if (submissions.reconciled.stillPending) parts.push(`${submissions.reconciled.stillPending} still not established`);
+        if (submissions.reconciled.corrected) parts.push(`${submissions.reconciled.corrected} recorded period${submissions.reconciled.corrected === 1 ? "" : "s"} corrected`);
+      }
       setRanSummary(`${parts.join(", ")}.`);
     });
 
@@ -272,11 +331,19 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
           const formData = new FormData(form);
           startSave(async () => {
             setSaved("");
+            const refresh = String(formData.get("submissionRefresh") ?? "").trim();
             const result = await saveReportingConfiguration({
               finalPeriodStartDate: String(formData.get("finalStart") ?? ""),
               officialSubmissionDeadline: String(formData.get("officialDeadline") ?? ""),
               nudgeWeekday: Number(formData.get("nudgeWeekday")),
               nudgeTime: String(formData.get("nudgeTime") ?? "12:00"),
+              // Checkboxes submit only what is ticked, so both arrays are
+              // always sent: an untouched form would otherwise read as
+              // "leave the materials alone" and unticking the last one
+              // would never save.
+              requiredMaterials: formData.getAll("required").map(String),
+              optionalMaterials: formData.getAll("optional").map(String),
+              submissionRefreshMinutes: refresh === "" ? 0 : Number(refresh),
             });
             setSaved(result.ok ? "Saved. Check the weeks above, then apply." : result.error ?? "Could not save. Try again.");
           });
@@ -311,6 +378,41 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
               Reminder time
               <input name="nudgeTime" type="time" defaultValue={data.config.nudgeTime} required />
             </label>
+            <label className={styles.field}>
+              Check submissions automatically, every (minutes)
+              <input
+                name="submissionRefresh"
+                type="number"
+                min={0}
+                step={5}
+                placeholder="off"
+                defaultValue={data.config.submissionRefreshMinutes ?? ""}
+              />
+            </label>
+          </div>
+
+          {/* Which materials this edition actually asks for. Nothing is
+              required until an admin says so: Colosseum publishes no
+              per-field requirement HQ can read, so an edition nobody has
+              configured shows every material as Not known rather than
+              inventing a checklist. */}
+          <h4>Submission materials this hackathon asks for</h4>
+          <div className={styles.grid}>
+            {MATERIAL_KEYS.map((key) => (
+              <div key={key} className={styles.field}>
+                {MATERIAL_LABELS[key]}
+                <span style={{ display: "flex", gap: 12, fontSize: 13 }}>
+                  <label>
+                    <input type="checkbox" name="required" value={key} defaultChecked={data.config.requiredMaterials.includes(key)} />
+                    {" "}Required
+                  </label>
+                  <label>
+                    <input type="checkbox" name="optional" value={key} defaultChecked={data.config.optionalMaterials.includes(key)} />
+                    {" "}Optional
+                  </label>
+                </span>
+              </div>
+            ))}
           </div>
           <p className={styles.muted}>
             The final period merges the last weeks into one submission-focused window that runs to the hackathon&apos;s end date. The Colosseum
@@ -319,12 +421,40 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
             The reminder day and time decide when the Wednesday Captain reminder goes out, and a change takes effect for every week whose
             reminder has not been recorded yet.
           </p>
+          <p className={styles.muted}>
+            A material that is neither required nor optional is shown to teams as Not known, which is the honest answer: Colosseum does not tell us
+            what this edition asks for. Automatic submission checks only run during the final period, no more often than every 15 minutes, and
+            never more than a handful of projects at a time. Leave the field empty to turn them off and let teams press Check submission themselves.
+          </p>
           <div className={styles.actions}>
             <button className={styles.secondary} type="submit">Save reporting settings</button>
           </div>
         </fieldset>
         {(saving || saved) && <div className={styles.feedback} role="status">{saving ? "Saving…" : saved}</div>}
       </form>
+
+      <div className={styles.actions}>
+        <button className={styles.secondary} type="button" onClick={readDeadline} disabled={readingDeadline}>
+          {readingDeadline ? "Asking Colosseum…" : "Read the deadline from Colosseum"}
+        </button>
+      </div>
+      <p className={styles.muted}>
+        {data.config.officialDeadlineSource === "colosseum"
+          ? "The deadline above came from Colosseum."
+          : data.config.officialDeadlineSource === "admin"
+            ? "The deadline above was typed in here."
+            : "No submission deadline is recorded, so a submission is judged against the end of the final period."}
+        {data.config.officialDeadlineCheckedAt
+          ? ` Last asked Colosseum on ${data.config.officialDeadlineCheckedAt.slice(0, 10)}.`
+          : " Colosseum has not been asked for it yet."}
+        {" Reading it needs this hackathon's Colosseum edition id, set under Builder onboarding. An edition whose project directory is still closed has no published deadline to read."}
+      </p>
+      {(readingDeadline || deadlineNote) && (
+        <div className={styles.feedback} role="status">{readingDeadline ? "Asking Colosseum…" : deadlineNote}</div>
+      )}
+
+      <h3>Final submission period</h3>
+      <SubmissionReconciliations rows={data.reconciliations} />
 
       <h3>Wednesday Captain reminders</h3>
       <p>
@@ -340,6 +470,10 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
           {running ? "Running…" : "Run the reminder and closure job now"}
         </button>
       </div>
+      <p className={styles.muted}>
+        This runs due reminders, period closure and submission checks for all editions in this deployment.
+        The history below shows the selected edition.
+      </p>
       {(running || ranSummary) && <div className={styles.feedback} role="status">{running ? "Running…" : ranSummary}</div>}
       {reminders.length === 0 && <p>No reminder has been recorded for this hackathon yet.</p>}
       {reminders.length > 0 && (

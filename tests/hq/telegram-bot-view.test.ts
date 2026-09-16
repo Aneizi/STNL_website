@@ -39,6 +39,15 @@ const WEEK = { startDate: "2026-09-14", endDate: "2026-09-20", completed: false 
 const PROJECT: ProjectSummary = { projectId: "p1", projectName: "Vault Team", current: WEEK, missedPeriods: 0 };
 
 describe("escaping", () => {
+  it("preserves every space when a long note is split and packed", () => {
+    const body = "One & two three four ".repeat(220);
+    const chunks = chunkForEscaped(body, 80);
+    expect(chunks.join("")).toBe(body);
+    const messages = packMessages([{ quote: body }]);
+    const quoted = messages.flatMap((message) => [...message.matchAll(/<blockquote>([\s\S]*?)<\/blockquote>/g)].map((match) => match[1])).join("");
+    expect(quoted).toBe(escapeHtml(body));
+    expect(messages.every((message) => message.length <= TELEGRAM_TEXT_LIMIT)).toBe(true);
+  });
   it("escapes every character Telegram's HTML parser reads", () => {
     expect(escapeHtml(`<b>&"'`)).toBe("&lt;b&gt;&amp;&quot;&#39;");
   });

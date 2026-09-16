@@ -326,7 +326,7 @@ describe("operator changePassword", () => {
 
     await expect(
       actions.changePassword(null, form({ password: NEXT_PASSWORD, confirm: NEXT_PASSWORD })),
-    ).rejects.toThrow("REDIRECT:/hq/login");
+    ).rejects.toThrow("REDIRECT:/hq/admin/login");
 
     expect(
       (await rows<{ password_version: number }>("SELECT password_version FROM hq_users"))[0]
@@ -415,7 +415,7 @@ describe("operator changePassword", () => {
     // ...and still opens nothing, because its row is gone.
     state.jar.set(COOKIE, { value: oldToken, options: {} });
     expect(await auth.currentUser()).toBeNull();
-    await expect(auth.requireUser()).rejects.toThrow("REDIRECT:/hq/login");
+    await expect(auth.requireUser()).rejects.toThrow("REDIRECT:/hq/admin/login");
 
     // Even were the row restored, the password_version bump alone rejects it.
     await state.pg!.query(
@@ -434,7 +434,7 @@ describe("operator logout", () => {
     ).rejects.toThrow("REDIRECT:/hq/select");
     expect(await auth.currentUser()).not.toBeNull();
 
-    await expect(actions.logout()).rejects.toThrow("REDIRECT:/hq/login");
+    await expect(actions.logout()).rejects.toThrow("REDIRECT:/hq/admin/login");
 
     expect(state.jar.has(COOKIE)).toBe(false);
     expect(await rows("SELECT id FROM hq_sessions")).toHaveLength(0);
@@ -449,7 +449,7 @@ describe("operator logout", () => {
     );
     state.jar.set(COOKIE, { value: "not-a-signed-token", options: {} });
 
-    await expect(actions.logout()).rejects.toThrow("REDIRECT:/hq/login");
+    await expect(actions.logout()).rejects.toThrow("REDIRECT:/hq/admin/login");
 
     expect(state.jar.has(COOKIE)).toBe(false);
     expect(await rows("SELECT id FROM hq_sessions")).toHaveLength(1);
@@ -480,7 +480,7 @@ describe("the operator session and the public member session stay separate", () 
       options: {},
     });
     expect(await auth.currentUser()).toBeNull();
-    await expect(auth.requireUser()).rejects.toThrow("REDIRECT:/hq/login");
+    await expect(auth.requireUser()).rejects.toThrow("REDIRECT:/hq/admin/login");
 
     // Copied into the operator cookie name it is still not a signed hq_session.
     state.jar.set(COOKIE, { value: "fictional-member-session-token", options: {} });

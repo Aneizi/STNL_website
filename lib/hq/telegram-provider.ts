@@ -33,7 +33,7 @@ const TELEGRAM_ALGORITHMS = ["RS256"];
 const ID_TOKEN_MAX_AGE = "10 minutes";
 const PLACEHOLDER_NAMESPACE = "telegram";
 
-/** Claims Telegram puts in an id_token for the `openid profile` scopes. */
+/** Parsed Telegram claims for the `openid profile` scopes, with the user id normalized. */
 export type TelegramIdTokenClaims = {
   iss: string;
   aud: string | string[];
@@ -41,7 +41,7 @@ export type TelegramIdTokenClaims = {
   iat: number;
   exp: number;
   nonce?: string;
-  /** Numeric Telegram user id, at most 52 significant bits. Present with the `profile` scope. */
+  /** Telegram user id normalized from a number or decimal string. Present with the `profile` scope. */
   id?: number;
   name?: string;
   given_name?: string;
@@ -86,10 +86,13 @@ export function parseTelegramClaims(payload: JWTPayload | Record<string, unknown
   if (typeof aud !== "string" && !(Array.isArray(aud) && aud.every((a) => typeof a === "string"))) return null;
   if (typeof iat !== "number" || typeof exp !== "number") return null;
   const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+  // Live Telegram responses use a string; accept the documented numeric form too.
+  // Reject coercions such as whitespace, signs or exponents, and preserve exact integers.
+  const telegramId = typeof id === "string" && /^[1-9]\d{0,15}$/.test(id) ? Number(id) : id;
   return {
     iss, aud: aud as string | string[], sub, iat, exp,
     nonce: text(nonce),
-    id: typeof id === "number" && Number.isSafeInteger(id) && id > 0 ? id : undefined,
+    id: typeof telegramId === "number" && Number.isSafeInteger(telegramId) && telegramId > 0 ? telegramId : undefined,
     name: text(name), given_name: text(given_name), family_name: text(family_name),
     preferred_username: text(preferred_username), picture: text(picture),
   };

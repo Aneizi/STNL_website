@@ -1,9 +1,9 @@
 import "server-only";
-import { ColosseumApiError, fetchColosseumProject, type ColosseumErrorCode, type ColosseumFetch } from "@/lib/colosseum-api";
+import { ColosseumApiError, colosseumProjectUrl, fetchColosseumProject, type ColosseumErrorCode, type ColosseumFetch } from "@/lib/colosseum-api";
 import { builderStore } from "./builder-store";
 import {
-  BuilderError, ImportRefusedError, isNetherlands,
-  type BuilderIdentity, type ImportRefusal,
+  BuilderError, ImportRefusedError, isNetherlands, JOIN_LINK_MESSAGES,
+  type BuilderIdentity, type ImportRefusal, type JoinProject, type JoinLinkRefusal,
 } from "./builder-types";
 
 /**
@@ -14,7 +14,9 @@ import {
  * and error reporting"): an import is accepted when, and only when, the
  * fetched project is a Netherlands project AND its `hackathonId` equals the
  * external edition id an admin configured in `hq_hackathon_onboarding`. There
- * is no ownership proof, no pending state and no approval queue.
+ * is no ownership proof, no pending state and no approval queue. Before the
+ * import completes, the authenticated importer selects their own roster
+ * entry; that membership is committed with the new project.
  *
  * Neither gate value is ever hard coded. The country string is the plan's own
  * (`lib/hq/builder-types.ts#NETHERLANDS`); the external edition id is
@@ -43,6 +45,29 @@ export type ImportFailureReason =
 export type ImportOutcome =
   | { ok: true; projectId: string }
   | { ok: false; reason: ImportFailureReason; message: string };
+
+export type ImportPreviewOutcome =
+  | { ok: true; project: { name: string; projectUrl: string; members: { username: string; name: string; avatarUrl: string | null }[] } }
+  | { ok: false; reason: ImportFailureReason; message: string };
+
+/** Preview carries source references only. No team, person or membership is created. */
+export async function previewColosseumTeam(input: { hackathonId: number; url: string }, fetcher: ColosseumFetch = fetch): Promise<ImportPreviewOutcome> {
+  const store = builderStore();
+  const edition = await store.hackathon(input.hackathonId);
+  if (edition.externalId == null) return refusal('edition_not_configured');
+  if (!edition.projectsOpen || (edition.projectsAvailableAt && Date.parse(edition.projectsAvailableAt) > Date.now())) return refusal('imports_closed');
+  try {
+    const project = await fetchColosseumProject(input.url, fetcher);
+    const refused = gateProject(project, { ...edition, hackathonId: edition.id });
+    if (refused) return refusal(refused);
+    if (await store.importedProject(input.hackathonId, project.externalId)) return refusal('already_imported');
+    return { ok: true, project: { name: project.name, projectUrl: colosseumProjectUrl(project.slug),
+      members: project.members.map(member => ({ username: member.username, name: member.displayName, avatarUrl: member.avatarUrl })) } };
+  } catch (error) {
+    if (error instanceof ColosseumApiError) return { ok: false, ...importFailureFor(error) };
+    throw error;
+  }
+}
 
 /**
  * One Colosseum transport/lookup failure, mapped to its own outcome. This is
@@ -115,7 +140,7 @@ export function gateProject(
  */
 export async function importColosseumTeam(
   user: BuilderIdentity,
-  input: { hackathonId: number; url: string },
+  input: { hackathonId: number; url: string; selectedUsername: string },
   fetcher: ColosseumFetch = fetch,
 ): Promise<ImportOutcome> {
   const store = builderStore();
@@ -152,7 +177,8 @@ export async function importColosseumTeam(
     const projectId = await store.importTeam(user, {
       hackathonId: input.hackathonId,
       project,
-      projectUrl: `https://colosseum.com/arena/projects/explore/${project.slug}`,
+      projectUrl: colosseumProjectUrl(project.slug),
+      selectedUsername: input.selectedUsername,
     });
     return { ok: true, projectId };
   } catch (error) {
@@ -204,7 +230,7 @@ export async function attachColosseumSource(
       projectId: input.projectId,
       hackathonId: input.hackathonId,
       project,
-      projectUrl: `https://colosseum.com/arena/projects/explore/${project.slug}`,
+      projectUrl: colosseumProjectUrl(project.slug),
       operatorId: input.operatorId,
     });
     return { ok: true, projectId: input.projectId };
@@ -215,8 +241,28 @@ export async function attachColosseumSource(
   }
 }
 
-function refusal(reason: ImportRefusal): ImportOutcome {
+function refusal(reason: ImportRefusal): Extract<ImportOutcome, { ok: false }> {
   return { ok: false, reason, message: new ImportRefusedError(reason).message };
+}
+
+/** Refresh the roster behind a valid link before offering seats, including a previously full team. */
+export async function previewTeamInvitation(code: string, fetcher: ColosseumFetch = fetch): Promise<
+  { ok: true; data: JoinProject } | { ok: false; reason: JoinLinkRefusal | ImportFailureReason; message: string }
+> {
+  const store = builderStore();
+  const invitation = await store.invitation(code);
+  if (!invitation.ok) return { ...invitation, message: JOIN_LINK_MESSAGES[invitation.reason] };
+  try {
+    const project = await fetchColosseumProject(invitation.data.projectUrl, fetcher);
+    await store.refreshTeam({ projectId: invitation.data.projectId, hackathonId: invitation.data.hackathonId, project, forJoining: true });
+    const refreshed = await store.invitation(code);
+    return refreshed.ok ? refreshed : { ...refreshed, message: JOIN_LINK_MESSAGES[refreshed.reason] };
+  } catch (error) {
+    if (error instanceof ColosseumApiError) return { ok: false, ...importFailureFor(error) };
+    if (error instanceof ImportRefusedError) return refusal(error.reason);
+    if (error instanceof BuilderError) return { ok: false, reason: 'unavailable', message: error.message };
+    throw error;
+  }
 }
 
 /**
@@ -238,7 +284,10 @@ export async function refreshColosseumTeam(
       await store.recordSourceFailure(input.projectId, error.code, error.sourceMessage);
       return { ok: false, ...importFailureFor(error) };
     }
-    if (error instanceof BuilderError) return { ok: false, reason: "unavailable", message: error.message };
+    if (error instanceof BuilderError) {
+      await store.recordSourceFailure(input.projectId, "SOURCE_MISMATCH", error.message);
+      return { ok: false, reason: "unavailable", message: error.message };
+    }
     throw error;
   }
 }

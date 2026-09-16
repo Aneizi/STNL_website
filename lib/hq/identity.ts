@@ -2,6 +2,7 @@ import "server-only";
 import type { BuilderQuery } from "./builder-db";
 import { builderDatabase, builderStore } from "./builder-store";
 import { isPlaceholderEmail } from "./placeholder-email";
+import { activeTelegramIdentitySql } from "./telegram-identity-sql";
 
 // The rule for the internal placeholder address lives in ./placeholder-email
 // (not ./telegram-provider, which is reserved for the public member auth
@@ -45,7 +46,7 @@ function toIdentity(row: Record<string, unknown>): TelegramIdentity {
 }
 
 export async function getTelegramIdentity(userId: string): Promise<TelegramIdentity | null> {
-  const { rows } = await builderDatabase().query(`SELECT ${COLUMNS} FROM hq_auth_telegram_identity WHERE user_id = $1`, [userId]);
+  const { rows } = await builderDatabase().query(`SELECT ${COLUMNS} FROM hq_auth_telegram_identity i WHERE user_id = $1 AND ${activeTelegramIdentitySql()}`, [userId]);
   return rows.length ? toIdentity(rows[0]) : null;
 }
 
@@ -66,12 +67,12 @@ export async function findTelegramIdentityByTelegramUserId(
   db: BuilderQuery = builderDatabase(),
 ): Promise<TelegramIdentity | null> {
   if (!/^\d{1,19}$/.test(String(telegramUserId ?? ""))) return null;
-  const { rows } = await db.query(`SELECT ${COLUMNS} FROM hq_auth_telegram_identity WHERE telegram_user_id = $1::bigint`, [telegramUserId]);
+  const { rows } = await db.query(`SELECT ${COLUMNS} FROM hq_auth_telegram_identity i WHERE telegram_user_id = $1::bigint AND ${activeTelegramIdentitySql()}`, [telegramUserId]);
   return rows.length ? toIdentity(rows[0]) : null;
 }
 
 export async function hasTelegramIdentity(userId: string): Promise<boolean> {
-  const { rows } = await builderDatabase().query(`SELECT 1 FROM hq_auth_telegram_identity WHERE user_id = $1`, [userId]);
+  const { rows } = await builderDatabase().query(`SELECT 1 FROM hq_auth_telegram_identity i WHERE user_id = $1 AND ${activeTelegramIdentitySql()}`, [userId]);
   return rows.length > 0;
 }
 

@@ -17,7 +17,7 @@ export const dynamic = "force-dynamic";
 // A handler sends a small number of Telegram messages and nothing else. The
 // Vercel Hobby ceiling is 60 seconds; a normal update finishes in well under
 // one.
-export const maxDuration = 30;
+export const maxDuration = 60;
 
 export async function POST(request: Request) {
   const result = await handleTelegramWebhookRequest(request);

@@ -3,7 +3,7 @@
 import type { RefObject } from "react";
 
 /** The status line every code form shows once a code went out; the expiry matches `expiresIn` in lib/hq/member-auth.ts. */
-export const CODE_SENT_COPY = "Code sent. It expires in 5 minutes.";
+export const CODE_SENT_COPY = "Code sent. It expires in 15 minutes.";
 
 type FieldProps = {
   value: string;

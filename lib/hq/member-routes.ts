@@ -1,6 +1,6 @@
 // The public HQ route list, in one place. The proxy lets these paths past
-// the operator cookie gate and safeMemberNext() lets them be a post-auth
-// destination; a route added here is known to both at once.
+// the operator cookie gate. safeMemberNext() permits the same destinations
+// except login pages, which would loop after authentication.
 //
 // Client-safe on purpose: this module is bundled for the browser through
 // member-auth-config.ts and the sign-in form, so it holds paths and nothing
@@ -29,6 +29,9 @@ const JOIN_PATH_PREFIX = "/hq/join/";
  */
 export const CAPTAIN_PATH = "/hq/captain";
 
+/** Login and its compatibility redirect are public, but never post-auth destinations. */
+const MEMBER_LOGIN_PATHS = ["/hq/login", "/hq/signin"] as const;
+
 /**
  * Every member page. An entry ending in "/" names a subtree whose next and
  * last segment is a single id (a team's project id, an invitation token);
@@ -37,7 +40,7 @@ export const CAPTAIN_PATH = "/hq/captain";
  * started from an invitation can return to it.
  */
 export const MEMBER_PUBLIC_PATHS = [
-  "/hq/signin",
+  ...MEMBER_LOGIN_PATHS,
   "/hq/profile",
   "/hq/welcome",
   "/hq/dashboard",
@@ -48,6 +51,7 @@ export const MEMBER_PUBLIC_PATHS = [
   // link reaches. See joinLink() and parseJoinCode() below.
   JOIN_PATH_PREFIX,
   "/hq/team/",
+  "/hq/hackathon/",
   "/hq/account",
   "/hq/account/connect-telegram",
   "/hq/account/disconnect-telegram",
@@ -134,14 +138,14 @@ const MEMBER_FALLBACK = "/hq/welcome";
  * Keeps authentication redirects within public HQ, never the admin surface
  * and never another origin. Same-origin relative paths only (no scheme, no
  * "//", no backslash, no control character), resolved so ".." cannot climb,
- * then matched against the member route list. The query is kept for the
- * page it belongs to; the fragment is dropped.
+ * then matched against the member route list, excluding login pages. The
+ * query is kept for the page it belongs to; the fragment is dropped.
  */
 export function safeMemberNext(value: unknown): string {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u0020]/.test(value)) return MEMBER_FALLBACK;
   try {
     const url = new URL(value, "https://hq.invalid");
-    if (url.origin !== "https://hq.invalid" || !isMemberPath(url.pathname)) return MEMBER_FALLBACK;
+    if (url.origin !== "https://hq.invalid" || !isMemberPath(url.pathname) || MEMBER_LOGIN_PATHS.some((path) => path === url.pathname)) return MEMBER_FALLBACK;
     return `${url.pathname}${url.search}`;
   } catch {
     return MEMBER_FALLBACK;

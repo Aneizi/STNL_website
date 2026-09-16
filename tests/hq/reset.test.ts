@@ -194,6 +194,10 @@ async function seedEverything() {
   // edition's weeks and goes with it.
   await run(`INSERT INTO hq_reminder_deliveries (captain_user_id, hackathon_id, period_id, reminder_type, due_at, state, project_count)
              VALUES ('builder-1', '${hackathon}', '${period}', 'weekly_nudge', '2026-09-16T10:00:00Z', 'sent', 2)`);
+  // The closing submission reconciliation (phase 10), which names one of the
+  // edition's weeks and one of its projects, and goes with both.
+  await run(`INSERT INTO hq_submission_reconciliations (period_id, project_id, hackathon_id, state)
+             VALUES ('${period}', '${project}', '${hackathon}', 'pending')`);
 }
 
 beforeEach(async () => {

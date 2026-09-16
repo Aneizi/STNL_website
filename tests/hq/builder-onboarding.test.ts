@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ImportedProject } from "@/lib/colosseum-api";
+import type { ColosseumFetch, ImportedProject } from "@/lib/colosseum-api";
 import { BuilderStore, type BuilderDatabase } from "@/lib/hq/builder-store";
 import * as builderModule from "@/lib/hq/builder-store";
+import * as identityModule from "@/lib/hq/identity";
 import type { BuilderIdentity } from "@/lib/hq/builder-types";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { assignCaptain } from "@/lib/hq/captains";
@@ -16,10 +17,9 @@ vi.mock("server-only", () => ({}));
 const actionMocks = vi.hoisted(() => ({ requireMember: vi.fn() }));
 vi.mock("@/lib/hq/member-auth", () => ({ requireMember: actionMocks.requireMember }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-import { chooseBuilderPath, importBuilderTeam, requestBuilderReview } from "@/lib/hq/actions/builders";
-import { JOIN_LINK_MESSAGES } from "@/lib/hq/builder-types";
+import { acceptBuilderInvite, chooseBuilderPath, importBuilderTeam, requestBuilderReview } from "@/lib/hq/actions/builders";
 import { joinLink, parseJoinCode } from "@/lib/hq/member-routes";
-import { gateProject } from "@/lib/hq/project-import";
+import { gateProject, previewColosseumTeam, previewTeamInvitation } from "@/lib/hq/project-import";
 
 const OWNER: BuilderIdentity = { id: "auth-owner", email: "owner@example.test", name: "Owner" };
 const TEAMMATE: BuilderIdentity = { id: "auth-teammate", email: "teammate@example.test", name: "Teammate" };
@@ -49,26 +49,40 @@ const PROJECT: ImportedProject = {
 };
 const PROJECT_URL = `https://colosseum.com/arena/projects/explore/${PROJECT.slug}`;
 
+function projectResponse(project = PROJECT) {
+  return new Response(JSON.stringify({ projectType: "HACKATHON", project: {
+    id: project.externalId, slug: project.slug, name: project.name, country: project.country,
+    hackathonId: project.hackathon.id, hackathon: project.hackathon, description: project.description,
+    submittedAt: project.submittedAt, teamMembers: project.members,
+  } }), { headers: { "Content-Type": "application/json" } });
+}
+
 let pg: PGlite;
 let db: BuilderDatabase;
 let store: BuilderStore;
 
 async function rows(text: string, values?: unknown[]) { return (await db.query(text, values)).rows; }
 
+async function ownTeam(userId: string, projectId: string) {
+  const team = (await store.teams(userId)).find(team => team.id === projectId);
+  if (!team) throw new Error("This team is not available to your account.");
+  return team;
+}
+
 async function prepareUsers() {
   await Promise.all([OWNER, TEAMMATE, OUTSIDER].map(user => store.syncAccount(user)));
 }
 
 /** One self-service import: no challenge, no proof, no approval — the whole flow is this call. */
-async function importProject(project = PROJECT, owner = OWNER, hackathonId = 41) {
-  return store.importTeam(owner, { hackathonId, project, projectUrl: `https://colosseum.com/arena/projects/explore/${project.slug}` });
+async function importProject(project = PROJECT, owner = OWNER, hackathonId = 41, selectedUsername = project.members[0].username) {
+  return store.importTeam(owner, { selectedUsername, hackathonId, project, projectUrl: `https://colosseum.com/arena/projects/explore/${project.slug}` });
 }
 
 async function invite() {
   const id = await importProject();
-  const team = await store.team(OWNER.id, id);
+  const team = await ownTeam(OWNER.id, id);
   const member = team.members.find(item => item.username === "fictional_builder_2")!;
-  return { projectId: id, memberId: member.id, code: await store.createInvite(OWNER.id, id, member.id) };
+  return { projectId: id, memberId: member.id, code: await store.createInvite(OWNER.id, id) };
 }
 
 beforeAll(async () => {
@@ -95,6 +109,19 @@ beforeEach(async () => {
 afterAll(async () => { await pg?.close(); });
 
 describe("builder accounts and edition-scoped People", () => {
+  it("reads unchanged accounts without opening a write transaction, and repairs missing CRM identity", async () => {
+    let transactions = 0;
+    const observed: BuilderDatabase = { query: vi.fn(db.query), transaction: work => { transactions += 1; return db.transaction(work); } };
+    const observedStore = new BuilderStore(observed);
+    await observedStore.syncAccount(OWNER);
+    expect(observed.query).toHaveBeenCalledTimes(1);
+    expect(transactions).toBe(0);
+    await db.query("DELETE FROM hq_crm_persons WHERE builder_user_id=$1", [OWNER.id]);
+    await observedStore.syncAccount(OWNER);
+    expect(transactions).toBe(1);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE builder_user_id=$1", [OWNER.id])).toEqual([{ n: 1 }]);
+  });
+
   it("applies the additive schema repeatedly", async () => {
     await expect(pg.exec(readFileSync(join(process.cwd(), "scripts/hq/builder-schema.sql"), "utf8"))).resolves.toBeDefined();
   });
@@ -334,9 +361,8 @@ describe("correcting a person match", () => {
     expect(viaCard).toMatchObject({ deletedPersonId: null });
     expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [teammatePerson])).toEqual([{ builder_user_id: null }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE person_id=$1", [teammatePerson])).toEqual([{ n: 1 }]);
-    // Three accounts, the two roster persons phase 3's import now creates,
-    // and the two fresh persons the clears above handed back to the accounts.
-    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 7 }]);
+    // Three original people and two replacements from the explicit clears.
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 5 }]);
   });
 
   it("links a roster person to an account without a person, leaving a colliding card unstamped and reported", async () => {
@@ -366,7 +392,7 @@ describe("correcting a person match", () => {
     const roster = await ensurePersonForRosterMember(db, { colosseumUsername: "fictional_builder_1", displayName: "Fictional Builder One" });
     const colliding = await rosterCard(41, roster);
     const moving = await rosterCard(42, roster);
-    await importProject();
+    await importProject(PROJECT, OUTSIDER, 41, PROJECT.members[1].username);
     await db.query("UPDATE hq_project_members SET person_id=$1 WHERE colosseum_username='fictional_builder_1'", [roster]);
     const result = await correctPersonMatch(db, { personId: roster, toUserId: OWNER.id, reason: "Owner imported the team under this handle", actor: OPERATOR_ACTOR });
     expect(result).toMatchObject({ changed: true, fromUserId: null, toUserId: OWNER.id, survivingPersonId: own, mergedPersonId: roster, movedCards: [moving], unlinkedCards: [colliding], movedRosterRows: 1 });
@@ -381,7 +407,7 @@ describe("correcting a person match", () => {
     expect(await ensurePersonForRosterMember(db, { colosseumUsername: "@Fictional_Builder_1", displayName: "Someone Else" })).toBe(own);
     // The import above writes its own project.imported event first; the
     // correction is the one under test.
-    expect(await events()).toEqual([expect.objectContaining({ kind: "project.imported" }), expect.objectContaining({
+    expect(await events()).toEqual([expect.objectContaining({ kind: "person.match_corrected" }), expect.objectContaining({ kind: "project.imported" }), expect.objectContaining({
       kind: "person.match_corrected", actor_id: OPERATOR_ACTOR.id, subject_user_id: OWNER.id,
       metadata: expect.objectContaining({ fromPersonId: roster, toPersonId: own, movedCards: [moving], unlinkedCards: [colliding], movedRosterRows: 1, mergedColosseumUsername: "fictional_builder_1" }),
     })]);
@@ -428,7 +454,7 @@ describe("correcting a person match", () => {
 });
 
 describe("self-service import", () => {
-  it("imports the project, its normalized snapshot, its roster and its People identities in one step", async () => {
+  it("imports a snapshot and roster references while linking only the selected importing account", async () => {
     const id = await importProject();
     expect(await rows(`SELECT p.name,p.lead_name,p.hackathon_id,o.stage,o.verification,o.country,o.category,o.twitter_handle,
       o.repo_link,(o.submitted_at AT TIME ZONE 'UTC')::text AS submitted_at,o.submission_status,o.source_status,o.external_hackathon_id,o.external_hackathon_slug,o.raw
@@ -442,14 +468,14 @@ describe("self-service import", () => {
         source_status: "ok", external_hackathon_id: 6, external_hackathon_slug: "frontier", raw: PROJECT.raw }]);
     expect(await rows(`SELECT name,colosseum_username,avatar_url,builder_user_id,person_id IS NOT NULL AS has_person
       FROM hq_project_members WHERE project_id=$1 ORDER BY sort`, [id])).toEqual([
-      { name: "Fictional Builder One", colosseum_username: "fictional_builder_1", avatar_url: null, builder_user_id: null, has_person: true },
-      { name: "Fictional Builder Two", colosseum_username: "fictional_builder_2", avatar_url: "https://static.example.test/two.png", builder_user_id: null, has_person: true },
+      { name: "Fictional Builder One", colosseum_username: "fictional_builder_1", avatar_url: null, builder_user_id: OWNER.id, has_person: true },
+      { name: "Fictional Builder Two", colosseum_username: "fictional_builder_2", avatar_url: "https://static.example.test/two.png", builder_user_id: null, has_person: false },
     ]);
-    // A People card per roster person, plus the importer's own account card.
+    // Only the already registered accounts have People cards.
     expect(await rows(`SELECT name FROM hq_people WHERE hackathon_id=41 ORDER BY name`))
-      .toEqual([{ name: "Fictional Builder One" }, { name: "Fictional Builder Two" }, { name: "Outsider" }, { name: "Owner" }, { name: "Teammate" }]);
+      .toEqual([{ name: "Outsider" }, { name: "Owner" }, { name: "Teammate" }]);
     expect(await rows("SELECT normalized_colosseum_username FROM hq_crm_persons WHERE normalized_colosseum_username IS NOT NULL ORDER BY 1"))
-      .toEqual([{ normalized_colosseum_username: "fictional_builder_1" }, { normalized_colosseum_username: "fictional_builder_2" }]);
+      .toEqual([{ normalized_colosseum_username: "fictional_builder_1" }]);
     expect(await rows("SELECT message FROM hq_activity")).toEqual([{ message: "Tulip Ledger imported from Colosseum" }]);
   });
 
@@ -467,14 +493,14 @@ describe("self-service import", () => {
 
   it("leaves no eligibility row behind when the import itself rolls back", async () => {
     await importProject();
-    await expect(store.importTeam(OUTSIDER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
+    await expect(store.importTeam(OUTSIDER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
       .rejects.toMatchObject({ reason: "already_imported" });
     expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_eligibility`)).toEqual([{ n: 1 }]);
   });
 
   it("reports an already-imported project rather than creating a second team", async () => {
     await importProject();
-    await expect(store.importTeam(OUTSIDER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
+    await expect(store.importTeam(OUTSIDER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
       .rejects.toMatchObject({ reason: "already_imported" });
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 1 }]);
     expect(await rows("SELECT owner_user_id FROM hq_project_onboarding")).toEqual([{ owner_user_id: OWNER.id }]);
@@ -482,8 +508,8 @@ describe("self-service import", () => {
 
   it("refuses a simultaneous second import of the same project without leaving a half-written team", async () => {
     const results = await Promise.allSettled([
-      store.importTeam(OWNER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }),
-      store.importTeam(OUTSIDER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }),
+      store.importTeam(OWNER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }),
+      store.importTeam(OUTSIDER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }),
     ]);
     expect(results.filter(item => item.status === "fulfilled")).toHaveLength(1);
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 1 }]);
@@ -495,14 +521,14 @@ describe("self-service import", () => {
     ["not_dutch", { ...PROJECT, country: null }],
     ["wrong_edition", { ...PROJECT, hackathon: { id: 7, slug: "next-edition", name: "Next" } }],
   ])("refuses with reason %s and writes nothing", async (reason, project) => {
-    await expect(store.importTeam(OWNER, { hackathonId: 41, project, projectUrl: PROJECT_URL })).rejects.toMatchObject({ reason });
+    await expect(store.importTeam(OWNER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project, projectUrl: PROJECT_URL })).rejects.toMatchObject({ reason });
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
   });
 
   it("refuses when the edition mapping is unset rather than comparing against null", async () => {
     await db.query("UPDATE hq_hackathon_onboarding SET external_hackathon_id=NULL WHERE hackathon_id=41");
-    await expect(store.importTeam(OWNER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
+    await expect(store.importTeam(OWNER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
       .rejects.toMatchObject({ reason: "edition_not_configured" });
     expect(gateProject(PROJECT, { hackathonId: 41, externalId: null, externalSlug: null, projectsOpen: true, projectsAvailableAt: null }))
       .toBe("edition_not_configured");
@@ -510,7 +536,7 @@ describe("self-service import", () => {
 
   it.each(["projects_open=false", "projects_available_at=now()+interval '1 day'"])("refuses while imports are closed: %s", async (change) => {
     await db.query(`UPDATE hq_hackathon_onboarding SET ${change} WHERE hackathon_id=41`);
-    await expect(store.importTeam(OWNER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
+    await expect(store.importTeam(OWNER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
       .rejects.toMatchObject({ reason: "imports_closed" });
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
   });
@@ -518,7 +544,7 @@ describe("self-service import", () => {
   it("rolls the whole import back if any part of it fails", async () => {
     await db.query("ALTER TABLE hq_activity ADD CONSTRAINT test_activity_failure CHECK (message='')");
     try {
-      await expect(store.importTeam(OWNER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL })).rejects.toThrow();
+      await expect(store.importTeam(OWNER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL })).rejects.toThrow();
       expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
       expect(await rows("SELECT count(*)::int AS n FROM hq_project_members")).toEqual([{ n: 0 }]);
       expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE normalized_colosseum_username IS NOT NULL")).toEqual([{ n: 0 }]);
@@ -529,19 +555,33 @@ describe("self-service import", () => {
     await importProject();
     const second = { ...PROJECT, externalId: 90002, slug: "orchid-relay", name: "Orchid Relay",
       members: [PROJECT.members[1], { username: "fictional_builder_3", displayName: "Fictional Builder Three", avatarUrl: null }] };
-    await store.importTeam(OUTSIDER, { hackathonId: 41, project: second, projectUrl: "https://colosseum.com/arena/projects/explore/orchid-relay" });
-    expect(await rows(`SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41 AND name='Fictional Builder Two'`)).toEqual([{ n: 1 }]);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE normalized_colosseum_username='fictional_builder_2'")).toEqual([{ n: 1 }]);
+    await store.importTeam(OUTSIDER, { selectedUsername: second.members[1].username, hackathonId: 41, project: second, projectUrl: "https://colosseum.com/arena/projects/explore/orchid-relay" });
+    expect(await rows(`SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41 AND name='Fictional Builder Two'`)).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE normalized_colosseum_username='fictional_builder_2'")).toEqual([{ n: 0 }]);
   });
 });
 
 describe("refreshing a team's Colosseum snapshot", () => {
+  it.each(["project", "source edition", "HQ edition"])("refuses a refresh for a different %s without changing the snapshot or roster", async mismatch => {
+    const id = await importProject();
+    const before = await ownTeam(OWNER.id, id);
+    const project = {
+      ...PROJECT, name: "Wrong team", description: "Wrong source",
+      externalId: mismatch === "project" ? 99999 : PROJECT.externalId,
+      hackathon: mismatch === "source edition" ? { ...PROJECT.hackathon, id: 999 } : PROJECT.hackathon,
+      members: [{ username: "wrong_member", displayName: "Wrong Member", avatarUrl: null }],
+    };
+    await expect(store.refreshTeam({ projectId: id, hackathonId: mismatch === "HQ edition" ? 42 : 41, project })).rejects.toThrow();
+    expect(await ownTeam(OWNER.id, id)).toEqual(before);
+    expect(await rows("SELECT id FROM hq_crm_persons WHERE normalized_colosseum_username='wrong_member'")).toEqual([]);
+  });
+
   it("updates the snapshot and adds new roster members without touching HQ state", async () => {
     const id = await importProject();
-    const team = await store.team(OWNER.id, id);
+    const team = await ownTeam(OWNER.id, id);
     const teammate = team.members.find(member => member.username === "fictional_builder_2")!;
-    const code = await store.createInvite(OWNER.id, id, teammate.id);
-    await store.redeemInvite(TEAMMATE, code);
+    const code = await store.createInvite(OWNER.id, id);
+    await store.redeemInvite(TEAMMATE, code, teammate.id);
     await store.updateTeam(OWNER.id, id, "beta", "fictional_builder_2");
     await db.query("INSERT INTO hq_project_notes(project_id,body) VALUES($1,'Operator note that must survive')", [id]);
     await db.query("INSERT INTO hq_captain_assignments(project_id,captain_user_id) VALUES($1,$2)", [id, OUTSIDER.id]);
@@ -554,7 +594,7 @@ describe("refreshing a team's Colosseum snapshot", () => {
     // lib/hq/colosseum-snapshot.ts#DRAFT_SIGNAL_CONFIRMED).
     expect(submission).toBe("not_submitted");
 
-    const refreshed = await store.team(OWNER.id, id);
+    const refreshed = await ownTeam(OWNER.id, id);
     expect(refreshed).toMatchObject({ name: "Tulip Ledger v2", description: "Updated on Colosseum", stage: "beta", leadUsername: "fictional_builder_2", ownerId: OWNER.id, verification: "verified" });
     expect(refreshed.members.map(member => member.username)).toEqual(["fictional_builder_1", "fictional_builder_2", "fictional_builder_9"]);
     expect(refreshed.members.find(member => member.username === "fictional_builder_2")?.joined).toBe(true);
@@ -569,11 +609,11 @@ describe("refreshing a team's Colosseum snapshot", () => {
 
   it("keeps a member who left the Colosseum roster, and their claimed HQ membership", async () => {
     const id = await importProject();
-    const team = await store.team(OWNER.id, id);
+    const team = await ownTeam(OWNER.id, id);
     const teammate = team.members.find(member => member.username === "fictional_builder_2")!;
-    await store.redeemInvite(TEAMMATE, await store.createInvite(OWNER.id, id, teammate.id));
+    await store.redeemInvite(TEAMMATE, await store.createInvite(OWNER.id, id), teammate.id);
     await store.refreshTeam({ projectId: id, hackathonId: 41, project: { ...PROJECT, members: [PROJECT.members[0]] } });
-    const refreshed = await store.team(OWNER.id, id);
+    const refreshed = await ownTeam(OWNER.id, id);
     expect(refreshed.members.map(member => member.username)).toEqual(["fictional_builder_1", "fictional_builder_2"]);
     expect((await store.teams(TEAMMATE.id)).map(item => item.id)).toEqual([id]);
   });
@@ -584,7 +624,7 @@ describe("refreshing a team's Colosseum snapshot", () => {
     const first = await rows("SELECT id,name,colosseum_username,person_id FROM hq_project_members WHERE project_id=$1 ORDER BY sort", [id]);
     await store.refreshTeam({ projectId: id, hackathonId: 41, project: PROJECT });
     expect(await rows("SELECT id,name,colosseum_username,person_id FROM hq_project_members WHERE project_id=$1 ORDER BY sort", [id])).toEqual(first);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41")).toEqual([{ n: 5 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41")).toEqual([{ n: 3 }]);
   });
 
   it("a failed check records the failure and keeps the last known submission status", async () => {
@@ -597,135 +637,183 @@ describe("refreshing a team's Colosseum snapshot", () => {
   });
 });
 
-describe("roster invitations and team access", () => {
-  it("only lets the team's own importer create a join link, and only for an unclaimed seat", async () => {
-    const id = await importProject();
-    const team = await store.team(OWNER.id, id);
-    await expect(store.createInvite(OUTSIDER.id, id, team.members[1].id)).rejects.toThrow();
-    await expect(store.createInvite(OWNER.id, id, "00000000-0000-4000-8000-000000000001")).rejects.toThrow();
-    expect(await rows("SELECT count(*)::int AS n FROM hq_team_invites")).toEqual([{ n: 0 }]);
-    // Every unclaimed seat gets one, including the importer's own: a
-    // self-service import claims no roster seat, so the importer opens their
-    // own link to take theirs.
-    await store.createInvite(OWNER.id, id, team.members[0].id);
-    await store.createInvite(OWNER.id, id, team.members[1].id);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_team_invites")).toEqual([{ n: 2 }]);
+describe("project invitations and team access", () => {
+  it("allows owners and joined teammates to share a project link, excluding outsiders", async () => {
+    const item = await invite();
+    await expect(store.createInvite(OUTSIDER.id, item.projectId)).rejects.toThrow("Only a team member");
+    await store.redeemInvite(TEAMMATE, item.code, item.memberId);
+    const teammateCode = await store.createInvite(TEAMMATE.id, item.projectId);
+    expect(teammateCode).toBe(item.code);
+    expect(await store.invitation(teammateCode)).toMatchObject({ ok: true, data: { members: [] } });
+    expect(await rows("SELECT member_id,expires_at,consumed_at FROM hq_team_invites"))
+      .toEqual([{ member_id: null, expires_at: null, consumed_at: null }]);
   });
 
-  it("accepts a whole pasted join link, a bare code and a link with a tracking query or trailing slash", async () => {
+  it("accepts a pasted link or code while resolving through token hashes", async () => {
     const item = await invite();
-    const path = joinLink(item.code.replaceAll("-", ""));
-    for (const pasted of [
-      item.code,
-      `  ${item.code}  `,
-      `https://hq.example.test${path}`,
-      `https://hq.example.test${path}/`,
-      `https://hq.example.test${path}?utm_source=telegram`,
-      `https://hq.example.test${path}#fragment`,
-    ]) {
-      expect(parseJoinCode(pasted), pasted).not.toBeNull();
-      expect(await store.invitation(parseJoinCode(pasted)!), pasted).toMatchObject({ ok: true });
+    for (const pasted of [item.code, `  ${item.code}  `, `https://hq.example.test${joinLink(item.code)}/?utm_source=telegram#fragment`]) {
+      expect(await store.invitation(parseJoinCode(pasted)!)).toMatchObject({ ok: true, data: {
+        projectName: "Tulip Ledger", members: [{ id: item.memberId, username: "fictional_builder_2" }],
+      } });
     }
-    expect(parseJoinCode("https://hq.example.test/hq/join/not-a-code")).toBeNull();
-    expect(parseJoinCode("")).toBeNull();
-  });
-
-  it("stores a code hash, shows the intended profile, and revokes previous unconsumed codes", async () => {
-    const item = await invite();
-    expect(await store.invitation(item.code)).toMatchObject({ ok: true, data: { username: "fictional_builder_2", projectName: "Tulip Ledger", hackathonId: 41 } });
     const [{ token_hash }] = await rows("SELECT token_hash FROM hq_team_invites");
     expect(token_hash).not.toBe(item.code.replaceAll("-", ""));
     expect(String(token_hash)).toMatch(/^[a-f0-9]{64}$/);
-    const replacement = await store.createInvite(OWNER.id, item.projectId, item.memberId);
-    // A retired link is simply not a link we know: the refusal names nothing about the team.
-    expect(await store.invitation(item.code)).toEqual({ ok: false, reason: "invalid" });
-    expect(await store.invitation(replacement.toLowerCase().replaceAll("-", " "))).toMatchObject({ ok: true, data: { memberId: item.memberId } });
+    const newer = await store.createInvite(OWNER.id, item.projectId);
+    expect(await store.invitation(item.code)).toMatchObject({ ok: true });
+    expect(newer).toBe(item.code);
+    expect(await store.invitation(newer)).toMatchObject({ ok: true });
   });
 
-  it("redeems once, records joined status and adds the teammate to the edition's People", async () => {
+  it("reuses one link for different people, with no duplicate People cards", async () => {
     const item = await invite();
-    expect(await store.redeemInvite(TEAMMATE, item.code)).toBe(item.projectId);
-    // Only the seat the link was for: a self-service import claims none, so
-    // the other roster row is still unclaimed after this redemption.
-    expect((await store.team(TEAMMATE.id, item.projectId)).members.map(member => member.joined)).toEqual([false, true]);
-    expect(await rows("SELECT builder_user_id,joined_at IS NOT NULL AS joined FROM hq_project_members WHERE id=$1", [item.memberId]))
-      .toEqual([{ builder_user_id: TEAMMATE.id, joined: true }]);
-    expect(await rows("SELECT consumed_by,consumed_at IS NOT NULL AS consumed FROM hq_team_invites")).toEqual([{ consumed_by: TEAMMATE.id, consumed: true }]);
-    await expect(store.redeemInvite(OUTSIDER, item.code)).rejects.toThrow("no longer usable");
+    await store.refreshTeam({ projectId: item.projectId, hackathonId: 41, project: { ...PROJECT,
+      members: [...PROJECT.members, { username: "third_builder", displayName: "Third Builder", avatarUrl: null }] } });
+    const lookup = await store.invitation(item.code);
+    if (!lookup.ok) throw new Error("expected invitation");
+    const third = lookup.data.members.find(member => member.username === "third_builder")!;
+    expect(await store.redeemInvite(TEAMMATE, item.code, item.memberId)).toBe(item.projectId);
+    expect(await store.redeemInvite(OUTSIDER, item.code, third.id)).toBe(item.projectId);
+    expect(await store.invitation(item.code)).toMatchObject({ ok: true, data: { members: [] } });
+    expect(await rows("SELECT consumed_at FROM hq_team_invites")).toEqual([{ consumed_at: null }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41")).toEqual([{ n: 3 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+    expect(await store.joinedSeat(item.projectId, TEAMMATE.id)).toBe(item.memberId);
+  });
+
+  it("serializes competing claims for one seat and leaves the reusable link open", async () => {
+    const item = await invite();
+    const results = await Promise.allSettled([
+      store.redeemInvite(TEAMMATE, item.code, item.memberId), store.redeemInvite(OUTSIDER, item.code, item.memberId),
+    ]);
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(await rows("SELECT consumed_at FROM hq_team_invites")).toEqual([{ consumed_at: null }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_project_members WHERE id=$1 AND builder_user_id IS NOT NULL", [item.memberId])).toEqual([{ n: 1 }]);
+  });
+
+  it("allows an identical retry but cannot claim a second seat for one account", async () => {
+    const item = await invite();
+    await store.refreshTeam({ projectId: item.projectId, hackathonId: 41, project: { ...PROJECT,
+      members: [...PROJECT.members, { username: "third_builder", displayName: "Third Builder", avatarUrl: null }] } });
+    const lookup = await store.invitation(item.code);
+    if (!lookup.ok) throw new Error("expected invitation");
+    const third = lookup.data.members.find(member => member.username === "third_builder")!;
+    await store.redeemInvite(TEAMMATE, item.code, item.memberId);
+    expect(await store.redeemInvite(TEAMMATE, item.code, item.memberId)).toBe(item.projectId);
+    await expect(store.redeemInvite(TEAMMATE, item.code, third.id)).rejects.toThrow("already joined");
+    expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE id=$1", [third.id])).toEqual([{ builder_user_id: null }]);
+  });
+
+  it("serializes simultaneous selections of different seats by the same account", async () => {
+    const item = await invite();
+    await store.refreshTeam({ projectId: item.projectId, hackathonId: 41, project: { ...PROJECT,
+      members: [...PROJECT.members, { username: "third_builder", displayName: "Third Builder", avatarUrl: null }] } });
+    const lookup = await store.invitation(item.code);
+    if (!lookup.ok) throw new Error("expected invitation");
+    const results = await Promise.allSettled(lookup.data.members.map(member => store.redeemInvite(TEAMMATE,item.code,member.id)));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_project_members WHERE project_id=$1 AND builder_user_id=$2", [item.projectId,TEAMMATE.id]))
+      .toEqual([{ n: 1 }]);
+  });
+
+  it("upgrades legacy invite constraints without changing old links or stored people", async () => {
+    const item = await invite();
+    await db.query("UPDATE hq_team_invites SET member_id=$1,expires_at=now()+interval '2 days',share_code=NULL", [item.memberId]);
+    await pg.exec("ALTER TABLE hq_team_invites ALTER COLUMN member_id SET NOT NULL; ALTER TABLE hq_team_invites ALTER COLUMN expires_at SET NOT NULL; ALTER TABLE hq_team_invites ALTER COLUMN expires_at SET DEFAULT (now()+interval '2 days')");
+    const old = await rows("SELECT id,member_id,token_hash,expires_at,consumed_at FROM hq_team_invites");
+    const people = await rows("SELECT id,person_id,builder_user_id FROM hq_people ORDER BY id");
+    const schema = readFileSync(join(process.cwd(),"scripts/hq/builder-schema.sql"),"utf8");
+    await pg.exec(schema);
+    expect(await rows("SELECT id,member_id,token_hash,expires_at,consumed_at FROM hq_team_invites")).toEqual(old);
+    expect(await rows("SELECT id,person_id,builder_user_id FROM hq_people ORDER BY id")).toEqual(people);
+    const shared = await store.createInvite(OWNER.id,item.projectId);
+    expect(shared).not.toBe(item.code);
+    // The old app may still issue a seat link while the new deployment is
+    // rolling out. Its INSERT omits expiry and must still get two days.
+    const [oldAppLink] = await rows(`INSERT INTO hq_team_invites(project_id,member_id,created_by,token_hash)
+      VALUES($1,$2,$3,'legacy-during-rollout') RETURNING expires_at IS NOT NULL AS expires,
+        expires_at BETWEEN now()+interval '47 hours' AND now()+interval '49 hours' AS two_days`,
+      [item.projectId,item.memberId,OWNER.id]);
+    expect(oldAppLink).toEqual({ expires: true, two_days: true });
+    expect(await rows("SELECT expires_at FROM hq_team_invites WHERE project_id=$1 AND member_id IS NULL", [item.projectId]))
+      .toEqual([{ expires_at: null }]);
+    await pg.exec(schema);
+    expect(await store.createInvite(OWNER.id,item.projectId)).toBe(shared);
+    expect(await store.invitation(item.code)).toMatchObject({ ok: true, data: { members: [{ id: item.memberId }] } });
+  });
+
+  it("does not transfer a legacy roster identity linked to another account", async () => {
+    const item = await invite();
+    const rosterPersonId = await ensurePersonForRosterMember(db, { colosseumUsername: "fictional_builder_2", displayName: "Fictional Builder Two" });
+    await db.query("UPDATE hq_project_members SET person_id=$1 WHERE id=$2", [rosterPersonId, item.memberId]);
+    const correction = await correctPersonMatch(db, { personId: rosterPersonId, toUserId: OUTSIDER.id,
+      actor: { kind: "operator", id: "00000000-0000-4000-8000-000000000001" }, reason: "Confirmed this account" });
+    await expect(store.redeemInvite(TEAMMATE, item.code, item.memberId)).rejects.toThrow("already linked to another HQ account");
+    expect(await rows("SELECT builder_user_id FROM hq_crm_persons WHERE id=$1", [correction.survivingPersonId])).toEqual([{ builder_user_id: OUTSIDER.id }]);
+    expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE id=$1", [item.memberId])).toEqual([{ builder_user_id: null }]);
+    expect(await store.redeemInvite(OUTSIDER, item.code, item.memberId)).toBe(item.projectId);
+  });
+
+  it("preserves existing member-bound links without broadening or reusing them", async () => {
+    const item = await invite();
+    await db.query("UPDATE hq_team_invites SET member_id=$1,expires_at=now()+interval '2 days'", [item.memberId]);
+    const own = (await ownTeam(OWNER.id,item.projectId)).members.find(member => member.username === "fictional_builder_1")!;
+    await expect(store.redeemInvite(OUTSIDER,item.code,own.id)).rejects.toThrow("older join link");
+    expect(await store.redeemInvite(TEAMMATE,item.code,item.memberId)).toBe(item.projectId);
     expect(await store.invitation(item.code)).toEqual({ ok: false, reason: "used" });
+    expect(await rows("SELECT consumed_by FROM hq_team_invites")).toEqual([{ consumed_by: TEAMMATE.id }]);
   });
 
-  it("permits only one successful concurrent redemption", async () => {
+  it("lets a legacy importer choose their own still-unclaimed entry", async () => {
     const item = await invite();
-    const result = await Promise.allSettled([store.redeemInvite(TEAMMATE, item.code), store.redeemInvite(OUTSIDER, item.code)]);
-    expect(result.filter(value => value.status === "fulfilled")).toHaveLength(1);
-    const [{ builder_user_id }] = await rows("SELECT builder_user_id FROM hq_project_members WHERE id=$1", [item.memberId]);
-    expect([TEAMMATE.id, OUTSIDER.id]).toContain(builder_user_id);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_team_invites WHERE consumed_at IS NOT NULL")).toEqual([{ n: 1 }]);
+    const own = (await ownTeam(OWNER.id,item.projectId)).members.find(member => member.username === "fictional_builder_1")!;
+    await db.query("UPDATE hq_project_members SET builder_user_id=NULL,joined_at=NULL WHERE id=$1", [own.id]);
+    expect(await store.joinedSeat(item.projectId,OWNER.id)).toBeNull();
+    expect(await store.redeemInvite(OWNER,item.code,own.id)).toBe(item.projectId);
+    expect(await store.joinedSeat(item.projectId,OWNER.id)).toBe(own.id);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE builder_user_id=$1 AND hackathon_id=41", [OWNER.id])).toEqual([{ n: 1 }]);
   });
 
-  // One distinct reason per refusal, and not one of them names the team.
   it.each([
-    ["expired", "expired", "UPDATE hq_team_invites SET expires_at=now()-interval '1 second'"],
-    ["a team no longer in an active edition", "other_edition", "UPDATE hq_project_onboarding SET verification='rejected'"],
-    ["an archived edition", "other_edition", "UPDATE hq_hackathons SET archived_at=now() WHERE id=41"],
-  ])("refuses %s with its own reason, naming nothing about the team", async (_label, reason, change) => {
+    ["expired", "UPDATE hq_team_invites SET expires_at=now()-interval '1 second'"],
+    ["other_edition", "UPDATE hq_project_onboarding SET verification='rejected'"],
+    ["other_edition", "UPDATE hq_hackathons SET archived_at=now() WHERE id=41"],
+  ])("refuses invalid link state %s without revealing the project", async (reason, change) => {
     const item = await invite();
     await db.query(change);
-    const lookup = await store.invitation(item.code);
-    expect(lookup).toEqual({ ok: false, reason });
-    expect(JSON.stringify(lookup)).not.toContain("Tulip Ledger");
-    expect(JOIN_LINK_MESSAGES[reason as keyof typeof JOIN_LINK_MESSAGES]).not.toContain("Tulip Ledger");
-    await expect(store.redeemInvite(TEAMMATE, item.code)).rejects.toThrow();
-    expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE id=$1", [item.memberId])).toEqual([{ builder_user_id: null }]);
+    expect(await store.invitation(item.code)).toEqual({ ok: false, reason });
+    await expect(store.redeemInvite(TEAMMATE,item.code,item.memberId)).rejects.toThrow();
   });
 
-  it("refuses a code that was never issued, without a database row to read", async () => {
+  it("refuses a code that was never issued", async () => {
     expect(await store.invitation("AAAAAA-BBBBBB-CCCCCC-DDDDDD")).toEqual({ ok: false, reason: "invalid" });
   });
 
-  it("does not let one HQ account claim two seats on the same team", async () => {
+  it("never lets a missing or removed source entry join, but retains historical HQ membership", async () => {
     const item = await invite();
-    await store.redeemInvite(TEAMMATE, item.code);
-    const other = (await store.team(OWNER.id, item.projectId)).members.find(member => member.username === "fictional_builder_1")!;
-    const second = await store.createInvite(OWNER.id, item.projectId, other.id);
-    await expect(store.redeemInvite(TEAMMATE, second)).rejects.toThrow();
-    expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE id=$1", [other.id])).toEqual([{ builder_user_id: null }]);
+    await store.refreshTeam({ projectId: item.projectId, hackathonId: 41, project: { ...PROJECT, members: [PROJECT.members[0]] } });
+    expect(await store.invitation(item.code)).toMatchObject({ ok: true, data: { members: [] } });
+    await expect(store.redeemInvite(TEAMMATE,item.code,item.memberId)).rejects.toThrow("current Colosseum team");
+    expect(await store.joinedSeat(item.projectId,OWNER.id)).not.toBeNull();
+    expect(await rows("SELECT count(*)::int AS n FROM hq_project_members WHERE project_id=$1", [item.projectId])).toEqual([{ n: 2 }]);
   });
 
-  it("merges the roster person into the joining account's own person", async () => {
-    const item = await invite();
-    const [{ id: rosterPerson }] = await rows("SELECT person_id AS id FROM hq_project_members WHERE id=$1", [item.memberId]);
-    await store.redeemInvite(TEAMMATE, item.code);
-    // The merge branch of correctPersonMatch: the provisional person is gone,
-    // its username moved to the account's own person, the roster row follows.
-    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE id=$1", [rosterPerson])).toEqual([{ n: 0 }]);
-    expect(await rows("SELECT normalized_colosseum_username FROM hq_crm_persons WHERE builder_user_id=$1", [TEAMMATE.id]))
-      .toEqual([{ normalized_colosseum_username: "fictional_builder_2" }]);
-    expect(await rows(`SELECT person_id=(SELECT id FROM hq_crm_persons WHERE builder_user_id=$2) AS matches
-      FROM hq_project_members WHERE id=$1`, [item.memberId, TEAMMATE.id])).toEqual([{ matches: true }]);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_audit_events WHERE kind='person.match_corrected'")).toEqual([{ n: 1 }]);
-  });
-
-  it("scopes team reads and changes to the authenticated owner or joined teammates", async () => {
+  it("scopes team reads and changes to the owner or joined teammates", async () => {
     const item = await invite();
     expect(await store.teams(OUTSIDER.id)).toEqual([]);
-    await expect(store.team(OUTSIDER.id, item.projectId)).rejects.toThrow("your account");
-    await expect(store.updateTeam(OUTSIDER.id, item.projectId, "live", "fictional_builder_1")).rejects.toThrow();
-    await store.redeemInvite(TEAMMATE, item.code);
-    expect(await store.team(TEAMMATE.id, item.projectId)).toMatchObject({ id: item.projectId });
-    await expect(store.updateTeam(TEAMMATE.id, item.projectId, "live", "fictional_builder_1")).rejects.toThrow();
-    await expect(store.updateTeam(OWNER.id, item.projectId, "live", "outsider")).rejects.toThrow();
-    await store.updateTeam(OWNER.id, item.projectId, "live", "fictional_builder_1");
-    expect(await rows("SELECT lead_name FROM hq_projects WHERE id=$1", [item.projectId])).toEqual([{ lead_name: "Fictional Builder One" }]);
-    expect(await store.team(OWNER.id, item.projectId)).toMatchObject({ stage: "live", leadUsername: "fictional_builder_1" });
+    await expect(ownTeam(OUTSIDER.id,item.projectId)).rejects.toThrow("your account");
+    await expect(store.updateTeam(OUTSIDER.id,item.projectId,"live","fictional_builder_1")).rejects.toThrow();
+    await store.redeemInvite(TEAMMATE,item.code,item.memberId);
+    expect(await ownTeam(TEAMMATE.id,item.projectId)).toMatchObject({ id: item.projectId });
+    await expect(store.updateTeam(TEAMMATE.id,item.projectId,"live","fictional_builder_1")).rejects.toThrow();
+    await store.updateTeam(OWNER.id,item.projectId,"live","fictional_builder_1");
+    expect(await ownTeam(OWNER.id,item.projectId)).toMatchObject({ stage: "live" });
   });
 
-  it.each(["pending", "rejected"])("refuses a team change on a %s claim, the way the decision that gates it does", async state => {
+  it.each(["pending", "rejected"])("refuses a team change on a %s claim", async state => {
     const item = await invite();
-    await db.query("UPDATE hq_project_onboarding SET verification=$1 WHERE project_id=$2", [state, item.projectId]);
-    await expect(store.updateTeam(OWNER.id, item.projectId, "beta", "fictional_builder_1")).rejects.toThrow("imported team");
-    expect(await rows("SELECT stage FROM hq_project_onboarding WHERE project_id=$1", [item.projectId])).toEqual([{ stage: "idea" }]);
+    await db.query("UPDATE hq_project_onboarding SET verification=$1 WHERE project_id=$2", [state,item.projectId]);
+    await expect(store.updateTeam(OWNER.id,item.projectId,"beta","fictional_builder_1")).rejects.toThrow("imported team");
   });
 });
 
@@ -764,17 +852,17 @@ describe("Captain assignment races with membership acceptance", () => {
     });
     expect(assigned.outcome).toBe("assigned");
 
-    await expect(store.redeemInvite(TEAMMATE, item.code)).rejects.toThrow("You currently hold the Captain role for this project");
+    await expect(store.redeemInvite(TEAMMATE, item.code, item.memberId)).rejects.toThrow("You currently hold the Captain role for this project");
     // Refused, not silently dropped: the seat is still open and the invite still redeemable once the Captain is reassigned.
     expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE id=$1", [item.memberId])).toEqual([{ builder_user_id: null }]);
-    expect(await rows("SELECT consumed_at FROM hq_team_invites WHERE member_id=$1", [item.memberId])).toEqual([{ consumed_at: null }]);
+    expect(await rows("SELECT consumed_at FROM hq_team_invites WHERE project_id=$1", [item.projectId])).toEqual([{ consumed_at: null }]);
   });
 
   it("ordering 2 (membership first): a team member who already joined a project cannot then be assigned as its Captain", async () => {
     await seedOperator();
     const item = await invite();
     await grantCaptain(TEAMMATE.id);
-    expect(await store.redeemInvite(TEAMMATE, item.code)).toBe(item.projectId);
+    expect(await store.redeemInvite(TEAMMATE, item.code, item.memberId)).toBe(item.projectId);
 
     const result = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: item.projectId, hackathonId: 41, captainUserId: TEAMMATE.id });
     expect(result).toEqual({ outcome: "conflict", conflict: { kind: "verified_member", role: "member" } });
@@ -798,7 +886,7 @@ describe("Captain assignment races with membership acceptance", () => {
     });
     expect(assigned.outcome).toBe("assigned");
 
-    await expect(store.importTeam(OUTSIDER, { hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
+    await expect(store.importTeam(OUTSIDER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
       .rejects.toMatchObject({ reason: "already_imported" });
     expect(await rows("SELECT owner_user_id FROM hq_project_onboarding WHERE project_id=$1", [id])).toEqual([{ owner_user_id: OWNER.id }]);
   });
@@ -848,9 +936,64 @@ describe("public builder actions", () => {
   beforeEach(() => {
     actionMocks.requireMember.mockResolvedValue(OWNER);
     vi.spyOn(builderModule, "builderStore").mockImplementation(() => store);
-    vi.spyOn(builderModule, "syncBuilderAccount").mockImplementation(user => store.syncAccount(user));
+    vi.spyOn(identityModule, "getTelegramIdentity").mockResolvedValue(null);
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it("previews without creating records and requires a current selected roster entry to complete import", async () => {
+    const fetcher = vi.fn<ColosseumFetch>(async () => projectResponse());
+    vi.stubGlobal("fetch",fetcher);
+    expect(await previewColosseumTeam({ hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: true, project: {
+      name: PROJECT.name, members: [{ username: "fictional_builder_1" }, { username: "fictional_builder_2" }],
+    } });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+    fetcher.mockImplementation(async () => projectResponse({ ...PROJECT, members: [PROJECT.members[0]] }));
+    expect(await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL, selectedUsername: PROJECT.members[1].username }))
+      .toMatchObject({ ok: false, error: "Choose yourself from the Colosseum team." });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
+    fetcher.mockImplementation(async () => projectResponse());
+    expect(await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL, selectedUsername: PROJECT.members[1].username })).toMatchObject({ ok: true });
+    expect(await rows("SELECT colosseum_username FROM hq_project_members WHERE builder_user_id=$1",[OWNER.id]))
+      .toEqual([{ colosseum_username: PROJECT.members[1].username }]);
+  });
+
+  it("refreshes a full team's reusable link so someone newly added on Colosseum can join", async () => {
+    const item = await invite();
+    await store.redeemInvite(TEAMMATE,item.code,item.memberId);
+    const fetcher = vi.fn<ColosseumFetch>(async () => projectResponse());
+    expect(await previewTeamInvitation(item.code,fetcher)).toMatchObject({ ok: true, data: { members: [], projectUrl: PROJECT_URL } });
+    const later = { ...PROJECT, members: [...PROJECT.members, { username: "third_builder", displayName: "Third Builder", avatarUrl: null }] };
+    fetcher.mockImplementation(async () => projectResponse(later));
+    const preview = await previewTeamInvitation(item.code,fetcher);
+    if (!preview.ok) throw new Error(preview.message);
+    expect(preview.data.members).toMatchObject([{ username: "third_builder" }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
+    expect(await store.redeemInvite(OUTSIDER,item.code,preview.data.members[0].id)).toBe(item.projectId);
+    expect(await store.createInvite(OUTSIDER.id,item.projectId)).toBe(item.code);
+  });
+
+  it.each(["country","edition","project"])("does not add selectable roster entries from a mismatched %s", async mismatch => {
+    const item = await invite();
+    const bad = { ...PROJECT, country: mismatch === "country" ? "Belgium" : PROJECT.country,
+      externalId: mismatch === "project" ? 99999 : PROJECT.externalId,
+      hackathon: mismatch === "edition" ? { ...PROJECT.hackathon, id: 999 } : PROJECT.hackathon,
+      members: [{ username: "unexpected", displayName: "Unexpected", avatarUrl: null }] };
+    expect(await previewTeamInvitation(item.code,async () => projectResponse(bad))).toMatchObject({ ok: false });
+    expect(await rows("SELECT id FROM hq_project_members WHERE colosseum_username='unexpected'")).toEqual([]);
+    expect(await store.invitation(item.code)).toMatchObject({ ok: true, data: { members: [{ id: item.memberId }] } });
+  });
+
+  it("keeps membership unchanged when the current Colosseum roster cannot be checked", async () => {
+    const item = await invite();
+    actionMocks.requireMember.mockResolvedValue(TEAMMATE);
+    const fetcher = vi.fn().mockRejectedValue(new Error("Colosseum is offline"));
+    vi.stubGlobal("fetch", fetcher);
+    expect(await acceptBuilderInvite({ code: item.code, memberId: item.memberId })).toMatchObject({ ok: false });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(await store.joinedSeat(item.projectId,TEAMMATE.id)).toBeNull();
+    expect(await store.invitation(item.code)).toMatchObject({ ok: true });
+  });
 
   it.each(["initialize", "join"] as const)("does not enroll an abandoned %s path in a second hackathon", async (path) => {
     expect(await chooseBuilderPath({ hackathonId: 42, path })).toEqual({ ok: true, data: { url: `/hq/${path}?hackathon=42` } });
@@ -866,13 +1009,56 @@ describe("public builder actions", () => {
   it("keeps the Request help route usable when Colosseum cannot be fetched at all", async () => {
     const fetcher = vi.fn().mockRejectedValue(new Error("Colosseum is offline"));
     vi.stubGlobal("fetch", fetcher);
-    expect(await requestBuilderReview({ hackathonId: 41, url: PROJECT_URL, note: "My project does not load on Colosseum yet." }))
+    expect(await requestBuilderReview({ hackathonId: 41, url: `https://colosseum.com/arena/projects/${PROJECT.slug}/?utm_source=telegram#team`, telegramUsername: "  @My_Builder  " }))
       .toEqual({ ok: true, data: { url: "/hq/dashboard" } });
     // The route parses the link locally and records the request; it never
     // depends on the source being reachable, which is the whole point of it.
     expect(fetcher).not.toHaveBeenCalled();
-    expect((await store.dashboard(OWNER.id)).requests).toHaveLength(1);
+    expect((await store.dashboard(OWNER.id)).requests).toMatchObject([
+      { project_url: `https://colosseum.com/arena/projects/${PROJECT.slug}` },
+    ]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT note FROM hq_project_import_requests WHERE user_id=$1", [OWNER.id]))
+      .toEqual([{ note: "Import help requested. Telegram contact (provided): @My_Builder." }]);
+    expect(identityModule.getTelegramIdentity).toHaveBeenCalledWith(OWNER.id);
+  });
+
+  it.each([undefined, "", "   ", "@", "@@builder", "my builder", "https://t.me/builder", "a".repeat(33)])(
+    "requires a valid contact username for an unconnected account (%s)", async telegramUsername => {
+      expect(await requestBuilderReview({ hackathonId: 41, url: PROJECT_URL, telegramUsername }))
+        .toEqual({ ok: false, error: "Enter your Telegram username, such as @yourname.", field: "telegramUsername" });
+      expect(await rows("SELECT count(*)::int AS n FROM hq_project_import_requests")).toEqual([{ n: 0 }]);
+    },
+  );
+
+  it.each(["linked_builder", null])("uses the current Telegram connection without requiring a username (%s)", async username => {
+    vi.mocked(identityModule.getTelegramIdentity).mockResolvedValue({
+      userId: OWNER.id, telegramUserId: "9007199254740993", providerSubject: "telegram-subject",
+      username, photoUrl: null, linkedAt: "2026-09-01T00:00:00.000Z", lastLoginAt: "2026-09-01T00:00:00.000Z",
+    });
+    expect(await requestBuilderReview({ hackathonId: 41, url: PROJECT_URL }))
+      .toEqual({ ok: true, data: { url: "/hq/dashboard" } });
+    // A stale form's manual field cannot replace the current linked contact.
+    expect(await requestBuilderReview({ hackathonId: 41, url: PROJECT_URL, telegramUsername: "invalid supplied contact" }))
+      .toEqual({ ok: true, data: { url: "/hq/dashboard" } });
+    expect(identityModule.getTelegramIdentity).toHaveBeenCalledTimes(2);
+    expect(await rows("SELECT note FROM hq_project_import_requests WHERE user_id=$1", [OWNER.id]))
+      .toEqual([{ note: username
+        ? "Import help requested. Telegram connected as @linked_builder."
+        : "Import help requested. Telegram connected to this HQ account." }]);
+  });
+
+  it("accepts pasted links up to the main import limit and keeps request help available before project access opens", async () => {
+    await db.query("UPDATE hq_hackathon_onboarding SET projects_open=false WHERE hackathon_id=41");
+    const longUrl = `${PROJECT_URL}?tracking=${"a".repeat(2048 - PROJECT_URL.length - 10)}`;
+    expect(longUrl).toHaveLength(2048);
+    expect(await requestBuilderReview({ hackathonId: 41, url: longUrl, telegramUsername: "builder" }))
+      .toEqual({ ok: true, data: { url: "/hq/dashboard" } });
+    expect(await requestBuilderReview({ hackathonId: 41, url: `${longUrl}a`, telegramUsername: "builder" }))
+      .toEqual({ ok: false, error: "Check the details and try again." });
+    expect((await store.dashboard(OWNER.id)).requests).toMatchObject([
+      { project_url: `https://colosseum.com/arena/projects/${PROJECT.slug}` },
+    ]);
   });
 
   it("imports through the member action end to end, and answers each Colosseum failure with its own reason", async () => {
@@ -887,31 +1073,36 @@ describe("public builder actions", () => {
     const respond = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
     vi.stubGlobal("fetch", vi.fn(async () => respond({ message: "Project not found.", code: "NOT_FOUND" }, 404)));
-    expect(await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "not_found", retry: false });
+    expect(await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "not_found", retry: false });
 
     vi.stubGlobal("fetch", vi.fn(async () => respond({ message: "slow down", code: "RATE_LIMITED" }, 429)));
-    expect(await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "rate_limited", retry: true });
+    expect(await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "rate_limited", retry: true });
 
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{broken", { headers: { "Content-Type": "application/json" } })));
-    expect(await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "unreadable", retry: true });
+    expect(await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "unreadable", retry: true });
 
     vi.stubGlobal("fetch", vi.fn(async () => respond({ ...detailBody, project: { ...detailBody.project, country: "Belgium" } })));
-    expect(await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "not_dutch", retry: false });
+    expect(await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "not_dutch", retry: false });
 
     vi.stubGlobal("fetch", vi.fn(async () => respond({ ...detailBody, project: { ...detailBody.project, hackathonId: 7, hackathon: { id: 7, slug: "next-edition", name: "Next" } } })));
-    expect(await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "wrong_edition", retry: false });
+    expect(await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: PROJECT_URL })).toMatchObject({ ok: false, reason: "wrong_edition", retry: false });
 
-    expect(await importBuilderTeam({ hackathonId: 41, url: "https://example.com/not-colosseum" })).toMatchObject({ ok: false, reason: "invalid_url" });
+    expect(await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: "https://example.com/not-colosseum" })).toMatchObject({ ok: false, reason: "invalid_url" });
 
-    const calls = vi.fn(async () => respond(detailBody));
+    const calls = vi.fn<ColosseumFetch>(async () => respond(detailBody));
     vi.stubGlobal("fetch", calls);
-    const imported = await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL });
+    const imported = await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: `https://colosseum.com/arena/projects/${PROJECT.slug}?utm_source=telegram#team` });
     expect(imported.ok).toBe(true);
+    expect(calls).toHaveBeenCalledOnce();
+    expect(String(calls.mock.calls[0][0])).toBe(`https://api.colosseum.com/api/project?slug=${PROJECT.slug}&type=HACKATHON`);
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 1 }]);
+    expect(await rows("SELECT project_url FROM hq_project_onboarding")).toEqual([
+      { project_url: `https://colosseum.com/arena/projects/${PROJECT.slug}` },
+    ]);
 
     // The distinct outcome the plan singles out: already imported, routed to
     // help rather than to a retry, revealing nothing about who owns it.
-    const second = await importBuilderTeam({ hackathonId: 41, url: PROJECT_URL });
+    const second = await importBuilderTeam({ selectedUsername: PROJECT.members[0].username, hackathonId: 41, url: PROJECT_URL });
     expect(second).toMatchObject({ ok: false, reason: "already_imported", retry: false });
     expect("error" in second && second.error).not.toContain(OWNER.name);
 

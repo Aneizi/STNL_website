@@ -47,6 +47,13 @@ export const CLEAR_TABLES = [
   // the bot actually sent survives in hq_telegram_outgoing, which is KEEP,
   // below, for the same reason the processed-update ledger is.
   "hq_reminder_deliveries",
+  // The closing submission reconciliation (phase 10). It belongs to the
+  // submission period and the project it judged, both of which are cleared
+  // here, and it holds no configuration: the evidence can be established
+  // again from Colosseum whenever the project is imported again. Keeping it
+  // would leave reconciliations pointing at weeks and teams that no longer
+  // exist, exactly like the reminder rows above.
+  "hq_submission_reconciliations",
   "hq_reporting_periods",
   // Telegram bot chat state (phase 7). Both rows point at a project or a
   // period of the edition being emptied, both expire on their own within

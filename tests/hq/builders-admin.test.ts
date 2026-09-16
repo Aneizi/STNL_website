@@ -352,6 +352,8 @@ describe("accounts without a login email in Admin", () => {
   beforeEach(async () => {
     await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES
       ('tg-only','Telegram Builder',$1,false),('tg-plain','Handle-less Builder','9007199254740994@telegram.placeholder.invalid',false)`, [PLACEHOLDER]);
+    await rows(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES
+      ('tg-only','https://oauth.telegram.org','subject-1','telegram','tg-only'),('tg-plain','https://oauth.telegram.org','subject-2','telegram','tg-plain')`);
     await rows(`INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES
       ('tg-only','subject-1',9007199254740993,'tg_handle'),('tg-plain','subject-2',9007199254740994,NULL)`);
     await rows(`INSERT INTO hq_builder_profiles(id,email,contact_email,name) VALUES

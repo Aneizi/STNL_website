@@ -51,6 +51,7 @@ import {
   LABELS,
   openHqButton,
   ownNoteMessages,
+  packMessages,
   page,
   periodChangedMessages,
   previewMessages,
@@ -141,6 +142,8 @@ export type BotOutcome = {
 export type BotContext = {
   db?: BuilderDatabase;
   now?: number;
+  /** A retry of the same webhook delivery may need to rebuild lost controls. */
+  retry?: boolean;
   /** The public HQ origin, for the Open HQ buttons. Null when none is configured, and then no link button is offered. */
   hqOrigin?: string | null;
 };
@@ -152,6 +155,7 @@ type Session = {
   chatId: string;
   hqOrigin: string | null;
   updateId: number;
+  retry: boolean;
   /**
    * The edition this press is scoped to, or null for the account's default
    * one. Set from the pressed button, and inherited by every button minted
@@ -207,7 +211,7 @@ const draftButton = (
   draft: BotDraft,
   text: string,
   action: Omit<Parameters<typeof createBotAction>[1], "userId" | "chatId" | "draftId" | "draftRevision">,
-): Promise<Button> => button(session, text, { ...action, draftId: draft.id, draftRevision: draft.revision });
+): Promise<Button> => button(session, text, { ...action, hackathonId: draft.hackathonId, draftId: draft.id, draftRevision: draft.revision });
 
 async function mainMenu(session: Session): Promise<BotReply> {
   const [projects, add, notes] = await Promise.all([
@@ -388,7 +392,7 @@ export async function handleTelegramUpdate(update: TelegramUpdate, context: BotC
     };
   }
 
-  const session: Session = { db, now, actor, chatId, hqOrigin, updateId: update.update_id, hackathonId: null };
+  const session: Session = { db, now, actor, chatId, hqOrigin, updateId: update.update_id, hackathonId: null, retry: context.retry ?? false };
   await bindBotChat(db, { userId: actor.id, telegramUserId: String(from.id), chatId });
 
   // Permission to be messaged, read now rather than remembered. The one thing
@@ -464,6 +468,9 @@ async function handleMessage(session: Session, message: TelegramMessage): Promis
 
   // The only step at which free text means anything. Outside it, a message is
   // not interpreted: the menu comes back instead.
+  if (draft && session.retry && draft.step === "preview") {
+    return { ...(await resumeDraft(session, draft)), answer: null };
+  }
   if (!draft || draft.step !== "awaiting_text") {
     return { replies: [await mainMenu(session)], answer: null, queued: false, outcome: draft ? "menu_with_draft" : "menu" };
   }
@@ -476,6 +483,7 @@ async function handleMessage(session: Session, message: TelegramMessage): Promis
     return { replies: [{ chatId: session.chatId, text: BOT_COPY.composeTooLong, keyboard: [] }], answer: null, queued: false, outcome: "too_long" };
   }
 
+  session.hackathonId = draft.hackathonId;
   const project = await projectFor(session, draft.projectId, draft.hackathonId);
   if (!project) return { ...(await staleReply(session, "stale_project")), answer: null };
   // Conditional on the generation this message was typed against, so two
@@ -522,7 +530,7 @@ async function handleCallback(session: Session, callback: TelegramCallbackQuery)
       outcome: `action_${resolved.reason}`,
     };
   }
-  const result = await dispatch(session, resolved.action, callback.id);
+  const result = await dispatch(session, resolved.action);
   return { ...result, answer: { callbackQueryId: callback.id } };
 }
 
@@ -547,7 +555,7 @@ async function boundDraft(session: Session, action: BotAction): Promise<BotDraft
 
 type Dispatched = Omit<BotOutcome, "answer">;
 
-async function dispatch(session: Session, action: BotAction, callbackId: string): Promise<Dispatched> {
+async function dispatch(session: Session, action: BotAction): Promise<Dispatched> {
   // Scope the whole press to the edition the pressed button was minted for.
   session.hackathonId = action.hackathonId;
 
@@ -555,21 +563,29 @@ async function dispatch(session: Session, action: BotAction, callbackId: string)
   // first, in one place, so no handler below can forget.
   if (isDraftAction(action.kind)) {
     const draft = await boundDraft(session, action);
-    if (!draft) return staleReply(session, "stale_draft");
+    if (!draft) {
+      // A previous attempt may have advanced this draft before its preview
+      // send failed. Rebuild the current controls without replaying the edit.
+      const current = session.retry ? await readBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId }, session.now) : null;
+      if (current?.id === action.draftId) return resumeDraft(session, current);
+      return staleReply(session, "stale_draft");
+    }
     switch (action.kind) {
       case "draft.rewrite":
         return rewriteDraft(session, draft);
       case "draft.visibility":
         return setDraftVisibility(session, action, draft);
       case "draft.cancel":
-        await clearBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId });
+        if (!(await claimBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId, draftId: draft.id, expectedRevision: draft.revision }, session.now))) {
+          return staleReply(session, "stale_draft");
+        }
         return { replies: [{ chatId: session.chatId, text: BOT_COPY.cancelled, keyboard: [] }, await mainMenu(session)], queued: false, outcome: "cancelled" };
       case "draft.save":
-        return save(session, action, draft, callbackId, {});
+        return save(session, action, draft, {});
       case "draft.save_into_current":
-        return save(session, action, draft, callbackId, { intoCurrentPeriod: true });
+        return save(session, action, draft, { intoCurrentPeriod: true });
       case "draft.save_over":
-        return save(session, action, draft, callbackId, { overrideVersion: action.expectedVersion ?? undefined });
+        return save(session, action, draft, { overrideVersion: action.expectedVersion ?? undefined });
       default:
         return staleReply(session, "stale_draft");
     }
@@ -651,6 +667,10 @@ async function composePrompt(session: Session, draft: BotDraft, header: string, 
 }
 
 async function startCompose(session: Session, action: BotAction): Promise<Dispatched> {
+  if (session.retry) {
+    const current = await readBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId }, session.now);
+    if (current) return resumeDraft(session, current);
+  }
   const project = await projectFor(session, action.projectId);
   if (!project) return staleReply(session, "stale_project");
   // A NEW composing session, which retires every button the previous one
@@ -693,6 +713,15 @@ async function rewriteDraft(session: Session, draft: BotDraft): Promise<Dispatch
   return composePrompt(session, advanced, escapeHtml(BOT_COPY.compose), "compose");
 }
 
+/** Rebuild a draft's controls after a failed reply, while checking its current project access. */
+async function resumeDraft(session: Session, draft: BotDraft): Promise<Dispatched> {
+  session.hackathonId = draft.hackathonId;
+  const project = await projectFor(session, draft.projectId, draft.hackathonId);
+  if (!project) return staleReply(session, "stale_project");
+  if (draft.step === "awaiting_text") return composePrompt(session, draft, escapeHtml(BOT_COPY.compose), "compose");
+  return { replies: await previewReplies(session, draft, project.summary, project.mayUseSensitive), queued: false, outcome: "preview" };
+}
+
 /**
  * The sensitive toggle. The target audience is carried on the action row
  * rather than derived from the current state, so pressing the same button
@@ -729,6 +758,10 @@ async function setDraftVisibility(session: Session, action: BotAction, draft: Bo
  * from the button that was minted before any of that changed.
  */
 async function startEdit(session: Session, action: BotAction): Promise<Dispatched> {
+  if (session.retry) {
+    const current = await readBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId }, session.now);
+    if (current) return resumeDraft(session, current);
+  }
   const project = await projectFor(session, action.projectId);
   if (!project || !action.entryId) return staleReply(session, "stale_project");
   const entry = await findEntry(session, project.summary.projectId, project.hackathonId, action.entryId);
@@ -752,17 +785,10 @@ async function startEdit(session: Session, action: BotAction): Promise<Dispatche
   return composePrompt(session, draft, escapeHtml(BOT_COPY.compose), "edit_compose");
 }
 
-/** One entry of a project this actor may read, by id. Paged through the service rather than queried directly. */
+/** One entry by id, through the service's current project and audience checks. */
 async function findEntry(session: Session, projectId: string, hackathonId: number, entryId: string): Promise<ReportingEntryView | null> {
-  let cursor: string | undefined;
-  for (let guard = 0; guard < 5; guard += 1) {
-    const result = await readAuthorizedUpdates(session.actor, { projectId, hackathonId, cursor, limit: 50 }, session.db);
-    const found = result.entries.find((entry) => entry.id === entryId);
-    if (found) return found;
-    if (!result.nextCursor) return null;
-    cursor = result.nextCursor;
-  }
-  return null;
+  const result = await readAuthorizedUpdates(session.actor, { projectId, hackathonId, entryId, limit: 1 }, session.db);
+  return result.entries[0] ?? null;
 }
 
 /**
@@ -777,7 +803,7 @@ async function findEntry(session: Session, projectId: string, hackathonId: numbe
  * records".
  */
 async function ownNotes(session: Session, action: BotAction): Promise<Dispatched> {
-  const hackathonId = await builderStore().currentHackathonId();
+  const hackathonId = session.hackathonId ?? await builderStore().currentHackathonId();
   if (hackathonId === null) return { replies: [await mainMenu(session)], queued: false, outcome: "menu" };
   const own = await readOwnUpdates(
     session.actor,
@@ -813,7 +839,7 @@ async function ownNotes(session: Session, action: BotAction): Promise<Dispatched
   }
   rows.push([back]);
   rows.push(openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH)));
-  return { replies: [{ chatId: session.chatId, text: lines.join("\n"), keyboard: rows.filter((row) => row.length) }], queued: false, outcome: "notes" };
+  return { replies: replies(session.chatId, packMessages(lines.map((fixed) => ({ fixed }))), rows.filter((row) => row.length)), queued: false, outcome: "notes" };
 }
 
 /**
@@ -827,7 +853,7 @@ async function ownNotes(session: Session, action: BotAction): Promise<Dispatched
  * theirs to change, which is the same decision the project screen makes.
  */
 async function openOwnNote(session: Session, action: BotAction): Promise<Dispatched> {
-  const hackathonId = await builderStore().currentHackathonId();
+  const hackathonId = session.hackathonId ?? await builderStore().currentHackathonId();
   if (hackathonId === null || !action.entryId) return staleReply(session, "stale_entry");
   const note = await findOwnNote(session, hackathonId, action.entryId);
   if (!note) return staleReply(session, "stale_entry");
@@ -852,25 +878,18 @@ async function openOwnNote(session: Session, action: BotAction): Promise<Dispatc
   return { replies: replies(session.chatId, text, rows.filter((row) => row.length)), queued: false, outcome: "note" };
 }
 
-/** One of the account's own notes by id, with the week it belongs to. Paged through the service rather than queried directly. */
+/** One of the account's own notes by id, through the author-only service read. */
 async function findOwnNote(
   session: Session,
   hackathonId: number,
   entryId: string,
 ): Promise<(OwnReportingEntry & { periodStart: string; periodEnd: string }) | null> {
-  let cursor: string | undefined;
-  for (let guard = 0; guard < 20; guard += 1) {
-    const result = await readOwnUpdates(session.actor, { hackathonId, limit: 50, ...(cursor ? { cursor } : {}) }, session.db);
-    const found = result.entries.find((entry) => entry.id === entryId);
-    if (found) {
-      const periods = await listReportingPeriods(session.db, hackathonId);
-      const period = periods.find((candidate: ReportingPeriod) => candidate.id === found.periodId);
-      return { ...found, periodStart: period?.startDate ?? "", periodEnd: period?.endDate ?? "" };
-    }
-    if (!result.nextCursor) return null;
-    cursor = result.nextCursor;
-  }
-  return null;
+  const result = await readOwnUpdates(session.actor, { hackathonId, entryId, limit: 1 }, session.db);
+  const found = result.entries[0];
+  if (!found) return null;
+  const periods = await listReportingPeriods(session.db, hackathonId);
+  const period = periods.find((candidate: ReportingPeriod) => candidate.id === found.periodId);
+  return { ...found, periodStart: period?.startDate ?? "", periodEnd: period?.endDate ?? "" };
 }
 
 /* -------------------------------------------------------------------------
@@ -911,7 +930,6 @@ async function save(
   session: Session,
   action: BotAction,
   draft: BotDraft,
-  callbackId: string,
   options: { intoCurrentPeriod?: boolean; overrideVersion?: number },
 ): Promise<Dispatched> {
   if (!draft.body) return staleReply(session, "stale_draft");
@@ -965,7 +983,6 @@ async function save(
     });
   } catch (error) {
     if (!(error instanceof SaveAborted)) throw error;
-    void callbackId;
     return abortReply(session, draft, error.detail);
   }
 }

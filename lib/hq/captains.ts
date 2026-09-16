@@ -294,7 +294,9 @@ export async function acceptCaptainInvitation(
     );
     if (!invitations.length) return { outcome: "not-found" };
 
-    const { rows: profiles } = await tx.query(`SELECT 1 FROM hq_builder_profiles WHERE id = $1`, [input.userId]);
+    // Different invitations can target the same account concurrently. Share
+    // the grant writer's account lock before checking access or using a slot.
+    const { rows: profiles } = await tx.query(`SELECT 1 FROM hq_builder_profiles WHERE id = $1 FOR UPDATE`, [input.userId]);
     if (!profiles.length) return { outcome: "no-profile" };
 
     const row = invitations[0];

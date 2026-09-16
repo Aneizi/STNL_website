@@ -8,11 +8,9 @@ guess a path.
 
 Two standing rules:
 
-1. **No stub source files.** Phases 5 to 10 are named here and nowhere else. A
-   stub route handler would be a live endpoint, and a stub module is work with no
-   user. The typed hooks that authorization needs for phase 4 and phase 5 records
-   live inside `lib/hq/authz.ts`, which phase 1 creates, not in placeholder
-   files of their own.
+1. **No stub source files.** Phases 0–8 and 10 now have implementations. Keep
+   future work in the plan until it has a caller and an authorized use. Phase 9
+   remains removed.
 2. **No real secrets and no real external ids in code.** Environment variable
    names live in `docs/hq/manual-setup.md`. The Colosseum external edition
    mapping is operator data in `hq_hackathon_onboarding`, never a constant and
@@ -66,6 +64,12 @@ The operator shape comes from `requireUser()`, the member shape from
 the safe integer range in some runtimes, and a number would be a silent
 corruption.
 
+The Telegram OIDC parser accepts a positive safe integer or its canonical
+decimal string in the signed profile `id` claim. It normalizes that claim
+before the identity store converts it to a string. Malformed or unsafe values
+remain invalid; the OIDC `sub` is a separate account key and never substitutes
+for the bot-facing Telegram user id.
+
 A public role never creates operator access. `requireOperator()` in the
 authorization module is a thin wrapper over `requireUser()`, and there is no path
 from a public account to an `hq_users` row.
@@ -91,7 +95,7 @@ exists yet and none should be created before that phase.
 | Reporting surfaces | the team, Captain and admin reporting screens and the actions behind them | `lib/hq/reporting-view.ts` (pure copy and presentation rules, client-safe), `lib/hq/reporting-contacts.ts` (the two opt-in contacts, no `./authz` import so operator queries reach it), `lib/hq/reporting-surface.ts` (the two member page reads), `lib/hq/actions/reporting.ts` (member gated), `lib/hq/actions/reporting-admin.ts` (operator gated, scanned by `tests/hq/operator-imports.test.ts`), `components/hq/reporting-member.tsx`, `components/hq/reporting-admin.tsx`, `components/hq/reporting-project-panel.tsx` | Member actions: `addReportingUpdate`, `editReportingUpdate`, `saveTeamContact`, `saveCaptainContact`. Operator actions: `previewReportingSchedule`, `applyReportingSchedule`, `saveReportingConfiguration`, `enableProjectReporting`, `setProjectReportingPaused`, `voidReportingUpdate`, `correctReportingOutcome`, `loadProjectReporting`, `loadEntryRevisions`. Pure: `statusLabel`, `periodRangeLabel`, `deadlineLabel`, `shouldPromptUpdate`, `promptDismissKey`, `byOutstandingFirst`, `ADD_UPDATE_MESSAGES`, `EDIT_UPDATE_MESSAGES`, `AUDIENCE_NOTES`, `normalizeContact`, `MAX_CONTACT_LENGTH`. Reads: `teamReportingPanel`, `captainReportingBoard`, `readTeamContact(s)`, `readCaptainContact(s)`. A phase that writes reporting copy adds it to `reporting-view.ts`, so the em dash and middot scan keeps covering it | 6, complete |
 | Telegram adapter | authenticated chat commands, drafts, delivery | `lib/hq/telegram-bot.ts` (the deterministic flow), `lib/hq/telegram-bot-view.ts` (pure copy, escaping and keyboards, client-safe like `reporting-view.ts`), `lib/hq/telegram-bot-store.ts` (receipts, callback references, drafts, the outgoing queue and the chat binding), `lib/hq/telegram-bot-api.ts` (the transport, the only module that holds the token), `lib/hq/telegram-webhook.ts` (the endpoint's own rules), `app/api/telegram/webhook/route.ts` (the address) | Flow: `handleTelegramUpdate(update, { db?, now?, hqOrigin? })` returning `{ replies, answer, queued, outcome }`. Endpoint: `handleTelegramWebhookRequest(request, deps?)`, `secretMatches`, `telegramUpdateSchema`, `readBoundedBody`, `MAX_WEBHOOK_BODY_BYTES`, `SECRET_HEADER`. Transport: `telegramBotConfig(env)`, `isTelegramBotConfigured`, `telegramSender(config)`, `redactBotUrl`, `TelegramSender`. Store: `claimTelegramUpdate` (leased, so an interrupted update is retried), `finishTelegramUpdate`, `bindBotChat`, `deliverableBotChat`, `botMessagingEnabled`, `createBotAction`, `readBotAction` (resolves, never consumes), `consumeBotAction` (inside the writing transaction), `isWriteAction`, `isDraftAction`, `readBotDraft`, `startBotDraft` (new generation), `advanceBotDraft` (same generation, next revision), `claimBotDraft` (the logical-save claim), `clearBotDraft`, `enqueueBotMessage`, `flushBotMessages` (claimed batches, consent re-checked before dispatch), `purgeExpiredBotState`. Identity: `telegramMemberActor(telegramUserId, db?)` in `lib/hq/actor.ts` over `findTelegramIdentityByTelegramUserId` in `lib/hq/identity.ts`. View: `escapeHtml`, `inlineKeyboard`, `packMessages`, `chunkForEscaped`, `TELEGRAM_TEXT_LIMIT`, `BOT_COPY`, `LABELS`, `previewMessages`, `savedMessage`, `periodChangedMessages`, `conflictMessages`, `refusalMessages`, `ownNoteMessages`, `projectMessage`, `projectListLine`, `weekLine`, `snippet`, `page` | 7, complete |
 | Job runner | reminders, closures, bounded sync | `lib/hq/jobs.ts` (the one module a caller imports), `lib/hq/github-actions-auth.ts` parameterised by audience and workflow (`ScheduledJob`, `isTrustedJobClaims`, `isTrustedJobRequest`), `app/api/cron/hq-jobs/route.ts`, `.github/workflows/hq-jobs.yml`, `lib/hq/actions/jobs.ts` (operator gated, the manual retry and the admin read) | `dueReminders`, `prepareReminder`, `expireStaleReminders`, `reconcileReminderDeliveries`, `purgeReminderDeliveries`, `closeDuePeriods`, `listReminderDeliveries`, `runDueWork`; constants `REMINDER_TYPE_WEEKLY`, `REMINDER_MAX_AGE_MS`, `REMINDER_RETENTION_MS`; the `ReminderSkipReason` vocabulary. Its own OIDC audience (`HQ_JOBS_AUDIENCE`, `stnl-hq-jobs`) and its own workflow file, no shared privileges and no stored secret. Delivery is phase 7's, untouched: `deliverableBotChat` names the chat, `enqueueBotMessage` with a reminder `dedupeKey` writes the message inside the job's transaction, and `flushBotMessages` sends it and records the result. Operator actions: `runReportingJobsNow`, `loadReminderDeliveries` | 8, complete |
-| Discovery and readiness | final submission readiness | named only | decided in phase 10 | 10 |
+| Final submission | material readiness, submission snapshots and historical reconciliation | `lib/hq/submission-readiness.ts` (pure checklist), `lib/hq/submission.ts` (snapshots and bounded jobs), `components/hq/submission-focus.tsx` (shared authorized view) | `readSubmissionSnapshots`, `readSubmissionReconciliations`, `listSubmissionReconciliations`, `dueSubmissionRefreshes`, `refreshDueSubmissions`, `openSubmissionReconciliations`, `reconcileSubmissions`; surface authorization stays in `reporting-surface.ts`, submission truth stays in `colosseum-snapshot.ts` | 10, complete |
 
 Audit event kinds, so that later phases extend one vocabulary instead of
 inventing their own: `capability.granted`, `capability.revoked`,
@@ -207,19 +211,29 @@ Full detail, including the named test proving each bullet and the two
 concurrency and browser-verification limits that apply throughout, is the
 phase 4 acceptance checklist in `docs/hq/implementation-log.md`.
 
-### Phase 3 gate
+### Team import and joining (updated 16 September 2026)
 
-- A Dutch project in the configured external edition imports in one step,
-  with no verification, approval or pending state anywhere in the flow.
+- A Dutch project in the configured external edition is previewed first.
+  The importer selects their Colosseum teammate, then the import atomically
+  binds that entry to their signed-in account. There is no approval queue.
 - A non-Dutch project, another edition, an unconfigured edition mapping, a
   malformed URL, a 404, a timeout, a 429, an unreadable body and an already
   imported team each produce their own message; none is generic, and
   Colosseum's own error text never reaches the browser.
 - An already-imported team offers the Superteam NL Telegram group as a logo
   control with an accessible name, and reveals nothing about who imported it.
-- A join link admits exactly one teammate, survives a trailing slash,
-  whitespace and an appended query, and fails distinctly when invalid,
-  expired, used or from another edition, without naming the team.
+- Each team has a reusable link that verified teammates can share. Each
+  person selects an unclaimed entry from the current Colosseum roster. One
+  account can claim one entry per project; concurrent claims are serialized.
+  Existing single-seat links retain their original expiry and use rules.
+  The database keeps their two-day expiry default for older app instances
+  during deployment; reusable links explicitly store no expiry.
+- Colosseum roster entries are source references. Import and refresh do not
+  create People records for unclaimed teammates. Claiming an entry links it
+  to the account's person, reusing existing identity records where needed.
+- If no entry is available, the join page asks the person to add themselves
+  on Colosseum and refresh. Roster refresh checks project identity, country
+  and edition before updating available entries.
 - A project imported twice creates no duplicate team and no duplicate People
   identity; refresh is idempotent and retains membership, notes and the
   Captain assignment.
@@ -310,6 +324,23 @@ Where DDL goes:
    say so in a comment, the way `builder-schema.sql` now does at that site.
 
 ## Colosseum integration, what the API can and cannot do
+
+### Project link input (updated 2026-09-16)
+
+`parseColosseumProjectUrl` accepts public
+`https://colosseum.com/arena/projects/<slug>` links and saved legacy
+`/arena/projects/explore/<slug>` links. It strips outer whitespace, an optional
+trailing slash, query parameters and fragments. It validates HTTPS, the exact
+host and slug before any request; credentials, extra path segments, bare
+directories and literal/encoded dot segments are rejected without fetching.
+Only the validated slug enters the fixed API request
+`https://api.colosseum.com/api/project?slug=<slug>&type=HACKATHON`.
+Imports, operator source attachment and help requests use the shared
+`colosseumProjectUrl` formatter to save the direct public URL.
+The legacy path is retained for the special slug `explore` to avoid confusing
+that project with the bare directory when refreshing it.
+
+### API observations
 
 Observed on 2026-09-13 against the public API. Structural fixtures and the full
 provenance note live in `tests/hq/fixtures/colosseum/`.
@@ -410,10 +441,10 @@ The approved project fallback image:
 The plan's original path, `assets/hq-project-fallback.png`, does not exist at the
 repository root. Phase 3 copied the source above to the target path.
 
-## Handoff to phase 10 and later
+## Handoff to phase 11
 
-Phases 0, 1, 2, 3, 4, 5, 6, 7 and 8 are complete. **Phase 10 (the final
-submission period) is next**, then phase 11; there is no phase 9. This
+Phases 0, 1, 2, 3, 4, 5, 6, 7, 8 and 10 are complete. **Phase 11 (verify,
+prepare deployment and release progressively) is next**; there is no phase 9. This
 section is what a later phase needs to start without re-reading the whole
 log. The per-task detail is in `docs/hq/implementation-log.md`.
 
@@ -433,9 +464,9 @@ log. The per-task detail is in `docs/hq/implementation-log.md`.
   `ensurePersonForAccount`, `ensurePersonForRosterMember`,
   `linkPersonToAccount`, `correctPersonMatch` in `lib/hq/crm-identity.ts`, each
   writing through the query handle it is given so it joins the caller's
-  `BuilderDatabase.transaction`. Since phase 3, imported roster rows carry real
-  `person_id` values and a joiner's link redemption runs the merge branch of
-  `correctPersonMatch`.
+  `BuilderDatabase.transaction`. Roster entries receive a `person_id` when
+  claimed. Import and joining reuse the signed-in account's person; older
+  pre-created roster identities are reconciled when claimed.
 - **Capabilities and audit.** `grantCapability`, `revokeCapability`,
   `listActiveCapabilities`, `listActiveCapabilitiesForUsers`,
   `listCapabilityGrants`, `personTags` in `lib/hq/capabilities.ts`;
@@ -448,7 +479,7 @@ log. The per-task detail is in `docs/hq/implementation-log.md`.
   `lib/hq/telegram-consent.ts`.
 - **Store and view models.** `BuilderStore.profile(userId)`,
   `BuilderStore.hasTeams(userId)`, `BuilderStore.teamById(projectId)`,
-  `BuilderStore.ownClaim(userId, projectId)`, `realEmail` in
+  `realEmail` in
   `lib/hq/builder-store.ts`; `builderDatabase()`, `BuilderQuery`,
   `BuilderDatabase`, `atomically()` in `lib/hq/builder-db.ts`;
   `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView`,
@@ -486,6 +517,14 @@ log. The per-task detail is in `docs/hq/implementation-log.md`.
   `lib/hq/telegram-bot-api.ts` is the only module that holds the token;
   `telegramMemberActor` in `lib/hq/actor.ts` is the second admitted actor
   origin. See the module-map row and the section at the end of this file.
+- **Final period (phase 10, complete).** `lib/hq/submission.ts` is the one
+  module to import for submission evidence, the bounded refresh and the
+  closing reconciliation; `lib/hq/submission-readiness.ts` is the pure
+  checklist and copy; `submissionFocusFor` in `lib/hq/reporting-surface.ts` is
+  the one composition every authorized surface renders, carried on
+  `TeamReportingPanel.submissionFocus` and `CaptainReportingCard.submissionFocus`.
+  `fetchEditionSubmissionWindow` and `submittedOnTime` finally have production
+  callers. See the section at the end of this file.
 - **Job runner (phase 8, complete).** `lib/hq/jobs.ts` is the one module to
   import: `runDueWork` is one whole pass, and `dueReminders`,
   `prepareReminder`, `expireStaleReminders`, `reconcileReminderDeliveries`,
@@ -1070,3 +1109,157 @@ kind, no permission and no second definition of a week.
     of separately committed steps, so a failure can leave weeks closed and
     messages sent. The action says that and says retrying is safe, rather
     than claiming nothing happened.
+
+### What phase 10 settled, and what phase 11 inherits
+
+Phase 10 built the final, submission-focused period: two modules, one
+component, one table, five columns, two operator actions and two job steps.
+It added no audit kind, no permission, no reminder type and no second
+definition of a week.
+
+1. **The checklist cannot become a submission, structurally.**
+   `lib/hq/submission-readiness.ts` is pure, has no database handle and
+   produces no submission state at all; `interpretSubmission` in
+   `lib/hq/colosseum-snapshot.ts` is still the only writer of
+   `submission_status`, reached through `refreshColosseumTeam`, and phase 10
+   only ever reads the column back. A complete required checklist leaves the
+   period incomplete, and `SUBMISSION_COPY.readinessNotSubmission` says so on
+   the screen. Do not add a second reading, and do not let a checklist count
+   toward completion.
+2. **Requirements are operator data, and Unknown is a real answer.** Colosseum
+   publishes no per-field requirement HQ can read: `projectCompletion` is
+   owner-authenticated and absent from the public detail endpoint, which phase
+   3 recorded. So `hq_reporting_config.required_materials` and
+   `optional_materials` are what an admin ticked, anything in neither is
+   `unknown`, and nothing is required by default. Never hard-code a material
+   as mandatory; that is the plan's own instruction and the reason there are
+   three requirement values rather than a boolean.
+3. **An item is judged on its own field.** `submissionChecklist` marks a
+   material present only when ITS OWN link is set, and names the other
+   materials sharing a URL rather than counting one deck twice. "Do not mark
+   an item complete merely because an unrelated URL exists" is a rule about
+   this function.
+4. **The deadline has provenance.** `official_submission_deadline` is one
+   column with `official_deadline_source` beside it: an admin typed it, or HQ
+   read it from the edition's own listing envelope through
+   `fetchEditionSubmissionWindow`, which phase 10 gave its first production
+   caller. A failed read stamps `official_deadline_checked_at` and leaves the
+   value alone, so "we asked and the directory is closed" is distinguishable
+   from "nobody has asked". The comparison itself is unchanged: phase 5's
+   `submissionSatisfies` uses the official deadline when there is one and the
+   period's own exclusive end otherwise.
+5. **The refresh is a query over stored state, like every other scheduled
+   thing here.** `dueSubmissionRefreshes` answers "which snapshots are stale at
+   this instant" from `submission_refresh_minutes`, an open submission period,
+   an unarchived edition and an unpaused project in reporting. It is off until
+   an admin sets an interval, floored at 15 minutes, capped at five projects
+   and 12 seconds a pass. A phase that wants its own background source work
+   expresses it the same way and calls it from `runDueWork`; it does not add a
+   timer or a browser poll.
+6. **The reconciliation is a catch-up, not a step of the closure.**
+   `openSubmissionReconciliations` inserts from the closed submission period's
+   own stored OUTCOMES, so it does not matter who closed the period or when, and
+   a pass that died between closing a week and opening its rows is repaired by
+   the next one. An earlier round hung it off `closePeriod`'s return value,
+   which `closeDuePeriods` never revisits for an already-closed period: a
+   single interrupted pass would have left a closed final period with nothing
+   tracking its unverified submissions, forever.
+7. **Three answers, never two.** `hq_submission_reconciliations.state` is
+   `pending` until evidence arrives, and `submission_status` is NULL while it
+   is, deliberately not `'not_checked'`: "we never got an answer" and
+   "Colosseum answered, but supplied no interpretable evidence" are different
+   statements; both remain pending until a confirmed signal arrives. An outage increments `attempts`, records HQ's own error code
+   and claims nothing. Nothing in this phase ever turns an unreachable source
+   into a failure to submit.
+8. **Late discovery is not late submission.** Evidence is judged against the
+   deadline recorded ON THE RECONCILIATION ROW when it opens, not against
+   when it was discovered and not against a deadline an admin has since
+   edited. An on-time submission for a week recorded as missed goes through
+   `correctOutcome`; a submission after the deadline is recorded, marked
+   `on_time: false`, and corrects nothing.
+9. **`correctOutcome` now takes a job actor.** The plan's audited historical
+   correction has no operator behind it, so `operatorId` may be null and the
+   event is recorded as the `system` actor through the existing `auditActor`.
+   A member actor is still refused. No new audit kind was needed:
+   `reporting.outcome_corrected` already meant this.
+10. **`outcome_corrected` on the row is the idempotence guard**, beside
+    `correctOutcome`'s own `unchanged` refusal. A second reconciliation pass
+    over a resolved row does nothing, and a week corrected once is never
+    corrected twice.
+11. **One composition serves every audience.** `submissionFocusFor` in
+    `lib/hq/reporting-surface.ts` builds the view once per edition, and the
+    team page and Captain card both read it. The admin panel reads the same
+    stored submission evidence through `loadProjectReporting`. A Captain and their team can therefore never read a
+    different submission state off two screens, and a test asserts the two are
+    equal. `completedBySubmission` is derived from the project's OWN
+    submission rather than from the period's `basis`, for the same reason
+    `TeamPeriodView` omits `basis`: `basis: "entry"` on a week a team sees no
+    entries for would tell them a Captain wrote something they may not read.
+12. **The weekly vocabulary is untouched.** Submitted/Not submitted and
+    Updated/Not updated stay separate words on separate lines everywhere,
+    including in the admin panel. A reconciliation is never a weekly status,
+    exactly as a reminder delivery never was.
+13. **Copy lives in `submission-readiness.ts`, and the scan follows it.**
+    `tests/hq/reporting-view.test.ts` now scans that module and
+    `components/hq/submission-focus.tsx` for em dashes and middots along with
+    the three reporting components. The contract's rule is that reporting copy
+    stays inside that scan; a phase that adds a fourth copy module adds it to
+    the same list rather than inlining strings.
+14. **Phase 10 added one pointer at `hq_projects`, and said so.**
+    `hq_submission_reconciliations` cascades from the project and from the
+    period, which `lib/hq/record-deletion.ts`'s header records, together with
+    why it is not counted in the deletion confirmation: what it holds is
+    evidence about the recorded week beside it, and the week is already
+    counted.
+
+## Integrated review, 15 September 2026
+
+These current rules supplement the phase handoffs above. The review and remaining
+live checks are summarized in `docs/hq/integrated-review.md`; owner steps are in
+`docs/hq/manual-setup.md`.
+
+- Unchanged account reads take a read-only synchronization fast path. Actual
+  changes and identity repair still use transactions.
+- Telegram identity requires its matching live Better Auth provider account.
+  `telegram-identity-sql.ts` shares the predicate between login, bot access and
+  delivery; interrupted unlink cleanup cannot preserve privilege.
+- Captain invitation redemption and manual grants serialize on the recipient
+  profile as well as the invitation. Roster claiming never transfers a CRM
+  identity belonging to another account.
+- Updated 16 September: joining refreshes Colosseum before offering or claiming
+  an available teammate. If the source cannot be read, the person can retry.
+  The source must match the stored external project and edition;
+  `source_attempted_at` tracks failed attempts as well as successes.
+- Pending/rejected import compatibility screens and `BuilderStore.ownClaim` are
+  removed. Imports are immediately verified under the approved import gate.
+- Reporting entries use a single timestamp for the period decision and saved
+  submission instant. A future period cannot be completed early. Member and
+  operator screens support explicit late entries; operator create/edit use the
+  same reporting service as members and the bot.
+- A draft retains its opened period and edit version through page refreshes.
+  Selecting another period or accepting a conflict is explicit. Refreshed lists
+  must remove newly unreadable or voided content instead of retaining stale bodies.
+- Voiding recalculates an open period. A closed outcome is preserved until an
+  explicit admin correction with a reason; history is not silently rewritten.
+- Captain first-page update reads are batched with per-project limits and live
+  assignment/audience checks. Submission panels reuse loaded reporting status.
+- Outbox sends claim one message at a time, recheck delivery permissions, and
+  reserve time for each transport request. Job stages share one invocation
+  deadline. Active claims, retry timing and final-attempt crash recovery retain
+  an honest distinction between confirmed and uncertain delivery.
+- Bot drafts, notes and reminder controls remain scoped to their edition.
+  Webhook completion is fenced to its processing attempt. Preview retries recover
+  controls; author-note lookup is a bounded query, not a scan of prior pages.
+- Submission reconciliation captures its cutoff when the pending record opens
+  after closure. Unknown evidence remains pending. A failure still advances the
+  source-attempt clock so other projects can be checked.
+- Raw snapshot backfills accept only ordinary HTTP(S) links without credentials,
+  controls or backslashes. Invalid legacy JSON shapes and out-of-range edition
+  IDs cannot abort a migration rerun.
+- The local project fallback uses `next/image`; remote project images remain
+  direct browser requests. The operator reporting panel loads only when opened.
+  Next.js is patched to 16.3.5 and Vitest to 4.1.11; audit fixes are locked.
+
+People deletion still preserves the public sign-in account. A subsequent login
+may create a fresh People card. HQ roster membership persists when a source roster
+changes; an upstream removal alone never revokes a verified HQ relationship.

@@ -1,6 +1,12 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  outputFileTracingIncludes: {
+    "/api/auth/*": ["./lib/hq/email-assets/superteam-nl.png"],
+  },
+  async redirects() {
+    return [{ source: "/hq/signin", destination: "/hq/login", permanent: true }];
+  },
   images: {
     // Luma event cover images
     remotePatterns: [{ protocol: "https", hostname: "**.lumacdn.com" }],

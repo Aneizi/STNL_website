@@ -480,6 +480,7 @@ describe("the actor", () => {
   it("builds the member actor from the member session with current grants and the Telegram identity as a string", async () => {
     await grant("cap");
     await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES('cap','Captain','cap@telegram.placeholder.invalid',false)`);
+    await rows(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES('cap-telegram','https://oauth.telegram.org','cap-subject','telegram','cap')`);
     await rows("INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES('cap','cap-subject',9007199254740993,'cap_handle')");
     mocks.currentUser.mockResolvedValue(null);
     mocks.currentMember.mockResolvedValue(MEMBER_USER);
@@ -507,18 +508,18 @@ describe("the actor", () => {
     mocks.requireUser.mockResolvedValue(OPERATOR_USER);
     expect(await requireOperatorActor()).toEqual({ kind: "operator", id: OPERATOR_ID, displayName: "Operator" });
     expect(await requireOperator()).toEqual({ kind: "operator", id: OPERATOR_ID, displayName: "Operator" });
-    mocks.requireUser.mockImplementation(async () => redirect("/hq/login"));
+    mocks.requireUser.mockImplementation(async () => redirect("/hq/admin/login"));
     mocks.currentMember.mockResolvedValue(MEMBER_USER);
     mocks.requireMember.mockResolvedValue(MEMBER_USER);
-    await expect(requireOperatorActor()).rejects.toThrow("REDIRECT:/hq/login");
-    await expect(requireOperator()).rejects.toThrow("REDIRECT:/hq/login");
+    await expect(requireOperatorActor()).rejects.toThrow("REDIRECT:/hq/admin/login");
+    await expect(requireOperator()).rejects.toThrow("REDIRECT:/hq/admin/login");
     expect(mocks.currentMember).not.toHaveBeenCalled();
     expect(mocks.requireMember).not.toHaveBeenCalled();
   });
 
   it("requireMemberActor redirects like requireMember and passes the destination through", async () => {
-    mocks.requireMember.mockImplementation(async (next?: string) => redirect(`/hq/signin?next=${encodeURIComponent(next ?? "/hq/welcome")}`));
-    await expect(requireMemberActor("/hq/team/x")).rejects.toThrow("REDIRECT:/hq/signin?next=%2Fhq%2Fteam%2Fx");
+    mocks.requireMember.mockImplementation(async (next?: string) => redirect(`/hq/login?next=${encodeURIComponent(next ?? "/hq/welcome")}`));
+    await expect(requireMemberActor("/hq/team/x")).rejects.toThrow("REDIRECT:/hq/login?next=%2Fhq%2Fteam%2Fx");
     mocks.requireMember.mockResolvedValue(MEMBER_USER);
     expect(await requireMemberActor()).toEqual({ kind: "member", id: "cap", name: "Captain", email: null, capabilities: new Set(), telegram: null });
     expect(mocks.requireUser).not.toHaveBeenCalled();

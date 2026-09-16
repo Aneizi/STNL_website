@@ -125,7 +125,7 @@ describe("team actions", () => {
     // A joined teammate is a member, not the lead: the same not-found answer as an outsider.
     signIn("member-a");
     expect(await saveBuilderTeam({ projectId: PROJECT_A, hackathonId: EDITION_A, stage: "idea", leadUsername: "lead-a" })).toEqual(DENIED);
-    expect(await createBuilderInvite({ projectId: PROJECT_A, hackathonId: EDITION_A, memberId: UNKNOWN })).toEqual(DENIED);
+    expect(await createBuilderInvite({ projectId: PROJECT_A, hackathonId: EDITION_A })).toMatchObject({ok:true});
     expect(await rows("SELECT stage FROM hq_project_onboarding WHERE project_id=$1", [PROJECT_A])).toEqual([{ stage: "live" }]);
   });
 
@@ -147,7 +147,7 @@ describe("team actions", () => {
       signIn(userId);
       const label = `${userId} ${projectId} ${hackathonId}`;
       expect(await saveBuilderTeam({ projectId, hackathonId, stage: "live", leadUsername: userId }), label).toEqual(DENIED);
-      expect(await createBuilderInvite({ projectId, hackathonId, memberId: UNKNOWN }), label).toEqual(DENIED);
+      expect(await createBuilderInvite({ projectId, hackathonId }), label).toEqual(DENIED);
     }
     expect(fetcher).not.toHaveBeenCalled();
     expect(await teamState()).toEqual(before);
@@ -159,16 +159,16 @@ describe("team actions", () => {
     signIn("lead-a");
     expect(await saveBuilderTeam({ projectId: PROJECT_A, hackathonId: EDITION_A, stage: "beta", leadUsername: "lead-a" })).toEqual({ ok: true, data: { saved: true } });
     expect(await saveBuilderTeam({ projectId: PROJECT_C, hackathonId: EDITION_B, stage: "beta", leadUsername: "lead-c" })).toEqual(DENIED);
-    expect(await createBuilderInvite({ projectId: PROJECT_C, hackathonId: EDITION_B, memberId: UNKNOWN })).toEqual(DENIED);
+    expect(await createBuilderInvite({ projectId: PROJECT_C, hackathonId: EDITION_B })).toEqual(DENIED);
     expect(mocks.cookies).not.toHaveBeenCalled();
   });
 
-  it("gives a captain grant no team action on its own, and no lead-only action through a roster seat", async () => {
+  it("allows sharing through team membership but never through a captain grant alone", async () => {
     await grant("cap");
     signIn("cap");
     for (const projectId of [PROJECT_A, PROJECT_B, PROJECT_C, UNKNOWN]) {
       expect(await saveBuilderTeam({ projectId, hackathonId: EDITION_A, stage: "live", leadUsername: "cap_handle" }), projectId).toEqual(DENIED);
-      expect(await createBuilderInvite({ projectId, hackathonId: EDITION_A, memberId: UNKNOWN }), projectId).toEqual(DENIED);
+      expect(await createBuilderInvite({ projectId, hackathonId: EDITION_A }), projectId).toMatchObject(projectId===PROJECT_B?{ok:true}:DENIED);
     }
     expect(await rows("SELECT stage FROM hq_project_onboarding WHERE project_id=$1", [PROJECT_B])).toEqual([{ stage: "mvp" }]);
   });
@@ -187,39 +187,28 @@ describe("team actions", () => {
     expect(await save()).toEqual(DENIED);
   });
 
-  it("invites through the central decision, then the Colosseum roster check, and stores only a code hash", async () => {
-    const project = {
-      projectType: "HACKATHON",
-      project: {
-        id: 9001, hackathonId: 9006, slug: "lead-a", name: "Project lead-a", description: "", country: "Netherlands",
-        hackathon: { id: 9006, slug: "edition-a", name: "Edition A" },
-        teamMembers: [
-          { username: "lead-a", displayName: "Lead A", avatarUrl: null },
-          { username: "member_a", displayName: "Member A", avatarUrl: null },
-          { username: "unclaimed", displayName: "Unclaimed", avatarUrl: null },
-        ],
-      },
-    };
-    const fetcher = vi.fn(async () => new Response(JSON.stringify(project), { headers: { "Content-Type": "application/json" } }));
-    vi.stubGlobal("fetch", fetcher);
-    const [unclaimed] = await rows("SELECT id::text AS id FROM hq_project_members WHERE project_id=$1 AND colosseum_username='unclaimed'", [PROJECT_A]);
-    const memberId = String(unclaimed.id);
-    // The teammate is not the lead: denied before anything is fetched.
+  it("shares a reusable team link without choosing a person or contacting Colosseum", async () => {
+    const fetcher=vi.fn();
+    vi.stubGlobal("fetch",fetcher);
     signIn("member-a");
-    expect(await createBuilderInvite({ projectId: PROJECT_A, hackathonId: EDITION_A, memberId })).toEqual(DENIED);
+    const result=await createBuilderInvite({projectId:PROJECT_A,hackathonId:EDITION_A});
+    expect(result.ok && result.data.code).toMatch(/^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$/);
     expect(fetcher).not.toHaveBeenCalled();
     signIn("lead-a");
-    const result = await createBuilderInvite({ projectId: PROJECT_A, hackathonId: EDITION_A, memberId });
-    expect(result.ok && result.data.code).toMatch(/^[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6}$/);
-    // Phase 3: creating a join link no longer re-reads Colosseum. The seat
-    // is a row on the team's own imported roster, and a refresh is a
-    // separate, explicit action — so the team lead can hand a teammate a
-    // link while Colosseum is down, and one slow upstream request cannot
-    // stand between them and their own team.
-    expect(fetcher).not.toHaveBeenCalled();
-    expect(await rows("SELECT member_id::text AS member_id, created_by, consumed_at FROM hq_team_invites")).toEqual([{ member_id: memberId, created_by: "lead-a", consumed_at: null }]);
-    expect(await rosterUsernames(PROJECT_A)).toEqual([{ colosseum_username: "lead-a" }, { colosseum_username: "member_a" }, { colosseum_username: "unclaimed" }]);
+    expect(await createBuilderInvite({projectId:PROJECT_A,hackathonId:EDITION_A})).toEqual(result);
+    expect(await rows("SELECT member_id::text AS member_id, created_by, consumed_at FROM hq_team_invites"))
+      .toEqual([{member_id:null,created_by:"member-a",consumed_at:null}]);
+    expect(await rosterUsernames(PROJECT_A)).toEqual([{colosseum_username:"lead-a"},{colosseum_username:"member_a"},{colosseum_username:"unclaimed"}]);
   });
+
+  it("does not let an assigned captain share a team's link without membership", async () => {
+    await grant("cap");
+    await assignCaptain(db,{actorOperatorId:OPERATOR_ID,projectId:PROJECT_A,hackathonId:EDITION_A,captainUserId:"cap"});
+    signIn("cap");
+    expect(await createBuilderInvite({projectId:PROJECT_A,hackathonId:EDITION_A})).toEqual(DENIED);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_team_invites")).toEqual([{n:0}]);
+  });
+
 });
 
 describe("the team page", () => {
@@ -246,12 +235,12 @@ describe("the team page", () => {
     await expect(page(PROJECT_A)).resolves.toBeDefined();
   });
 
-  it("shows a claimant their own pending or rejected claim with its status, and grants them no team action", async () => {
+  it("does not expose obsolete pending or rejected imports as usable teams", async () => {
     const claimant = await actorFor("lead-p");
-    expect((await memberTeamView(claimant, PROJECT_P))?.membership).toEqual({ role: "owner", verification: "pending" });
-    await expect(page(PROJECT_P)).resolves.toBeDefined();
+    expect(await memberTeamView(claimant, PROJECT_P)).toBeNull();
+    await expect(page(PROJECT_P)).rejects.toThrow("NOT_FOUND");
     await rows("UPDATE hq_project_onboarding SET verification='rejected' WHERE project_id=$1", [PROJECT_P]);
-    expect((await memberTeamView(claimant, PROJECT_P))?.membership).toEqual({ role: "owner", verification: "rejected" });
+    expect(await memberTeamView(claimant, PROJECT_P)).toBeNull();
     expect(await saveBuilderTeam({ projectId: PROJECT_P, hackathonId: EDITION_A, stage: "live", leadUsername: "lead-p" })).toEqual(DENIED);
     // Nobody else sees the claim, and a claim is never anyone else's team.
     expect(await memberTeamView(await actorFor("plain"), PROJECT_P)).toBeNull();
@@ -286,8 +275,8 @@ describe("the team page", () => {
   });
 
   it("sends a signed-out visitor to sign in with the team URL as the destination", async () => {
-    mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/signin?next=${encodeURIComponent(next ?? "")}`); });
-    await expect(page(PROJECT_A)).rejects.toThrow(`REDIRECT:/hq/signin?next=${encodeURIComponent(`/hq/team/${PROJECT_A}`)}`);
+    mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/login?next=${encodeURIComponent(next ?? "")}`); });
+    await expect(page(PROJECT_A)).rejects.toThrow(`REDIRECT:/hq/login?next=${encodeURIComponent(`/hq/team/${PROJECT_A}`)}`);
   });
 
   it("shows the team its assigned Captain's display name with no contact (task T4.5), and no Captain again once unassigned", async () => {
@@ -309,10 +298,8 @@ describe("the team page", () => {
     expect(renderToStaticMarkup(await page(PROJECT_C))).not.toContain("Team Captain");
   });
 
-  it("shows no Captain to the account watching its own still-unverified claim: only a verified team's own view is populated", async () => {
+  it("withholds the whole team view for an obsolete unverified import", async () => {
     const claim = await memberTeamView(await actorFor("lead-p"), PROJECT_P);
-    expect(claim?.membership.role).toBe("owner");
-    expect(claim?.membership.verification).not.toBe("verified");
-    expect(claim?.captain).toBeNull();
+    expect(claim).toBeNull();
   });
 });

@@ -74,9 +74,20 @@ beforeEach(async () => {
   // account, which is what these tests are about.
   await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES($1,'Bot account',$2,true)`, [USER, `${USER}@example.test`]);
   await rows("INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id) VALUES($1,$2,$3::bigint)", [USER, `telegram:${CHAT}`, CHAT]);
+  await rows(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES('telegram-test','https://oauth.telegram.org',$1,'telegram',$2)`, [`telegram:${CHAT}`, USER]);
 });
 
 describe("update receipts", () => {
+  it("does not let an expired attempt finish over its replacement", async () => {
+    const start = Date.now();
+    await claimTelegramUpdate(db, 5010, start);
+    await claimTelegramUpdate(db, 5010, start + UPDATE_LEASE_MS + 1);
+    await finishTelegramUpdate(db, 5010, "failed", "old_attempt", 1);
+    expect((await rows("SELECT state, attempts FROM hq_telegram_updates WHERE update_id=5010"))[0]).toMatchObject({ state: "processing", attempts: 2 });
+    await finishTelegramUpdate(db, 5010, "done", undefined, 2);
+    await finishTelegramUpdate(db, 5010, "failed", "late_failure", 1);
+    expect((await rows("SELECT state FROM hq_telegram_updates WHERE update_id=5010"))[0].state).toBe("done");
+  });
   it("leases an update, refuses an overlapping delivery, and never re-runs a finished one", async () => {
     expect(await claimTelegramUpdate(db, 5001)).toMatchObject({ accepted: true, attempts: 1 });
     // A second delivery while the first invocation still holds the lease.

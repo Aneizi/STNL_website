@@ -82,9 +82,9 @@ afterAll(async () => { await pg.close(); });
 
 describe("acceptCaptainInvitationFromContinuation", () => {
   it("refuses a signed-out visitor: requireMemberActor's own gate, before any continuation is even read", async () => {
-    mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/signin?next=${encodeURIComponent(next ?? "")}`); });
+    mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/login?next=${encodeURIComponent(next ?? "")}`); });
     withContinuationCookie(undefined);
-    await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow("REDIRECT:/hq/signin?next=%2Fhq%2Finvite%2Fcontinue");
+    await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow("REDIRECT:/hq/login?next=%2Fhq%2Finvite%2Fcontinue");
     expect(await redemptions()).toEqual([]);
   });
 
@@ -96,7 +96,7 @@ describe("acceptCaptainInvitationFromContinuation", () => {
     // A visitor who has not finished signing up yet — no member session —
     // retries the accept control a few times. requireMemberActor()'s own
     // gate refuses every one of them before the continuation is even read.
-    mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/signin?next=${encodeURIComponent(next ?? "")}`); });
+    mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/login?next=${encodeURIComponent(next ?? "")}`); });
     for (let i = 0; i < 3; i++) {
       await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow(/^REDIRECT:/);
     }

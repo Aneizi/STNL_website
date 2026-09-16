@@ -27,9 +27,9 @@ export const CAPABILITIES = ["captain"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** How People shows a capability: a locked tag with this label. */
-export const CAPABILITY_LABELS: Record<Capability, string> = { captain: "Captain" };
+const CAPABILITY_LABELS: Record<Capability, string> = { captain: "Captain" };
 
-export function isCapability(value: unknown): value is Capability {
+function isCapability(value: unknown): value is Capability {
   return typeof value === "string" && (CAPABILITIES as readonly string[]).includes(value);
 }
 
@@ -104,7 +104,7 @@ async function activeGrant(db: BuilderQuery, userId: string, capability: Capabil
 export async function grantCapability(db: BuilderQuery | BuilderDatabase, input: CapabilityChange): Promise<CapabilityGrant> {
   if (!isCapability(input.capability)) throw new BuilderError("Unknown capability.");
   return atomically(db, async (tx) => {
-    const { rows: accounts } = await tx.query("SELECT name FROM hq_builder_profiles WHERE id = $1", [input.userId]);
+    const { rows: accounts } = await tx.query("SELECT name FROM hq_builder_profiles WHERE id = $1 FOR UPDATE", [input.userId]);
     if (!accounts.length) throw new BuilderError("This account no longer exists.");
     const { rows: inserted } = await tx.query(
       `INSERT INTO hq_account_capabilities (user_id, capability, granted_by_user_id, reason)

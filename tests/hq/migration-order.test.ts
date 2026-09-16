@@ -76,6 +76,7 @@ async function expectIdentitySchema(pg: PGlite) {
   await run(pg, `INSERT INTO hq_auth_account (id, issuer, "accountId", "providerId", "userId") VALUES ('a3', 'https://other.example', 'sub-3', 'other', 'tg-user')`);
   await run(pg, `DELETE FROM hq_auth_user WHERE id = 'tg-user'`);
   expect(await column(pg, "hq_builder_profiles", "email")).toEqual({ data_type: "text", is_nullable: "YES" });
+  expect(await column(pg, "hq_project_onboarding", "source_attempted_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
   expect(await column(pg, "hq_builder_profiles", "contact_email")).toEqual({ data_type: "text", is_nullable: "YES" });
   expect(await column(pg, "hq_people", "person_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
   expect(await column(pg, "hq_project_members", "person_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
@@ -666,6 +667,42 @@ describe("phase 3: the Colosseum source snapshot and the removed challenge", () 
       await applyMigrations(pg);
       expect(await run(pg, `SELECT category FROM hq_project_onboarding WHERE project_id='${id}'`))
         .toEqual([{ category: "Operator corrected" }]);
+      // Current public payloads have only project.hackathonId. Invalid
+      // legacy values must not abort every other migration statement.
+      await run(pg, `UPDATE hq_project_onboarding SET external_hackathon_id=NULL,
+        raw=raw #- '{project,hackathon}' WHERE project_id='${id}'`);
+      await applyMigrations(pg);
+      expect(await run(pg, `SELECT external_hackathon_id FROM hq_project_onboarding WHERE project_id='${id}'`))
+        .toEqual([{ external_hackathon_id: 6 }]);
+      await run(pg, `UPDATE hq_project_onboarding SET external_hackathon_id=NULL,
+        raw=jsonb_set(raw,'{project,hackathonId}','99999999999999999999'::jsonb) WHERE project_id='${id}'`);
+      await applyMigrations(pg);
+      expect(await run(pg, `SELECT external_hackathon_id FROM hq_project_onboarding WHERE project_id='${id}'`))
+        .toEqual([{ external_hackathon_id: null }]);
+
+      // A normalized NULL may be deliberate: source parsing rejects unsafe
+      // URLs but retains the raw snapshot for diagnostics. Re-running the
+      // migration must not resurrect those rejected links or choke on a
+      // legacy field whose JSON shape no longer matches today's response.
+      const unsafeRaw = JSON.stringify({ project: {
+        website: "javascript:alert(1)",
+        repoLink: "data:text/html,unsafe",
+        presentationLink: "https://user:password@example.test/deck",
+        technicalDemoLink: "//example.test/demo",
+        pitchVideoLink: "https://user@example.test/pitch",
+        demoVideoLink: "file:///private/demo",
+        image: { url: "data:image/svg+xml,<svg/>" },
+        tracks: { unexpected: "object" },
+      } });
+      await run(pg, `UPDATE hq_project_onboarding SET raw=$2::jsonb, website=NULL, repo_link=NULL,
+        presentation_link=NULL, technical_demo_link=NULL, pitch_video_link=NULL, demo_video_link=NULL,
+        image_url=NULL, tracks='{}' WHERE project_id=$1`, [id, unsafeRaw]);
+      await applyMigrations(pg);
+      expect(await run(pg, `SELECT website, repo_link, presentation_link, technical_demo_link, pitch_video_link,
+        demo_video_link, image_url, tracks FROM hq_project_onboarding WHERE project_id=$1`, [id])).toEqual([{
+        website: null, repo_link: null, presentation_link: null, technical_demo_link: null,
+        pitch_video_link: null, demo_video_link: null, image_url: null, tracks: [],
+      }]);
     } finally {
       await pg.close();
     }
@@ -800,6 +837,53 @@ describe("phase 5: the reporting tables", () => {
       await run(pg, insertEntry(projectId, periodId));
       await run(pg, `DELETE FROM hq_builder_profiles WHERE id = 'author-1'`);
       expect(await run(pg, `SELECT author_kind, author_id FROM hq_reporting_entries`)).toEqual([{ author_kind: "member", author_id: "author-1" }]);
+    } finally {
+      await pg.close();
+    }
+  });
+
+  // Phase 10: the final period's settings and the closing reconciliation.
+  it("adds the submission settings and the reconciliation table, on a fresh database applied twice", async () => {
+    const pg = new PGlite();
+    try {
+      await applyMigrations(pg);
+      await applyMigrations(pg);
+      expect(await exists(pg, "hq_submission_reconciliations")).toBe(true);
+      const columns = await run(
+        pg,
+        `SELECT column_name FROM information_schema.columns WHERE table_name = 'hq_reporting_config' ORDER BY column_name`,
+      );
+      for (const column of ["required_materials", "optional_materials", "submission_refresh_minutes", "official_deadline_source", "official_deadline_checked_at"]) {
+        expect(columns.map((row) => row.column_name), column).toContain(column);
+      }
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("refuses a submission check interval below the floor, and a second reconciliation for one project and period", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, periodId } = await seed(pg);
+      await expect(run(
+        pg,
+        `INSERT INTO hq_reporting_config (hackathon_id, submission_refresh_minutes) VALUES (${HACKATHON}, 5)`,
+      )).rejects.toThrow();
+      const insert = `INSERT INTO hq_submission_reconciliations (period_id, project_id, hackathon_id) VALUES ($1, $2, ${HACKATHON})`;
+      await run(pg, insert, [periodId, projectId]);
+      await expect(run(pg, insert, [periodId, projectId])).rejects.toThrow();
+    } finally {
+      await pg.close();
+    }
+  });
+
+  it("removes a project's reconciliation with the project, the way its weeks go", async () => {
+    const pg = await createMigratedDatabase();
+    try {
+      const { projectId, periodId } = await seed(pg);
+      await run(pg, `INSERT INTO hq_submission_reconciliations (period_id, project_id, hackathon_id) VALUES ($1, $2, ${HACKATHON})`, [periodId, projectId]);
+      await run(pg, `DELETE FROM hq_projects WHERE id = $1`, [projectId]);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_submission_reconciliations`)).toEqual([{ n: 0 }]);
     } finally {
       await pg.close();
     }

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import {
   Fragment,
@@ -11,7 +12,6 @@ import {
   useTransition,
 } from "react";
 import { IconBubbleAndPencil } from "@/components/hq/icons/IconBubbleAndPencil";
-import { ProjectReportingPanel } from "@/components/hq/reporting-project-panel";
 import { showToast } from "@/components/hq/toast";
 import { Badge, FormField, accentBtn, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
@@ -47,6 +47,10 @@ import type {
   ProjectMember,
   Settings,
 } from "@/lib/hq/types";
+
+const ProjectReportingPanel = dynamic(() => import("./reporting-project-panel").then((module) => module.ProjectReportingPanel), {
+  loading: () => <p role="status">Loading weekly reporting…</p>,
+});
 
 type PartnerOption = { id: string; name: string };
 type EventOption = { id: string; name: string };

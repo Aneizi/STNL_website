@@ -5,6 +5,8 @@
 // complete draft, unknown state, failed check).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { fetchColosseumProject, type ColosseumFetch } from "@/lib/colosseum-api";
 import {
@@ -13,6 +15,7 @@ import {
 } from "@/lib/hq/colosseum-snapshot";
 import detail from "./fixtures/colosseum/detail.json";
 import listing from "./fixtures/colosseum/listing.json";
+import { BuilderProjectImage } from "@/components/hq/builder-project-image";
 
 const ROOT = process.cwd();
 const url = (slug: string) => `https://colosseum.com/arena/projects/explore/${slug}`;
@@ -121,6 +124,8 @@ describe("the submission signal", () => {
     expect(submittedOnTime("2026-05-13T00:00:00.000Z", deadline)).toBe(false);
     expect(submittedOnTime(null, deadline)).toBeNull();
     expect(submittedOnTime("2026-05-11T20:00:00.000Z", null)).toBeNull();
+    expect(submittedOnTime(deadline, deadline)).toBe(true);
+    expect(submittedOnTime(deadline, deadline, true)).toBe(false);
   });
 });
 
@@ -133,13 +138,18 @@ describe("the approved fallback image", () => {
   it("is used for a missing image and for one that fails to load, and is never a human avatar", () => {
     const source = readFileSync(join(ROOT, "components/hq/builder-project-image.tsx"), "utf8");
     // Missing source, and an onError that swaps to the fallback.
-    expect(source).toMatch(/!src \|\| failed \? PROJECT_FALLBACK_IMAGE : src/);
-    expect(source).toMatch(/onError=\{\(\) => setFailed\(true\)\}/);
+    expect(source).toMatch(/if \(!src \|\| failed\) return <Image/);
+    expect(source).toMatch(/onError=\{\(\) => setFailedSource\(src\)\}/);
     // Contained proportions and one consistent size prop.
     expect(source).toContain('objectFit: "contain"');
-    // No server-side image proxy: a plain tag, no next/image, no remote host
-    // added to remotePatterns.
-    expect(source).not.toMatch(/^\s*import .* from "next\/image"/m);
+    // Remote images remain direct; only the trusted local fallback is optimized.
+    const remote = renderToStaticMarkup(createElement(BuilderProjectImage, { src: "https://images.example.com/team.png", name: "Team" }));
+    expect(remote).toContain('src="https://images.example.com/team.png"');
+    expect(remote).toContain('referrerPolicy="no-referrer"');
+    expect(remote).not.toContain("/_next/image");
+    const fallback = renderToStaticMarkup(createElement(BuilderProjectImage, { src: null, name: "Team" }));
+    expect(fallback).toContain("/_next/image?url=%2Fimages%2Fhq%2Fproject-fallback.png");
+    expect(fallback).toContain('alt=""');
     expect(readFileSync(join(ROOT, "next.config.ts"), "utf8")).not.toContain("narrative-violation");
     // Nothing renders it for a person: the roster shows no avatar fallback.
     expect(readFileSync(join(ROOT, "components/hq/builder-onboarding.tsx"), "utf8"))

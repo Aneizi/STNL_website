@@ -66,13 +66,14 @@ export const JOIN_LINK_MESSAGES: Record<JoinLinkRefusal, string> = {
   other_edition: 'This join link is for a hackathon HQ is no longer running.',
 };
 
-/** The unclaimed roster seat a valid join link opens. Returned only once the link checks out. */
-export type JoinSeat = {
-  id: string; memberId: string; projectId: string;
-  name: string; username: string; projectName: string; projectUrl: string; hackathonId: number;
+/** The unclaimed roster a valid project link opens. Legacy links expose only their original seat. */
+export type JoinProject = {
+  id: string; projectId: string;
+  projectName: string; projectUrl: string; hackathonId: number;
+  members: { id: string; name: string; username: string; avatarUrl: string | null }[];
 };
 
-export type JoinLinkLookup = { ok: true; data: JoinSeat } | { ok: false; reason: JoinLinkRefusal };
+export type JoinLinkLookup = { ok: true; data: JoinProject } | { ok: false; reason: JoinLinkRefusal };
 /**
  * The signed-in public account as the store writes it: the stable account id,
  * the verified login email (null for a Telegram-only account or an unverified

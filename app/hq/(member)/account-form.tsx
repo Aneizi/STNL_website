@@ -73,7 +73,7 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
       const result = await memberAuthClient.signIn.social({
         provider: "telegram",
         callbackURL: destination,
-        errorCallbackURL: `/hq/signin?error=telegram&next=${encodeURIComponent(destination)}`,
+        errorCallbackURL: `/hq/login?error=telegram&next=${encodeURIComponent(destination)}`,
         newUserCallbackURL: `/hq/profile?next=${encodeURIComponent(destination)}`,
       });
       if (result.error) {
@@ -145,8 +145,8 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
       </header>
       <main className={styles.main}>
         <div className={styles.content}>
-          <h1>{step === "verify" ? <>Check your <em>email.</em></> : mode === "signup" ? <>Create your <em>account.</em></> : <>Welcome <em>back.</em></>}</h1>
-          <p className={styles.introduction}>{step === "verify" ? <>Enter the 6-digit code sent to <strong>{email}</strong>.</> : "Your place in Superteam NL HQ."}</p>
+          <h1>{step === "verify" ? "Check your email" : "Enter HQ"}</h1>
+          {step === "verify" && <p className={styles.introduction}>Enter the 6-digit code sent to <strong>{email}</strong>.</p>}
 
           {step === "details" ? (
             <>
@@ -163,10 +163,9 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
                   Name
                   <input name="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required disabled={busy} />
                 </label>}
-                <label className={styles.field}>
-                  Email
-                  <input name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required disabled={busy} />
-                </label>
+                <div className={styles.field}>
+                  <input aria-label="Email" placeholder="example@gmail.com" name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required disabled={busy} />
+                </div>
                 {unavailable.email && <p className={styles.hint}>{unavailable.email}</p>}
                 <button className={styles.submit} disabled={busy || !availability.email} type="submit">
                   {busy ? "Sending code…" : "Continue with email"}
@@ -175,7 +174,7 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
                 <p className={styles.hint}>We&apos;ll email you a verification code. No password needed.</p>
               </form>
               {unavailable.all && <p className={styles.hint}>{unavailable.all}</p>}
-              {mode === "signup" && <p className={styles.switchMode}>Already have an account? <Link href={`/hq/signin?next=${encodeURIComponent(destination)}`}>Sign in</Link></p>}
+              {mode === "signup" && <p className={styles.switchMode}>Already have an account? <Link href={`/hq/login?next=${encodeURIComponent(destination)}`}>Sign in</Link></p>}
             </>
           ) : (
             <form className={styles.form} onSubmit={verifyCode}>

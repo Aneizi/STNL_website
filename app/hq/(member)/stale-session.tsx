@@ -25,7 +25,7 @@ export function SignInAgain({ next, start, disabled, onError }: Props) {
   const signInAgain = () => start(async () => {
     const result = await memberAuthClient.signOut();
     if (result.error) return onError("Could not sign out. Please try again.");
-    router.replace(`/hq/signin?next=${encodeURIComponent(next)}`);
+    router.replace(`/hq/login?next=${encodeURIComponent(next)}`);
     router.refresh();
   });
   return <button type="button" className={styles.textButton} disabled={disabled} onClick={signInAgain}>Sign in again</button>;

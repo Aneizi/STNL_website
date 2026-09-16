@@ -1,0 +1,14 @@
+# Names only. Copy into a gitignored file and fill privately for ONE environment.
+# .env.development.local takes precedence over .env.local in Next and HQ scripts.
+DATABASE_URL=
+DATABASE_URL_UNPOOLED=
+HQ_SESSION_SECRET=
+BETTER_AUTH_URL=
+BETTER_AUTH_SECRET=
+RESEND_API_KEY=
+EMAIL_FROM=
+TELEGRAM_LOGIN_CLIENT_ID=
+TELEGRAM_LOGIN_CLIENT_SECRET=
+TELEGRAM_BOT_USERNAME=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_WEBHOOK_SECRET=

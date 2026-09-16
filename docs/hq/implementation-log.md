@@ -5552,3 +5552,428 @@ changed.
 Telegram, GitHub Actions, production database or deployed timeout test. The
 OIDC signature path still needs GitHub. Those remain manual setup 2.11 and
 live checks L23 to L27.
+
+## Phase 10, the final submission-focused period
+
+Implemented in one session on branch `hq-captains-phases-0-2`, on top of
+phase 8. The plan's Phase 10 section is the authority for everything below,
+together with section 2's "Hackathon dates and final submission" and
+`docs/hq/contracts.md`'s "Handoff to phase 10 and later". There is no phase 9;
+the owner removed it on 14 September 2026.
+
+The phase's shape follows from one sentence in the plan: **"Checklist
+readiness does not set Submitted. A confirmed official submission signal
+does."** Everything here is arranged so that the two can never be confused.
+The checklist lives in a pure module that cannot reach a database. The
+submission status is still written in exactly one place, phase 3's
+`interpretSubmission`, and this phase only ever reads it back. And the
+closing reconciliation records what HQ has established separately from what
+the week recorded, so an outage produces "not established yet" rather than a
+false conclusion about a team.
+
+### What changed
+
+**Two new modules and one component.**
+
+- `lib/hq/submission-readiness.ts` is pure, client-safe and holds the final
+  period's presentation rules and copy: the six material keys, the
+  Required/Optional/Unknown vocabulary, the checklist derivation, the summary,
+  the deadline label and the three submission sentences. It is scanned for em
+  dashes and middots by `tests/hq/reporting-view.test.ts` along with
+  `components/hq/submission-focus.tsx`, which is how the contract's rule that
+  reporting copy stays inside that scan is met without `reporting-view.ts`
+  swallowing a second subject.
+- `lib/hq/submission.ts` is the server service: the snapshot read every
+  authorized surface shares, the bounded staleness refresh, the catch-up that
+  opens reconciliations for closed submission periods, and the reconciliation
+  itself. It writes no submission status and makes no permission decision; the
+  caller has already authorized every project id it is handed.
+- `components/hq/submission-focus.tsx` is the panel the team page and the
+  Captain card both render, from the same server composition, so the two can
+  never describe one submission differently.
+
+**One table and five columns (`scripts/hq/builder-schema.sql`).**
+`hq_submission_reconciliations`, unique on `(period_id, project_id)`, plus
+`hq_reporting_config.required_materials`, `optional_materials`,
+`submission_refresh_minutes`, `official_deadline_source` and
+`official_deadline_checked_at`. Everything is `IF NOT EXISTS` or
+`ADD COLUMN IF NOT EXISTS`, in the additive file, after the tables it
+references.
+
+**The requirements are operator data, and Unknown is the default.** Colosseum
+publishes no per-field requirement HQ can read: `projectCompletion` is
+owner-authenticated and absent from the public detail response, which phase 3
+recorded. So an admin ticks Required or Optional per material under Weekly
+reporting, and a material in neither list is shown to teams as "Not known".
+Nothing is hard-coded as mandatory, which is the plan's own instruction.
+
+**`fetchEditionSubmissionWindow` has its first production caller.** The admin
+panel's "Read the deadline from Colosseum" button asks the listing envelope
+for the external edition id an admin configured under Builder onboarding, and
+stores `projectSubmissionEndDate` as `official_submission_deadline` with its
+provenance. Every failure keeps its own sentence, the rule imports have
+followed since phase 3, and none of them erases a deadline an admin typed in:
+an edition whose project directory is still closed answers 400, which is a
+fact about the directory rather than about the deadline.
+
+**The refresh is a job step, not a poller.** `dueSubmissionRefreshes` answers
+"which snapshots are stale at this instant" from stored configuration, the
+same shape `dueReminders` uses, and only for an edition whose submission
+period is open, whose admin has set an interval (floor 15 minutes), and for
+projects in reporting and not paused. `refreshDueSubmissions` takes at most
+five per pass and stops on a 12-second budget. `refreshColosseumTeam` is phase
+3's, untouched, so a failed read records the failure and keeps the last known
+status and the last successful check time.
+
+**The reconciliation is a catch-up, not a step of the closure.**
+`openSubmissionReconciliations` inserts from the closed submission period's
+own stored outcomes, so it repairs itself on the next pass if a run died
+between closing the week and opening the rows. `reconcileSubmissions` then
+attempts the pending ones, bounded and budgeted, and records one of three
+things: an outage (attempts up, HQ's own error code, still pending, nothing
+claimed), a confirmed on-time submission (resolved, and the week corrected if
+it recorded a miss), or a confirmed late or absent submission (resolved, and
+the week untouched).
+
+**`correctOutcome` now accepts a job actor.** The correction the plan asks for
+("historical corrections based on delayed authoritative evidence are audited")
+has no operator behind it. A job writes it with `operatorId` null, the same
+mandatory reason, and `reporting.outcome_corrected` recorded as the `system`
+actor. A member actor is still refused, as it always was. No new audit kind
+was added.
+
+**Surfaces.** The team page leads with the submission panel while the final
+period is open and keeps it below the week after it ends; the Captain card
+carries the identical view; the Projects detail panel shows Colosseum's own
+signal and the reconciliation beside the weeks, on separate lines because
+Submitted/Not submitted and Updated/Not updated are separate vocabularies; and
+Admin's Weekly reporting panel gains the materials, the refresh interval, the
+deadline read and a "Final submission period" list of what has and has not
+been established. The team page's standalone Check submission button is
+suppressed while the panel offers its own, so there is one control rather than
+two.
+
+### Acceptance checklist
+
+| Plan bullet | How it is met | Test |
+|---|---|---|
+| "The final dashboard begins 5 October and includes 12 October without creating a fifth week" | The stored periods are 1 to 3 weekly and 4 submission, 5 to 12 October, whose exclusive end is `2026-10-12T22:00:00.000Z`; the status read answers period 4 on 5 October and on 12 October, week 3 on 4 October, and null after | `submission.test.ts` "begins 5 October and includes 12 October", "is the open period on its first and on its last day" |
+| "A confirmed submission satisfies the final week" | `submissionSatisfies` (phase 5, unchanged) completes the submission period on a `submitted` status inside the deadline, with no entry | `submission.test.ts` "is satisfied by a confirmed, on-time submission" |
+| "and cancels a queued missing-update reminder" | Completion removes the project from `outstandingForCaptain`, which is re-run at dispatch; every team submitting answers `nothing_outstanding` | `submission.test.ts` "drops a team whose submission is confirmed" |
+| "An incomplete draft, missing source data and complete materials without actual submission do not show Submitted" | A live refresh of a draft writes `not_submitted` and completes nothing even with every material present; an unread project stays `not_checked` | `submission.test.ts` "does not show Submitted for a draft, for a project never checked, or for complete materials" |
+| "Keep Add update available. Either an on-time written update or a confirmed on-time submission satisfies" | The composer is unchanged and an entry completes the period on its own; the submission status is still carried beside it | `submission.test.ts` "is satisfied by a written update on its own" |
+| "Distinguish Required, Optional and Unknown" | Three requirement values, three distinct labels, Unknown the default for every material | `submission-readiness.test.ts` "what this edition asks for" |
+| "Do not mark an item complete merely because an unrelated URL exists" | Each item is judged on its own field; a shared link is named on both rows and counted once | `submission-readiness.test.ts` "judges every material on its own field" |
+| "Checklist readiness does not set Submitted" | The pure module produces no submission state, and a complete required checklist leaves the period incomplete | `submission-readiness.test.ts` "says every material is required and present only when"; `submission.test.ts` as above |
+| "Provide Check submission/Refresh on the authorized project view" | `refreshBuilderTeam` behind the panel's button, gated by `authorizeProjectAction` read, so a team member and the assigned Captain both reach it | existing `member-actions-authz.test.ts`; the panel renders on both surfaces |
+| "Use bounded server-side refreshes during the final period if configured; do not poll from every browser tab" | Nothing is due until an interval is set; nothing outside the open submission period; paused excluded; batch and time budget | `submission.test.ts` "the bounded refresh during the final period" (5 cases) |
+| "Store verification timestamps and retain last-known results on failure" | A failed refresh keeps `submission_status` and `source_checked_at` and writes `source_status='error'` | `submission.test.ts` "keeps the last known status and records the failure" |
+| "If the API is unavailable, preserve Not checked/stale information and flag reconciliation as pending internally; do not claim an unverified submission failure" | The row stays `pending` with `submission_status` NULL and `on_time` NULL; no outcome is touched; the team is told a reconciliation is open | `submission.test.ts` "stays pending and claims nothing", "tells the team a reconciliation is still open" |
+| "Once verified, use the official submitted timestamp and deadline to establish whether it was on time, even if discovery happened later" | Evidence arriving after the close is judged against the recorded deadline, not the discovery time | `submission.test.ts` "corrects a missed final period, with an audit event" |
+| "Historical corrections based on delayed authoritative evidence are audited" | `correctOutcome` writes the correction beside the original with its reason and a `reporting.outcome_corrected` event attributed to the system | same test, which asserts the event and its actor kind |
+| "A submission made after the deadline remains late and does not erase an on-time failure" | `on_time` false, `outcome_corrected` false, the outcome unchanged and no audit event | `submission.test.ts` "records a late submission as late" |
+| "After the period ends, retain history and submission details, stop routine prompts and reminders, keep the final reporting range intact" | The panel stays with `open: false`; `shouldPromptUpdate` needs an open period; `outstandingForCaptain` answers `period_over`; the period's dates are untouched | `submission.test.ts` "keeps the submission detail after the period ends", "stops entirely once the final period has ended" |
+| "Required materials and official deadlines match the configured edition" | Both are per-edition configuration; the deadline can additionally be read from Colosseum for the configured external edition | `reporting-actions.test.ts` "records which submission materials", "says which of the two put the deadline there", "will not ask Colosseum before an admin has set the edition's Colosseum id" |
+| "The Wednesday reminder still follows the agreed missing-update rule" | Unchanged. The final period carries a `nudge_at` like any other, and no submission-specific reminder type was added | `submission.test.ts` "names a team that has neither submitted nor written anything" |
+
+### Which migrations apply
+
+The same single `npm run hq:migrate`. One new table with two indexes and five
+`ADD COLUMN IF NOT EXISTS` on `hq_reporting_config`, all in
+`scripts/hq/builder-schema.sql`. No existing table, column, constraint or
+index changed, and no index definition was retired.
+`scripts/hq/reset-statements.ts` classifies `hq_submission_reconciliations`
+as CLEAR, beside the reporting rows it belongs to;
+`tests/hq/migration-order.test.ts` asserts the table and the columns exist
+after applying the whole migration twice, that the interval floor and the
+uniqueness are enforced, and that a reconciliation goes with its project.
+`lib/hq/record-deletion.ts`'s header records the new pointer at `hq_projects`
+and why it cascades without being counted in the confirmation.
+
+### Verification
+
+`npm test`: 59 files, 1,464 tests passing (phase 8 closed at 1,392); the new
+cases are in `tests/hq/submission.test.ts` (30), `tests/hq/submission-readiness.test.ts`
+(15), `tests/hq/reporting-actions.test.ts` (5) and `tests/hq/migration-order.test.ts` (3),
+with `tests/hq/reset.test.ts`, `tests/hq/member-shell.test.ts` and
+`tests/hq/reporting-view.test.ts` extended to cover the new table, the new
+page argument and the new copy module. `npx tsc --noEmit` clean.
+`npm run lint` 0 errors and the same 18 pre-existing warnings in
+`public/deck/deck-stage.js`. `npm run build` passes.
+
+### Limits, stated rather than implied
+
+- **Nothing has been run against the live Colosseum API in this phase.** The
+  transport is stubbed in every test. What is verified live, and was verified
+  in phase 3, is the shape of the detail response and the `submittedAt`
+  behaviour that `DRAFT_SIGNAL_CONFIRMED` rests on. The deadline read has
+  never returned a real value, because the current edition's project directory
+  is still disabled: `fetchEditionSubmissionWindow` will answer
+  `SOURCE_REJECTED` for external id 7 until Colosseum opens it, and the admin
+  button says exactly that.
+- **No requirement information comes from Colosseum, and none can.** The
+  Required/Optional lists are an admin's own reading of the hackathon rules.
+  An edition nobody has configured shows every material as Not known, which is
+  honest but is also the state a deployment starts in; setting them is manual
+  setup [Final submission settings](manual-setup.md#212-final-submission-settings).
+- **The reconciliation depends on a scheduled pass running after the period
+  closes.** With no scheduler active, the rows are opened and stay pending by
+  the admin's Run now button instead. Either way nothing is claimed until
+  evidence arrives.
+- **A submission that is later withdrawn on Colosseum is not handled
+  specially.** A refresh would write `not_submitted` again and the live status
+  would follow, but a week already closed and corrected stays corrected: a
+  correction is history like the original, and undoing one is an admin's
+  decision through the existing control, with its own reason.
+- **The 15-minute floor on automatic checks is a guess, not a measured rate
+  limit.** Colosseum publishes none and phase 3 observed no 429. Five projects
+  per pass on a half-hourly schedule is deliberately far below anything likely
+  to be a problem, and the setting is off by default.
+- **The member pages still have not been reached through a real sign-in**, for
+  the same reason as phase 6: `BETTER_AUTH_URL`/`BETTER_AUTH_SECRET` are
+  outstanding owner setup. The panel is rendered by the real page in tests
+  through the real service; what is unverified is the sign-in path into it.
+
+## Integrated review — 15 September 2026
+
+Reviewed phases 0–8 and 10 from commit `9b58267` plus the complete working tree
+on `hq-captains-phases-0-2`. The owner confirmed the uncommitted Phase 10 work
+was in scope and that no other agent was editing. Phase 9 remains removed.
+Changes are left uncommitted for review. No live migration, test deployment,
+provider configuration, external message, commit, push or release was performed.
+
+### Result
+
+- Fixed live Telegram identity checks after interrupted unlink cleanup,
+  concurrent invitation redemption, roster identity reassignment and strict
+  imported project/edition identity checks. Unchanged account reads no longer
+  open a writing transaction. Valid join links use HQ's saved roster.
+- Fixed reporting timestamp/period validation and malformed inputs; made late
+  updates and admin creation/editing reachable through the existing services.
+  Browser refreshes discard unauthorized history, keep drafts tied to their
+  opening week/version, and retain typed text across a pause/final deadline.
+- Batched Captain first-page history, reused reporting status, optimized the
+  local fallback image and deferred operator reporting detail code. Removed
+  unused aliases, obsolete verification UI and unused query/callback helpers
+  after checking callers.
+- Bounded bot delivery claims/time budgets, fenced webhook receipt completion,
+  repaired retry controls and edition context, and failed closed for removed
+  delivery recipients. Scheduled submission attempts now rotate fairly even
+  when upstream sources fail.
+- Kept unknown submission evidence pending; captured the reconciliation cutoff
+  when its record opens; guarded migration backfills against rejected raw URLs,
+  malformed track metadata and out-of-range external edition IDs.
+- Patched Next.js, its matching ESLint config, Vitest and compatible transitive
+  dependencies. Clarified the manual runner's all-edition scope and import
+  activation settings in the UI/manual.
+
+The complete findings, assumptions, performance measurements and verification
+limits are in [the integrated review](integrated-review.md). The rewritten
+[owner setup manual](manual-setup.md) and names-only
+[environment template](environment.example) are the current handoff. Existing
+phase entries above are historical records, including their earlier test counts
+and descriptions of then-pending work.
+
+### Final verification
+
+- **1,521 tests passed across 61 files** with
+  `npm test -- --maxWorkers=1 --testTimeout=30000 --hookTimeout=60000`.
+  The final local run took 20 minutes 39 seconds after ordinary repeats hit
+  embedded-database time limits. Assertions and repository timeout defaults
+  are unchanged. The runtime investigation and earlier passing runs are
+  documented in the integrated review.
+- **Production build and `npx tsc --noEmit` passed** with the patched dependencies
+  and without the ignored performance-probe routes.
+- **ESLint: zero errors**, the same 18 pre-existing warnings in
+  `public/deck/deck-stage.js`; **npm audit: zero known vulnerabilities**;
+  `git diff --check` clean.
+- Real email/Telegram delivery, live database migration/concurrency/restore,
+  Node 24 CI, responsive browser interaction and authenticated page-performance
+  measurements remain for the isolated test environment after owner preparation.
+
+## Colosseum public project links — 16 September 2026
+
+The owner supplied `https://colosseum.com/arena/projects/nihilium-recovery` as
+the actual pasted link format. Regression tests reproduced its rejection by the
+old parser, which required `/arena/projects/explore/<slug>`.
+
+- Accept direct public project links and retain legacy link support. Validate
+  the URL and extract its slug before constructing the fixed Colosseum API
+  request. Ignore share parameters/fragments and optional trailing slashes.
+- Reject other hosts, credentials, unsupported paths and literal/encoded dot
+  segments before fetching; the bare explore directory remains invalid.
+- Share canonical URL formatting across imports, source attachment and help
+  requests. Preserve the legacy path for a project literally named `explore`
+  so its saved URL remains refreshable. Updated input placeholder and guidance.
+- Verify the complete member import saves the canonical link and deduplicates
+  a later legacy-link import; help requests remain usable during a source outage.
+
+**Verification:** 207 tests passed across the five affected suites (API, builder
+onboarding, builder admin, import UI and member action authorization), with the
+onboarding suite rerun after correcting its URL-object assertion. TypeScript,
+scoped ESLint and `git diff --check` passed. Network responses were mocked;
+this does not claim a live import of the example project. No deployment or
+live database change was performed.
+
+## Isolated staging deployment — 16 September 2026
+
+The owner authorized creation of the test database and environment under Vercel
+account `netherlands-2227`, scope `stnl`.
+
+- Created separate `stnl-hq-staging` and fresh Neon `stnl-hq-staging-db` on the
+  free plan in Frankfurt. Migrated 65 HQ tables and seeded one synthetic
+  operator, one labelled test edition and four reporting periods. No production
+  data was copied; the existing project/database credentials were unchanged.
+- Deployed the reviewed working tree through a separate source snapshot to
+  `https://stnl-hq-staging.vercel.app`, using Node.js 24.x and Frankfurt functions.
+  Vercel authentication protects every deployment, including the stable address.
+- Configured staging provider credentials and set all secret-bearing integration
+  aliases and application variables to Secret. Registered `@stnl_test_bot` with
+  the independent webhook secret and private automation bypass.
+- The first live check found the anonymous session endpoint inherited a public
+  cache header. Updated the auth route to return `private, no-store` for every
+  produced response, preserving redirects, cookies and delivery failure status.
+  The focused route and existing auth suites passed **66 tests**, TypeScript
+  and scoped lint; the hosted rebuild passed and the fix is live.
+- Passed **12 live HTTP checks** and **5 operator login/session checks**. The
+  synthetic operator still requires first-password replacement. No real OTP
+  email or Telegram message was sent, no public account was fabricated, and no
+  staging scheduler was enabled.
+
+The [staging handoff](staging-environment.md) records access, owner steps,
+verification and remaining tests. BotFather Allowed URL confirmation, real
+email/Telegram sign-in, linked identities and full feature/device testing remain
+pending. No public rollout, production migration, commit or push was performed.
+
+## Live Telegram identity correction — 16 September 2026
+
+The owner's first Telegram login reaches the correct callback and passes token
+verification, then returns `telegram_identity_incomplete` before an account is
+created. The browser's wallet-extension errors are separate from this failure.
+
+A temporary diagnostic confirmed that the live signed profile `id` is a
+string; the parser accepted only numbers. Normalize a canonical positive
+decimal string to a safe integer, while continuing to accept the documented
+numeric form. Reject malformed or unsafe IDs and keep the OIDC subject separate
+from the Telegram bot user ID. Signature, nonce, issuer and audience checks
+remain unchanged.
+
+Removed the temporary field diagnostic after identifying the mismatch; retain
+only a fixed warning on incomplete identities, with no token or personal data.
+Regression coverage proves signed string-ID sign-up, numeric/string repeat
+logins into the same account, invalid-ID boundaries and rollback without
+orphan accounts. All **63 Telegram tests**, TypeScript, scoped lint and
+`git diff --check` passed. The hosted build passed and the fix is deployed at
+the stable staging address. Automated browser verification was interrupted by
+an open browser-extension UI; a completed live owner login remains pending.
+No production configuration was changed.
+
+## Team dashboard and joining — 16 September 2026
+
+The team page uses the full available width, with weekly work beside team
+information. Body text and controls use 17px, section headings 20px and the
+project title 32px. Updates, history, contact preferences, project details and
+settings expand on request; drafts survive collapse. Feedback stays beside its
+action, and unassigned Captain placeholders are omitted.
+
+Import now previews Colosseum and asks the importer which teammate they are.
+Unclaimed roster entries remain source references and do not create People or
+CRM persons. Each team has one reusable link shared by its members. Joining
+refreshes the source and claims one available entry transactionally. When none
+remain, the page asks the person to add themselves on Colosseum and refresh.
+Existing members opening the link return to their team.
+
+The import fallback is a bottom link opening a dialog for a project URL, plus a
+Telegram username only when Telegram is not connected.
+
+Verification: all 1,619 tests across 64 files passed, along with TypeScript,
+scoped ESLint and diff checks. Real components were checked in a local browser
+preview at desktop and mobile widths with mocked server actions, including
+draft retention, disclosures, import selection, joining and exhausted seats.
+No live database or deployment was changed. Run `npm run hq:migrate` before
+deploying: it adds current-roster tracking and stable generic invite codes while
+preserving existing People, memberships and older teammate-specific links.
+
+### Staging rollout
+
+At the owner's request, applied and verified the migration against the isolated
+staging database and deployed the current working tree to
+`https://stnl-hq-staging.vercel.app`. Deployment
+`dpl_38BU9Uuqj5nQwjua4SLjKnChdnkU` passed the hosted build and TypeScript checks.
+The migration preserved existing projects, roster references, People, CRM persons
+and legacy invites. A rollout fix retains the old two-day expiry default while
+new generic links explicitly store NULL; 109 focused migration/onboarding tests
+pass with this change.
+
+All 12 HTTPS smoke checks passed. The signed-in browser verified the updated
+team page, expandable project details and import-help popup with Telegram already
+connected. No project was reimported and no teammate identity was chosen during
+verification. The main Vercel project and database were unchanged.
+The two-day database expiry default remains for older app instances during
+rollout; new reusable links explicitly insert `NULL` expiry. The migration
+regression also checks an old-style link insert after the schema upgrade.
+
+### Home menu
+
+Home is a full-width menu of rectangular tiles. Current hackathons appear by
+name; existing participation stays reachable after an edition ends. Other
+unjoined editions appear only while active. Update details and forms stay on
+their relevant pages. A red dot straddling the bottom-right corner marks a
+current, actionable update or submission requirement. Paused reporting and
+historical missed weeks do not trigger it. Multi-team editions lead to a scoped
+team menu with the same indicators; help requests and hosting use disclosures.
+
+Verification: the full suite passed 1,662 tests, followed by 305 focused checks
+after adding indicators to individual team tiles. TypeScript, scoped ESLint and
+diff checks passed. The actual menu components were checked at 375, 768 and
+1,280 pixels, including corner placement, overflow and keyboard focus.
+
+The final review added inactive-edition onboarding guards and retained archived
+hosting history. The related 387 service/page checks and 55 Home/hackathon page
+checks passed. Deployment `dpl_DS6Je8VWyhDHaEz5uEM86ZJLjL6e` is live at the
+stable staging address. The hosted build and 13 HTTPS checks passed, and the
+signed-in browser verified Home and the edition's import/join menu. No test
+records were created or cleared during this rollout.
+
+### Sign-in simplification
+
+Sign-in and signup now use “Enter HQ” without the introductory subtitle or
+orange heading. Email uses an accessible input name and `example@gmail.com`
+placeholder instead of a visible label. Shared form typography follows the
+32px heading and 17px body scale. Email codes expire after 15 minutes, with
+matching email and form copy; resend and attempt limits are unchanged.
+
+All 117 focused auth tests passed, including real handler checks that new and
+returning accounts can use codes at 10 minutes and cannot at 16 minutes. Local
+desktop/mobile previews checked the form and mocked verification step. The
+hosted build and all 13 HTTPS checks passed for staging deployment
+`dpl_44ydtEfKUwyLf426qpTJ97BUMKkR`, including the new sign-in text and placeholder.
+
+### Separate member and admin login paths
+
+Member login now lives at `/hq/login`; operator login lives at
+`/hq/admin/login` outside the authenticated admin layout. `/hq/signin` is a
+permanent redirect with query passthrough. Member links, Telegram error returns,
+session guards and both sign-out flows use the corresponding canonical paths.
+Post-login destinations exclude both member login URLs to avoid loops. Admin
+login explicitly says “For admins only.” and no longer mentions closed signups.
+
+Auth, page and proxy checks passed, including isolated member/operator sessions,
+safe return destinations and mandatory password changes. The full test pass
+identified two stale path assertions; the corrected files passed on rerun.
+Route type generation, TypeScript, scoped ESLint and the hosted build passed.
+Deployment `dpl_7UhbtQqoJdr8pd5cczUoG11wHUqu` passed all 14 staging HTTPS checks,
+including the real 308 redirect preserving `next` and repeated `error` values.
+
+### Branded verification email
+
+Resend verification emails now include the supplied Superteam Netherlands banner
+and a large, bold code centered in a simple bordered box. Sign-in and email
+confirmation share the layout, with short instructions, a 15-minute expiry and
+plain-text fallback. The original PNG is embedded as an inline attachment.
+
+All 99 focused auth tests, TypeScript and scoped ESLint passed. Desktop and
+mobile browser previews verified the layout. Deployment
+`dpl_D5Y7GZBS5ZY7oGqV2gc9evETDrbv` passed the hosted build, an explicit check
+that the logo is bundled with the auth function, and all 14 staging HTTPS checks.
+No live verification emails were sent during this change.

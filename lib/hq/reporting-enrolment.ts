@@ -98,18 +98,49 @@ export type ReportingConfig = {
   finalPeriodStartDate: string | null;
   /** Colosseum's own deadline when an admin has recorded one. Never read from Colosseum here. */
   officialSubmissionDeadline: string | null;
+  /**
+   * Where that deadline came from: an admin typed it, or HQ read it from the
+   * edition's own listing envelope. Null when there is no deadline at all.
+   * Provenance rather than decoration: an admin about to overwrite a value
+   * needs to know whether they are overwriting Colosseum's own answer.
+   */
+  officialDeadlineSource: "admin" | "colosseum" | null;
+  /** When the deadline was last read from Colosseum, whatever the outcome of that read. */
+  officialDeadlineCheckedAt: string | null;
+  /** The material keys this edition requires, as an admin recorded them. Empty means nothing is known to be required. */
+  requiredMaterials: string[];
+  /** The material keys this edition offers but does not require. Anything in neither list is Unknown. */
+  optionalMaterials: string[];
+  /** How stale a snapshot may get during the final period before the job re-reads it, or null for no automatic refresh. */
+  submissionRefreshMinutes: number | null;
   nudgeWeekday: number;
   nudgeTime: string;
   /** Whether a row exists, so a screen can say "not set yet" rather than showing a default as a decision. */
   stored: boolean;
 };
 
-const CONFIG_COLUMNS = "hackathon_id, final_period_start_date, official_submission_deadline, nudge_weekday, nudge_time";
+const CONFIG_COLUMNS =
+  "hackathon_id, final_period_start_date, official_submission_deadline, official_deadline_source, official_deadline_checked_at, "
+  + "required_materials, optional_materials, submission_refresh_minutes, nudge_weekday, nudge_time";
+
+/** A `text[]` column as a string list, tolerating the driver handing back a JSON-ish string rather than an array. */
+const toKeyList = (value: unknown): string[] => {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value.startsWith("{")) {
+    return value.slice(1, -1).split(",").map((entry) => entry.replace(/^"|"$/g, "")).filter(Boolean);
+  }
+  return [];
+};
 
 const toConfig = (hackathonId: number, row: Record<string, unknown> | undefined): ReportingConfig => ({
   hackathonId,
   finalPeriodStartDate: row?.final_period_start_date == null ? null : toDay(row.final_period_start_date),
   officialSubmissionDeadline: row?.official_submission_deadline == null ? null : toIso(row.official_submission_deadline),
+  officialDeadlineSource: row?.official_deadline_source === "colosseum" ? "colosseum" : row?.official_deadline_source === "admin" ? "admin" : null,
+  officialDeadlineCheckedAt: row?.official_deadline_checked_at == null ? null : toIso(row.official_deadline_checked_at),
+  requiredMaterials: toKeyList(row?.required_materials),
+  optionalMaterials: toKeyList(row?.optional_materials),
+  submissionRefreshMinutes: row?.submission_refresh_minutes == null ? null : Number(row.submission_refresh_minutes),
   nudgeWeekday: row?.nudge_weekday == null ? DEFAULT_NUDGE_WEEKDAY : Number(row.nudge_weekday),
   nudgeTime: row?.nudge_time == null ? DEFAULT_NUDGE_TIME : toTimeOfDay(row.nudge_time),
   stored: row != null,
@@ -132,20 +163,81 @@ export async function readReportingConfig(db: BuilderQuery, hackathonId: number)
  */
 export async function writeReportingConfig(
   db: BuilderDatabase | BuilderQuery,
-  input: { hackathonId: number; finalPeriodStartDate: string | null; officialSubmissionDeadline: string | null; nudgeWeekday: number; nudgeTime: string },
+  input: {
+    hackathonId: number;
+    finalPeriodStartDate: string | null;
+    officialSubmissionDeadline: string | null;
+    nudgeWeekday: number;
+    nudgeTime: string;
+    /** Phase 10. Omitted keys keep whatever is stored, so the weekly form does not clear the submission settings. */
+    requiredMaterials?: readonly string[];
+    optionalMaterials?: readonly string[];
+    submissionRefreshMinutes?: number | null;
+  },
 ): Promise<ReportingConfig> {
   return atomically(db, async (tx) => {
     const { rows } = await tx.query(
-      `INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date, official_submission_deadline, nudge_weekday, nudge_time)
-       VALUES ($1, $2::date, $3::timestamptz, $4, $5::time)
+      `INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date, official_submission_deadline, official_deadline_source,
+         required_materials, optional_materials, submission_refresh_minutes, nudge_weekday, nudge_time)
+       VALUES ($1, $2::date, $3::timestamptz, CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE 'admin' END,
+         COALESCE($6::text[], '{}'), COALESCE($7::text[], '{}'), $8, $4, $5::time)
        ON CONFLICT (hackathon_id) DO UPDATE SET
          final_period_start_date = EXCLUDED.final_period_start_date,
          official_submission_deadline = EXCLUDED.official_submission_deadline,
+         -- Typing a deadline in makes an admin its source; clearing it clears
+         -- the provenance too. Saving the form without touching the deadline
+         -- leaves a value read from Colosseum attributed to Colosseum only if
+         -- the instant is unchanged, which is what this comparison says.
+         official_deadline_source = CASE
+           WHEN EXCLUDED.official_submission_deadline IS NULL THEN NULL
+           WHEN hq_reporting_config.official_submission_deadline IS NOT DISTINCT FROM EXCLUDED.official_submission_deadline
+             THEN hq_reporting_config.official_deadline_source
+           ELSE 'admin' END,
+         required_materials = COALESCE($6::text[], hq_reporting_config.required_materials),
+         optional_materials = COALESCE($7::text[], hq_reporting_config.optional_materials),
+         submission_refresh_minutes = CASE WHEN $9 THEN $8 ELSE hq_reporting_config.submission_refresh_minutes END,
          nudge_weekday = EXCLUDED.nudge_weekday,
          nudge_time = EXCLUDED.nudge_time,
          updated_at = now()
        RETURNING ${CONFIG_COLUMNS}`,
-      [input.hackathonId, input.finalPeriodStartDate, input.officialSubmissionDeadline, input.nudgeWeekday, input.nudgeTime],
+      [
+        input.hackathonId, input.finalPeriodStartDate, input.officialSubmissionDeadline, input.nudgeWeekday, input.nudgeTime,
+        input.requiredMaterials ? [...input.requiredMaterials] : null,
+        input.optionalMaterials ? [...input.optionalMaterials] : null,
+        input.submissionRefreshMinutes ?? null,
+        input.submissionRefreshMinutes !== undefined,
+      ],
+    );
+    return toConfig(input.hackathonId, rows[0]);
+  });
+}
+
+/**
+ * Records the deadline HQ read from Colosseum's own listing envelope.
+ *
+ * Separate from `writeReportingConfig` because it is a different act: the
+ * settings form saves what an admin typed, this stores what the source said
+ * and stamps the read. `checkedAt` is written whatever the answer, so a
+ * successful read that found no deadline is distinguishable from never having
+ * looked, and a null `deadline` leaves any admin-entered value alone rather
+ * than erasing it on an edition that has not published its window yet.
+ */
+export async function recordColosseumDeadline(
+  db: BuilderDatabase | BuilderQuery,
+  input: { hackathonId: number; deadline: string | null; checkedAt: string },
+): Promise<ReportingConfig> {
+  return atomically(db, async (tx) => {
+    const { rows } = await tx.query(
+      `INSERT INTO hq_reporting_config (hackathon_id, official_submission_deadline, official_deadline_source, official_deadline_checked_at)
+       VALUES ($1, $2::timestamptz, CASE WHEN $2::timestamptz IS NULL THEN NULL ELSE 'colosseum' END, $3::timestamptz)
+       ON CONFLICT (hackathon_id) DO UPDATE SET
+         official_submission_deadline = COALESCE(EXCLUDED.official_submission_deadline, hq_reporting_config.official_submission_deadline),
+         official_deadline_source = CASE WHEN EXCLUDED.official_submission_deadline IS NULL
+           THEN hq_reporting_config.official_deadline_source ELSE 'colosseum' END,
+         official_deadline_checked_at = EXCLUDED.official_deadline_checked_at,
+         updated_at = now()
+       RETURNING ${CONFIG_COLUMNS}`,
+      [input.hackathonId, input.deadline, input.checkedAt],
     );
     return toConfig(input.hackathonId, rows[0]);
   });
@@ -549,8 +641,12 @@ export async function reportingEligibility(db: BuilderQuery, projectId: string):
 }
 
 /** Every project currently in reporting for the edition, paused ones included (a pause is a state, not a removal). */
-export async function listReportingEligibility(db: BuilderQuery, hackathonId: number): Promise<ReportingEligibility[]> {
-  const { rows } = await db.query(`${ELIGIBILITY_SELECT} WHERE e.hackathon_id = $1 ORDER BY p.name`, [hackathonId]);
+export async function listReportingEligibility(db: BuilderQuery, hackathonId: number, projectIds?: readonly string[]): Promise<ReportingEligibility[]> {
+  if (projectIds && !projectIds.length) return [];
+  const { rows } = await db.query(
+    `${ELIGIBILITY_SELECT} WHERE e.hackathon_id = $1${projectIds ? " AND e.project_id = ANY($2::uuid[])" : ""} ORDER BY p.name`,
+    projectIds ? [hackathonId, [...projectIds]] : [hackathonId],
+  );
   return rows.map(toEligibility);
 }
 

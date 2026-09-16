@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { builderDatabase, type BuilderDatabase } from "./builder-db";
-import { telegramBotConfig, telegramSender, type TelegramBotConfig, type TelegramSender } from "./telegram-bot-api";
+import { telegramBotConfig, telegramSender, TELEGRAM_REQUEST_TIMEOUT_MS, type TelegramBotConfig, type TelegramSender } from "./telegram-bot-api";
 import { handleTelegramUpdate, type TelegramUpdate } from "./telegram-bot";
 import { claimTelegramUpdate, finishTelegramUpdate, flushBotMessages } from "./telegram-bot-store";
 import { inlineKeyboard } from "./telegram-bot-view";
@@ -154,6 +154,7 @@ export type WebhookDependencies = {
  * only up to `MAX_UPDATE_ATTEMPTS`.
  */
 export async function handleTelegramWebhookRequest(request: Request, dependencies: WebhookDependencies = {}): Promise<WebhookResult> {
+  const deadlineMs = Date.now() + 55_000;
   const config = dependencies.config !== undefined ? dependencies.config : telegramBotConfig();
   // No credentials is not an error, it is "this deployment has no bot". The
   // same honest unavailability /api/auth/* answers when Better Auth is
@@ -184,8 +185,10 @@ export async function handleTelegramWebhookRequest(request: Request, dependencie
   const now = dependencies.now ?? Date.now();
   const claim = await claimTelegramUpdate(db, update.data.update_id, now);
   if (!claim.accepted) {
-    // `already_done` and `in_progress` are both answered 200 and nothing
-    // else: the work is finished, or somebody else has it right now.
+    // An overlapping retry must remain retryable: the invocation holding
+    // the lease could still fail. A 200 here would tell Telegram to forget it.
+    if (claim.reason === "in_progress") return { status: 503, body: { ok: false, error: "Update still processing" } };
+    // `already_done` is finished work.
     // `exhausted` is a row an operator should look at, and answering 200
     // stops Telegram retrying something that has already failed five times.
     return { status: 200, body: { ok: true, outcome: claim.reason } };
@@ -196,6 +199,7 @@ export async function handleTelegramWebhookRequest(request: Request, dependencie
     const result = await handleTelegramUpdate(update.data as TelegramUpdate, {
       db,
       now,
+      retry: claim.attempts > 1,
       ...(dependencies.hqOrigin !== undefined ? { hqOrigin: dependencies.hqOrigin } : {}),
     });
     // Menus, lists and previews are sent directly rather than queued, because
@@ -207,7 +211,14 @@ export async function handleTelegramWebhookRequest(request: Request, dependencie
     // Telegram's own signal to deliver the update again, and the handler
     // rebuilds the same reply from state it never destroyed.
     let retryableSendFailure: string | null = null;
+    if (result.answer && Date.now() + TELEGRAM_REQUEST_TIMEOUT_MS < deadlineMs) {
+      await sender.answerCallbackQuery({ callbackQueryId: result.answer.callbackQueryId, ...(result.answer.text ? { text: result.answer.text } : {}) });
+    }
     for (const reply of result.replies) {
+      if (Date.now() + TELEGRAM_REQUEST_TIMEOUT_MS >= deadlineMs) {
+        retryableSendFailure = "reply_budget";
+        break;
+      }
       const outcome = await sender.sendMessage({
         chatId: reply.chatId,
         text: reply.text,
@@ -222,19 +233,18 @@ export async function handleTelegramWebhookRequest(request: Request, dependencie
       // a redelivery: the same send would fail the same way forever.
       if (!outcome.ok) console.warn("Telegram reply refused", { updateId: update.data.update_id, code: outcome.code });
     }
-    if (result.answer) await sender.answerCallbackQuery({ callbackQueryId: result.answer.callbackQueryId, ...(result.answer.text ? { text: result.answer.text } : {}) });
-    if (result.queued) await flushBotMessages(db, sender, { now });
+    if (result.queued) await flushBotMessages(db, sender, { deadlineMs, ...(dependencies.now != null ? { now: dependencies.now } : {}) });
     if (retryableSendFailure) {
-      await finishTelegramUpdate(db, update.data.update_id, "failed", retryableSendFailure);
+      await finishTelegramUpdate(db, update.data.update_id, "failed", retryableSendFailure, claim.attempts);
       return { status: 502, body: { ok: false, error: "Reply could not be delivered" } };
     }
-    await finishTelegramUpdate(db, update.data.update_id, "done");
+    await finishTelegramUpdate(db, update.data.update_id, "done", undefined, claim.attempts);
     return { status: 200, body: { ok: true, outcome: result.outcome } };
   } catch (error) {
     // The code only. Never the update's text, never a name, never a token:
     // "Redact tokens and update text from routine logs."
     const code = error instanceof Error ? error.name : "error";
-    await finishTelegramUpdate(db, update.data.update_id, "failed", code);
+    await finishTelegramUpdate(db, update.data.update_id, "failed", code, claim.attempts);
     console.error("Telegram webhook handler failed", { updateId: update.data.update_id, code });
     // The receipt is released rather than closed, so Telegram's retry of this
     // same update is picked up and finished. That is safe because the

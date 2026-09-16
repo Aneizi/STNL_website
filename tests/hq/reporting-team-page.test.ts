@@ -1,9 +1,8 @@
 // /hq/team/<id>'s weekly reporting section, rendered against real rows on
 // PGlite. The acceptance bullets this file is measured against:
 //
-// - "Saved updates immediately update the relevant views; completion stops
-//   the prompt."
-// - "Sensitive notes can make the status Updated even when there is no new
+// - Saved updates complete the week; its due message then disappears.
+// - "Sensitive notes can make the status Complete even when there is no new
 //   shared entry to display. Do not show a hidden-note preview or count."
 // - "Show the assigned Captain and their approved contact when available."
 // - "Interface copy contains no em dashes or middots."
@@ -127,21 +126,23 @@ async function assignCaptainWithContact(contact: string | null) {
 const MONDAY_IN_WEEK_ONE = Date.parse("2026-09-14T10:00:00.000Z");
 
 describe("the team page's weekly reporting", () => {
-  it("shows the open week, its dates and its deadline, and says the week is not updated yet", async () => {
+  it("shows the current deadline and keeps writing and history behind disclosures", async () => {
     const html = await render(member("lead"));
     expect(html).toContain("This week");
-    expect(html).toContain("Not updated");
-    expect(html).toContain("14 to 20 September");
-    expect(html).toContain("Sunday 20 September");
+    expect(html).toContain("Due Sunday 20 September");
+    expect(html).toContain("Write update");
+    expect(html).toContain(`aria-controls="update-${PROJECT}"`);
+    expect(html).toMatch(new RegExp(`id="update-${PROJECT}"[^>]*hidden=""`));
+    expect(html).toMatch(new RegExp(`id="history-${PROJECT}"[^>]*hidden=""`));
     expect(html).toContain("No updates yet for this week.");
   });
 
-  it("shows a saved update, marks the week Updated and offers the author an edit", async () => {
+  it("shows a saved update, marks the week Complete and offers the author an edit", async () => {
     const saved = await createUpdate(member("lead"), { projectId: PROJECT, hackathonId: EDITION, body: "Shipped the swap flow." }, db);
     expect(saved.ok).toBe(true);
     const html = await render(member("lead"));
     expect(html).toContain("Shipped the swap flow.");
-    expect(html).toContain("Updated");
+    expect(html).toContain("Complete");
     expect(html).toContain("Edit this update");
   });
 
@@ -152,20 +153,20 @@ describe("the team page's weekly reporting", () => {
     expect(html).not.toContain("Edit this update");
   });
 
-  it("prompts on a Monday while the week is outstanding, and stops once it is complete", async () => {
+  it("shows when an update is due and removes that message after completion", async () => {
     vi.setSystemTime(new Date(MONDAY_IN_WEEK_ONE));
     try {
-      expect(await render(member("lead"))).toContain("This week still needs an update");
+      expect(await render(member("lead"))).toContain("Due Sunday 20 September");
       await createUpdate(member("lead"), { projectId: PROJECT, hackathonId: EDITION, body: "Done." }, db);
       const after = await render(member("lead"));
-      expect(after).not.toContain("This week still needs an update");
-      expect(after).toContain("Updated");
+      expect(after).not.toContain("Due Sunday 20 September");
+      expect(after).toContain("Complete");
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("does not prompt on a Wednesday, whatever the week's state", async () => {
+  it("does not repeat the deadline in a second alert", async () => {
     vi.setSystemTime(new Date("2026-09-16T10:00:00.000Z"));
     try {
       expect(await render(member("lead"))).not.toContain("This week still needs an update");
@@ -174,7 +175,7 @@ describe("the team page's weekly reporting", () => {
     }
   });
 
-  it("marks the week Updated on a Captain's sensitive note without showing the team the note, a preview or a count", async () => {
+  it("marks the week Complete on a Captain's sensitive note without showing the team the note, a preview or a count", async () => {
     await assignCaptainWithContact(null);
     const note = await createUpdate(
       member("cap", ["captain"]),
@@ -184,46 +185,48 @@ describe("the team page's weekly reporting", () => {
     expect(note).toMatchObject({ ok: true, completesPeriod: true });
 
     const html = await render(member("lead"));
-    expect(html).toContain("Updated");
+    expect(html).toContain("Complete");
     // Not the body, not its existence, and no count that invites a look.
     expect(html).not.toContain("A private worry");
     expect(html).not.toMatch(/sensitive/i);
     // No count either, and nothing that says an update exists: the team sees
-    // Updated, and the list below it is genuinely empty.
+    // Complete, and the list below it is empty.
     expect(html).toContain("No updates yet for this week.");
     expect(html).not.toMatch(/1 update|note from|private/i);
   });
 
-  it("shows the assigned Captain and the contact they approved, and says so plainly when they approved none", async () => {
+  it("shows the assigned Captain and only the contact they approved", async () => {
     await assignCaptainWithContact(null);
-    expect(await render(member("lead"))).toContain("They have not shared a way to reach them yet.");
+    const withoutContact = await render(member("lead"));
+    expect(withoutContact).toContain("Captain");
+    expect(withoutContact).not.toContain("They have not shared a way to reach them yet.");
     await writeCaptainContact(db, "cap", "@thecaptain");
     const html = await render(member("lead"));
-    expect(html).toContain("Reach them at @thecaptain");
+    expect(html).toContain("@thecaptain");
   });
 
   it("keeps the team able to update while no Captain is assigned", async () => {
     const html = await render(member("lead"));
-    expect(html).toContain("No Captain assigned yet. You can still add your updates.");
-    expect(html).toContain("Add update");
+    expect(html).not.toContain("No Captain assigned yet. You can still add your updates.");
+    expect(html).toContain("Write update");
   });
 
   it("offers the team lead the team contact field, and does not offer it to a teammate", async () => {
-    expect(await render(member("lead"))).toContain("How your Captain should reach the team");
-    expect(await render(member("mate"))).not.toContain("How your Captain should reach the team");
+    expect(await render(member("lead"))).toContain("Contact preference");
+    expect(await render(member("mate"))).not.toContain("Contact preference");
   });
 
   it("says a paused team owes nothing and drops the composer, leaving the recorded weeks alone", async () => {
     await rows("UPDATE hq_reporting_eligibility SET paused_at = now() WHERE project_id = $1::uuid", [PROJECT]);
     const html = await render(member("lead"));
-    expect(html).toContain("Reporting paused");
+    expect(html).toContain("Updates paused");
     expect(html).not.toContain("Add update");
   });
 
   it("names a week the composer is bound to, so a save that crosses midnight has something to compare against", async () => {
     const [first] = await listReportingPeriods(db, EDITION);
     expect(first.startDate).toBe("2026-09-14");
-    expect(await render(member("lead"))).toContain("Your update for this week");
+    expect(await render(member("lead"))).toContain("Your update");
   });
 
   it("uses no em dash and no middot anywhere on the page", async () => {

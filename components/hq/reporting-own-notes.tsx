@@ -26,11 +26,13 @@ export function OwnReportingNotes({
   const [entries, setEntries] = useState(initial);
   const [cursor, setCursor] = useState(initialCursor);
   const [pending, start] = useTransition();
+  const [error, setError] = useState("");
 
   if (!entries.length) return <p>You have not written any updates in this hackathon yet.</p>;
 
   return (
     <>
+      {error && <p role="alert" className={styles.error}>{error}</p>}
       {entries.map((entry) => (
         <div className={styles.card} key={entry.id}>
           {entry.visibility === "sensitive" && <span className={styles.status}>Only you and Superteam NL admins</span>}
@@ -51,9 +53,14 @@ export function OwnReportingNotes({
             disabled={pending}
             onClick={() =>
               start(async () => {
-                const page = await loadOwnUpdates({ cursor });
-                setEntries([...entries, ...page.entries]);
-                setCursor(page.nextCursor);
+                setError("");
+                try {
+                  const page = await loadOwnUpdates({ cursor });
+                  setEntries((current) => [...current, ...page.entries]);
+                  setCursor(page.nextCursor);
+                } catch {
+                  setError("Your notes could not be loaded. Please try again.");
+                }
               })
             }
           >

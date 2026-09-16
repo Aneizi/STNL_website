@@ -1,5 +1,5 @@
 import "server-only";
-import { builderDatabase, type BuilderQuery } from "./builder-db";
+import type { BuilderQuery } from "./builder-db";
 import { normalizeContact } from "./reporting-view";
 
 /**
@@ -102,6 +102,3 @@ export async function writeCaptainContact(db: BuilderQuery, userId: string, cont
   );
   return rows.length > 0;
 }
-
-/** The pool, so a caller with no handle of its own can still reach these. */
-export const contactsDatabase = builderDatabase;

@@ -4,7 +4,7 @@ import { listActiveCapabilitiesForUsers, personTags } from "./capabilities";
 import { CLASSIFIERS_SELECT, toClassifiers } from "./classifiers-sql";
 import { getSql } from "./db";
 import { attributeOutputs, type AttributableProject } from "./event-attribution";
-import { fmtDate, normName, todayInTz } from "./format";
+import { fmtDate, normName } from "./format";
 import type {
   ActivityItem,
   Award,
@@ -665,10 +665,4 @@ export async function searchAll(query: string, hackathonId: number): Promise<Sea
     })),
   ];
   return results.slice(0, 12);
-}
-
-/** Today in the hackathon's timezone — the stamp used by check-ins and touch(). */
-export async function getToday(hackathonId: number): Promise<string> {
-  const settings = await getSettings(hackathonId);
-  return todayInTz(settings.timezone);
 }

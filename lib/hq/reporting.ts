@@ -6,6 +6,8 @@ import { loadCurrentAssignment, loadProjectEdition, loadTeamMembership, type Ent
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { BuilderError } from "./builder-types";
 import { listActiveCapabilities } from "./capabilities";
+import { submittedOnTime } from "./colosseum-snapshot";
+import { HQ_JOBS_AUDIENCE } from "./github-actions-auth";
 import {
   listReportingEligibility,
   listReportingPeriods,
@@ -101,6 +103,7 @@ export {
   previewReportingPeriods,
   readReportingConfig,
   readReportingSchedule,
+  recordColosseumDeadline,
   reportingEligibility,
   toDay,
   toIso,
@@ -119,9 +122,6 @@ export type {
   ReportingScheduleProblem,
 } from "./reporting-enrolment";
 export type { GeneratedPeriod, ReportingPeriodMode, ReportingSchedule } from "./reporting-periods";
-
-/** The builder-side pool, so a caller can reach the service without building a handle of its own. */
-export const reportingDatabase = builderDatabase;
 
 /**
  * The plan's plain-text update: one field, 4,000 characters. A constant here
@@ -194,7 +194,7 @@ function toEntryView(row: EntryRow, viewer: Actor, canEdit: boolean): ReportingE
     updatedAt: toIso(row.updated_at),
     authorName: String(row.author_name),
     authorIsYou: viewer.kind !== "job" && authorKey(row) === (viewer.kind === "operator" ? `operator:${viewer.id}` : viewer.id),
-    canEdit,
+    canEdit: canEdit && row.voided_at == null,
     voided: row.voided_at != null,
   };
 }
@@ -251,7 +251,7 @@ export type CreateUpdateInput = {
   expectedPeriodId?: string;
   /** An explicitly chosen period, for a late entry against a week that has passed. */
   periodId?: string;
-  /** The instant the save happens at. Defaults to now; a caller never supplies the stored timestamp, only which period to resolve. */
+  /** Server clock injection for tests. Web actions and bot payloads never accept this field. */
   atMs?: number;
 };
 
@@ -276,7 +276,7 @@ export type CreateUpdateResult =
  *
  * The body, the period and the author all come from the server: the trimmed
  * text, the period resolved from the instant (or explicitly chosen), and
- * `submitted_at` from the database's own clock.
+ * `submitted_at` from the same server clock that selects the period.
  */
 export async function createUpdate(
   actor: Actor,
@@ -290,6 +290,8 @@ export async function createUpdate(
   const writer = writerColumns(actor);
   return atomically(db, async (tx) => {
     const loaders = loadersOver(tx);
+    const projectEdition = await loadProjectEdition(tx, input.projectId);
+    if (!projectEdition || projectEdition.hackathonId !== input.hackathonId) return { ok: false, reason: "not_authorized" };
     const decision = await authorizeProjectAction(actor, { projectId: input.projectId, hackathonId: input.hackathonId, action: "update.create" }, loaders);
     if (!decision.allowed) return { ok: false, reason: "not_authorized" };
     if (visibility === "sensitive" && !mayWriteSensitive(decision)) return { ok: false, reason: "visibility_not_allowed" };
@@ -320,11 +322,20 @@ export async function createUpdate(
     );
     if (!locked.length) return { ok: false, reason: "period_not_found" };
     const current = toPeriod(locked[0]);
-    const late = current.closedAt != null || atMs >= Date.parse(current.endsAt);
+    // A lock wait can cross the boundary or follow a schedule change. Decide
+    // against the locked row and the actual save instant, then store that
+    // same instant so completion and history cannot disagree.
+    const savedAtMs = input.atMs ?? Date.now();
+    if (savedAtMs < Date.parse(current.startsAt)) return { ok: false, reason: "no_open_period" };
+    const late = current.closedAt != null || savedAtMs >= Date.parse(current.endsAt);
+    if (late && !input.periodId) {
+      return { ok: false, reason: "period_changed", currentPeriod: periodForInstant(await listReportingPeriods(tx, input.hackathonId), savedAtMs) };
+    }
+    if (Date.parse(eligibility.eligibleFrom) >= Date.parse(current.endsAt)) return { ok: false, reason: "not_eligible" };
     const { rows } = await tx.query(
-      `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility, source, late)
-       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8) RETURNING id::text AS id`,
-      [input.projectId, period.id, writer.kind, writer.id, checked.body, visibility, input.source === "telegram" ? "telegram" : "hq", late],
+      `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility, source, late, submitted_at)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::timestamptz) RETURNING id::text AS id`,
+      [input.projectId, period.id, writer.kind, writer.id, checked.body, visibility, input.source === "telegram" ? "telegram" : "hq", late, new Date(savedAtMs).toISOString()],
     );
     const entryId = String(rows[0].id);
     await appendRevision(tx, { entryId, version: 1, body: checked.body, visibility, editor: writer });
@@ -397,10 +408,11 @@ export async function editUpdate(
   input: EditUpdateInput,
   db: BuilderDatabase | BuilderQuery = builderDatabase(),
 ): Promise<EditUpdateResult> {
+  if (!isUuidArg(input.entryId)) return { ok: false, reason: "not_found" };
   const checked = input.body === undefined ? null : checkBody(input.body);
   if (checked && "problem" in checked) return { ok: false, reason: checked.problem };
   return atomically(db, async (tx) => {
-    const { rows } = await tx.query(`${ENTRY_SELECT} WHERE e.id = $1::uuid FOR UPDATE OF e`, [input.entryId].filter(isUuidArg));
+    const { rows } = await tx.query(`${ENTRY_SELECT} WHERE e.id = $1::uuid FOR UPDATE OF e`, [input.entryId]);
     if (!rows.length) return { ok: false, reason: "not_found" };
     const row = rows[0];
     const { rows: edition } = await tx.query("SELECT hackathon_id FROM hq_projects WHERE id = $1::uuid", [String(row.project_id)]);
@@ -440,7 +452,7 @@ export async function editUpdate(
   });
 }
 
-/** `FOR UPDATE` on a non-uuid would error rather than miss; the id is filtered to a uuid first, exactly as the loaders do. */
+/** Reject malformed IDs before they reach PostgreSQL's UUID cast. */
 const UUID_ARG = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuidArg = (value: unknown): value is string => typeof value === "string" && UUID_ARG.test(value);
 
@@ -463,14 +475,15 @@ export async function voidUpdate(
   db: BuilderDatabase | BuilderQuery = builderDatabase(),
 ): Promise<VoidUpdateResult> {
   if (actor.kind !== "operator") return { ok: false, reason: "not_authorized" };
+  if (!isUuidArg(input.entryId)) return { ok: false, reason: "not_found" };
   return atomically(db, async (tx) => {
     const { rows } = await tx.query(
       `UPDATE hq_reporting_entries SET voided_at=now(), voided_by_user_id=$2::uuid, void_reason=$3
        WHERE id=$1::uuid AND voided_at IS NULL RETURNING id::text AS id, project_id::text AS project_id, period_id::text AS period_id`,
-      [input.entryId, actor.id, input.reason].filter((value, index) => index !== 0 || isUuidArg(value)),
+      [input.entryId, actor.id, input.reason],
     );
     if (!rows.length) {
-      const { rows: existing } = await tx.query("SELECT voided_at FROM hq_reporting_entries WHERE id=$1::uuid", [input.entryId].filter(isUuidArg));
+      const { rows: existing } = await tx.query("SELECT voided_at FROM hq_reporting_entries WHERE id=$1::uuid", [input.entryId]);
       return { ok: false, reason: existing.length ? "already_voided" : "not_found" };
     }
     const { rows: edition } = await tx.query("SELECT hackathon_id FROM hq_projects WHERE id=$1::uuid", [String(rows[0].project_id)]);
@@ -490,6 +503,7 @@ export type ReadUpdatesInput = {
   projectId: string;
   hackathonId: number;
   periodId?: string;
+  entryId?: string;
   limit?: number;
   /** The `nextCursor` of the previous page. */
   cursor?: string;
@@ -499,6 +513,11 @@ export type ReportingEntryPage = { entries: ReportingEntryView[]; nextCursor: st
 
 const DEFAULT_PAGE = 25;
 const MAX_PAGE = 100;
+
+function entryCursor(value: string): [string, string] | null {
+  const [at, id, extra] = value.split("|");
+  return extra === undefined && isUuidArg(id) && Number.isFinite(Date.parse(at)) ? [at, id] : null;
+}
 
 /**
  * The entries of one project this actor may read, newest first.
@@ -519,6 +538,10 @@ export async function readAuthorizedUpdates(
   input: ReadUpdatesInput,
   db: BuilderQuery = builderDatabase(),
 ): Promise<ReportingEntryPage> {
+  if (input.entryId && !isUuidArg(input.entryId)) return { entries: [], nextCursor: null };
+  if (input.periodId && !isUuidArg(input.periodId)) return { entries: [], nextCursor: null };
+  const cursor = input.cursor ? entryCursor(input.cursor) : null;
+  if (input.cursor && !cursor) return { entries: [], nextCursor: null };
   const decision = await authorizeProjectAction(actor, { projectId: input.projectId, hackathonId: input.hackathonId, action: "read" }, loadersOver(db));
   if (!decision.allowed || actor.kind === "job") return { entries: [], nextCursor: null };
   const limit = Math.max(1, Math.min(MAX_PAGE, Math.floor(input.limit ?? DEFAULT_PAGE)));
@@ -534,8 +557,9 @@ export async function readAuthorizedUpdates(
     where.push(`e.voided_at IS NULL`, `(e.visibility = 'shared' OR (e.author_kind = 'member' AND e.author_id = ${bind(actor.id)}))`);
   }
   if (input.periodId) where.push(`e.period_id = ${bind(input.periodId)}::uuid`);
-  if (input.cursor) {
-    const [at, id] = String(input.cursor).split("|");
+  if (input.entryId) where.push(`e.id = ${bind(input.entryId)}::uuid`);
+  if (cursor) {
+    const [at, id] = cursor;
     where.push(`(e.submitted_at, e.id) < (${bind(at)}::timestamptz, ${bind(id)}::uuid)`);
   }
   const { rows } = await db.query(
@@ -549,6 +573,51 @@ export async function readAuthorizedUpdates(
   const entries = page.map((row) => toEntryView(row, actor, actor.kind === "operator" || (row.voided_at == null && authorKey(row) === actor.id)));
   const last = page[page.length - 1];
   return { entries, nextCursor: rows.length > limit && last ? `${toIso(last.submitted_at)}|${String(last.id)}` : null };
+}
+
+/** First pages for a Captain board in one bounded read per project.
+ * Current assignment, live capability and the note audience are checked in
+ * the same SQL statement. The lateral limit applies before author/profile
+ * data leaves the server; history and other authors' sensitive notes are
+ * never selected. Later pages still use readAuthorizedUpdates.
+ */
+export async function readCaptainUpdatePages(
+  actor: Actor,
+  input: { hackathonId: number; projectIds: readonly string[]; limit?: number },
+  db: BuilderQuery = builderDatabase(),
+): Promise<Map<string, ReportingEntryPage>> {
+  const pages = new Map<string, ReportingEntryPage>();
+  const ids = [...new Set(input.projectIds)].filter(isUuidArg);
+  if (actor.kind !== "member" || !ids.length) return pages;
+  const limit = Math.max(1, Math.min(MAX_PAGE, Math.floor(input.limit ?? DEFAULT_PAGE)));
+  const { rows } = await db.query(
+    `SELECT page.* FROM hq_projects p
+     JOIN LATERAL (
+       ${ENTRY_SELECT}
+       WHERE e.project_id = p.id AND e.voided_at IS NULL
+         AND (e.visibility = 'shared' OR (e.author_kind = 'member' AND e.author_id = $3))
+       ORDER BY e.submitted_at DESC, e.id DESC LIMIT $4
+     ) page ON true
+     WHERE p.hackathon_id = $1 AND p.id = ANY($2::uuid[])
+       AND EXISTS (SELECT 1 FROM hq_captain_assignments a WHERE a.project_id = p.id
+         AND a.captain_user_id = $3 AND a.unassigned_at IS NULL)
+       AND EXISTS (SELECT 1 FROM hq_account_capabilities c WHERE c.user_id = $3
+         AND c.capability = 'captain' AND c.revoked_at IS NULL)
+     ORDER BY page.project_id, page.submitted_at DESC, page.id DESC`,
+    [input.hackathonId, ids, actor.id, limit + 1],
+  );
+  for (const row of rows) {
+    const projectId = String(row.project_id);
+    const page = pages.get(projectId) ?? { entries: [], nextCursor: null };
+    if (page.entries.length < limit) {
+      page.entries.push(toEntryView(row, actor, authorKey(row) === actor.id));
+    } else {
+      const last = page.entries.at(-1)!;
+      page.nextCursor = `${last.submittedAt}|${last.id}`;
+    }
+    pages.set(projectId, page);
+  }
+  return pages;
 }
 
 /** One of the caller's own updates, with the project it belongs to so a list of them reads as something other than loose text. */
@@ -578,18 +647,25 @@ export type OwnReportingEntryPage = { entries: OwnReportingEntry[]; nextCursor: 
  */
 export async function readOwnUpdates(
   actor: Actor,
-  input: { hackathonId: number; limit?: number; cursor?: string },
+  input: { hackathonId: number; limit?: number; cursor?: string; entryId?: string },
   db: BuilderQuery = builderDatabase(),
 ): Promise<OwnReportingEntryPage> {
   if (actor.kind !== "member") return { entries: [], nextCursor: null };
+  if (input.entryId && !isUuidArg(input.entryId)) return { entries: [], nextCursor: null };
+  const cursor = input.cursor ? entryCursor(input.cursor) : null;
+  if (input.cursor && !cursor) return { entries: [], nextCursor: null };
   if (!(await listActiveCapabilities(actor.id, db)).includes("captain")) return { entries: [], nextCursor: null };
   const limit = Math.max(1, Math.min(MAX_PAGE, Math.floor(input.limit ?? DEFAULT_PAGE)));
   const values: unknown[] = [input.hackathonId, actor.id];
   // `pr` is the period ENTRY_SELECT already joins, and it carries the
   // edition: no second join, and no project read inside the page.
   const where = ["pr.hackathon_id = $1", "e.author_kind = 'member'", "e.author_id = $2", "e.voided_at IS NULL"];
-  if (input.cursor) {
-    const [at, id] = String(input.cursor).split("|");
+  if (input.entryId) {
+    values.push(input.entryId);
+    where.push(`e.id = $${values.length}::uuid`);
+  }
+  if (cursor) {
+    const [at, id] = cursor;
     values.push(at, id);
     where.push(`(e.submitted_at, e.id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`);
   }
@@ -717,7 +793,7 @@ export type ReportingStatusInput = {
   includeHistory?: boolean;
 };
 
-type EntryTally = { entries: number; latestEntryAt: string | null; firstEntryId: string };
+type EntryTally = { entries: number; latestEntryAt: string | null };
 
 /**
  * Whether a project was accountable for a period: it had entered reporting
@@ -763,9 +839,7 @@ function submissionSatisfies(
   officialDeadline: string | null,
 ): boolean {
   if (period.mode !== "submission" || project.submissionStatus !== "submitted") return false;
-  if (!project.submittedAt) return true;
-  const deadline = Date.parse(officialDeadline ?? period.endsAt);
-  return Date.parse(project.submittedAt) <= deadline;
+  return submittedOnTime(project.submittedAt, officialDeadline ?? period.endsAt, officialDeadline == null) === true;
 }
 
 /**
@@ -788,21 +862,22 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
 
   const [periods, eligibility, config] = await Promise.all([
     listReportingPeriods(db, input.hackathonId),
-    listReportingEligibility(db, input.hackathonId),
+    listReportingEligibility(db, input.hackathonId, filter ?? undefined),
     db.query("SELECT official_submission_deadline FROM hq_reporting_config WHERE hackathon_id = $1", [input.hackathonId]),
   ]);
   const officialDeadline = config.rows.length && config.rows[0].official_submission_deadline != null
     ? toIso(config.rows[0].official_submission_deadline) : null;
-  const projects = filter ? eligibility.filter((row) => filter.includes(row.projectId)) : eligibility;
+  const projects = eligibility;
   if (!projects.length || !periods.length) return projects.map((row) => bareStatus(row, "not_checked"));
   const projectIds = projects.map((row) => row.projectId);
 
   const [tallies, outcomes, submissions, assignments] = await Promise.all([
     db.query(
       `SELECT e.project_id::text AS project_id, e.period_id::text AS period_id, count(*)::int AS entries,
-              max(e.submitted_at) AS latest, (array_agg(e.id::text ORDER BY e.submitted_at, e.id))[1] AS first_entry
+              max(e.submitted_at) AS latest
        FROM hq_reporting_entries e JOIN hq_reporting_periods p ON p.id = e.period_id
        WHERE p.hackathon_id = $1 AND e.project_id = ANY($2::uuid[]) AND e.voided_at IS NULL AND e.late = false
+         AND e.submitted_at >= p.starts_at AND e.submitted_at < p.ends_at
        GROUP BY e.project_id, e.period_id`,
       [input.hackathonId, projectIds],
     ),
@@ -826,7 +901,7 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
   const key = (projectId: string, periodId: string) => `${projectId}|${periodId}`;
   const tallyBy = new Map<string, EntryTally>(tallies.rows.map((row) => [
     key(String(row.project_id), String(row.period_id)),
-    { entries: Number(row.entries), latestEntryAt: row.latest == null ? null : toIso(row.latest), firstEntryId: String(row.first_entry) },
+    { entries: Number(row.entries), latestEntryAt: row.latest == null ? null : toIso(row.latest) },
   ]));
   const outcomeBy = new Map(outcomes.rows.map((row) => [key(String(row.project_id), String(row.period_id)), row]));
   const submissionBy = new Map(submissions.rows.map((row) => [
@@ -926,7 +1001,7 @@ export async function listPeriodOutcomes(db: BuilderQuery, periodId: string): Pr
 
 export type ClosePeriodResult =
   | { ok: true; alreadyClosed: boolean; outcomes: PeriodOutcome[]; completed: number; missed: number }
-  | { ok: false; reason: "not_found" | "not_ended" };
+  | { ok: false; reason: "not_found" | "not_ended" | "not_authorized" };
 
 /**
  * Persists a period's outcomes and marks it closed.
@@ -949,6 +1024,9 @@ export async function closePeriod(
   db: BuilderDatabase | BuilderQuery,
   input: { periodId: string; actor: Actor; atMs?: number },
 ): Promise<ClosePeriodResult> {
+  if (input.actor.kind === "member" || (input.actor.kind === "job" && input.actor.audience !== HQ_JOBS_AUDIENCE)) {
+    return { ok: false, reason: "not_authorized" };
+  }
   const atMs = input.atMs ?? Date.now();
   if (!isUuidArg(input.periodId)) return { ok: false, reason: "not_found" };
   return atomically(db, async (tx) => {
@@ -969,8 +1047,9 @@ export async function closePeriod(
     const eligibility = new Map((await listReportingEligibility(tx, period.hackathonId)).map((row) => [row.projectId, row]));
     const { rows: firstEntries } = await tx.query(
       `SELECT DISTINCT ON (project_id) project_id::text AS project_id, id::text AS id FROM hq_reporting_entries
-       WHERE period_id = $1::uuid AND voided_at IS NULL AND late = false ORDER BY project_id, submitted_at, id`,
-      [period.id],
+       WHERE period_id = $1::uuid AND voided_at IS NULL AND late = false
+         AND submitted_at >= $2::timestamptz AND submitted_at < $3::timestamptz ORDER BY project_id, submitted_at, id`,
+      [period.id, period.startsAt, period.endsAt],
     );
     const entryByProject = new Map(firstEntries.map((row) => [String(row.project_id), String(row.id)]));
 
@@ -1042,17 +1121,27 @@ export type CorrectOutcomeResult =
   | { ok: false; reason: "not_found" | "not_authorized" | "reason_required" | "unchanged" };
 
 /**
- * An admin's correction of a mistaken historical outcome. Requires a reason
- * and writes an audit event, per the plan; `completed` stays exactly as it
- * was recorded at close, so the original factual answer and the correction
- * are both readable afterwards.
+ * A correction of a mistaken historical outcome. Requires a reason and writes
+ * an audit event, per the plan; `completed` stays exactly as it was recorded
+ * at close, so the original factual answer and the correction are both
+ * readable afterwards.
+ *
+ * An admin is one writer. The other, since phase 10, is the closing
+ * submission reconciliation: authoritative evidence of an on-time submission
+ * that arrived after the period closed is exactly the plan's "historical
+ * corrections based on delayed authoritative evidence are audited", and it
+ * has no operator behind it. A job actor is therefore accepted, with
+ * `operatorId` null and the same mandatory reason; a member actor is not, and
+ * never was. The audit event records which of the two it was, because
+ * `auditActor` carries the actor's own kind.
  */
 export async function correctOutcome(
   actor: Actor,
-  input: { periodId: string; projectId: string; completed: boolean; reason: string; operatorId: string },
+  input: { periodId: string; projectId: string; completed: boolean; reason: string; operatorId?: string | null },
   db: BuilderDatabase | BuilderQuery = builderDatabase(),
 ): Promise<CorrectOutcomeResult> {
-  if (actor.kind !== "operator") return { ok: false, reason: "not_authorized" };
+  if (actor.kind === "member" || (actor.kind === "job" && actor.audience !== HQ_JOBS_AUDIENCE)) return { ok: false, reason: "not_authorized" };
+  if (!isUuidArg(input.projectId) || !isUuidArg(input.periodId)) return { ok: false, reason: "not_found" };
   const reason = String(input.reason ?? "").trim();
   if (!reason) return { ok: false, reason: "reason_required" };
   return atomically(db, async (tx) => {
@@ -1060,7 +1149,7 @@ export async function correctOutcome(
       `UPDATE hq_reporting_outcomes SET corrected_completed = $3, corrected_at = now(), corrected_by_user_id = $4::uuid, correction_reason = $5
        WHERE period_id = $1::uuid AND project_id = $2::uuid AND COALESCE(corrected_completed, completed) <> $3
        RETURNING ${OUTCOME_COLUMNS}`,
-      [input.periodId, input.projectId, input.completed, input.operatorId, reason],
+      [input.periodId, input.projectId, input.completed, actor.kind === "operator" ? actor.id : null, reason],
     );
     if (!rows.length) {
       const { rows: existing } = await tx.query(

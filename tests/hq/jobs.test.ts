@@ -25,6 +25,7 @@ import {
   REMINDER_TYPE_WEEKLY,
   closeDuePeriods,
   dueReminders,
+  expireEndedReminders,
   listReminderDeliveries,
   prepareReminder,
   runDueWork,
@@ -100,6 +101,10 @@ async function seedAssignedCaptain(userId: string, projectId: string, hackathonI
 
 /** Telegram connected and bot messages agreed to, with a bound private chat. */
 async function seedBotReach(userId: string, telegramUserId: string, chatId = telegramUserId, messaging = true) {
+  await rows(
+    `INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org',$2,'telegram',$3) ON CONFLICT (id) DO NOTHING`,
+    [`telegram-${userId}`, `telegram:${telegramUserId}`, userId],
+  );
   await rows(
     `INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id) VALUES($1,$2,$3::bigint)
      ON CONFLICT (user_id) DO NOTHING`,
@@ -665,6 +670,19 @@ describe("a queued reminder is rebuilt from current facts before it is sent", ()
     expect(sent).toEqual([]);
     expect((await deliveries())[0]).toMatchObject({ state: "skipped", reason: "period_over" });
   });
+
+  it("lets an active sender record its result when the period ends during the request", async () => {
+    await queuedReminder();
+    const sender: TelegramSender = {
+      async sendMessage() {
+        expect(await expireEndedReminders(db, PERIOD_1_END + 1_000)).toBe(0);
+        return { ok: true, messageId: 77 };
+      },
+      async answerCallbackQuery() {},
+    };
+    expect(await flushBotMessages(db, sender, { now: PERIOD_1_END - 1_000 })).toMatchObject({ sent: 1 });
+    expect((await rows("SELECT state,provider_message_id FROM hq_telegram_outgoing"))[0]).toMatchObject({ state: "sent", provider_message_id: 77 });
+  });
 });
 
 describe("an inactive project stops reminders without a separate reporting pause", () => {
@@ -690,6 +708,7 @@ describe("the chat a reminder is delivered to belongs to the identity that is co
     // The identity swap is a fixture; the consent service either side of it is
     // the real one. What it reproduces is the retained chat id.
     await rows("UPDATE hq_auth_telegram_identity SET telegram_user_id = 7777, provider_subject = 'telegram:7777' WHERE user_id = $1", [CAPTAIN]);
+    await rows(`UPDATE hq_auth_account SET "accountId" = 'telegram:7777' WHERE "userId"=$1 AND "providerId"='telegram'`, [CAPTAIN]);
     await setBotConsent({ kind: "member", id: CAPTAIN }, true);
     const { sender, sent } = fakeSender();
     await runDueWork({ db, sender, now: LATER });
@@ -699,6 +718,7 @@ describe("the chat a reminder is delivered to belongs to the identity that is co
 
   it("does not prepare a new reminder before the new identity has opened a chat", async () => {
     await rows("UPDATE hq_auth_telegram_identity SET telegram_user_id = 7777, provider_subject = 'telegram:7777' WHERE user_id = $1", [CAPTAIN]);
+    await rows(`UPDATE hq_auth_account SET "accountId" = 'telegram:7777' WHERE "userId"=$1 AND "providerId"='telegram'`, [CAPTAIN]);
     await rows("UPDATE hq_telegram_bot_consent SET telegram_user_id = 7777 WHERE user_id = $1", [CAPTAIN]);
     await rows("UPDATE hq_telegram_bot_consent SET chat_id = 5551 WHERE user_id = $1", [CAPTAIN]);
     const period = await periodOne();
@@ -763,6 +783,18 @@ describe("a delayed closure records who was responsible during the week", () => 
 });
 
 describe("a reminder's Add update opens the edition it named", () => {
+  it("keeps its Add update button usable when delivery is delayed by more than a day", async () => {
+    const period = await periodOne();
+    await prepareReminder(db, { captainUserId: CAPTAIN, hackathonId: EDITION, periodId: period.id, atMs: NUDGE_1 });
+    const [queued] = await rows("SELECT reply_markup FROM hq_telegram_outgoing");
+    const markup = queued.reply_markup as { inline_keyboard: { callback_data?: string }[][] };
+    const callbackId = markup.inline_keyboard.flat().find((button) => button.callback_data)!.callback_data;
+    const result = await handleTelegramUpdate(
+      { update_id: 992, callback_query: { id: "cb992", from: { id: "5551" }, data: callbackId, message: { chat: { id: "5551", type: "private" } } } },
+      { db, now: NUDGE_1 + 2 * 24 * 60 * 60_000 },
+    );
+    expect(result.outcome).toBe("compose_list");
+  });
   it("offers the second edition's team, not the default edition's", async () => {
     await rows("UPDATE hq_hackathons SET start_date='2026-09-15', end_date='2026-10-12' WHERE id=$1", [OTHER_EDITION]);
     await ensureReportingPeriods(db, OTHER_EDITION);

@@ -107,7 +107,9 @@ export function chunkForEscaped(plain: string, budget: number): string[] {
     // Break between words, but never throw away more than a quarter of a
     // chunk to do it.
     if (space > text.length * 0.75) {
-      chunks.push(text.slice(0, space));
+      // Keep the boundary space: callers reassemble unsent chunks, and a
+      // split must never turn two words into one.
+      chunks.push(text.slice(0, space + 1));
       current = Array.from(text.slice(space + 1));
       length = current.reduce((total, character) => total + escapeHtml(character).length, 0);
       return;

@@ -14,6 +14,8 @@ import { builderDatabase } from "./builder-db";
 import { syncBuilderAccount } from "./builder-store";
 import { isVerifiedAccount, verifiedLoginEmail } from "./identity";
 import { memberEmailDeliveryFailed } from "./member-auth-delivery";
+import { memberCodeEmail } from "./member-email";
+import { memberEmailLogo } from "./member-email-logo";
 import { hqTelegramIdentity } from "./telegram-identity-plugin";
 import { isPlaceholderEmail } from "./telegram-provider";
 
@@ -32,8 +34,8 @@ export class MemberAuthUnavailableError extends Error {
 // below and the account-creation hook both import them; neither restates the
 // rule. The placeholder checks that remain here guard endpoints, not access.
 
-/** What the one sender takes: a plain message to one address. */
-type MemberEmail = { to: string; subject: string; text: string };
+/** Every message has a plain-text fallback; verification codes also carry HTML. */
+type MemberEmail = { to: string; subject: string; text: string; html?: string };
 
 /**
  * The library's answers on /email-otp/change-email that only a stored code
@@ -63,7 +65,8 @@ function createMemberAuth() {
     if (isPlaceholderEmail(message.to) || !available.email) return false;
     try {
       const resend = new Resend(process.env.RESEND_API_KEY);
-      const { error } = await resend.emails.send({ from: process.env.EMAIL_FROM!, ...message });
+      const attachments = message.html ? [await memberEmailLogo()] : undefined;
+      const { error } = await resend.emails.send({ from: process.env.EMAIL_FROM!, ...message, ...(attachments ? { attachments } : {}) });
       return !error;
     } catch {
       return false;
@@ -250,7 +253,7 @@ function createMemberAuth() {
     plugins: [
       emailOTP({
         otpLength: 6,
-        expiresIn: 300,
+        expiresIn: 15 * 60,
         allowedAttempts: 3,
         storeOTP: "hashed",
         // The recovery-email flow for Telegram-first accounts, and the only
@@ -259,15 +262,7 @@ function createMemberAuth() {
         // there is never mailed (routes.mjs sends only to newEmail).
         changeEmail: { enabled: true, verifyCurrentEmail: false },
         async sendVerificationOTP({ email, otp, type }) {
-          const message = type === "change-email"
-            ? {
-                subject: "Confirm your Superteam NL HQ email",
-                text: `Your Superteam NL HQ code is ${otp}.\n\nEnter it to confirm this address for your HQ account. It expires in 5 minutes. If you did not ask to add this address, you can ignore this email.`,
-              }
-            : {
-                subject: "Your Superteam NL HQ sign-in code",
-                text: `Your Superteam NL HQ code is ${otp}.\n\nIt expires in 5 minutes. If you did not request this code, you can ignore this email.`,
-              };
+          const message = memberCodeEmail({ otp, type });
           // Better Auth absorbs sender errors; the delivery module turns
           // this flag into an honest 503 for the request.
           if (!(await deliver({ to: email, ...message }))) memberEmailDeliveryFailed();
@@ -338,9 +333,9 @@ export async function redirectToMemberSignIn(next: string): Promise<never> {
   const session = await currentMemberSession();
   if (session) {
     await (await getAuth().$context).internalAdapter.deleteSession(session.session.token);
-    redirect(`/hq/signin?error=identity_missing&next=${encodeURIComponent(destination)}`);
+    redirect(`/hq/login?error=identity_missing&next=${encodeURIComponent(destination)}`);
   }
-  redirect(`/hq/signin?next=${encodeURIComponent(destination)}`);
+  redirect(`/hq/login?next=${encodeURIComponent(destination)}`);
 }
 
 export async function requireMember(next = "/hq/welcome"): Promise<MemberSessionUser> {

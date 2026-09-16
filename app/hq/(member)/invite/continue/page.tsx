@@ -65,7 +65,7 @@ export default async function InviteContinuePage() {
         <AcceptInvitationForm />
       ) : (
         <div className={styles.actions}>
-          <Link className={styles.button} href={`/hq/signin?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`}>
+          <Link className={styles.button} href={`/hq/login?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`}>
             Sign in to continue
           </Link>
         </div>

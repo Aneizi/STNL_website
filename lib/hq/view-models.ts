@@ -47,7 +47,7 @@ export type MemberTeamView = {
    * id, and is safe for the team and its Captain alike.
    */
   source: BuilderTeamSource;
-  /** The imported roster as the team page shows it. `id` is the roster row a team lead names when inviting; no account id is included. */
+  /** Colosseum reference entries. The team page lists joined accounts only; no account id is included. */
   roster: { id: string; name: string; username: string; avatarUrl: string | null; joined: boolean }[];
 };
 

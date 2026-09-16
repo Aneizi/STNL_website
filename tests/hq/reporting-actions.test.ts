@@ -44,12 +44,15 @@ import {
   saveTeamContact,
 } from "@/lib/hq/actions/reporting";
 import {
+  addAdminReportingUpdate,
+  editAdminReportingUpdate,
   applyReportingSchedule,
   correctReportingOutcome,
   enableProjectReporting,
   loadEntryRevisions,
   loadProjectReporting,
   previewReportingSchedule,
+  readColosseumDeadline,
   saveReportingConfiguration,
   setProjectReportingPaused,
   voidReportingUpdate,
@@ -63,6 +66,7 @@ import {
   editUpdate,
   enableReporting,
   listReportingPeriods,
+  readReportingConfig,
   reportingStatus,
 } from "@/lib/hq/reporting";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
@@ -367,6 +371,35 @@ describe("the admin controls", () => {
     await enableReporting(db, { projectId: PROJECT, hackathonId: EDITION });
   });
 
+  it("creates operator updates and edits member updates with history and version conflicts", async () => {
+    const admin = await addAdminReportingUpdate({ projectId: PROJECT, body: "Call notes", visibility: "sensitive" });
+    expect(admin).toMatchObject({ ok: true, entry: { authorIsYou: true, visibility: "sensitive" } });
+    asMember(member("lead"));
+    const team = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "Typo" });
+    if (!team.ok) throw new Error("Expected member update");
+    expect(await editAdminReportingUpdate({ entryId: team.entry.id, body: "Corrected", expectedVersion: 1 }))
+      .toMatchObject({ ok: true, entry: { authorName: "lead", authorIsYou: false, version: 2 } });
+    expect(await editAdminReportingUpdate({ entryId: team.entry.id, body: "Stale edit", expectedVersion: 1 }))
+      .toMatchObject({ ok: false, reason: "conflict", current: { body: "Corrected" } });
+    expect(await rows(`SELECT version FROM hq_reporting_entry_revisions WHERE entry_id=$1 ORDER BY version`, [team.entry.id]))
+      .toEqual([{ version: 1 }, { version: 2 }]);
+  });
+
+  it("refuses an operator update for a project from another edition", async () => {
+    expect(await addAdminReportingUpdate({ projectId: OTHER_PROJECT, body: "Wrong edition" }))
+      .toMatchObject({ ok: false, reason: "not_authorized" });
+  });
+
+  it("allows a deliberate late update without changing the closed outcome", async () => {
+    const period = await openPeriod();
+    await closePeriod(db, { periodId: period.id, actor: { kind: "operator", id: OPERATOR_ID, displayName: "Operator" }, atMs: Date.parse(period.endsAt) });
+    asMember(member("lead"));
+    const saved = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "Late context", periodId: period.id });
+    expect(saved).toMatchObject({ ok: true, completesPeriod: false, entry: { late: true } });
+    expect(await rows(`SELECT completed, corrected_completed FROM hq_reporting_outcomes WHERE period_id=$1 AND project_id=$2`, [period.id, PROJECT]))
+      .toEqual([{ completed: false, corrected_completed: null }]);
+  });
+
   it("adds a CRM-only project to weekly reporting, with the same week as an imported team", async () => {
     expect(await enableProjectReporting(CRM_PROJECT)).toEqual({ ok: true });
     const statuses = await reportingStatus(db, { hackathonId: EDITION });
@@ -503,5 +536,76 @@ describe("the admin schedule screen", () => {
     expect(await saveReportingConfiguration({
       finalPeriodStartDate: "", officialSubmissionDeadline: "not a date", nudgeWeekday: 3, nudgeTime: "12:00",
     })).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    { finalPeriodStartDate: "2026-02-30" },
+    { finalPeriodStartDate: "2026-11-01" },
+    { officialSubmissionDeadline: "2026-02-30T12:00" },
+    { nudgeTime: "29:99" },
+  ])("rejects invalid schedule settings without a database or date conversion error: %j", async (change) => {
+    expect(await saveReportingConfiguration({
+      finalPeriodStartDate: "2026-10-05", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00", ...change,
+    })).toMatchObject({ ok: false });
+  });
+
+  // Phase 10's settings, saved through the same form.
+  it("records which submission materials this hackathon asks for, dropping a key that is not one", async () => {
+    expect(await saveReportingConfiguration({
+      finalPeriodStartDate: "2026-10-05", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
+      requiredMaterials: ["presentation", "made-up"], optionalMaterials: ["repo"],
+    })).toEqual({ ok: true });
+    const config = await readReportingConfig(db, EDITION);
+    expect(config.requiredMaterials).toEqual(["presentation"]);
+    expect(config.optionalMaterials).toEqual(["repo"]);
+  });
+
+  it("leaves the materials alone when the form does not send them", async () => {
+    await saveReportingConfiguration({
+      finalPeriodStartDate: "2026-10-05", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
+      requiredMaterials: ["pitchVideo"],
+    });
+    await saveReportingConfiguration({
+      finalPeriodStartDate: "2026-10-05", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
+    });
+    expect((await readReportingConfig(db, EDITION)).requiredMaterials).toEqual(["pitchVideo"]);
+  });
+
+  it("refuses an automatic submission check more often than the floor, and takes zero as off", async () => {
+    expect(await saveReportingConfiguration({
+      finalPeriodStartDate: "", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
+      submissionRefreshMinutes: 5,
+    })).toMatchObject({ ok: false });
+    expect(await saveReportingConfiguration({
+      finalPeriodStartDate: "", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
+      submissionRefreshMinutes: 60,
+    })).toEqual({ ok: true });
+    expect((await readReportingConfig(db, EDITION)).submissionRefreshMinutes).toBe(60);
+    await saveReportingConfiguration({
+      finalPeriodStartDate: "", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
+      submissionRefreshMinutes: 0,
+    });
+    expect((await readReportingConfig(db, EDITION)).submissionRefreshMinutes).toBeNull();
+  });
+
+  it("says which of the two put the deadline there", async () => {
+    await saveReportingConfiguration({
+      finalPeriodStartDate: "", officialSubmissionDeadline: "2026-10-12T23:59", nudgeWeekday: 3, nudgeTime: "12:00",
+    });
+    expect((await readReportingConfig(db, EDITION)).officialDeadlineSource).toBe("admin");
+    // Saving the same form again does not relabel a deadline nobody changed.
+    await saveReportingConfiguration({
+      finalPeriodStartDate: "", officialSubmissionDeadline: "2026-10-12T23:59", nudgeWeekday: 3, nudgeTime: "12:00",
+    });
+    expect((await readReportingConfig(db, EDITION)).officialDeadlineSource).toBe("admin");
+  });
+
+  it("will not ask Colosseum for a deadline before an admin has set the edition's Colosseum id", async () => {
+    const result = await readColosseumDeadline();
+    expect(result).toMatchObject({ ok: false });
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.error).toMatch(/Colosseum edition id/);
+    // Nothing was written, and nothing was claimed about a deadline.
+    expect((await readReportingConfig(db, EDITION)).officialDeadlineCheckedAt).toBeNull();
   });
 });

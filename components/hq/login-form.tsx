@@ -33,48 +33,41 @@ export function LoginForm() {
             style={{ width: 28, height: "auto", display: "block" }}
           />
         </div>
-        <div
+        <h1
           style={{
-            fontFamily: "var(--serif)",
-            fontSize: 36,
-            lineHeight: 1.05,
-            marginTop: 18,
+            fontSize: 32,
+            fontWeight: 600,
+            lineHeight: 1.2,
+            margin: "18px 0 0",
             textAlign: "center",
           }}
         >
-          Superteam <em style={{ color: "var(--accent)" }}>HQ</em>
-        </div>
-        <div style={{ ...authLabel, margin: "18px 0 8px" }}>Username</div>
+          Admin login
+        </h1>
+        <p style={{ fontSize: 17, color: "var(--label-2)", margin: "12px 0 24px", textAlign: "center" }}>For admins only.</p>
+        <label htmlFor="admin-username" style={{ ...authLabel, display: "block", fontSize: 17, textTransform: "none", letterSpacing: 0, color: "var(--label-2)", margin: "18px 0 8px" }}>Username</label>
         <input
+          id="admin-username"
           name="username"
           autoCapitalize="none"
           autoComplete="username"
           defaultValue={state?.username ?? ""}
-          style={authField}
+          style={{ ...authField, fontSize: 17, minHeight: 50 }}
         />
-        <div style={{ ...authLabel, margin: "16px 0 8px" }}>Password</div>
+        <label htmlFor="admin-password" style={{ ...authLabel, display: "block", fontSize: 17, textTransform: "none", letterSpacing: 0, color: "var(--label-2)", margin: "16px 0 8px" }}>Password</label>
         <input
+          id="admin-password"
           name="password"
           type="password"
           autoComplete="current-password"
-          style={authField}
+          style={{ ...authField, fontSize: 17, minHeight: 50 }}
         />
         {state?.error ? (
-          <div style={{ fontSize: 12, color: "var(--red)", marginTop: 10 }}>{state.error}</div>
+          <div role="alert" style={{ fontSize: 17, color: "var(--red)", marginTop: 10 }}>{state.error}</div>
         ) : null}
-        <button type="submit" disabled={pending} style={authSubmit}>
+        <button type="submit" disabled={pending} style={{ ...authSubmit, fontSize: 17, minHeight: 50 }}>
           {pending ? "Signing in…" : "Sign in"}
         </button>
-        <div
-          style={{
-            fontSize: 12,
-            color: "var(--label-3)",
-            marginTop: 14,
-            textAlign: "center",
-          }}
-        >
-          Sign ups are currently closed.
-        </div>
       </form>
     </div>
   );

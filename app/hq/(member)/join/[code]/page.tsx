@@ -21,7 +21,6 @@ export default async function JoinWithCodePage({params}:{params:Promise<{code:st
   const {code}=await params;
   await requireMember(joinLink(encodeURIComponent(code)));
   return <BuilderShell back='/hq/welcome'><h1>Join your <em>team.</em></h1>
-    <p>Check this is you, then join.</p>
     <BuilderJoin initialCode={code}/>
   </BuilderShell>;
 }

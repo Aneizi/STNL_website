@@ -18,7 +18,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {}, refresh() 
 vi.mock("@/lib/hq/member-auth", () => ({ requireMember: vi.fn(), currentMember: vi.fn() }));
 vi.mock("@/lib/hq/actions/builders", () => ({
   acceptBuilderInvite: vi.fn(), chooseBuilderPath: vi.fn(), createBuilderInvite: vi.fn(),
-  importBuilderTeam: vi.fn(), previewBuilderInvite: vi.fn(), refreshBuilderTeam: vi.fn(),
+  importBuilderTeam: vi.fn(), previewBuilderImport: vi.fn(), previewBuilderInvite: vi.fn(), refreshBuilderTeam: vi.fn(),
   requestBuilderEvent: vi.fn(), requestBuilderReview: vi.fn(), saveBuilderTeam: vi.fn(),
 }));
 // The icon package ships its source; these checks render markup, not glyphs,
@@ -28,7 +28,7 @@ vi.mock("symbols-react", () => ({
   IconTelegramLogo: (props: Record<string, unknown>) => createElement("svg", { ...props, "data-icon": "telegram" }),
 }));
 
-import { BuilderInitialize } from "@/components/hq/builder-onboarding";
+import { BuilderInitialize, BuilderJoin } from "@/components/hq/builder-onboarding";
 
 const ROOT = process.cwd();
 const EDITION = {
@@ -95,7 +95,7 @@ describe("the already-imported outcome", () => {
     expect(html).not.toContain(SUPERTEAM_NL_TELEGRAM_GROUP);
 
     const source = readFileSync(join(ROOT, "components/hq/builder-onboarding.tsx"), "utf8");
-    const control = source.slice(source.indexOf("function TelegramGroupControl"), source.indexOf("function CopyLink"));
+    const control = source.slice(source.indexOf("function TelegramGroupControl"), source.indexOf("export function BuilderWelcome"));
     // The icon, with the repository's fill convention, and an accessible name.
     expect(control).toContain("IconTelegramLogo");
     expect(control).toContain("fill='currentColor'");
@@ -108,9 +108,8 @@ describe("the already-imported outcome", () => {
 
     // The already-imported branch offers help, not a retry, and says nothing
     // about who holds the team.
-    const branch = source.slice(source.indexOf("failure.reason==='already_imported'"), source.indexOf("{failure.retry"));
+    const branch = source.slice(source.indexOf("failure.reason==='already_imported'"), source.indexOf("<BuilderImportHelp"));
     expect(branch).toContain("<TelegramGroupControl/>");
-    expect(branch).toContain("We can’t say who imported it");
     expect(branch.toLowerCase()).not.toMatch(/owner|imported by|belongs to [a-z]/);
     expect(IMPORT_REFUSAL_MESSAGES.already_imported).toBe("This team is already in HQ.");
   });
@@ -149,5 +148,24 @@ describe("the join link", () => {
     expect(JOIN_LINK_MESSAGES.expired).toContain("expired");
     expect(JOIN_LINK_MESSAGES.used).toContain("already been used");
     expect(JOIN_LINK_MESSAGES.other_edition).toContain("no longer running");
+  });
+});
+
+
+describe("progressive onboarding", () => {
+  it("starts with one project field and keeps import help available", () => {
+    const html = renderToStaticMarkup(createElement(BuilderInitialize, { hackathon: EDITION, available: true }));
+    expect(html).toContain('Colosseum project link');
+    expect(html).toContain('Continue');
+    expect(html).toContain('Can’t import your project?');
+    expect(html).not.toContain('Which teammate are you?');
+    expect(html).not.toContain('Import my team');
+  });
+
+  it("starts a pasted team link without naming a recipient", () => {
+    const html = renderToStaticMarkup(createElement(BuilderJoin));
+    expect(html).toContain('Team join link');
+    expect(html).not.toContain('This link is for');
+    expect(html).not.toContain('That’s me');
   });
 });

@@ -3,7 +3,8 @@ import type { Actor } from "./actor";
 import { authorizeProjectAction } from "./authz-decisions";
 import { builderDatabase, type BuilderQuery } from "./builder-db";
 import { reminderDispatchDecision, REMINDER_KIND } from "./reminder-dispatch";
-import type { TelegramSender } from "./telegram-bot-api";
+import { TELEGRAM_REQUEST_TIMEOUT_MS, type TelegramSender } from "./telegram-bot-api";
+import { activeTelegramIdentitySql } from "./telegram-identity-sql";
 
 /**
  * The Telegram bot's durable state: processed updates, callback references,
@@ -35,7 +36,7 @@ export const WRITE_ACTION_TTL_MS = DRAFT_TTL_MS;
 export const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const DELIVERY_RETENTION_MS = 90 * 24 * 60 * 60_000;
 /** How long one invocation may hold an update before another may take it over. Longer than the route's own maxDuration. */
-export const UPDATE_LEASE_MS = 60_000;
+export const UPDATE_LEASE_MS = 90_000;
 /** How many times one Telegram update may be attempted before it is left for an operator. */
 export const MAX_UPDATE_ATTEMPTS = 5;
 /** How long a drain may hold a queued message before another drain may take it over. */
@@ -64,8 +65,8 @@ export type UpdateClaim =
  * - **Finished** (`state = 'done'`): the work is behind us. Answer 200 and do
  *   nothing. This is the only terminal state.
  * - **In flight** (`state = 'processing'` with a live lease): another
- *   invocation has it right now. Answer 200 and do nothing, because an
- *   overlapping delivery is a duplicate, not a reason to run twice.
+ *   invocation has it. The webhook answers 503 so Telegram can retry if the
+ *   first invocation fails, without starting a second handler now.
  * - **Interrupted** (`state = 'failed'`, or `'processing'` with an expired
  *   lease): the previous attempt died. **Re-claim it.** Refusing here is what
  *   turned one transient database error into an update that was never saved
@@ -102,6 +103,9 @@ export async function claimTelegramUpdate(db: BuilderQuery, updateId: number, no
   );
   if (!existing.length) return { accepted: false, reason: "in_progress" };
   if (String(existing[0].state) === "done") return { accepted: false, reason: "already_done" };
+  if (existing[0].state === "processing" && existing[0].lease_expires_at != null && Date.parse(toIso(existing[0].lease_expires_at)) > now) {
+    return { accepted: false, reason: "in_progress" };
+  }
   if (Number(existing[0].attempts) >= MAX_UPDATE_ATTEMPTS) return { accepted: false, reason: "exhausted" };
   return { accepted: false, reason: "in_progress" };
 }
@@ -114,15 +118,15 @@ export async function claimTelegramUpdate(db: BuilderQuery, updateId: number, no
  * which is the whole point: the handler's writes are atomic, so there is
  * nothing half-finished for that retry to duplicate.
  */
-export async function finishTelegramUpdate(db: BuilderQuery, updateId: number, state: "done" | "failed", error?: string): Promise<void> {
+export async function finishTelegramUpdate(db: BuilderQuery, updateId: number, state: "done" | "failed", error?: string, attempt?: number): Promise<void> {
   await db.query(
     `UPDATE hq_telegram_updates
      SET state = $2, completed_at = now(), last_error = $3,
          lease_expires_at = CASE WHEN $2 = 'done' THEN lease_expires_at ELSE NULL END
-     WHERE update_id = $1::bigint`,
+     WHERE update_id = $1::bigint AND state <> 'done' AND ($4::int IS NULL OR attempts = $4)`,
     // Truncated and never the update's own text: a handler passes a code, not
     // what somebody typed.
-    [updateId, state, error ? String(error).slice(0, 200) : null],
+    [updateId, state, error ? String(error).slice(0, 200) : null, attempt ?? null],
   );
 }
 
@@ -176,7 +180,7 @@ export async function deliverableBotChat(db: BuilderQuery, userId: string): Prom
      FROM hq_telegram_bot_consent c
      JOIN hq_auth_telegram_identity i
        ON i.user_id = c.user_id AND i.telegram_user_id = c.chat_bound_telegram_user_id
-     WHERE c.user_id = $1 AND c.messaging_enabled AND c.chat_id IS NOT NULL`,
+     WHERE c.user_id = $1 AND c.messaging_enabled AND c.chat_id IS NOT NULL AND ${activeTelegramIdentitySql()}`,
     [userId],
   );
   return rows.length ? { userId: String(rows[0].user_id), chatId: String(rows[0].chat_id), messagingEnabled: true } : null;
@@ -266,6 +270,8 @@ export type NewBotAction = {
   draftId?: string | null;
   draftRevision?: number | null;
   hackathonId?: number | null;
+  /** Navigation reminders remain usable throughout their period. Draft buttons keep the short draft TTL. */
+  expiresAt?: string;
 };
 
 const toAction = (row: Record<string, unknown>): BotAction => ({
@@ -298,7 +304,7 @@ const ACTION_COLUMNS =
 export async function createBotAction(db: BuilderQuery, input: NewBotAction, now = Date.now()): Promise<BotAction> {
   const singleUse = isWriteAction(input.kind);
   const bound = isDraftAction(input.kind);
-  const expires = new Date(now + (bound ? WRITE_ACTION_TTL_MS : ACTION_TTL_MS)).toISOString();
+  const expires = new Date(bound ? now + WRITE_ACTION_TTL_MS : input.expiresAt ?? now + ACTION_TTL_MS).toISOString();
   const { rows } = await db.query(
     `INSERT INTO hq_telegram_actions (user_id, chat_id, kind, project_id, period_id, entry_id, expected_version, page, cursor, visibility, single_use, draft_id, draft_revision, expires_at, hackathon_id)
      VALUES ($1, $2::bigint, $3, $4::uuid, $5::uuid, $6::uuid, $7, $8, $9, $10, $11, $12::uuid, $13, $14::timestamptz, $15) RETURNING ${ACTION_COLUMNS}`,
@@ -500,7 +506,7 @@ export async function advanceBotDraft(
        body = CASE WHEN $13::boolean THEN $14 ELSE body END,
        expires_at = $15::timestamptz,
        updated_at = now()
-     WHERE user_id = $1 AND chat_id = $2::bigint AND id = $3::uuid AND revision = $4 AND expires_at > now()
+     WHERE user_id = $1 AND chat_id = $2::bigint AND id = $3::uuid AND revision = $4 AND expires_at > $16::timestamptz
      RETURNING ${DRAFT_COLUMNS}`,
     [
       input.userId, input.chatId, input.draftId, input.expectedRevision,
@@ -511,6 +517,7 @@ export async function advanceBotDraft(
       input.visibility ?? null,
       "body" in input, input.body ?? null,
       new Date(now + DRAFT_TTL_MS).toISOString(),
+      new Date(now).toISOString(),
     ],
   );
   return rows.length ? toDraft(rows[0]) : null;
@@ -585,7 +592,7 @@ export async function enqueueBotMessage(
   db: BuilderQuery,
   input: {
     chatId: string;
-    userId: string | null;
+    userId: string;
     kind: string;
     body: string;
     replyMarkup?: unknown;
@@ -615,7 +622,7 @@ export const MAX_SEND_ATTEMPTS = 5;
 /** Backoff between attempts, so a struggling Telegram is not hammered. Bounded, and overridden by Telegram's own retry_after. */
 const RETRY_BACKOFF_MS = [30_000, 2 * 60_000, 10 * 60_000, 30 * 60_000];
 
-export type FlushResult = { sent: number; failed: number; retrying: number; skipped: number };
+export type FlushResult = { sent: number; failed: number; retrying: number; skipped: number; stoppedOnBudget?: boolean };
 
 type ClaimedMessage = {
   id: string;
@@ -629,24 +636,7 @@ type ClaimedMessage = {
   hackathonId: number | null;
 };
 
-/**
- * Why a queued message was dropped instead of sent. Recorded on the row so an
- * admin can see it. A reminder can additionally answer with any
- * `ReminderSkipReason`, which is why this is widened to a string at the call
- * site rather than being the only vocabulary.
- */
-export type SendSkipReason =
-  | "messaging_disabled"
-  | "telegram_disconnected"
-  | "chat_changed"
-  | "chat_not_bound"
-  | "not_authorized"
-  | "message_too_long";
-
-/**
- * What the pre-send check decided: send this row, optionally with a body
- * rebuilt from the state that exists now, or skip it with a reason.
- */
+/** A fresh delivery decision, including a reminder's rebuilt body or refusal reason. */
 type DeliveryDecision = { ok: true; body?: string } | { ok: false; reason: string };
 
 /**
@@ -661,12 +651,14 @@ type DeliveryDecision = { ok: true; body?: string } | { ok: false; reason: strin
  * reassigned project must not appear in a message.
  */
 async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: number): Promise<DeliveryDecision> {
-  if (!message.userId) return { ok: true };
+  // Account deletion nulls the history row's foreign key. It revokes the
+  // destination; it must never turn a protected message into a public one.
+  if (!message.userId) return { ok: false, reason: "telegram_disconnected" };
   const { rows } = await db.query(
     `SELECT c.messaging_enabled, c.chat_id::text AS chat_id, c.chat_bound_telegram_user_id::text AS bound_to,
             i.user_id AS identity, i.telegram_user_id::text AS telegram_user_id
      FROM hq_telegram_bot_consent c
-     LEFT JOIN hq_auth_telegram_identity i ON i.user_id = c.user_id
+     LEFT JOIN hq_auth_telegram_identity i ON i.user_id = c.user_id AND ${activeTelegramIdentitySql()}
      WHERE c.user_id = $1`,
     [message.userId],
   );
@@ -705,9 +697,8 @@ async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: numb
  * Called after the webhook's own transaction has committed, so a send failure
  * can never roll back a saved update.
  *
- * Rows are **claimed** before they are sent: one atomic update takes a
- * bounded batch, stamps an owner and an expiry on each, and only that owner
- * may complete them. Two drains running at once therefore divide the queue
+ * Each row is claimed immediately before its send, with an owner and expiry,
+ * and only that owner may complete it. Concurrent drains divide the queue
  * instead of both sending the same row, and a worker that dies mid-send
  * releases its rows when the claim expires rather than stranding them. What
  * this does not promise is exactly-once delivery: a claim that expires after
@@ -724,28 +715,49 @@ async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: numb
 export async function flushBotMessages(
   db: BuilderQuery,
   sender: TelegramSender,
-  options: { limit?: number; now?: number; owner?: string } = {},
+  options: { limit?: number; now?: number; owner?: string; deadlineMs?: number } = {},
 ): Promise<FlushResult> {
   const limit = Math.max(1, Math.min(50, Math.floor(options.limit ?? 10)));
-  const now = options.now ?? Date.now();
-  const owner = options.owner ?? `${Math.random().toString(36).slice(2)}${now.toString(36)}`;
-  const at = new Date(now).toISOString();
-  const { rows } = await db.query(
-    `UPDATE hq_telegram_outgoing SET
+  const owner = options.owner ?? crypto.randomUUID();
+  const deadlineMs = options.deadlineMs ?? Date.now() + 20_000;
+  const result: FlushResult = { sent: 0, failed: 0, retrying: 0, skipped: 0 };
+  // An invocation can die during its final allowed attempt. Such a row can
+  // never be claimed again; resolve it explicitly and preserve uncertainty.
+  const exhausted = await db.query(
+    `UPDATE hq_telegram_outgoing SET state = 'failed',
+       last_error = 'network: delivery worker interrupted during its final attempt',
+       claimed_by = NULL, claim_expires_at = NULL, next_attempt_at = NULL
+     WHERE state = 'queued' AND attempts >= $1
+       AND (claim_expires_at IS NULL OR claim_expires_at <= $2::timestamptz)
+     RETURNING id`,
+    [MAX_SEND_ATTEMPTS, new Date(options.now ?? Date.now()).toISOString()],
+  );
+  result.failed += exhausted.rows.length;
+  // Claim only the next message. Claiming a whole batch lets later rows'
+  // leases expire while earlier sends are still in flight.
+  for (let index = 0; index < limit; index += 1) {
+    if (Date.now() + TELEGRAM_REQUEST_TIMEOUT_MS >= deadlineMs) {
+      result.stoppedOnBudget = true;
+      break;
+    }
+    const now = options.now ?? Date.now();
+    const at = new Date(now).toISOString();
+    const { rows } = await db.query(
+      `UPDATE hq_telegram_outgoing SET
        attempts = attempts + 1, claimed_at = $1::timestamptz, claim_expires_at = $2::timestamptz, claimed_by = $3
      WHERE id IN (
        SELECT id FROM hq_telegram_outgoing
        WHERE state = 'queued' AND attempts < $4
          AND (next_attempt_at IS NULL OR next_attempt_at <= $1::timestamptz)
          AND (claim_expires_at IS NULL OR claim_expires_at <= $1::timestamptz)
-       ORDER BY created_at LIMIT $5 FOR UPDATE SKIP LOCKED
+       ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
      )
      RETURNING id::text AS id, chat_id::text AS chat_id, user_id, kind, body, reply_markup, attempts,
                project_id::text AS project_id, hackathon_id`,
-    [at, new Date(now + SEND_CLAIM_MS).toISOString(), owner, MAX_SEND_ATTEMPTS, limit],
-  );
-  const result: FlushResult = { sent: 0, failed: 0, retrying: 0, skipped: 0 };
-  for (const row of rows) {
+      [at, new Date(now + SEND_CLAIM_MS).toISOString(), owner, MAX_SEND_ATTEMPTS],
+    );
+    if (!rows.length) break;
+    const row = rows[0];
     const message: ClaimedMessage = {
       id: String(row.id), chatId: String(row.chat_id), userId: row.user_id == null ? null : String(row.user_id),
       kind: String(row.kind), body: String(row.body), replyMarkup: row.reply_markup ?? null, attempts: Number(row.attempts),
@@ -771,6 +783,16 @@ export async function flushBotMessages(
     const text = decision.body ?? message.body;
     if (decision.body != null && decision.body !== message.body) {
       await db.query("UPDATE hq_telegram_outgoing SET body=$2 WHERE id=$1::uuid AND claimed_by=$3", [message.id, decision.body, owner]);
+    }
+    // Authorization can itself take time. A row that was never handed to
+    // Telegram spends no attempt and is immediately available to another run.
+    if (Date.now() + TELEGRAM_REQUEST_TIMEOUT_MS >= deadlineMs) {
+      await db.query(
+        "UPDATE hq_telegram_outgoing SET attempts=attempts-1, claimed_by=NULL, claim_expires_at=NULL WHERE id=$1::uuid AND claimed_by=$2",
+        [message.id, owner],
+      );
+      result.stoppedOnBudget = true;
+      break;
     }
     const outcome = await sender.sendMessage({
       chatId: message.chatId,
@@ -803,7 +825,7 @@ export async function flushBotMessages(
         // the one fact that says delivery is unknown rather than failed.
         [outcome.code, outcome.detail ? String(outcome.detail) : null].filter(Boolean).join(": ").slice(0, 300) || null,
         giveUp && !outcome.retryable ? outcome.code : null,
-        giveUp ? null : new Date(now + backoff).toISOString(),
+        giveUp ? null : new Date((options.now ?? Date.now()) + backoff).toISOString(),
         owner,
       ],
     );

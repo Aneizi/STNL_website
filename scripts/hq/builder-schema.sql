@@ -58,21 +58,33 @@ CREATE TABLE IF NOT EXISTS hq_project_onboarding (
 ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS colosseum_username text;
 ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS builder_user_id text REFERENCES hq_builder_profiles(id) ON DELETE SET NULL;
 ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS joined_at timestamptz;
+ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS source_present boolean NOT NULL DEFAULT true;
 CREATE UNIQUE INDEX IF NOT EXISTS hq_roster_username_idx ON hq_project_members(project_id, lower(colosseum_username));
 CREATE UNIQUE INDEX IF NOT EXISTS hq_roster_builder_idx ON hq_project_members(project_id, builder_user_id);
 
 CREATE TABLE IF NOT EXISTS hq_team_invites (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id uuid NOT NULL REFERENCES hq_project_onboarding(project_id) ON DELETE CASCADE,
-  member_id uuid NOT NULL REFERENCES hq_project_members(id) ON DELETE CASCADE,
+  member_id uuid REFERENCES hq_project_members(id) ON DELETE CASCADE,
   created_by text NOT NULL REFERENCES hq_builder_profiles(id),
   token_hash text NOT NULL UNIQUE,
-  expires_at timestamptz NOT NULL DEFAULT (now() + interval '2 days'),
+  expires_at timestamptz DEFAULT (now() + interval '2 days'),
+  share_code text,
   consumed_by text REFERENCES hq_builder_profiles(id),
   consumed_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS hq_invites_member_idx ON hq_team_invites(member_id);
+-- A null member identifies a reusable project link. Existing seat links keep
+-- their saved expiry and consumption state, so no old bearer gains access.
+ALTER TABLE hq_team_invites ALTER COLUMN member_id DROP NOT NULL;
+ALTER TABLE hq_team_invites ALTER COLUMN expires_at DROP NOT NULL;
+-- Keep the legacy default during rolling deploys: older code omits expiry
+-- for seat links. New reusable links explicitly insert NULL instead.
+ALTER TABLE hq_team_invites ALTER COLUMN expires_at SET DEFAULT (now() + interval '2 days');
+ALTER TABLE hq_team_invites ADD COLUMN IF NOT EXISTS share_code text;
+CREATE INDEX IF NOT EXISTS hq_invites_project_idx ON hq_team_invites(project_id);
+CREATE UNIQUE INDEX IF NOT EXISTS hq_invites_shared_project_idx ON hq_team_invites(project_id) WHERE member_id IS NULL;
 
 CREATE TABLE IF NOT EXISTS hq_project_import_requests (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -327,19 +339,38 @@ ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS avatar_url text;
 -- matched by the row's own raw payload rather than by name. Every statement
 -- is guarded on the column still being NULL, so each one matches nothing on a
 -- fresh database, nothing on a re-run, and never overwrites a later refresh.
+-- Raw source URLs remain untrusted. Never restore a rejected scheme,
+-- credential-bearing URL or control character into the normalized fields.
 UPDATE hq_project_onboarding SET category = raw->'project'->>'category' WHERE category IS NULL AND raw->'project'->>'category' IS NOT NULL;
 UPDATE hq_project_onboarding SET twitter_handle = raw->'project'->>'twitterHandle' WHERE twitter_handle IS NULL AND raw->'project'->>'twitterHandle' IS NOT NULL;
-UPDATE hq_project_onboarding SET website = raw->'project'->>'website' WHERE website IS NULL AND raw->'project'->>'website' IS NOT NULL;
-UPDATE hq_project_onboarding SET repo_link = raw->'project'->>'repoLink' WHERE repo_link IS NULL AND raw->'project'->>'repoLink' IS NOT NULL;
-UPDATE hq_project_onboarding SET presentation_link = raw->'project'->>'presentationLink' WHERE presentation_link IS NULL AND raw->'project'->>'presentationLink' IS NOT NULL;
-UPDATE hq_project_onboarding SET technical_demo_link = raw->'project'->>'technicalDemoLink' WHERE technical_demo_link IS NULL AND raw->'project'->>'technicalDemoLink' IS NOT NULL;
-UPDATE hq_project_onboarding SET pitch_video_link = raw->'project'->>'pitchVideoLink' WHERE pitch_video_link IS NULL AND raw->'project'->>'pitchVideoLink' IS NOT NULL;
-UPDATE hq_project_onboarding SET demo_video_link = raw->'project'->>'demoVideoLink' WHERE demo_video_link IS NULL AND raw->'project'->>'demoVideoLink' IS NOT NULL;
-UPDATE hq_project_onboarding SET image_url = raw->'project'->'image'->>'url' WHERE image_url IS NULL AND raw->'project'->'image'->>'url' IS NOT NULL;
-UPDATE hq_project_onboarding SET external_hackathon_id = (raw->'project'->'hackathon'->>'id')::int WHERE external_hackathon_id IS NULL AND (raw->'project'->'hackathon'->>'id') ~ '^[0-9]+$';
+UPDATE hq_project_onboarding SET website = raw->'project'->>'website' WHERE website IS NULL
+  AND (raw->'project'->>'website') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'website')) = 0;
+UPDATE hq_project_onboarding SET repo_link = raw->'project'->>'repoLink' WHERE repo_link IS NULL
+  AND (raw->'project'->>'repoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'repoLink')) = 0;
+UPDATE hq_project_onboarding SET presentation_link = raw->'project'->>'presentationLink' WHERE presentation_link IS NULL
+  AND (raw->'project'->>'presentationLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'presentationLink')) = 0;
+UPDATE hq_project_onboarding SET technical_demo_link = raw->'project'->>'technicalDemoLink' WHERE technical_demo_link IS NULL
+  AND (raw->'project'->>'technicalDemoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'technicalDemoLink')) = 0;
+UPDATE hq_project_onboarding SET pitch_video_link = raw->'project'->>'pitchVideoLink' WHERE pitch_video_link IS NULL
+  AND (raw->'project'->>'pitchVideoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'pitchVideoLink')) = 0;
+UPDATE hq_project_onboarding SET demo_video_link = raw->'project'->>'demoVideoLink' WHERE demo_video_link IS NULL
+  AND (raw->'project'->>'demoVideoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'demoVideoLink')) = 0;
+UPDATE hq_project_onboarding SET image_url = raw->'project'->'image'->>'url' WHERE image_url IS NULL
+  AND (raw->'project'->'image'->>'url') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->'image'->>'url')) = 0;
+UPDATE hq_project_onboarding SET external_hackathon_id = (raw->'project'->'hackathon'->>'id')::int
+WHERE external_hackathon_id IS NULL
+  AND CASE WHEN (raw->'project'->'hackathon'->>'id') ~ '^[0-9]{1,10}$'
+    THEN (raw->'project'->'hackathon'->>'id')::bigint BETWEEN 1 AND 2147483647 ELSE false END;
+-- The current public response supplies hackathonId directly on project.
+UPDATE hq_project_onboarding SET external_hackathon_id = (raw->'project'->>'hackathonId')::int
+WHERE external_hackathon_id IS NULL
+  AND CASE WHEN (raw->'project'->>'hackathonId') ~ '^[0-9]{1,10}$'
+    THEN (raw->'project'->>'hackathonId')::bigint BETWEEN 1 AND 2147483647 ELSE false END;
 UPDATE hq_project_onboarding SET external_hackathon_slug = raw->'project'->'hackathon'->>'slug' WHERE external_hackathon_slug IS NULL AND raw->'project'->'hackathon'->>'slug' IS NOT NULL;
 UPDATE hq_project_onboarding SET external_hackathon_name = raw->'project'->'hackathon'->>'name' WHERE external_hackathon_name IS NULL AND raw->'project'->'hackathon'->>'name' IS NOT NULL;
-UPDATE hq_project_onboarding SET tracks = ARRAY(SELECT jsonb_array_elements_text(raw->'project'->'tracks')) WHERE tracks = '{}' AND jsonb_typeof(raw->'project'->'tracks') = 'array' AND jsonb_array_length(raw->'project'->'tracks') > 0;
+UPDATE hq_project_onboarding SET tracks = ARRAY(SELECT jsonb_array_elements_text(
+  CASE WHEN jsonb_typeof(raw->'project'->'tracks') = 'array' THEN raw->'project'->'tracks' ELSE '[]'::jsonb END))
+WHERE tracks = '{}' AND jsonb_typeof(raw->'project'->'tracks') = 'array';
 -- The raw snapshot is proof the source was read successfully once, at import
 -- time. submission_status is deliberately NOT backfilled: no phase 3 status
 -- check has run for these rows, and "Not checked" is the honest answer until
@@ -960,3 +991,105 @@ CREATE TABLE IF NOT EXISTS hq_reminder_deliveries (
 ALTER TABLE hq_reminder_deliveries ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz;
 CREATE INDEX IF NOT EXISTS hq_reminder_deliveries_edition_idx ON hq_reminder_deliveries (hackathon_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS hq_reminder_deliveries_open_idx ON hq_reminder_deliveries (period_id) WHERE state = 'queued';
+
+-- ---------------------------------------------------------------------------
+-- Phase 10: the final, submission-focused period.
+--
+-- The window itself is already here: hq_reporting_config.final_period_start_date
+-- merges the remaining weeks into one period whose mode is 'submission', and
+-- official_submission_deadline is Colosseum's own cutoff when it differs from
+-- HQ's window. What phase 10 adds is what that period needs beyond a week:
+-- which materials the edition actually asks for, how often HQ may re-read
+-- Colosseum on the teams' behalf, where the deadline came from, and a durable
+-- record of the closing reconciliation.
+
+-- Which submission materials this edition requires, and which are merely
+-- offered. Anything named in NEITHER array is UNKNOWN, and a screen says so
+-- rather than guessing: the plan is explicit that HQ must "distinguish
+-- Required, Optional and Unknown requirement information" and must not
+-- "hardcode every available API link field as mandatory".
+--
+-- Operator data, like the external edition mapping: an admin types it in
+-- under Weekly reporting, it is never seeded and never a constant. Colosseum
+-- does not publish per-field requirements on any endpoint HQ can read
+-- (projectCompletion is owner-authenticated and absent from the public
+-- detail response), so an edition nobody has configured reads back as all
+-- Unknown, which is the honest answer rather than a fabricated checklist.
+--
+-- The keys are the material keys in lib/hq/submission-readiness.ts. An
+-- unrecognised key is ignored on the way out rather than rejected here: the
+-- array is configuration, and a stale key left behind by a renamed material
+-- must not make the whole edition unreadable.
+ALTER TABLE hq_reporting_config ADD COLUMN IF NOT EXISTS required_materials text[] NOT NULL DEFAULT '{}';
+ALTER TABLE hq_reporting_config ADD COLUMN IF NOT EXISTS optional_materials text[] NOT NULL DEFAULT '{}';
+
+-- How stale a project's Colosseum snapshot may get during the final period
+-- before the scheduled job re-reads it, in minutes. NULL is off, and off is
+-- the default: the plan allows bounded server-side refreshes "if configured"
+-- and forbids polling "from every browser tab", so nothing here runs until an
+-- admin asks for it. The floor is deliberate; a one-minute setting would be a
+-- rate limit incident rather than a feature.
+ALTER TABLE hq_reporting_config ADD COLUMN IF NOT EXISTS submission_refresh_minutes int CONSTRAINT hq_reporting_config_submission_refresh_check CHECK (submission_refresh_minutes IS NULL OR submission_refresh_minutes >= 15);
+
+-- Where official_submission_deadline came from and when it was last read.
+-- An admin may type it in, or press Read from Colosseum, which asks the
+-- listing envelope's projectSubmissionEndDate for the configured external
+-- edition. Both are the same column because both are the same fact; the
+-- provenance is beside it so a screen can say which, and so a failed read
+-- leaves the previous value and its own timestamp alone.
+ALTER TABLE hq_reporting_config ADD COLUMN IF NOT EXISTS official_deadline_source text CONSTRAINT hq_reporting_config_deadline_source_check CHECK (official_deadline_source IS NULL OR official_deadline_source IN ('admin','colosseum'));
+ALTER TABLE hq_reporting_config ADD COLUMN IF NOT EXISTS official_deadline_checked_at timestamptz;
+
+-- Failed refreshes also consume an attempt. Scheduling only by the last
+-- successful read lets a few unavailable projects monopolize every batch.
+ALTER TABLE hq_project_onboarding ADD COLUMN IF NOT EXISTS source_attempted_at timestamptz;
+
+-- The closing reconciliation of the submission period: one row per project
+-- per submission period, written when that period closes and resolved when
+-- authoritative evidence arrives.
+--
+-- It exists because the plan asks for two things a reporting outcome cannot
+-- say at once. "If the API is unavailable, preserve Not checked/stale
+-- information and flag reconciliation as pending internally; do not claim an
+-- unverified submission failure" — so there has to be a place to record that
+-- HQ has NOT established anything yet, separate from the week's factual
+-- outcome, which is already recorded and is never rewritten. And "once
+-- verified, use the official submitted timestamp and deadline to establish
+-- whether it was on time, even if discovery happened later" — so the evidence
+-- has to be kept with the deadline it was judged against, rather than
+-- recomputed later against a deadline an admin has since edited.
+--
+-- What it is not: a second completion rule. The week's answer stays
+-- COALESCE(corrected_completed, completed) on hq_reporting_outcomes. When
+-- delayed evidence shows an on-time submission for a week recorded as missed,
+-- the reconciliation calls correctOutcome, which writes the correction beside
+-- the original with a mandatory reason and an audit event, and sets
+-- outcome_corrected here so a re-run does not do it twice. A submission after
+-- the deadline corrects nothing: it is recorded, it is marked not on time,
+-- and the missed week stands.
+CREATE TABLE IF NOT EXISTS hq_submission_reconciliations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  period_id uuid NOT NULL REFERENCES hq_reporting_periods(id) ON DELETE CASCADE,
+  project_id uuid NOT NULL REFERENCES hq_projects(id) ON DELETE CASCADE,
+  hackathon_id int NOT NULL REFERENCES hq_hackathons(id) ON DELETE CASCADE,
+  state text NOT NULL DEFAULT 'pending' CONSTRAINT hq_submission_reconciliations_state_check CHECK (state IN ('pending','resolved')),
+  -- The evidence, as phase 3's interpretSubmission wrote it. NULL while
+  -- nothing has been established: deliberately not 'not_checked', so that
+  -- "we never got an answer" and "Colosseum answered, and the answer was
+  -- not checked" cannot be confused for one another.
+  submission_status text CONSTRAINT hq_submission_reconciliations_status_check CHECK (submission_status IS NULL OR submission_status IN ('not_checked','submitted','not_submitted')),
+  submitted_at timestamptz,
+  -- The deadline this evidence was judged against, copied when reconciliation opens.
+  deadline timestamptz,
+  on_time boolean,
+  evidence_at timestamptz,
+  attempts int NOT NULL DEFAULT 0,
+  -- HQ's own error code from the last failed read, never Colosseum's words.
+  last_error text,
+  outcome_corrected boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (period_id, project_id)
+);
+CREATE INDEX IF NOT EXISTS hq_submission_reconciliations_pending_idx ON hq_submission_reconciliations (hackathon_id, updated_at) WHERE state = 'pending';
+CREATE INDEX IF NOT EXISTS hq_submission_reconciliations_project_idx ON hq_submission_reconciliations (project_id);

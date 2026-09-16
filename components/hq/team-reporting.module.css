@@ -1,0 +1,229 @@
+.dashboard {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.55;
+}
+
+.dashboard.dashboard :is(h2, h3, h4) {
+  margin: 0 0 8px;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -.01em;
+}
+
+.dashboard.dashboard :is(p, label, small, span, input, select, textarea, button, a, summary) {
+  font-size: 17px;
+}
+
+.dashboard p {
+  max-width: 68ch;
+  margin: 0 0 16px;
+}
+
+.dashboard small {
+  display: block;
+  color: var(--muted);
+}
+
+.dashboard [hidden] {
+  display: none;
+}
+
+.dashboard :is(button, a, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--orange-deep);
+  outline-offset: 4px;
+}
+
+.week {
+  padding: 0 0 28px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.dashboard .meta {
+  margin: 0;
+  color: var(--muted);
+}
+
+.primary,
+.secondary {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 9px 16px;
+  border: 1px solid var(--ink);
+  border-radius: 8px;
+  background: var(--ink);
+  color: var(--cream);
+  font: inherit;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.dashboard a.primary {
+  color: var(--cream);
+  text-decoration: none;
+}
+
+.secondary {
+  border-color: var(--line);
+  background: transparent;
+  color: var(--ink);
+}
+
+.primary:hover {
+  background: color-mix(in srgb, var(--ink), var(--cream) 12%);
+}
+
+.secondary:hover,
+.disclosureButton:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.dashboard button:disabled {
+  opacity: .5;
+  cursor: default;
+}
+
+.composer {
+  max-width: 68ch;
+}
+
+.dashboard form {
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.dashboard textarea {
+  min-height: 160px;
+}
+
+.dashboard :is(input, select, textarea) {
+  background: color-mix(in srgb, var(--cream), white 40%);
+}
+
+.disclosure {
+  border-top: 1px solid var(--line);
+}
+
+.disclosureButton {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  width: 100%;
+  min-height: 64px;
+  padding: 16px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chevron {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 10px;
+  height: 10px;
+  margin: 0 4px 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+}
+
+[aria-expanded="true"] > .chevron {
+  transform: rotate(225deg);
+  margin-bottom: 0;
+}
+
+.disclosureContent {
+  padding: 0 0 28px;
+}
+
+.submission {
+  margin-bottom: 28px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--line);
+}
+
+.disclosureContent > .submission {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.dashboard .deadline {
+  margin: 16px 0 4px;
+}
+
+.textButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.textButton:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.submissionDetails {
+  padding-top: 16px;
+}
+
+.materials {
+  margin-bottom: 20px;
+}
+
+.dashboard .inlineNotice {
+  margin: 12px 0 0;
+  padding-left: 12px;
+  border-left: 2px solid var(--orange);
+  color: var(--ink);
+}
+
+.dashboard .saved {
+  margin: 16px 0 0;
+  color: #2a604a;
+}
+
+.dashboard .error {
+  margin: 12px 0 0;
+  color: #a52b16;
+}
+
+@media (max-width: 540px) {
+  .sectionHeader {
+    gap: 16px;
+  }
+
+  .sectionHeader > div {
+    min-width: 0;
+    flex: 1 1 160px;
+  }
+}

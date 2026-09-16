@@ -50,6 +50,10 @@ describe("public HQ authentication configuration", () => {
 });
 
 describe("public HQ post-auth destinations", () => {
+  it.each(["/hq/login", "/hq/signin", "/hq/login?next=/hq/dashboard", "/hq/signin?next=/hq/dashboard", "/hq/admin/login"])("rejects login destinations: %s", (value) => {
+    expect(safeMemberNext(value)).toBe("/hq/welcome");
+  });
+
   it.each([undefined, "https://evil.example", "//evil.example", "/\\evil.example", "/hq", "/hq/admin", "/hq/people", "/hq/dashboard/../../hq/admin", "/hq/%61dmin", "/hq/dashboard\n", "/hq/account/other", "/hq/accounts"]) ("rejects unsafe or operator destinations: %s", (value) => {
     expect(safeMemberNext(value)).toBe("/hq/welcome");
   });

@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 const state = vi.hoisted(() => ({
   pg: null as PGlite | null,
-  sent: [] as Array<{ to: string; text: string }>,
+  sent: [] as Array<{ to: string; text: string; html?: string; attachments?: import("resend").Attachment[] }>,
   synced: vi.fn(),
   emailFailure: false,
   cookie: "",
@@ -41,7 +41,7 @@ vi.mock("pg", () => ({
 vi.mock("resend", () => ({
   Resend: class {
     emails = {
-      send: async (message: { to: string; text: string }) => {
+      send: async (message: { to: string; text: string; html?: string; attachments?: import("resend").Attachment[] }) => {
         if (state.emailFailure) return { error: { message: "test sender failure" } };
         state.sent.push(message);
         return { error: null, data: { id: "test-email" } };
@@ -124,6 +124,12 @@ describe("public HQ sign-in through Better Auth", () => {
     vi.unstubAllEnvs();
   });
 
+  it("sends signed-out members to their login page with a safe return path", async () => {
+    const { requireMember } = await import("@/lib/hq/member-auth");
+    await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/login?next=%2Fhq%2Fdashboard");
+    await expect(requireMember("/hq/admin/login")).rejects.toThrow("REDIRECT:/hq/login?next=%2Fhq%2Fwelcome");
+  });
+
   it("creates a verified account and CRM profile only after a valid email code", async () => {
     const email = "new-builder@example.com";
     expect((await request("/email-otp/send-verification-otp", { email, type: "sign-in" })).status).toBe(200);
@@ -150,6 +156,52 @@ describe("public HQ sign-in through Better Auth", () => {
     const session = await request("/get-session", undefined, cookie.split(";")[0]);
     expect((await session.json()).user.id).toBe(user.id);
     expect((await request("/sign-in/email-otp", { email, otp: code })).status).toBe(400);
+  });
+
+  it("sends the same code in HTML and text with the original inline PNG", async () => {
+    expect((await request("/email-otp/send-verification-otp",{email:"branded@example.com",type:"sign-in"})).status).toBe(200);
+    const message=state.sent[0];
+    const code=latestCode();
+    expect(message.html).toContain(code);
+    expect(message.text).toContain(code);
+    expect(message.attachments).toHaveLength(1);
+    const logo=message.attachments![0];
+    expect(logo).toMatchObject({filename:"superteam-nl.png",contentType:"image/png",contentId:"superteam-nl-logo"});
+    expect(message.html).toContain(`cid:${logo.contentId}`);
+    expect(logo.path).toBeUndefined();
+    const content=Buffer.from(String(logo.content),"base64");
+    expect(content.subarray(0,8).toString("hex")).toBe("89504e470d0a1a0a");
+    expect(content).toEqual(readFileSync("lib/hq/email-assets/superteam-nl.png"));
+  });
+
+  it.each([
+    ["new",10,200],
+    ["returning",10,200],
+    ["new",16,400],
+    ["returning",16,400],
+  ] as const)("checks the 15-minute code lifetime for a %s account after %i minutes", async (account, minutes, status) => {
+    const email="expiry@example.com";
+    if(account==="returning")await seedSession({id:"returning-expiry",email,emailVerified:true,name:"Returning Builder"});
+    const issuedAt=Date.now();
+    vi.useFakeTimers({toFake:["Date"]});
+    vi.setSystemTime(issuedAt);
+    try {
+      expect((await request("/email-otp/send-verification-otp",{email,type:"sign-in"})).status).toBe(200);
+      expect(state.sent.at(-1)!.text).toContain("It expires in 15 minutes.");
+      const code=latestCode();
+      const stored=await state.pg!.query<{expiresAt:Date}>('SELECT "expiresAt" FROM hq_auth_verification WHERE identifier=$1',[`sign-in-otp-${email}`]);
+      expect(stored.rows[0].expiresAt.getTime()-issuedAt).toBe(15*60*1000);
+      vi.setSystemTime(issuedAt+minutes*60*1000);
+      const response=await request("/sign-in/email-otp",{email,otp:code,name:"Expiry Builder"});
+      expect(response.status).toBe(status);
+      if(status===200)expect((await response.json()).user.emailVerified).toBe(true);
+      else {
+        expect((await response.json()).code).toBe("OTP_EXPIRED");
+        expect(state.synced).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("signs an existing user in without duplicating accounts or changing their name", async () => {
@@ -210,13 +262,14 @@ describe("public HQ sign-in through Better Auth", () => {
     // Without the identity row a session is not a member: fail closed, and nothing is synced.
     expect(await currentMember()).toBeNull();
     // The gate ends the unusable session and tells the sign-in page why.
-    await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Fdashboard");
+    await expect(requireMember("/hq/dashboard")).rejects.toThrow("REDIRECT:/hq/login?error=identity_missing&next=%2Fhq%2Fdashboard");
     expect(state.synced).not.toHaveBeenCalled();
     expect(await (await request("/get-session", undefined, state.cookie)).json()).toBeNull();
     await state.pg!.query(`INSERT INTO hq_auth_session(id, "expiresAt", token, "userId") VALUES ('session-2', now() + interval '1 day', 'token-2', $1)`, [id]);
     state.cookie = await signedSessionCookie("token-2");
 
     await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id) VALUES ($1, '1234123412341234123', 7000000000123)`, [id]);
+    await state.pg!.query(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org','1234123412341234123','telegram',$1)`, [id]);
     expect(await currentMember()).toEqual({ id, email: null, name: "Telegram Builder" });
     expect((await requireMember("/hq/dashboard")).email).toBeNull();
     // The CRM sync is null-safe: a profile without an email, a People card without a contact, never the placeholder.
@@ -237,6 +290,7 @@ describe("public HQ sign-in through Better Auth", () => {
     const id = "telegram-only-unnamed";
     state.cookie = await seedSession({ id, email: "5555555555555555555@telegram.placeholder.invalid", emailVerified: false, name: "" });
     await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id, username) VALUES ($1, '5555555555555555555', 5550000000055, 'tg_unnamed')`, [id]);
+    await state.pg!.query(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org','5555555555555555555','telegram',$1)`, [id]);
     const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
     // Admitted by the identity row, not yet named: no People card until the profile step, as for an email account.
     expect(await currentMember()).toEqual({ id, email: null, name: "" });
@@ -274,6 +328,7 @@ describe("public HQ sign-in through Better Auth", () => {
     const id = "telegram-with-unverified-email";
     state.cookie = await seedSession({ id, email: "unverified-real@example.com", emailVerified: false, name: "Linked Builder" });
     await state.pg!.query(`INSERT INTO hq_auth_telegram_identity(user_id, provider_subject, telegram_user_id) VALUES ($1, '2222222222222222222', 4200000000042)`, [id]);
+    await state.pg!.query(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org','2222222222222222222','telegram',$1)`, [id]);
     const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
     expect(await currentMember()).toEqual({ id, email: null, name: "Linked Builder" });
     expect((await requireMember("/hq/dashboard")).email).toBeNull();

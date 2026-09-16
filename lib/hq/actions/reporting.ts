@@ -72,6 +72,8 @@ export type AddUpdateInput = {
   visibility?: "shared" | "sensitive";
   /** The period the composer was opened against, so a save that crossed midnight is caught rather than silently moved. */
   expectedPeriodId?: string;
+  /** An explicitly chosen past week. The service labels the saved entry late. */
+  periodId?: string;
 };
 
 export type AddUpdateResult =
@@ -89,6 +91,7 @@ export async function addReportingUpdate(input: AddUpdateInput): Promise<AddUpda
       body: bodySchema,
       visibility: visibilitySchema.optional(),
       expectedPeriodId: uuid.optional(),
+      periodId: uuid.optional(),
     })
     .safeParse(input);
   if (!parsed.success) return { ok: false, reason: "not_authorized", error: ADD_UPDATE_MESSAGES.not_authorized };

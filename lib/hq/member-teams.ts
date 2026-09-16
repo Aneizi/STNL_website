@@ -87,23 +87,12 @@ export async function memberProjectView(actor: MemberActor, projectId: string): 
   };
 }
 
-/**
- * The team page's read: the team as its verified member may see it, or, for
- * the account that submitted an import still awaiting or refused review, that
- * account's own claim with its status. The claim is read by account, like the
- * dashboard's import requests; it authorizes nothing on the project, so a
- * claimant can neither invite nor edit until the team is verified.
- */
+/** The imported team after its current membership or Captain access is authorized. */
 export async function memberTeamView(actor: MemberActor, projectId: string): Promise<MemberTeamView | null> {
-  const outcome = await decide(actor, { projectId, action: "read" });
-  if (outcome === "missing") return null;
-  const store = builderStore();
-  const team = outcome === "allowed" ? await store.teamById(projectId) : await store.ownClaim(actor.id, projectId);
+  if ((await decide(actor, { projectId, action: "read" })) !== "allowed") return null;
+  const team = await builderStore().teamById(projectId);
   if (!team) return null;
-  // Only the verified team sees its Captain, never the account watching its
-  // own still-pending or rejected claim: it is not confirmed as this
-  // project's team yet, so there is nothing for it to be "its own Captain".
-  const captain = outcome === "allowed" ? await currentCaptainOfProject(builderDatabase(), projectId) : null;
+  const captain = await currentCaptainOfProject(builderDatabase(), projectId);
   // The contact the Captain approved for the teams they hold, or null when
   // they have not set one. Phase 6 gave that field its writer (/hq/captain);
   // before it there was none, which is why it read null for everyone.

@@ -18,7 +18,7 @@
 .signOut:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
 .page .back { display:inline-block; margin-bottom:28px; color:#57534a; text-decoration:none; font-size:15px; }
 .page .back:hover { color:#16130f; text-decoration:underline; text-underline-offset:4px; }
-.main { max-width:660px; margin:auto; padding:64px 24px 100px; }
+.main { max-width:660px; margin:auto; padding:64px 24px 100px; overflow-wrap:anywhere; }
 .wide { max-width:940px; }
 .main h1 { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(48px,7vw,68px); line-height:1.02; font-weight:400; letter-spacing:-.02em; margin:0 0 22px; }
 .main h1 em { color:#ee5b23; font-weight:400; }
@@ -28,7 +28,7 @@
 .main p { margin:0 0 22px; color:#57534a; }
 .main a:focus-visible,.main button:focus-visible,.nav a:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
 .form { display:grid; gap:24px; margin-top:32px; }
-.field { display:grid; gap:9px; }
+.field { display:grid; gap:9px; min-width:0; }
 .field input,.field select,.field textarea { width:100%; min-height:50px; box-sizing:border-box; border:1px solid #b4ac9d; border-radius:6px; padding:12px 14px; color:#16130f; background:transparent; font:inherit; }
 .field input:focus,.field select:focus,.field textarea:focus { outline:2px solid #ee5b23; outline-offset:2px; }
 .field textarea { min-height:110px; resize:vertical; }
@@ -53,14 +53,35 @@
 .actions { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
 .card { border-top:1px solid rgba(22,19,15,.2); padding:30px 0; }
 .card:first-of-type { margin-top:24px; }
-.row { display:flex; gap:20px; justify-content:space-between; align-items:center; padding:18px 0; border-bottom:1px solid rgba(22,19,15,.12); }
+.row { display:flex; flex-wrap:wrap; gap:12px 20px; justify-content:space-between; align-items:center; padding:18px 0; border-bottom:1px solid rgba(22,19,15,.12); }
 .row small { display:block; font-size:15px; color:#57534a; }
 .row button { min-height:44px; padding:8px 14px; }
 .status { display:inline-block; color:#57534a; border:1px solid #b4ac9d; border-radius:100px; padding:5px 12px; font-size:15px; margin-bottom:18px; }
-.check { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+.check { display:flex; align-items:center; justify-content:space-between; gap:20px; min-height:44px; }
 .check input { flex-shrink:0; width:22px; height:22px; accent-color:#ee5b23; }
 .details { margin-top:30px; }
 .details summary { cursor:pointer; text-decoration:underline; text-underline-offset:4px; padding:10px 0; }
+.importHelpFooter { margin-top:28px; text-align:center; }
+.importHelpFooter button { min-height:44px; }
+.importHelpFooter button:disabled { opacity:.5; cursor:default; }
+.importHelpDialog { position:fixed; inset:0; width:min(480px,calc(100% - 32px)); max-height:calc(100dvh - 48px); box-sizing:border-box; margin:auto; padding:28px; overflow:auto; border:1px solid var(--line); border-radius:12px; background:var(--cream); color:var(--ink); font:inherit; box-shadow:0 24px 80px color-mix(in srgb,var(--ink) 20%,transparent); }
+.importHelpDialog::backdrop { background:color-mix(in srgb,var(--ink) 42%,transparent); }
+.importHelpHeader { display:flex; align-items:flex-start; gap:16px; }
+.importHelpHeader h2 { flex:1; margin:0 0 14px; }
+.importHelpClose { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:44px; height:44px; margin:-8px -12px 0 0; padding:0; border:0; border-radius:6px; background:transparent; color:var(--muted); font:inherit; font-size:28px; cursor:pointer; }
+.importHelpClose:hover { background:var(--line); color:var(--ink); }
+.importHelpDialog .form { margin-top:24px; }
 @media(max-width:960px) { .nav{order:1;flex:1 1 100%} }
+@media(pointer:coarse) { .page .nav a,.signOut{min-height:44px;align-content:center;box-sizing:border-box}.textButton{min-height:44px} }
 @media(max-width:540px) { .main{padding:44px 20px 72px}.header{padding:14px 20px;gap:4px 20px}.brand{font-size:16px}.navList{gap:0 16px}.nav a{font-size:14px}.accountName,.signOut{font-size:14px}.choice{padding:22px}.row{align-items:flex-start}.row .secondary{font-size:15px}.code{font-size:24px;letter-spacing:.1em} }
 @media(prefers-reduced-motion:reduce) { .button,.secondary,.choice,.nav a{transition:none} }
+/* The team workspace uses a small, fixed type scale and the full available width. */
+.workspacePage .nav a,.workspacePage .accountName,.workspacePage .signOut,.workspacePage .back { font-size:17px; min-height:44px; align-content:center; }
+.workspacePage .brand { font-size:17px; }
+.main.workspace { width:100%; max-width:none; box-sizing:border-box; padding:32px clamp(20px,4vw,64px) 64px; }
+.workspace .back { margin-bottom:24px; }
+.workspace h1 { font-family:inherit; font-size:32px; line-height:1.2; font-weight:600; letter-spacing:-.025em; margin:0; }
+.workspace h2,.workspace h3,.workspace h4 { font-family:inherit; font-size:20px; line-height:1.4; font-weight:600; letter-spacing:0; }
+.workspace small,.workspace .status,.workspace .row small,.workspace .row .secondary { font-size:17px; }
+.workspace p { max-width:72ch; }
+.workspace .choice strong { font-family:inherit; font-size:20px; font-weight:600; line-height:1.4; }

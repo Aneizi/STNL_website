@@ -23,6 +23,7 @@ import {
   type ReportingPeriodPlan,
   type ReportingSchedule,
 } from "./reporting";
+import { listSubmissionReconciliations, type SubmissionReconciliation } from "./submission";
 import { isTelegramBotConfigured } from "./telegram-bot-api";
 import type { CaptainLeaderboardView } from "./view-models";
 
@@ -313,6 +314,13 @@ export type ReportingAdminData = {
    * is a different sentence from "nobody was reachable".
    */
   botConfigured: boolean;
+  /**
+   * The closing reconciliation of the final period (phase 10): what HQ has
+   * been able to establish about each team's Colosseum submission after that
+   * period closed, including the ones it has not been able to establish at
+   * all. Empty until a submission period has closed.
+   */
+  reconciliations: SubmissionReconciliation[];
 };
 
 /** How many reminders the admin panel shows before the rest stay in the table. */
@@ -322,12 +330,13 @@ export async function getReportingAdminData(): Promise<ReportingAdminData> {
   await requireUser();
   const hackathon = await requireHackathon();
   const db = operatorQuery();
-  const [schedule, config, plan, statuses, reminders] = await Promise.all([
+  const [schedule, config, plan, statuses, reminders, reconciliations] = await Promise.all([
     readReportingSchedule(db, hackathon.id),
     readReportingConfig(db, hackathon.id),
     previewReportingPeriods(db, hackathon.id),
     reportingStatus(db, { hackathonId: hackathon.id }),
     listReminderDeliveries(db, { hackathonId: hackathon.id, limit: REMINDER_PAGE }),
+    listSubmissionReconciliations(db, { hackathonId: hackathon.id }),
   ]);
   return {
     hackathonId: hackathon.id,
@@ -339,6 +348,7 @@ export async function getReportingAdminData(): Promise<ReportingAdminData> {
     paused: statuses.filter((status) => status.paused).length,
     reminders,
     botConfigured: isTelegramBotConfigured(),
+    reconciliations,
   };
 }
 

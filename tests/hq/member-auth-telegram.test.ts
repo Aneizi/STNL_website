@@ -15,11 +15,11 @@ import { applyMigrations } from "./helpers/db";
 import { getTelegramIdentity } from "@/lib/hq/identity";
 import { getBotConsent } from "@/lib/hq/telegram-consent";
 import { hqTelegramIdentity, PLACEHOLDER_GUARDED_ENDPOINTS, RECENT_SESSION_ENDPOINTS, recordTelegramIntent } from "@/lib/hq/telegram-identity-plugin";
-import { TELEGRAM_ISSUER, TELEGRAM_REJECTION_LOG_PREFIX, telegramProvider } from "@/lib/hq/telegram-provider";
+import { parseTelegramClaims, TELEGRAM_ISSUER, TELEGRAM_REJECTION_LOG_PREFIX, telegramProvider } from "@/lib/hq/telegram-provider";
 
 const state = vi.hoisted(() => ({
   pg: null as PGlite | null,
-  sent: [] as Array<{ to: string; subject: string; text: string }>,
+  sent: [] as Array<{ to: string; subject: string; text: string; html?: string; attachments?: import("resend").Attachment[] }>,
   synced: vi.fn(),
   cookie: "",
   fetches: [] as string[],
@@ -70,7 +70,7 @@ vi.mock("pg", () => ({
 vi.mock("resend", () => ({
   Resend: class {
     emails = {
-      send: async (message: { to: string; subject: string; text: string }) => {
+      send: async (message: { to: string; subject: string; text: string; html?: string; attachments?: import("resend").Attachment[] }) => {
         state.sent.push(message);
         return { error: null, data: { id: "test-email" } };
       },
@@ -98,7 +98,7 @@ let otherKeys: { publicKey: CryptoKey; privateKey: CryptoKey };
 let requestNumber = 0;
 
 type TokenOverride = {
-  sub?: string; id?: number | null; nonce?: string | null; iss?: string; aud?: string;
+  sub?: string; id?: number | string | null; nonce?: string | null; iss?: string; aud?: string;
   iat?: number; exp?: number | string; key?: CryptoKey; kid?: string; name?: string | null;
 };
 
@@ -138,7 +138,7 @@ async function count(table: string) {
 }
 
 async function startSignIn(extra: Record<string, unknown> = {}) {
-  const response = await request("/sign-in/social", { provider: "telegram", callbackURL: "/hq/welcome", errorCallbackURL: "/hq/signin", disableRedirect: true, ...extra });
+  const response = await request("/sign-in/social", { provider: "telegram", callbackURL: "/hq/welcome", errorCallbackURL: "/hq/login", disableRedirect: true, ...extra });
   expect(response.status).toBe(200);
   const url = new URL((await response.json()).url);
   return { url, state: url.searchParams.get("state")!, nonce: url.searchParams.get("nonce")!, codeChallenge: url.searchParams.get("code_challenge")!, cookie: cookieHeader(response), setCookies: response.headers.getSetCookie() };
@@ -370,9 +370,48 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     // The gate then ends that session and sends the person to sign in again, saying why.
     await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
     expect(await currentMember()).toBeNull();
-    await expect(requireMember("/hq/welcome")).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Fwelcome");
+    await expect(requireMember("/hq/welcome")).rejects.toThrow("REDIRECT:/hq/login?error=identity_missing&next=%2Fhq%2Fwelcome");
     expect(await count("hq_auth_session")).toBe(0);
     expect(await (await request("/get-session", undefined, cookie)).json()).toBeNull();
+  });
+
+  it("accepts Telegram's string user id and preserves the same account across numeric and string claims", async () => {
+    let userId: string | undefined;
+    for (const id of [String(TELEGRAM_ID), TELEGRAM_ID, String(TELEGRAM_ID)]) {
+      const { response, session } = await signInWithTelegram({ id });
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toMatch(/\/hq\/welcome$/);
+      expect(session).toMatch(SESSION_COOKIE_LINE);
+      const authenticated = await (await request("/get-session", undefined, session!.split(";")[0])).json();
+      userId ??= authenticated.user.id;
+      expect(authenticated.user.id).toBe(userId);
+      expect((await state.pg!.query('SELECT "accountId", "userId" FROM hq_auth_account')).rows).toEqual([{ accountId: SUB, userId }]);
+      expect((await state.pg!.query("SELECT user_id, provider_subject, telegram_user_id::text AS telegram_user_id FROM hq_auth_telegram_identity")).rows).toEqual([
+        { user_id: userId, provider_subject: SUB, telegram_user_id: String(TELEGRAM_ID) },
+      ]);
+    }
+    expect(await count("hq_auth_user")).toBe(1);
+    expect(await count("hq_auth_session")).toBe(3);
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId!)]);
+  });
+
+  it("diagnoses an incomplete Telegram identity without logging private claim values", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { response, session } = await signInWithTelegram({ id: null });
+      expect(errorCode(response)).toBe("telegram_identity_incomplete");
+      expect(session).toBeNull();
+      expect(await count("hq_auth_user")).toBe(0);
+      expect(await count("hq_auth_account")).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const diagnostic = JSON.stringify(warn.mock.calls);
+      expect(diagnostic).toContain("hq-telegram-identity: incomplete identity");
+      for (const privateValue of [state.minted.at(-1)!, SUB, NAME, USERNAME, PICTURE, state.nonce, CLIENT_SECRET]) {
+        expect(diagnostic).not.toContain(privateValue);
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("refuses replayed, unbound, forged and stale callbacks", async () => {
@@ -879,6 +918,28 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await (await request("/get-session", undefined, telegram.session!.split(";")[0])).json()).user.id).not.toBe(userId);
   });
 
+  it("refuses a stale Telegram identity when unlink cleanup fails after its provider account was deleted", async () => {
+    const emailUser = await signInWithEmail("unlink-cleanup@example.com", "Unlink Cleanup");
+    expect((await linkTelegramTo(emailUser.cookie)).status).toBe(302);
+    const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
+    const { confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
+    expect(await confirmUnlinkTelegram()).toEqual({ ok: true, accountId });
+    await state.pg!.query("ALTER TABLE hq_audit_events ADD CONSTRAINT test_unlink_failure CHECK(kind <> 'identity.unlinked')");
+    try {
+      expect((await request("/unlink-account", { accountId }, emailUser.cookie)).status).toBe(200);
+      expect(await count("hq_auth_account")).toBe(0);
+      expect(await count("hq_auth_telegram_identity")).toBe(1);
+      const { hasTelegramIdentity, findTelegramIdentityByTelegramUserId } = await import("@/lib/hq/identity");
+      expect(await getTelegramIdentity(emailUser.user.id)).toBeNull();
+      expect(await hasTelegramIdentity(emailUser.user.id)).toBe(false);
+      expect(await findTelegramIdentityByTelegramUserId(String(TELEGRAM_ID))).toBeNull();
+      const { telegramMemberActor } = await import("@/lib/hq/actor");
+      expect(await telegramMemberActor(String(TELEGRAM_ID))).toBeNull();
+    } finally {
+      await state.pg!.query("ALTER TABLE hq_audit_events DROP CONSTRAINT test_unlink_failure");
+    }
+  });
+
   it("renders the account page from server data only, and ends a session whose identity row is missing", async () => {
     const telegram = await signInWithTelegram();
     const cookie = telegram.session!.split(";")[0];
@@ -911,7 +972,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     // The identity row never landed: the page ends the session and says why; the next Telegram sign-in repairs the row.
     state.cookie = cookie;
     await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
-    await expect(AccountPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Faccount");
+    await expect(AccountPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/hq/login?error=identity_missing&next=%2Fhq%2Faccount");
     expect(await (await request("/get-session", undefined, cookie)).json()).toBeNull();
     expect(await count("hq_auth_session")).toBe(1);
     const repaired = await signInWithTelegram();
@@ -921,7 +982,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     state.cookie = repaired.session!.split(";")[0];
     await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
     const { confirmLinkTelegram } = await import("@/lib/hq/actions/telegram");
-    await expect(confirmLinkTelegram()).rejects.toThrow("REDIRECT:/hq/signin?error=identity_missing&next=%2Fhq%2Faccount%2Fconnect-telegram");
+    await expect(confirmLinkTelegram()).rejects.toThrow("REDIRECT:/hq/login?error=identity_missing&next=%2Fhq%2Faccount%2Fconnect-telegram");
     expect(await (await request("/get-session", undefined, state.cookie)).json()).toBeNull();
   });
 
@@ -1042,7 +1103,11 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(state.sent).toHaveLength(1);
     expect(state.sent[0].to).toBe("recover@example.com");
     expect(state.sent[0].text).toContain("confirm this address");
+    expect(state.sent[0].text).toContain("It expires in 15 minutes.");
     const otp = state.sent[0].text.match(/\b\d{6}\b/)![0];
+    expect(state.sent[0].html).toContain(otp);
+    expect(state.sent[0].html).toContain("cid:superteam-nl-logo");
+    expect(state.sent[0].attachments).toEqual([expect.objectContaining({contentId:"superteam-nl-logo",contentType:"image/png"})]);
     const again = await request("/email-otp/request-email-change", { newEmail: "recover@example.com" }, cookie);
     expect(again.status).toBe(403);
 
@@ -1124,6 +1189,8 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(state.sent[1].text).toContain("contact Superteam NL");
     expect(state.sent[1].text).not.toContain("after@example.com");
     expect(state.sent[1].text).not.toMatch(/\b\d{6}\b/);
+    expect(state.sent[1].html).toBeUndefined();
+    expect(state.sent[1].attachments).toBeUndefined();
     expect((await state.pg!.query('SELECT id, email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ id: userId, email: "after@example.com", emailVerified: true }]);
     expect(await auditEvents()).toEqual([memberEvent("identity.email_changed", userId, { hadPreviousEmail: true })]);
     expect((await state.pg!.query("SELECT email FROM hq_builder_profiles")).rows).toEqual([{ email: "after@example.com" }]);
@@ -1186,7 +1253,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await guess("free@example.com", code)).body.code).toBe("INVALID_OTP");
     expect(await changeEmailRows()).toEqual([]);
 
-    // A code past its five minutes (the library's OTP_EXPIRED) answers the same as no code at all.
+    // A code past its fifteen minutes (the library's OTP_EXPIRED) answers the same as no code at all.
     await requestCode("expired@example.com");
     await state.pg!.query(`UPDATE hq_auth_verification SET "expiresAt" = now() - interval '1 minute' WHERE identifier LIKE 'change-email-otp-%'`);
     expect(await guess("expired@example.com", wrong)).toEqual(await guess("taken@example.com", wrong));
@@ -1369,5 +1436,28 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await state.pg!.query('SELECT "accountId" FROM hq_auth_account')).rows).toEqual([{ accountId: SUB }]);
     expect(await count("hq_auth_telegram_identity")).toBe(0);
     expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId)]);
+  });
+});
+
+describe("Telegram profile id normalization", () => {
+  const claims = { iss: ISSUER, aud: CLIENT_ID, sub: SUB, iat: 1_700_000_000, exp: 1_700_003_600 };
+
+  it.each([1, TELEGRAM_ID, Number.MAX_SAFE_INTEGER])("preserves numeric id %s and its decimal string without changing the OIDC subject", (id) => {
+    for (const value of [id, String(id)]) {
+      expect(parseTelegramClaims({ ...claims, id: value })).toMatchObject({ id, sub: SUB });
+    }
+  });
+
+  it.each([
+    ["missing", undefined], ["null", null], ["boolean", true], ["object", {}], ["array", [TELEGRAM_ID]],
+    ["empty string", ""], ["zero", 0], ["string zero", "0"], ["negative", -1], ["string negative", "-1"],
+    ["fraction", 1.5], ["string fraction", "1.5"], ["exponent", "1e3"], ["explicit sign", "+123"],
+    ["leading space", " 123"], ["trailing space", "123 "], ["leading zero", "0123"],
+    ["unsafe integer", Number.MAX_SAFE_INTEGER + 1], ["unsafe integer string", "9007199254740992"],
+    ["very long integer", "9".repeat(100)], ["NaN", Number.NaN], ["infinity", Number.POSITIVE_INFINITY],
+  ])("refuses %s without using the OIDC subject as the Telegram user id", (_label, id) => {
+    const parsed = parseTelegramClaims({ ...claims, id });
+    expect(parsed?.id).toBeUndefined();
+    expect(parsed?.sub).toBe(SUB);
   });
 });

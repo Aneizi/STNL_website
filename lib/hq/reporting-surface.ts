@@ -2,15 +2,31 @@ import "server-only";
 import type { MemberActor } from "./actor";
 import { builderDatabase, type BuilderQuery } from "./builder-db";
 import { listAssignments } from "./captains";
+import { submittedOnTime } from "./colosseum-snapshot";
 import { readCaptainContact, readTeamContacts } from "./reporting-contacts";
 import {
   readAuthorizedUpdates,
+  readCaptainUpdatePages,
+  readReportingConfig,
   readReportingSchedule,
   reportingStatus,
   type PeriodStatus,
   type ProjectReportingStatus,
   type ReportingEntryView,
 } from "./reporting";
+import {
+  isOpenSubmissionPeriod,
+  readSubmissionReconciliations,
+  readSubmissionSnapshots,
+  submissionDeadlineFor,
+  type ProjectSubmissionSnapshot,
+  type SubmissionReconciliation,
+} from "./submission";
+import {
+  materialRequirements,
+  submissionChecklist,
+  type ChecklistItem,
+} from "./submission-readiness";
 
 /**
  * What the two member reporting screens read, composed once here rather than
@@ -90,6 +106,13 @@ export type TeamReportingPanel = {
   nextCursor: string | null;
   /** The team's preferred contact, which its lead sets and its Captain reads. */
   teamContact: string | null;
+  /**
+   * The final period, once the edition has one. Present whether or not it is
+   * open: the plan keeps the submission detail visible after the period ends
+   * ("retain history and submission details"), and the screen decides how
+   * prominent it is from `submissionFocus.open`.
+   */
+  submissionFocus: SubmissionFocusView | null;
 };
 
 /**
@@ -101,20 +124,25 @@ export type TeamReportingPanel = {
  */
 export async function teamReportingPanel(
   actor: MemberActor,
-  input: { projectId: string; hackathonId: number },
+  input: { projectId: string; hackathonId: number; atMs?: number },
   db: BuilderQuery = builderDatabase(),
 ): Promise<TeamReportingPanel> {
+  const atMs = input.atMs ?? Date.now();
   const [schedule, statuses, page, contacts] = await Promise.all([
     readReportingSchedule(db, input.hackathonId),
-    reportingStatus(db, { hackathonId: input.hackathonId, projectIds: [input.projectId], includeHistory: true }),
-    readAuthorizedUpdates(actor, { projectId: input.projectId, hackathonId: input.hackathonId, limit: RECENT_UPDATES }),
+    reportingStatus(db, { hackathonId: input.hackathonId, projectIds: [input.projectId], atMs, includeHistory: true }),
+    readAuthorizedUpdates(actor, { projectId: input.projectId, hackathonId: input.hackathonId, limit: RECENT_UPDATES }, db),
     readTeamContacts(db, [input.projectId]),
   ]);
   const status = statuses[0];
+  const timezone = schedule?.timezone ?? "Europe/Amsterdam";
+  const focus = status
+    ? (await submissionFocusFor({ hackathonId: input.hackathonId, projectIds: [input.projectId], atMs, timezone, statuses }, db)).get(input.projectId) ?? null
+    : null;
   return {
     projectId: input.projectId,
     hackathonId: input.hackathonId,
-    timezone: schedule?.timezone ?? "Europe/Amsterdam",
+    timezone,
     enrolled: Boolean(status),
     paused: Boolean(status?.paused),
     current: status?.current ? toTeamPeriod(status.current) : null,
@@ -123,19 +151,13 @@ export async function teamReportingPanel(
     entries: page.entries,
     nextCursor: page.nextCursor,
     teamContact: contacts.get(input.projectId) ?? null,
+    submissionFocus: focus,
   };
 }
 
 /**
- * One of the account's own teams as the HQ home page shows it: whose week it
- * is, whether it is done and when it is due.
- *
- * The plan's login experience is "prompt for the weekly update", and until
- * this the prompt lived only on the team detail screen: someone who signed in
- * and stayed on the dashboard saw a verification badge and an Open team
- * button, and nothing at all about the update they owed. The same team-facing
- * week shape as everywhere else, so the home page cannot see more of a
- * Captain's sensitive notes than the team page does.
+ * The account's own project state for Home's attention indicators. The
+ * team-facing period reveals no entry counts or sensitive-note details.
  */
 export type MemberWeekSummary = {
   projectId: string;
@@ -147,6 +169,13 @@ export type MemberWeekSummary = {
   paused: boolean;
   current: TeamPeriodView | null;
   missedPeriods: number;
+  /** Only the facts needed to identify a remaining submission action. */
+  submission?: {
+    periodId: string;
+    open: boolean;
+    submissionStatus: SubmissionFocusView["submissionStatus"];
+    deadline: string;
+  } | null;
 };
 
 /**
@@ -157,6 +186,7 @@ export type MemberWeekSummary = {
 export async function memberWeekSummaries(
   projects: readonly { id: string; name: string; hackathonId: number }[],
   db: BuilderQuery = builderDatabase(),
+  atMs: number = Date.now(),
 ): Promise<MemberWeekSummary[]> {
   if (!projects.length) return [];
   const editions = [...new Set(projects.map((project) => project.hackathonId))];
@@ -164,14 +194,17 @@ export async function memberWeekSummaries(
     const ids = projects.filter((project) => project.hackathonId === hackathonId).map((project) => project.id);
     const [schedule, statuses] = await Promise.all([
       readReportingSchedule(db, hackathonId),
-      reportingStatus(db, { hackathonId, projectIds: ids }),
+      reportingStatus(db, { hackathonId, projectIds: ids, atMs, includeHistory: true }),
     ]);
-    return { hackathonId, timezone: schedule?.timezone ?? "Europe/Amsterdam", statuses };
+    const timezone = schedule?.timezone ?? "Europe/Amsterdam";
+    const submissions = await submissionFocusFor({ hackathonId, projectIds: ids, atMs, timezone, statuses }, db);
+    return { hackathonId, timezone, statuses, submissions };
   }));
   const byEdition = new Map(reads.map((read) => [read.hackathonId, read]));
   return projects.map((project) => {
     const read = byEdition.get(project.hackathonId);
     const status = read?.statuses.find((row) => row.projectId === project.id);
+    const submission = read?.submissions.get(project.id);
     return {
       projectId: project.id,
       projectName: project.name,
@@ -181,8 +214,157 @@ export async function memberWeekSummaries(
       paused: Boolean(status?.paused),
       current: status?.current ? toTeamPeriod(status.current) : null,
       missedPeriods: status?.missedPeriods ?? 0,
+      submission: submission ? {
+        periodId: submission.period.periodId,
+        open: submission.open,
+        submissionStatus: submission.submissionStatus,
+        deadline: submission.deadline,
+      } : null,
     };
   });
+}
+
+/**
+ * The final period as an authorized member sees it: the submission itself,
+ * the deadline it is judged against, the materials and how fresh the reading
+ * is.
+ *
+ * Built from the same three sources every other surface uses and no fourth
+ * one: the period from `reportingStatus`, the snapshot from
+ * `hq_project_onboarding` (whose `submission_status` only
+ * `interpretSubmission` ever writes), and the requirements plus the official
+ * deadline from `hq_reporting_config`, which an admin owns.
+ *
+ * `completedBySubmission` is derived from the project's OWN submission and
+ * nothing else. The period's `basis` would answer it directly and is
+ * deliberately not carried here, for the same reason `TeamPeriodView` leaves
+ * it out: `basis: "entry"` on a week a team can see no entries for would tell
+ * them a Captain wrote something they may not read. What a team's own
+ * submission status says about their own week gives nothing away.
+ */
+export type SubmissionFocusView = {
+  projectId: string;
+  hackathonId: number;
+  /** The submission period itself, whether it is open now or has ended. */
+  period: TeamPeriodView;
+  /** Whether that period is the one open at the instant this was built. */
+  open: boolean;
+  timezone: string;
+  /** The project on Colosseum, which is where a submission is actually made. */
+  projectUrl: string;
+  submissionStatus: SubmissionStatus;
+  submittedAt: string | null;
+  /** The instant a submission must beat: the edition's official deadline when one is recorded, else the period's own end. */
+  deadline: string;
+  /** Whether that deadline is Colosseum's own rather than HQ's window, so the screen can say which. */
+  deadlineIsOfficial: boolean;
+  /** Whether the recorded submission beat the deadline. Null while nothing has been established. */
+  onTime: boolean | null;
+  /** True when a confirmed, on-time submission is what satisfies this period for this project. */
+  completedBySubmission: boolean;
+  items: ChecklistItem[];
+  sourceStatus: ProjectSubmissionSnapshot["sourceStatus"];
+  sourceCheckedAt: string | null;
+  /**
+   * The closing reconciliation, once the period has closed. `pending` means
+   * HQ could not reach Colosseum at the close and has established nothing;
+   * the screen says exactly that rather than implying a failure to submit.
+   */
+  reconciliation: { state: "pending" | "resolved"; onTime: boolean | null; submissionStatus: SubmissionStatus | null } | null;
+};
+
+/** Colosseum's own signal, as phase 3's `interpretSubmission` wrote it. Re-exported nowhere; the surface types name it. */
+type SubmissionStatus = ProjectSubmissionSnapshot["submissionStatus"];
+
+/** The final-period view for one project, or null when the edition has no submission period or the project has no Colosseum source. */
+function toSubmissionFocus(input: {
+  projectId: string;
+  hackathonId: number;
+  timezone: string;
+  atMs: number;
+  period: PeriodStatus | undefined;
+  snapshot: ProjectSubmissionSnapshot | undefined;
+  config: { officialSubmissionDeadline: string | null; requiredMaterials: string[]; optionalMaterials: string[] };
+  reconciliation: SubmissionReconciliation | undefined;
+}): SubmissionFocusView | null {
+  const { period, snapshot } = input;
+  if (!period || period.mode !== "submission" || !snapshot) return null;
+  const deadline = submissionDeadlineFor(period, input.config.officialSubmissionDeadline);
+  const onTime = snapshot.submissionStatus === "submitted"
+    ? submittedOnTime(snapshot.submittedAt, deadline, input.config.officialSubmissionDeadline == null)
+    : null;
+  return {
+    projectId: input.projectId,
+    hackathonId: input.hackathonId,
+    period: toTeamPeriod(period),
+    open: isOpenSubmissionPeriod(period, input.atMs),
+    timezone: input.timezone,
+    projectUrl: snapshot.projectUrl,
+    submissionStatus: snapshot.submissionStatus,
+    submittedAt: snapshot.submittedAt,
+    deadline,
+    deadlineIsOfficial: input.config.officialSubmissionDeadline != null,
+    onTime,
+    completedBySubmission: snapshot.submissionStatus === "submitted" && onTime === true,
+    items: submissionChecklist({
+      links: snapshot.links,
+      requirements: materialRequirements(input.config),
+    }),
+    sourceStatus: snapshot.sourceStatus,
+    sourceCheckedAt: snapshot.sourceCheckedAt,
+    reconciliation: input.reconciliation
+      ? {
+        state: input.reconciliation.state,
+        onTime: input.reconciliation.onTime,
+        submissionStatus: input.reconciliation.submissionStatus,
+      }
+      : null,
+  };
+}
+
+/**
+ * The final-period views for a set of projects in one edition, in the same
+ * grouped shape the rest of this module uses: one configuration read, one
+ * snapshot read and one reconciliation read whatever the project count.
+ *
+ * The CALLER has already authorized every project id it passes. This is a
+ * composition over rows, not a decision, which is what lets the team page,
+ * the Captain board and the admin panel share it.
+ */
+export async function submissionFocusFor(
+  input: { hackathonId: number; projectIds: readonly string[]; atMs: number; timezone?: string; statuses?: readonly ProjectReportingStatus[] },
+  db: BuilderQuery = builderDatabase(),
+): Promise<Map<string, SubmissionFocusView>> {
+  const ids = [...new Set(input.projectIds)];
+  const views = new Map<string, SubmissionFocusView>();
+  if (!ids.length) return views;
+  const [statuses, config, snapshots, schedule] = await Promise.all([
+    input.statuses ?? reportingStatus(db, { hackathonId: input.hackathonId, projectIds: ids, atMs: input.atMs, includeHistory: true }),
+    readReportingConfig(db, input.hackathonId),
+    readSubmissionSnapshots(db, ids),
+    input.timezone ? Promise.resolve(null) : readReportingSchedule(db, input.hackathonId),
+  ]);
+  const timezone = input.timezone ?? schedule?.timezone ?? "Europe/Amsterdam";
+  const finalPeriod = statuses[0]?.history.find((period) => period.mode === "submission");
+  if (!finalPeriod) return views;
+  const reconciliations = new Map(
+    (await readSubmissionReconciliations(db, { projectIds: ids, periodId: finalPeriod.periodId }))
+      .map((row) => [row.projectId, row]),
+  );
+  for (const status of statuses) {
+    const view = toSubmissionFocus({
+      projectId: status.projectId,
+      hackathonId: input.hackathonId,
+      timezone,
+      atMs: input.atMs,
+      period: status.history.find((period) => period.mode === "submission"),
+      snapshot: snapshots.get(status.projectId),
+      config,
+      reconciliation: reconciliations.get(status.projectId),
+    });
+    if (view) views.set(status.projectId, view);
+  }
+  return views;
 }
 
 export type CaptainReportingCard = {
@@ -202,6 +384,8 @@ export type CaptainReportingCard = {
   entries: ReportingEntryView[];
   /** The next page's cursor, or null at the end. The card's Load more carries it back through `loadTeamUpdates`. */
   nextCursor: string | null;
+  /** The final period for this project, once the edition has one. Same shape the team sees, so the two cannot disagree. */
+  submissionFocus: SubmissionFocusView | null;
 };
 
 export type CaptainReportingBoard = {
@@ -218,14 +402,14 @@ export type CaptainReportingBoard = {
  *
  * `reportingStatus` is called once for the whole set, narrowed by
  * `projectIds`, never once per card. The latest update is one small query per
- * card, which is the audience decision itself: an entry list is the one read
- * whose result depends on who is asking, and a Captain holds a handful of
- * projects, not a page of them.
+ * board, with a per-project limit and current assignment/audience checks
+ * applied before any content is returned.
  */
 export async function captainReportingBoard(
   actor: MemberActor,
   hackathonId: number,
   db: BuilderQuery = builderDatabase(),
+  atMs: number = Date.now(),
 ): Promise<CaptainReportingBoard> {
   const [assignments, schedule, captainContact] = await Promise.all([
     listAssignments(db, { hackathonId, captainUserId: actor.id }),
@@ -236,17 +420,16 @@ export async function captainReportingBoard(
   if (!assignments.length) return { hackathonId, timezone, cards: [], captainContact };
 
   const projectIds = assignments.map((assignment) => assignment.projectId);
-  const [statuses, contacts] = await Promise.all([
-    reportingStatus(db, { hackathonId, projectIds, includeHistory: true }),
+  const [statuses, contacts, pages] = await Promise.all([
+    reportingStatus(db, { hackathonId, projectIds, atMs, includeHistory: true }),
     readTeamContacts(db, projectIds),
+    readCaptainUpdatePages(actor, { hackathonId, projectIds, limit: RECENT_UPDATES }, db),
   ]);
+  const focus = await submissionFocusFor({ hackathonId, projectIds, atMs, timezone, statuses }, db);
   const statusBy = new Map(statuses.map((status) => [status.projectId, status]));
-  const pages = await Promise.all(
-    projectIds.map((projectId) => readAuthorizedUpdates(actor, { projectId, hackathonId, limit: RECENT_UPDATES }, db)),
-  );
 
   const cards: CaptainReportingCard[] = [];
-  assignments.forEach((assignment, index) => {
+  assignments.forEach((assignment) => {
     const status = statusBy.get(assignment.projectId);
     // A project with no eligibility row is not in reporting yet, so it has no
     // weeks to show. The card still appears, built from the assignment's own
@@ -268,8 +451,9 @@ export async function captainReportingBoard(
       current: status?.current ? toTeamPeriod(status.current) : null,
       weeks: (status?.history ?? []).map(toTeamPeriod),
       teamContact: contacts.get(assignment.projectId) ?? null,
-      entries: pages[index].entries,
-      nextCursor: pages[index].nextCursor,
+      entries: pages.get(assignment.projectId)?.entries ?? [],
+      nextCursor: pages.get(assignment.projectId)?.nextCursor ?? null,
+      submissionFocus: focus.get(assignment.projectId) ?? null,
     });
   });
   return { hackathonId, timezone, cards, captainContact };

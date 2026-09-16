@@ -149,6 +149,6 @@ describe("the pieces the code forms share", () => {
     expect(renderToStaticMarkup(createElement(ResendCodeButton, { secondsLeft: 12, disabled: false, onClick: () => {} }))).toMatch(/<button type="button" disabled="">Resend in 12s<\/button>/);
     expect(renderToStaticMarkup(createElement(ResendCodeButton, { secondsLeft: 0, disabled: false, onClick: () => {} }))).toBe('<button type="button">Resend code</button>');
     expect(renderToStaticMarkup(createElement(ResendCodeButton, { secondsLeft: 0, disabled: true, onClick: () => {}, className: "textButton" }))).toMatch(/<button type="button" class="textButton" disabled="">Resend code<\/button>/);
-    expect(CODE_SENT_COPY).toBe("Code sent. It expires in 5 minutes.");
+    expect(CODE_SENT_COPY).toBe("Code sent. It expires in 15 minutes.");
   });
 });

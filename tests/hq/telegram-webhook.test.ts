@@ -186,7 +186,7 @@ describe("deduplication", () => {
       sendMessage: async () => {
         // While this is in flight, a redelivery arrives.
         const overlapping = await handle(post(update(13)));
-        expect(overlapping.body).toMatchObject({ outcome: "in_progress" });
+        expect(overlapping.status).toBe(503);
         return { ok: true, messageId: 1 };
       },
       async answerCallbackQuery() {},

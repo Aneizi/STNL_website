@@ -3,6 +3,8 @@
 import { useEffect, useState, useTransition } from "react";
 import { showToast } from "@/components/hq/toast";
 import {
+  addAdminReportingUpdate,
+  editAdminReportingUpdate,
   correctReportingOutcome,
   enableProjectReporting,
   loadEntryRevisions,
@@ -13,15 +15,16 @@ import {
   type ProjectReportingDetail,
 } from "@/lib/hq/actions/reporting-admin";
 import type { CaptainReach } from "@/lib/hq/builder-admin-queries";
+import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtWhen } from "@/lib/hq/format";
-import type { PeriodOutcome, ProjectReportingStatus, ReportingRevision } from "@/lib/hq/reporting";
-import { missedLabel, periodRangeLabel, statusLabel } from "@/lib/hq/reporting-view";
+import type { PeriodOutcome, ProjectReportingStatus, ReportingEntryView, ReportingPeriod, ReportingRevision } from "@/lib/hq/reporting";
+import { mergeUpdatePages, missedLabel, periodRangeLabel, statusLabel } from "@/lib/hq/reporting-view";
 
 /**
  * The Projects detail panel's weekly reporting block: every week, every
  * update including the sensitive and the removed ones, the saved versions
- * behind any update, and the four admin controls (add to reporting, pause,
- * remove an update, correct a recorded week).
+ * behind any update, and admin controls to enroll/pause reporting, create,
+ * edit or remove updates, and correct a recorded week.
  *
  * Loaded when the row is opened rather than for every row on the board: the
  * board itself already carries each project's week from `reportingStatus`,
@@ -46,6 +49,7 @@ const smallButton: React.CSSProperties = {
   fontWeight: 600,
   background: "var(--fill-3)",
   color: "var(--accent-deep)",
+  minHeight: 40,
 };
 
 const smallField: React.CSSProperties = {
@@ -57,6 +61,103 @@ const smallField: React.CSSProperties = {
   color: "var(--label-1)",
   fontSize: 13,
 };
+
+/** One composer for an operator's new update and corrections to saved text. */
+export function AdminUpdateForm({ projectId, detail, entry, onDone, onCancel }: {
+  projectId: string;
+  detail: Pick<ProjectReportingDetail, "current" | "history">;
+  entry?: ReportingEntryView;
+  onDone: () => void;
+  onCancel?: () => void;
+}) {
+  const past = detail.history.filter(period => period.closed);
+  const [selection, setSelection] = useState({ periodId: detail.current?.periodId ?? past[0]?.periodId ?? "", late: !detail.current });
+  const { periodId, late } = selection;
+  // Refreshing the list must not silently bless an old draft against a new
+  // version, or change its audience. Only a conflict response advances this.
+  const [draftBase] = useState({ version: entry?.version ?? 1, visibility: entry?.visibility ?? "shared" });
+  const [body, setBody] = useState(entry?.body ?? "");
+  const [visibility, setVisibility] = useState(entry?.visibility ?? "shared");
+  const [confirmAudience, setConfirmAudience] = useState(false);
+  const [conflict, setConflict] = useState<ReportingEntryView | null>(null);
+  const [movedTo, setMovedTo] = useState<ReportingPeriod | null>(null);
+  const [error, setError] = useState("");
+  const [pending, start] = useTransition();
+  const selectedClosedPeriod = !entry && !late ? past.find(period => period.periodId === periodId) : null;
+  const sharing = (conflict ?? draftBase).visibility === "sensitive" && visibility === "shared";
+
+  return (
+    <form style={{ display: "grid", gap: 8, margin: "10px 0", fontSize: 13 }} onSubmit={event => {
+      event.preventDefault();
+      start(async () => {
+        setError("");
+        try {
+          if (entry) {
+            const result = await editAdminReportingUpdate({
+              entryId: entry.id, body, visibility,
+              expectedVersion: (conflict ?? draftBase).version,
+              confirmAudienceChange: confirmAudience || undefined,
+            });
+            if (result.ok) { onDone(); return; }
+            setError(result.error);
+            if (result.reason === "conflict") { setConflict(result.current); setConfirmAudience(false); }
+          } else {
+            const result = await addAdminReportingUpdate({ projectId, body, visibility: "shared", ...(late ? { periodId } : { expectedPeriodId: periodId }) });
+            if (result.ok) { setBody(""); onDone(); return; }
+            setError(result.error);
+            if (result.reason === "period_changed") setMovedTo(result.currentPeriod);
+          }
+        } catch {
+          setError("The update could not be saved. Your text is still here; try again.");
+        }
+      });
+    }}>
+      {!entry && <label style={{ display: "grid", gap: 4 }}>Reporting week
+        <select style={smallField} value={periodId} onChange={event => {
+          setSelection({ periodId: event.target.value, late: past.some(period => period.periodId === event.target.value) });
+          setMovedTo(null);
+          setError("");
+        }} disabled={pending} required>
+          {!periodId && <option value="">No reporting week available</option>}
+          {detail.current && <option value={detail.current.periodId}>Week {detail.current.periodSequence}: {periodRangeLabel(detail.current.startDate, detail.current.endDate)} (open)</option>}
+          {movedTo && movedTo.id !== detail.current?.periodId && <option value={movedTo.id}>Week {movedTo.sequence}: {periodRangeLabel(movedTo.startDate, movedTo.endDate)} (open now)</option>}
+          {past.map(period => <option key={period.periodId} value={period.periodId}>Week {period.periodSequence}: {periodRangeLabel(period.startDate, period.endDate)} (late update)</option>)}
+        </select>
+      </label>}
+      {selectedClosedPeriod && <div role="status">
+        Week {selectedClosedPeriod.periodSequence} ended while this draft was open. Choose the current week above, or confirm it belongs to the previous week.
+        <button type="button" style={{ ...smallButton, marginTop: 6 }} disabled={pending} onClick={() => { setSelection({ periodId, late: true }); setMovedTo(null); setError(""); }}>
+          Keep it in week {selectedClosedPeriod.periodSequence} as a late update
+        </button>
+      </div>}
+      <label style={{ display: "grid", gap: 4 }}>{entry ? "Correct this update" : "Add an update"}
+        <textarea style={{ ...smallField, resize: "vertical" }} rows={5} maxLength={4000} required value={body} onChange={event => setBody(event.target.value)} disabled={pending} />
+      </label>
+      {entry && <label style={{ display: "flex", gap: 8, alignItems: "center", minHeight: 40 }}>
+        <input type="checkbox" checked={visibility === "sensitive"} disabled={pending} onChange={event => { setVisibility(event.target.checked ? "sensitive" : "shared"); setConfirmAudience(false); }} />
+        Sensitive: only the original author and admins can read this note.
+      </label>}
+      {sharing && <label style={{ display: "flex", gap: 8, alignItems: "center", minHeight: 40 }}>
+        <input type="checkbox" checked={confirmAudience} required disabled={pending} onChange={event => setConfirmAudience(event.target.checked)} />
+        I confirm the team and its assigned Captain can read this note from now on.
+      </label>}
+      {late && !entry && <p style={{ margin: 0 }}>This late update stays with the selected week and does not erase a missed week.</p>}
+      {conflict && <section aria-live="polite" style={{ border: "1px solid var(--sep)", padding: 10 }}>
+        <strong>Saved now, version {conflict.version}</strong>
+        <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{conflict.body}</p>
+        <p>Your text is still above. Review this version before saving your correction again.</p>
+      </section>}
+      {movedTo && movedTo.id !== detail.current?.periodId && !entry && <p role="status" style={{ margin: 0 }}>The open week changed. Choose week {movedTo.sequence} above if this update belongs there; your text is still here.</p>}
+      {error && <p role="alert" style={{ margin: 0, color: "var(--red)" }}>{error}</p>}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <button style={smallButton} disabled={pending || !body.trim() || (!entry && !periodId) || Boolean(selectedClosedPeriod) || (sharing && !confirmAudience)}>
+          {pending ? "Saving…" : entry ? conflict ? "Save my correction anyway" : "Save correction" : late ? "Add late update" : "Add update"}
+        </button>
+        {onCancel && <button type="button" style={smallButton} disabled={pending} onClick={onCancel}>Cancel</button>}
+      </div>
+    </form>
+  );
+}
 
 /**
  * How reachable the assigned Captain is, on separate lines because these are
@@ -88,26 +189,30 @@ function Revisions({ entryId }: { entryId: string }) {
   const [revisions, setRevisions] = useState<ReportingRevision[] | null>(null);
   const [after, setAfter] = useState<number | null>(null);
   const [pending, start] = useTransition();
+  const [error, setError] = useState("");
 
   const load = (from: number) =>
     start(async () => {
-      const result = await loadEntryRevisions(entryId, from);
-      if (!result.ok) {
-        showToast(result.error);
-        return;
+      setError("");
+      try {
+        const result = await loadEntryRevisions(entryId, from);
+        if (!result.ok) { setError(result.error); return; }
+        setRevisions([...(from ? revisions ?? [] : []), ...result.revisions]);
+        setAfter(result.nextAfterVersion);
+      } catch {
+        setError("Saved versions could not be loaded. Try again.");
       }
-      setRevisions([...(from ? revisions ?? [] : []), ...result.revisions]);
-      setAfter(result.nextAfterVersion);
     });
 
   if (revisions) {
     return (
       <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0 }}>
+        {error && <li role="alert" style={{ color: "var(--red)", fontSize: 12 }}>{error}</li>}
         {revisions.map((revision) => (
           <li key={revision.version} style={{ fontSize: 12, color: "var(--label-2)", padding: "4px 0", borderTop: "1px solid var(--sep)" }}>
             <strong>Version {revision.version}</strong>, {revision.editorName}, {revision.createdAt.slice(0, 10)}
             {revision.visibility === "sensitive" ? ", sensitive" : ""}
-            <div style={{ whiteSpace: "pre-wrap", color: "var(--label-1)" }}>{revision.body}</div>
+            <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--label-1)" }}>{revision.body}</div>
           </li>
         ))}
         {revisions.length === 0 && <li style={{ fontSize: 12, color: "var(--label-3)" }}>No saved versions.</li>}
@@ -122,9 +227,12 @@ function Revisions({ entryId }: { entryId: string }) {
     );
   }
   return (
+    <>
+    {error && <p role="alert" style={{ color: "var(--red)", fontSize: 12 }}>{error}</p>}
     <button type="button" style={{ ...smallButton, marginTop: 6 }} disabled={pending} onClick={() => load(0)}>
       {pending ? "Loading…" : "Saved versions"}
     </button>
+    </>
   );
 }
 
@@ -134,7 +242,7 @@ function VoidUpdate({ entryId, onDone }: { entryId: string; onDone: () => void }
   const [pending, start] = useTransition();
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-      <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why it is being removed" style={{ ...smallField, flex: 1, minWidth: 160 }} />
+      <input aria-label="Why this update is being removed" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why it is being removed" style={{ ...smallField, flex: 1, minWidth: 160 }} />
       <button
         type="button"
         style={smallButton}
@@ -160,7 +268,7 @@ function CorrectOutcome({ periodId, projectId, outcome, onDone }: { periodId: st
   const effective = outcome.correctedCompleted ?? outcome.completed;
   return (
     <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
-      <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why this week is being corrected" style={{ ...smallField, flex: 1, minWidth: 160 }} />
+      <input aria-label="Why this week is being corrected" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Why this week is being corrected" style={{ ...smallField, flex: 1, minWidth: 160 }} />
       <button
         type="button"
         style={smallButton}
@@ -195,18 +303,22 @@ export function ProjectReportingPanel({
   reach: CaptainReach | undefined;
   timezone: string;
 }) {
-  const [detail, setDetail] = useState<ProjectReportingDetail | null>(null);
+  const [loadedDetail, setDetail] = useState<ProjectReportingDetail | null>(null);
+  const detail = loadedDetail?.projectId === projectId ? loadedDetail : null;
   const [error, setError] = useState("");
   const [reload, setReload] = useState(0);
   const [pending, start] = useTransition();
   const [more, startMore] = useTransition();
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   useEffect(() => {
     let live = true;
     loadProjectReporting(projectId).then((result) => {
       if (!live) return;
-      if (result.ok) setDetail(result.detail);
+      if (result.ok) { setDetail(result.detail); setError(""); }
       else setError(result.error);
+    }).catch(() => {
+      if (live) setError("Reporting could not be loaded. Try again.");
     });
     return () => {
       live = false;
@@ -218,19 +330,20 @@ export function ProjectReportingPanel({
   // "the newest fifty".
   const loadMoreUpdates = (cursor: string) =>
     startMore(async () => {
-      const result = await loadMoreProjectUpdates({ projectId, cursor });
-      if (!result.ok) {
-        showToast(result.error);
-        return;
+      try {
+        const result = await loadMoreProjectUpdates({ projectId, cursor });
+        if (!result.ok) { showToast(result.error); return; }
+        setDetail((current) =>
+          current?.projectId === projectId ? { ...current, entries: mergeUpdatePages(current.entries, result.entries), entriesCursor: result.nextCursor } : current,
+        );
+      } catch {
+        showToast("Older updates could not be loaded. Try again.");
       }
-      setDetail((current) =>
-        current ? { ...current, entries: [...current.entries, ...result.entries], entriesCursor: result.nextCursor } : current,
-      );
     });
 
   const refresh = () => setReload((value) => value + 1);
   const outcomeFor = (periodId: string) => detail?.outcomes.find((outcome) => outcome.periodId === periodId);
-  const missed = missedLabel(status?.missedPeriods ?? detail?.missedPeriods ?? 0);
+  const missed = missedLabel(detail?.missedPeriods ?? status?.missedPeriods ?? 0);
 
   return (
     // Its own full-width row under the three columns above: the weeks and the
@@ -243,7 +356,7 @@ export function ProjectReportingPanel({
       </div>
 
       {!detail && !error && <div style={{ fontSize: 13, color: "var(--label-3)" }}>Loading…</div>}
-      {error && <div style={{ fontSize: 13, color: "var(--red)" }}>{error}</div>}
+      {error && <div role="alert" style={{ fontSize: 13, color: "var(--red)" }}>{error} <button type="button" style={smallButton} onClick={refresh}>Retry</button></div>}
 
       {detail && !detail.enrolled && (
         <>
@@ -263,6 +376,35 @@ export function ProjectReportingPanel({
             {pending ? "Adding…" : "Add to weekly reporting"}
           </button>
         </>
+      )}
+
+      {/* Colosseum's own signal, beside the week and never mixed into it.
+          Submitted/Not submitted and Updated/Not updated are separate
+          vocabularies, which is why they are separate lines. */}
+      {detail?.submission && (
+        <div style={{ fontSize: 13, color: "var(--label-2)", marginBottom: 8, lineHeight: 1.5 }}>
+          <div>
+            Colosseum: {SUBMISSION_LABELS[detail.submission.submissionStatus]}
+            {detail.submission.submittedAt ? `, submitted ${detail.submission.submittedAt.slice(0, 10)}` : ""}
+          </div>
+          <div>
+            {detail.submission.sourceCheckedAt
+              ? `Last read ${fmtWhen(detail.submission.sourceCheckedAt, timezone)}.`
+              : "Never read from Colosseum."}
+            {detail.submission.sourceStatus === "error" ? " The last check did not get through, so this is the last thing we knew." : ""}
+          </div>
+          {detail.reconciliations.map((row) => (
+            <div key={row.periodId}>
+              {row.state === "pending"
+                ? `Final period: not established yet, ${row.attempts} ${row.attempts === 1 ? "attempt" : "attempts"} so far. Nothing recorded against the team.`
+                : row.submissionStatus === "submitted"
+                  ? row.onTime
+                    ? `Final period: submitted on time.${row.outcomeCorrected ? " The recorded period was corrected, with an audit event." : ""}`
+                    : "Final period: submitted after the deadline. The recorded period is unchanged."
+                  : "Final period: Colosseum has no submission for this team."}
+            </div>
+          ))}
+        </div>
       )}
 
       {detail?.enrolled && (
@@ -290,7 +432,7 @@ export function ProjectReportingPanel({
             {detail.paused ? "Resume weekly reporting" : "Pause weekly reporting"}
           </button>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(min(100%,280px),1fr))", gap: 20 }}>
           <div>
           <div style={{ ...microLabel, marginTop: 10, marginBottom: 6 }}>Weeks</div>
           {detail.history.length === 0 && <div style={{ fontSize: 13, color: "var(--label-3)" }}>No weeks are stored for this hackathon yet.</div>}
@@ -319,6 +461,7 @@ export function ProjectReportingPanel({
           </div>
           <div>
           <div style={{ ...microLabel, marginTop: 10, marginBottom: 6 }}>Updates</div>
+          <AdminUpdateForm key={projectId} projectId={projectId} detail={detail} onDone={refresh} />
           {detail.entries.length === 0 && <div style={{ fontSize: 13, color: "var(--label-3)" }}>No updates yet.</div>}
           {detail.entries.map((entry) => (
             <div key={entry.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--sep)" }}>
@@ -329,8 +472,11 @@ export function ProjectReportingPanel({
                 {entry.late ? ", late" : ""}
                 {entry.voided ? ", removed" : ""}
               </div>
-              <div style={{ fontSize: 13, whiteSpace: "pre-wrap", marginTop: 2, color: entry.voided ? "var(--label-3)" : "var(--label-1)" }}>{entry.body}</div>
+              <div style={{ fontSize: 13, whiteSpace: "pre-wrap", overflowWrap: "anywhere", marginTop: 2, color: entry.voided ? "var(--label-3)" : "var(--label-1)" }}>{entry.body}</div>
               <Revisions entryId={entry.id} />
+              {!entry.voided && (editingId === entry.id
+                ? <AdminUpdateForm key={entry.id} projectId={projectId} detail={detail} entry={entry} onCancel={() => setEditingId(null)} onDone={() => { setEditingId(null); refresh(); }} />
+                : <button type="button" style={{ ...smallButton, marginLeft: 8 }} onClick={() => setEditingId(entry.id)}>Edit update</button>)}
               {!entry.voided && <VoidUpdate entryId={entry.id} onDone={refresh} />}
             </div>
           ))}

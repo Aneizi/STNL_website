@@ -1,4 +1,5 @@
 import "server-only";
+import type { ColosseumFetch } from "@/lib/colosseum-api";
 import type { Actor } from "./actor";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { HQ_JOBS_AUDIENCE } from "./github-actions-auth";
@@ -13,6 +14,13 @@ import {
   toPeriod,
   type ReportingPeriod,
 } from "./reporting";
+import {
+  openSubmissionReconciliations,
+  reconcileSubmissions,
+  refreshDueSubmissions,
+  type ReconcileSummary,
+  type SubmissionRefreshSummary,
+} from "./submission";
 import { isTelegramBotConfigured, telegramBotConfig, telegramSender, type TelegramSender } from "./telegram-bot-api";
 import {
   createBotAction,
@@ -24,6 +32,7 @@ import {
   type PurgeResult,
 } from "./telegram-bot-store";
 import { inlineKeyboard, openHqButton, reminderMessage, LABELS, type Keyboard } from "./telegram-bot-view";
+import { activeTelegramIdentitySql } from "./telegram-identity-sql";
 
 /**
  * The job runner (contracts.md's "Job runner" row): due Wednesday reminders,
@@ -77,20 +86,10 @@ export const REMINDER_RETENTION_MS = 180 * 24 * 60 * 60_000;
 const FLUSH_BATCH = 25;
 /** The hard ceiling on one pass, whatever the clock says. */
 const MAX_FLUSH_BATCHES = 8;
-/**
- * How long one pass may spend sending before it stops and leaves the rest for
- * the next one.
- *
- * The endpoint declares `maxDuration = 60`, and every send carries its own
- * 8 second transport timeout, so a pass that took the batch ceiling literally
- * could attempt two hundred sequential sends and be killed halfway through.
- * Being killed is survivable, because a claimed row is released when its
- * claim expires and nothing is lost, but it wastes the invocation and delays
- * every remaining message by a whole scheduler interval. Stopping short on
- * purpose is better: the queue is drained by the next pass, fifteen minutes
- * later at worst, and each pass finishes cleanly.
- */
-const SEND_BUDGET_MS = 40_000;
+/** Delivery shares the route's time with submission refresh and reconciliation. */
+const SEND_BUDGET_MS = 20_000;
+/** Reserve the route's last five seconds for recording results and responding. */
+const JOB_BUDGET_MS = 55_000;
 
 /** Re-exported so a caller reads the vocabulary from the module it imports. Defined beside the check that produces it. */
 export type { ReminderSkipReason };
@@ -177,7 +176,7 @@ async function botReachFailure(tx: BuilderQuery, userId: string): Promise<Remind
             i.user_id IS NOT NULL AS has_identity, i.telegram_user_id::text AS telegram_user_id
      FROM hq_builder_profiles b
      LEFT JOIN hq_telegram_bot_consent c ON c.user_id = b.id
-     LEFT JOIN hq_auth_telegram_identity i ON i.user_id = b.id
+     LEFT JOIN hq_auth_telegram_identity i ON i.user_id = b.id AND ${activeTelegramIdentitySql()}
      WHERE b.id = $1`,
     [userId],
   );
@@ -252,7 +251,7 @@ export async function prepareReminder(
 
     // `created_at` is written from the JOB'S clock, not the database's. It is
     // the left-hand side of the staleness comparison in
-    // `expireStaleReminders`, whose right-hand side is the job's clock too, so
+    // the retention sweep, whose right-hand side is the job's clock too, so
     // writing `now()` here would compare two different readings and make the
     // answer depend on how far apart the application server and the database
     // happen to be.
@@ -298,7 +297,7 @@ export async function prepareReminder(
     // press it.
     const action = await createBotAction(
       tx,
-      { userId: input.captainUserId, chatId: chat.chatId, kind: "compose.page", page: 0, hackathonId: input.hackathonId },
+      { userId: input.captainUserId, chatId: chat.chatId, kind: "compose.page", page: 0, hackathonId: input.hackathonId, expiresAt: period.endsAt },
       atMs,
     );
     const keyboard: Keyboard = [
@@ -358,6 +357,7 @@ export async function expireEndedReminders(db: BuilderQuery, atMs: number = Date
      JOIN hq_reporting_periods p ON p.id = d.period_id
      WHERE o.id = d.outgoing_id AND o.state = 'queued' AND d.state = 'queued'
        AND (p.ends_at <= $1::timestamptz OR p.closed_at IS NOT NULL)
+       AND (o.claim_expires_at IS NULL OR o.claim_expires_at <= $1::timestamptz)
      RETURNING o.id::text AS id`,
     [new Date(atMs).toISOString()],
   );
@@ -432,8 +432,8 @@ export type ClosedPeriod = {
  */
 export async function closeDuePeriods(
   db: BuilderDatabase | BuilderQuery,
-  input: { atMs?: number; hackathonId?: number } = {},
-): Promise<{ closed: ClosedPeriod[] }> {
+  input: { atMs?: number; hackathonId?: number; deadlineMs?: number } = {},
+): Promise<{ closed: ClosedPeriod[]; reconciliationsOpened: number }> {
   const atMs = input.atMs ?? Date.now();
   const values: unknown[] = [new Date(atMs).toISOString()];
   let edition = "";
@@ -450,6 +450,7 @@ export async function closeDuePeriods(
   const actor: Actor = { kind: "job", audience: HQ_JOBS_AUDIENCE };
   const closed: ClosedPeriod[] = [];
   for (const row of rows) {
+    if (input.deadlineMs != null && Date.now() >= input.deadlineMs) break;
     const period = toPeriod(row);
     const result = await closePeriod(db, { periodId: period.id, actor, atMs });
     // `alreadyClosed` means another pass got there first; its outcomes are
@@ -458,7 +459,17 @@ export async function closeDuePeriods(
     if (!result.ok || result.alreadyClosed) continue;
     closed.push({ periodId: period.id, hackathonId: period.hackathonId, sequence: period.sequence, completed: result.completed, missed: result.missed });
   }
-  return { closed };
+  // Phase 10: every closed SUBMISSION period owes one reconciliation per
+  // accountable imported project, so that evidence arriving later has
+  // somewhere to land. Deliberately AFTER the loop and over the stored
+  // outcomes rather than inside it: closing and opening are separate
+  // statements, and a pass that died between them would otherwise leave a
+  // closed final period with nothing tracking its unverified submissions
+  // forever. Written as a catch-up, it repairs itself on the next pass.
+  const reconciliationsOpened = await openSubmissionReconciliations(db, {
+    ...(input.hackathonId != null ? { hackathonId: input.hackathonId } : {}),
+  });
+  return { closed, reconciliationsOpened };
 }
 
 /** One reminder as an admin reads it. Names, counts and outcomes; never a project id and never any update text. */
@@ -559,7 +570,14 @@ export type JobRunSummary = {
    * stay queued for a pass that does. `stoppedOnBudget` means the pass ran
    * out of its sending budget with work left, which the next pass picks up.
    */
-  delivery: (FlushResult & { stoppedOnBudget?: boolean }) | null;
+  delivery: FlushResult | null;
+  /**
+   * Phase 10's final-period work: the bounded staleness refresh (null unless
+   * an admin configured an interval and a submission period is open) and the
+   * closing reconciliation. Both talk to Colosseum, so both are bounded by a
+   * batch AND by a time budget, and both are safe to run at any frequency.
+   */
+  submissions: { refreshed: SubmissionRefreshSummary; reconciled: ReconcileSummary; reconciliationsOpened: number };
   purged: PurgeResult & { reminders: number };
 };
 
@@ -587,19 +605,23 @@ export async function runDueWork(
     now?: number;
     hqOrigin?: string | null;
     hackathonId?: number;
+    /** The Colosseum transport for phase 10's submission work. Omit to use the runtime's own `fetch`. */
+    colosseumFetch?: ColosseumFetch;
   } = {},
 ): Promise<JobRunSummary> {
+  const deadlineMs = Date.now() + JOB_BUDGET_MS;
   const db = options.db ?? builderDatabase();
   const now = options.now ?? Date.now();
   const hqOrigin = options.hqOrigin !== undefined ? options.hqOrigin : memberAuthOrigin();
 
-  const closures = await closeDuePeriods(db, { atMs: now, ...(options.hackathonId != null ? { hackathonId: options.hackathonId } : {}) });
+  const closures = await closeDuePeriods(db, { atMs: now, deadlineMs, ...(options.hackathonId != null ? { hackathonId: options.hackathonId } : {}) });
 
   const due = await dueReminders(db, { atMs: now, ...(options.hackathonId != null ? { hackathonId: options.hackathonId } : {}) });
   let queued = 0;
   let skipped = 0;
   let alreadyRecorded = 0;
   for (const reminder of due) {
+    if (Date.now() >= deadlineMs) break;
     const result = await prepareReminder(db, {
       captainUserId: reminder.captainUserId,
       hackathonId: reminder.hackathonId,
@@ -615,17 +637,18 @@ export async function runDueWork(
 
   const expired = await expireEndedReminders(db, now);
 
-  let delivery: (FlushResult & { stoppedOnBudget?: boolean }) | null = null;
+  let delivery: FlushResult | null = null;
   const sender = options.sender !== undefined ? options.sender : isTelegramBotConfigured() ? telegramSender(telegramBotConfig()!) : null;
   if (sender) {
     delivery = { sent: 0, failed: 0, retrying: 0, skipped: 0 };
     // The wall clock, not the injected `now`: the budget is about how long
     // this invocation has actually been running, which a fixed test instant
     // says nothing about.
-    const began = Date.now();
+    const sendDeadlineMs = Math.min(deadlineMs, Date.now() + SEND_BUDGET_MS);
     for (let batch = 0; batch < MAX_FLUSH_BATCHES; batch += 1) {
       const result = await flushBotMessages(db, sender, {
         limit: FLUSH_BATCH,
+        deadlineMs: sendDeadlineMs,
         // Only forward a caller-supplied instant. Left to itself,
         // `flushBotMessages` reads the clock per message, which is what makes
         // the dispatch check current rather than as old as this pass.
@@ -635,13 +658,30 @@ export async function runDueWork(
       delivery.failed += result.failed;
       delivery.retrying += result.retrying;
       delivery.skipped += result.skipped;
-      if (result.sent + result.failed + result.retrying + result.skipped < FLUSH_BATCH) break;
-      if (Date.now() - began >= SEND_BUDGET_MS) {
+      if (result.stoppedOnBudget) {
         delivery.stoppedOnBudget = true;
         break;
       }
+      if (result.sent + result.failed + result.retrying + result.skipped < FLUSH_BATCH) break;
     }
   }
+
+  // The final period, after the reminders: a stale snapshot refreshed now is
+  // read by the next pass's closure, and a reconciliation opened by this
+  // pass's closure is attempted from here on the pass after it. Both are
+  // no-ops on an edition with no submission period open and no pending row.
+  const refreshed = await refreshDueSubmissions(db, {
+    atMs: now,
+    deadlineMs,
+    ...(options.hackathonId != null ? { hackathonId: options.hackathonId } : {}),
+    ...(options.colosseumFetch ? { fetcher: options.colosseumFetch } : {}),
+  });
+  const reconciledSubmissions = await reconcileSubmissions(db, {
+    atMs: now,
+    deadlineMs,
+    ...(options.hackathonId != null ? { hackathonId: options.hackathonId } : {}),
+    ...(options.colosseumFetch ? { fetcher: options.colosseumFetch } : {}),
+  });
 
   const reconciled = await reconcileReminderDeliveries(db);
   const purged = await purgeExpiredBotState(db, now);
@@ -652,6 +692,7 @@ export async function runDueWork(
     closures: { closed: closures.closed.length, periods: closures.closed },
     reminders: { due: due.length, queued, skipped, alreadyRecorded, expired, reconciled },
     delivery,
+    submissions: { refreshed, reconciled: reconciledSubmissions, reconciliationsOpened: closures.reconciliationsOpened },
     purged: { ...purged, reminders: purgedReminders },
   };
 }

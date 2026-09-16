@@ -50,6 +50,7 @@ async function seedAccount(id: string, verified: "email" | "telegram" | "none" =
   await rows(`INSERT INTO hq_builder_profiles(id,email,name) VALUES($1,$2,$3) ON CONFLICT (id) DO NOTHING`, [id, verified === "email" ? email : null, id]);
   if (verified === "telegram") {
     telegramCounter += 1;
+    await rows(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org',$2,'telegram',$1)`, [id, `subject-${id}`]);
     await rows(`INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES($1,$2,$3,$4)`, [id, `subject-${id}`, telegramCounter, id]);
   }
 }
@@ -771,8 +772,10 @@ describe("the membership-acceptance lock order (lib/hq/builder-store.ts)", () =>
     const source = readFileSync(join(process.cwd(), "lib/hq/builder-store.ts"), "utf8");
     const redeemInvite = source.slice(source.indexOf("async redeemInvite"), source.indexOf("async dashboard"));
     expect(redeemInvite).toMatch(/FOR UPDATE OF i,o/);
-    expect(redeemInvite).toMatch(/FROM hq_captain_assignments WHERE project_id=\$1 AND captain_user_id=\$2 AND unassigned_at IS NULL/);
-    expect(redeemInvite.indexOf("FOR UPDATE OF i,o")).toBeLessThan(redeemInvite.indexOf("FROM hq_captain_assignments"));
+    const claimRosterSeat = source.slice(source.indexOf("async function claimRosterSeat"), source.indexOf("export class BuilderStore"));
+    expect(claimRosterSeat).toMatch(/FROM hq_captain_assignments WHERE project_id=\$1::uuid AND captain_user_id=\$2 AND unassigned_at IS NULL/);
+    expect(redeemInvite.indexOf("FOR UPDATE OF i,o")).toBeLessThan(redeemInvite.indexOf("await claimRosterSeat"));
+    expect(claimRosterSeat.indexOf("FROM hq_captain_assignments")).toBeLessThan(claimRosterSeat.indexOf("UPDATE hq_project_members SET builder_user_id"));
   });
 
   it("importTeam no longer needs that check, because phase 3 removed the path it guarded", () => {

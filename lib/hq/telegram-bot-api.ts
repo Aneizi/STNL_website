@@ -23,7 +23,7 @@ import "server-only";
  */
 
 /** How long a single Telegram call may take before it is abandoned as uncertain. */
-const REQUEST_TIMEOUT_MS = 8_000;
+export const TELEGRAM_REQUEST_TIMEOUT_MS = 8_000;
 
 /**
  * Telegram's own cap on a sendMessage text.
@@ -112,7 +112,7 @@ type TelegramResponse = { ok?: boolean; result?: { message_id?: number }; descri
 
 async function call(config: TelegramBotConfig, method: string, body: unknown): Promise<{ status: number; payload: TelegramResponse | null }> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), TELEGRAM_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch(`${config.apiBase}/bot${config.token}/${method}`, {
       method: "POST",

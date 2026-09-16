@@ -20,6 +20,7 @@ import type { Actor } from "@/lib/hq/actor";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { assignCaptain } from "@/lib/hq/captains";
+import { HQ_JOBS_AUDIENCE } from "@/lib/hq/github-actions-auth";
 import {
   closePeriod,
   correctOutcome,
@@ -32,6 +33,7 @@ import {
   pauseReporting,
   previewReportingPeriods,
   readAuthorizedUpdates,
+  readCaptainUpdatePages,
   readReportingSchedule,
   readRevisionHistory,
   reportingEligibility,
@@ -359,9 +361,31 @@ describe("createUpdate", () => {
 
   it("uses the server's own clock for the submitted timestamp, never a caller's", async () => {
     const before = Date.now();
-    const result = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Week one", atMs: WEEK_ONE });
+    const result = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Week one" });
     if (!result.ok) throw new Error("expected a saved update");
     expect(Date.parse(result.entry.submittedAt)).toBeGreaterThanOrEqual(before);
+  });
+
+  it("refuses to pre-complete a future week through explicit period selection", async () => {
+    const periods = await listReportingPeriods(db, EDITION);
+    expect(await createUpdate(member("lead-a"), {
+      projectId: PROJECT_A, hackathonId: EDITION, body: "Next week", periodId: periods[1].id, atMs: WEEK_ONE,
+    })).toEqual({ ok: false, reason: "no_open_period" });
+    expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_entries`)).toEqual([{ n: 0 }]);
+  });
+
+  it("uses one server instant for period selection and the original timestamp", async () => {
+    const saved = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Progress", atMs: WEEK_ONE });
+    expect(saved).toMatchObject({ ok: true, entry: { submittedAt: new Date(WEEK_ONE).toISOString() } });
+    if (!saved.ok) throw new Error("expected a saved update");
+    await rows(`UPDATE hq_reporting_entries SET submitted_at = $2::timestamptz WHERE id = $1`, [saved.entry.id, saved.period.endsAt]);
+    expect((await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_ONE }))[0].current?.completed).toBe(false);
+  });
+
+  it("refuses an operator's project from a different edition", async () => {
+    await seedProject(PROJECT_B, OTHER_EDITION);
+    expect(await createUpdate(OPERATOR, { projectId: PROJECT_B, hackathonId: EDITION, body: "Wrong project", atMs: WEEK_ONE }))
+      .toEqual({ ok: false, reason: "not_authorized" });
   });
 
   it("refuses an empty body and one over the maximum, and saves neither", async () => {
@@ -601,6 +625,29 @@ describe("readAuthorizedUpdates", () => {
     expect(bodies(await readAuthorizedUpdates(OPERATOR, { projectId: PROJECT_A, hackathonId: EDITION }))).toContain("SENSITIVE-BODY");
   });
 
+  it("batches Captain pages with the same audience and cursor while excluding unrelated projects", async () => {
+    await seedImportedProject(PROJECT_B, "lead-b");
+    await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION });
+    await createUpdate(member("lead-b"), { projectId: PROJECT_B, hackathonId: EDITION, body: "OTHER-TEAM", atMs: WEEK_ONE });
+    const actor = member("cap", ["captain"]);
+    let queries = 0;
+    const counted = { query: async (text: string, values?: unknown[]) => { queries += 1; return db.query(text, values); } };
+    const pages = await readCaptainUpdatePages(actor, { hackathonId: EDITION, projectIds: [PROJECT_A, PROJECT_B], limit: 2 }, counted);
+    expect(queries).toBe(1);
+    expect(pages.get(PROJECT_A)).toEqual(await readAuthorizedUpdates(actor, { projectId: PROJECT_A, hackathonId: EDITION, limit: 2 }));
+    expect(pages.has(PROJECT_B)).toBe(false);
+    expect(JSON.stringify([...pages.values()])).not.toContain("OTHER-TEAM");
+    await rows(`UPDATE hq_account_capabilities SET revoked_at=now() WHERE user_id='cap'`);
+    expect((await readCaptainUpdatePages(actor, { hackathonId: EDITION, projectIds: [PROJECT_A] })).size).toBe(0);
+  });
+
+  it("rejects malformed IDs and cursors without querying invalid SQL", async () => {
+    expect(await editUpdate(OPERATOR, { entryId: "broken", body: "Oops", expectedVersion: 1 })).toEqual({ ok: false, reason: "not_found" });
+    expect(await voidUpdate(OPERATOR, { entryId: "broken", reason: "Invalid" })).toEqual({ ok: false, reason: "not_found" });
+    expect(await readAuthorizedUpdates(OPERATOR, { projectId: PROJECT_A, hackathonId: EDITION, cursor: "broken" }))
+      .toEqual({ entries: [], nextCursor: null });
+  });
+
   it("shows another Captain nothing at all, not even that the project exists", async () => {
     await seedAccount("cap2");
     await grantCapability(db, { actor: { kind: "operator", id: OPERATOR_ID }, byOperatorId: OPERATOR_ID, userId: "cap2", capability: "captain", reason: "test" });
@@ -633,13 +680,14 @@ describe("readAuthorizedUpdates", () => {
     await voidUpdate(OPERATOR, { entryId: team.id, reason: "Duplicate" });
     expect(bodies(await readAuthorizedUpdates(member("member-a"), { projectId: PROJECT_A, hackathonId: EDITION }))).not.toContain("Team update");
     expect((await readAuthorizedUpdates(OPERATOR, { projectId: PROJECT_A, hackathonId: EDITION })).entries.find((entry) => entry.body === "Team update")?.voided).toBe(true);
+    expect((await readAuthorizedUpdates(OPERATOR, { projectId: PROJECT_A, hackathonId: EDITION })).entries.find((entry) => entry.body === "Team update")?.canEdit).toBe(false);
   });
 
   it("pages newest first without shifting under a later insert", async () => {
     const first = await readAuthorizedUpdates(OPERATOR, { projectId: PROJECT_A, hackathonId: EDITION, limit: 2 });
     expect(first.entries.length).toBe(2);
     expect(first.nextCursor).not.toBe(null);
-    await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Newest", atMs: WEEK_ONE });
+    await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Newest", atMs: WEEK_ONE + 1 });
     const second = await readAuthorizedUpdates(OPERATOR, { projectId: PROJECT_A, hackathonId: EDITION, limit: 2, cursor: first.nextCursor ?? undefined });
     expect(second.entries.map((entry) => entry.id)).not.toContain(first.entries[0].id);
     expect(bodies(second)).not.toContain("Newest");
@@ -773,6 +821,14 @@ describe("closePeriod", () => {
     expect(await closePeriod(db, { periodId: periodOne, actor: OPERATOR, atMs: WEEK_ONE })).toEqual({ ok: false, reason: "not_ended" });
   });
 
+  it("refuses member actors and jobs with another audience at the service boundary", async () => {
+    for (const actor of [member("lead-a"), { kind: "job", audience: "stnl-luma-sync" } as Actor]) {
+      expect(await closePeriod(db, { periodId: periodOne, actor, atMs: AFTER_WEEK_ONE }))
+        .toEqual({ ok: false, reason: "not_authorized" });
+    }
+    expect(await rows(`SELECT 1 FROM hq_reporting_outcomes`)).toEqual([]);
+  });
+
   it("records one outcome per accountable project, with the Captain at close", async () => {
     await seedAssignedCaptain("cap", PROJECT_A);
     await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Week one", atMs: WEEK_ONE });
@@ -812,7 +868,7 @@ describe("closePeriod", () => {
 
   it("audits the close as a system-attributable event carrying counts and no bodies", async () => {
     await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "A private detail", atMs: WEEK_ONE });
-    await closePeriod(db, { periodId: periodOne, actor: { kind: "job", audience: "hq-reporting" }, atMs: AFTER_WEEK_ONE });
+    await closePeriod(db, { periodId: periodOne, actor: { kind: "job", audience: HQ_JOBS_AUDIENCE }, atMs: AFTER_WEEK_ONE });
     const [event] = await rows(`SELECT actor_kind, actor_id, metadata FROM hq_audit_events WHERE kind='reporting.period_closed'`);
     expect(event).toMatchObject({ actor_kind: "system", actor_id: null });
     expect(event.metadata).toMatchObject({ sequence: 1, projects: 2, completed: 1, missed: 1 });

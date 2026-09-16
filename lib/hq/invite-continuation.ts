@@ -28,7 +28,7 @@ const IDENTIFIER_PREFIX = "hq-invite-continuation:";
 
 /**
  * Long enough to survive a sign-up, not just a sign-in: the email OTP itself
- * expires in 5 minutes (lib/hq/member-auth.ts), but reading the mail and
+ * expires in 15 minutes (lib/hq/member-auth.ts), but reading the mail and
  * typing the code takes real time, and a visitor may need one resend. Short
  * enough that an abandoned or leaked continuation is worthless within the
  * hour — it names an invitation, not a grant, so the blast radius of a leak

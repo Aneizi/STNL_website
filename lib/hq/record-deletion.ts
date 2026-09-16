@@ -1,6 +1,6 @@
 import "server-only";
 import { recordAuditEvent } from "./audit";
-import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
+import { atomically, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 
 /**
  * Admin deletion of a team and of a person (owner requirement, 14 September
@@ -56,6 +56,14 @@ import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } 
  *   here would put somebody's half-typed message into a confirmation that is
  *   supposed to be about the team's records. `hq_telegram_updates` and
  *   `hq_telegram_outgoing` never reference a project at all.
+ *   Phase 10 (the final submission period) added
+ *   `hq_submission_reconciliations`, which DOES point here: it names a
+ *   project and a period, and it cascades from both. That is right for the
+ *   same reason the reporting rows are: a reconciliation is a statement about
+ *   one team's submission, and it means nothing once the team is gone. It is
+ *   not counted in the confirmation, because what it holds is evidence about
+ *   the recorded week beside it rather than anything a person wrote; the week
+ *   itself is already counted.
  *   Phase 8 (the reminder and closure jobs) added `hq_reminder_deliveries`
  *   and deliberately pointed it at none of the three. It references the Captain's
  *   account, the edition and the reporting period, and it counts the teams a
@@ -302,6 +310,3 @@ export async function deletePersonRecord(
     return removal;
   });
 }
-
-/** The builder-side pool, so an operator action can call either deletion without building a handle of its own. */
-export const deletionDatabase = builderDatabase;
