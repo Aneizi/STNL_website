@@ -69,6 +69,7 @@ describe("LoginForm", () => {
     const html = renderLogin();
     expect(html).toContain("Signing in…");
     expect(html).toMatch(/<button type="submit" disabled=""/);
+    expect(html).toContain("opacity:0.5");
   });
 
   it("shows the action's refusal as an alert and keeps the username", () => {
@@ -128,6 +129,7 @@ describe("ChangePasswordForm", () => {
     const html = renderChange();
     expect(html).toContain("Saving…");
     expect(html).toMatch(/<button type="submit" disabled=""/);
+    expect(html).toContain("opacity:0.5");
   });
 
   it("shows the action's refusal as a 14px alert", () => {

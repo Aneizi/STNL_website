@@ -79,14 +79,6 @@ export const cardTitle: CSSProperties = {
   fontWeight: 400,
 };
 
-export const columnHeader: CSSProperties = {
-  fontSize: 14,
-  fontWeight: 600,
-  color: "var(--label-3)",
-  textTransform: "uppercase",
-  letterSpacing: "0.04em",
-};
-
 /* ── Form controls (the design's default input/select/button) ────── */
 
 export const input: CSSProperties = {
@@ -104,17 +96,6 @@ export const smallInput: CSSProperties = {
   boxSizing: "border-box",
   minHeight: 44,
   padding: "7px 10px",
-  border: "1px solid var(--sep)",
-  borderRadius: 0,
-  background: "transparent",
-  color: "var(--label-1)",
-  fontSize: 16,
-};
-
-export const smallSelect: CSSProperties = {
-  boxSizing: "border-box",
-  minHeight: 44,
-  padding: "6px 10px",
   border: "1px solid var(--sep)",
   borderRadius: 0,
   background: "transparent",
@@ -196,8 +177,8 @@ export function FormField({
             title={hint}
             style={{
               flex: "none",
-              width: 16,
-              height: 16,
+              width: 13,
+              height: 13,
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",

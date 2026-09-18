@@ -94,8 +94,16 @@ function SignedInMenu({ name }: { name: string }) {
   const signOut = async () => {
     setPending(true);
     setError('');
-    const result = await memberAuthClient.signOut();
-    if (result.error) {
+    let failed = false;
+    try {
+      failed = Boolean((await memberAuthClient.signOut()).error);
+    } catch {
+      // A request that never reached the server (offline, a dropped
+      // connection) answers like a refused one, not as an unhandled
+      // rejection that leaves the menu stuck on its pending state.
+      failed = true;
+    }
+    if (failed) {
       // The menu stays open with the message, so the member can try again.
       setError(SIGN_OUT_FAILED);
       setPending(false);

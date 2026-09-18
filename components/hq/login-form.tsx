@@ -94,7 +94,7 @@ export function LoginForm() {
         {error ? (
           <div role="alert" style={{ fontSize: 20, color: "var(--red)", marginTop: 10 }}>{error}</div>
         ) : null}
-        <button type="submit" disabled={pending} style={{ ...authSubmit, fontSize: 20, minHeight: 50 }}>
+        <button type="submit" disabled={pending} style={{ ...authSubmit, fontSize: 20, minHeight: 50, ...(pending ? { opacity: 0.5 } : {}) }}>
           {pending ? "Signing in…" : "Sign in"}
         </button>
       </form>

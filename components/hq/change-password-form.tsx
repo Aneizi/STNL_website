@@ -98,7 +98,7 @@ export function ChangePasswordForm({ displayName }: { displayName: string }) {
         {error ? (
           <div role="alert" style={{ fontSize: 14, color: "var(--red)", marginTop: 10 }}>{error}</div>
         ) : null}
-        <button type="submit" disabled={pending} style={authSubmit}>
+        <button type="submit" disabled={pending} style={pending ? { ...authSubmit, opacity: 0.5 } : authSubmit}>
           {pending ? "Saving…" : "Set new password"}
         </button>
       </form>
