@@ -1,49 +1,104 @@
-.workspace { --panel-fill:color-mix(in srgb,var(--cream) 55%,white); min-width:0; }
-.heading { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:24px; margin-bottom:36px; }
-.identity { display:flex; align-items:center; gap:16px; min-width:0; }
-.identity > div { min-width:0; }
-.workspace .edition { margin:6px 0 0; color:var(--muted); }
-.layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,380px); gap:clamp(28px,4vw,64px); align-items:start; }
-.content,.sidebar { min-width:0; }
-.sidebar { display:grid; gap:24px; }
-.panel { border:1px solid var(--line); border-radius:10px; padding:24px; background:var(--panel-fill); min-width:0; }
-.panelHeading { display:flex; align-items:baseline; flex-wrap:wrap; justify-content:space-between; gap:8px 16px; margin-bottom:20px; }
-.panel .panelHeading h2,.panel h2 { margin:0; }
-.count { color:var(--muted); }
-.members { list-style:none; margin:0 0 20px; padding:0; }
-.members li { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:14px 0; border-bottom:1px solid var(--line); }
-.members li:first-child { padding-top:0; }
-.memberName { display:block; font-weight:500; }
-.memberHandle { display:block; color:var(--muted); }
-.workspace .quiet { color:var(--muted); margin:12px 0 0; }
-.workspace .captainName { margin:12px 0 4px; color:var(--ink); }
-.workspace .captainContact { margin:0; overflow-wrap:anywhere; }
-.workspace a { color:var(--ink); text-underline-offset:4px; }
-.disclosure { border-top:1px solid var(--line); }
-.disclosureTitle { margin:0!important; }
-.disclosureButton { display:flex; align-items:center; justify-content:space-between; gap:16px; width:100%; min-height:64px; padding:16px 0; border:0; background:none; color:var(--ink); font:inherit; font-size:17px; font-weight:600; text-align:left; cursor:pointer; }
-.chevron { width:10px; height:10px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); margin:0 4px 6px; flex-shrink:0; }
-[aria-expanded=true] > .chevron { transform:rotate(225deg); margin-bottom:0; }
-.disclosureBody { padding:4px 0 24px; }
-.facts { display:grid; gap:16px; margin:0 0 24px; }
-.facts div { display:grid; gap:4px; }
-.facts dt { color:var(--muted); }
-.facts dd { margin:0; }
-.links { list-style:none; padding:0; margin:0 0 20px; }
-.links a { display:inline-flex; min-height:44px; align-items:center; }
-.workspace .form { display:grid; gap:20px; margin:0; }
-.workspace .form label { display:grid; gap:8px; }
-.workspace input,.workspace select { width:100%; box-sizing:border-box; min-height:48px; padding:10px 12px; border:1px solid var(--faded); border-radius:8px; background:var(--cream); color:var(--ink); font:inherit; }
-.workspace input:focus-visible,.workspace select:focus-visible { outline:2px solid var(--orange); outline-offset:3px; }
-.invite { margin-top:20px; }
-.invite label { display:grid; gap:8px; }
-.inviteActions { display:flex; gap:12px; margin-top:12px; }
-.workspace .feedback { margin:12px 0 0; }
-.workspace .error { color:#a52b16; }
-.workspace .button { display:inline-flex; box-sizing:border-box; justify-content:center; align-items:center; min-height:44px; padding:10px 16px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--ink); font:inherit; font-weight:500; text-decoration:none; cursor:pointer; }
-.workspace .button:hover { background:var(--line); }
-.workspace .button:disabled { opacity:.5; cursor:default; }
-.workspace .primary { background:var(--ink); border-color:var(--ink); color:var(--cream); }
-.workspace .primary:hover { background:color-mix(in srgb,var(--ink) 85%,var(--cream)); }
-@media(max-width:960px) { .layout { grid-template-columns:minmax(0,1fr); }.sidebar { grid-template-columns:repeat(2,minmax(0,1fr)); align-items:start; }.heading { margin-bottom:28px; } }
-@media(max-width:600px) { .sidebar { grid-template-columns:minmax(0,1fr); }.panel { padding:20px; }.heading { align-items:flex-start; }.identity { align-items:flex-start; } }
+/* The team dossier: an ink aside and a cream main column, edge to edge under
+ * the 81px member header (18 + 44 + 18 + the line). Radius 0 throughout:
+ * this is a redesigned member page. `.aside` and `.shell` prefixes beat
+ * app/hq/hq.css's `.hq a`, `.hq a:hover`, `.hq :focus-visible` and the
+ * placeholder colour, which wrap every /hq page. */
+.shell { display:grid; grid-template-columns:360px minmax(0,1fr); min-height:calc(100svh - 81px); }
+.aside { background:#16130f; color:#fbf7f0; padding:40px 36px 48px; display:flex; flex-direction:column; gap:44px; font-size:16px; line-height:1.55; min-width:0; }
+.main { padding:48px clamp(24px,5vw,64px) 96px; min-width:0; }
+.asideGrid { display:contents; }
+.asideFoot { margin-top:auto; display:flex; flex-direction:column; gap:4px; }
+
+/* Aside: the way home, the identity block and its Colosseum link. */
+.aside .homeLink { display:inline-flex; align-items:center; gap:8px; min-height:44px; font-size:15px; color:#b4ac9d; text-decoration:none; }
+.aside .homeLink:hover { color:#fbf7f0; text-decoration:none; }
+.identity { min-width:0; }
+.logo { display:block; margin-bottom:20px; }
+.title { font-family:var(--font-instrument-serif),Georgia,serif; font-size:48px; line-height:1; font-weight:400; letter-spacing:-.02em; margin:0 0 0 -2px; overflow-wrap:anywhere; }
+.edition { margin:10px 0 0; color:#b4ac9d; }
+.aside .projectLink { display:flex; align-items:center; min-height:44px; width:fit-content; color:#fbf7f0; text-decoration:underline; text-underline-offset:4px; }
+.aside .projectLink:hover { color:#ee5b23; text-decoration:underline; }
+
+/* Aside: the Team, Captain and Project sections. */
+.sectionHead { display:flex; justify-content:space-between; align-items:baseline; gap:12px; margin-bottom:14px; }
+.kicker { margin:0; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#b4ac9d; }
+.kickerSpaced { margin:0 0 14px; }
+.joined { font-size:14px; color:#b4ac9d; }
+.roster { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:12px; }
+.roster li { display:flex; justify-content:space-between; gap:12px; min-width:0; }
+.memberName { font-weight:600; min-width:0; overflow-wrap:anywhere; }
+.leadTag { color:#ee5b23; font-weight:600; flex:none; }
+.inviteToggle { display:inline-flex; align-items:center; min-height:44px; margin-top:12px; padding:0; border:0; background:none; color:#fbf7f0; font:inherit; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.inviteToggle:hover { color:#ee5b23; }
+.invite { display:flex; flex-direction:column; gap:10px; margin-top:8px; }
+.inviteInput { width:100%; box-sizing:border-box; min-height:44px; padding:10px 12px; border:1px solid #57534a; border-radius:0; background:transparent; color:#fbf7f0; font:inherit; font-size:14px; }
+.copyButton { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:0 16px; border:1px solid #fbf7f0; border-radius:0; background:transparent; color:#fbf7f0; font:inherit; font-weight:600; cursor:pointer; align-self:flex-start; }
+.copyButton:hover { background:#fbf7f0; color:#16130f; }
+/* A refusal on the ink aside. The member red (#a52b16) is illegible on ink, so the aside's own orange carries it. */
+.asideAlert { margin:0; font-size:15px; color:#ee5b23; }
+.captainName { margin:0; font-weight:600; }
+.aside .captainLink { display:inline-flex; align-items:center; min-height:44px; color:#fbf7f0; text-decoration:underline; text-underline-offset:4px; overflow-wrap:anywhere; }
+.aside .captainLink:hover { color:#ee5b23; text-decoration:underline; }
+.captainContact { margin:0; display:flex; align-items:center; min-height:44px; overflow-wrap:anywhere; }
+.facts { margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:8px 16px; }
+.facts dt { color:#b4ac9d; }
+.facts dd { margin:0; min-width:0; overflow-wrap:anywhere; }
+.projectLinks { display:flex; flex-direction:column; gap:4px; margin-top:10px; }
+.aside .factLink { display:inline-flex; align-items:center; min-height:40px; color:#fbf7f0; text-decoration:underline; text-underline-offset:4px; }
+.aside .factLink:hover { color:#ee5b23; text-decoration:underline; }
+.footButton { display:inline-flex; align-items:center; min-height:44px; padding:0; border:0; background:none; color:#b4ac9d; font:inherit; text-align:left; cursor:pointer; }
+.footButton:hover,.footActive { color:#fbf7f0; }
+
+/* Main: the week and the composer. */
+.weekKicker { margin:0; font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#ee5b23; }
+.weekDone { color:#2a604a; }
+.weekLine { text-decoration:underline; text-underline-offset:4px; text-decoration-thickness:1.5px; }
+.heading { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(40px,5vw,56px); line-height:1; font-weight:400; letter-spacing:-.02em; margin:12px 0 28px; }
+.savedStatus { margin:0 0 24px; color:#2a604a; font-weight:600; }
+.composer { display:flex; flex-direction:column; gap:16px; }
+.updateBox { width:100%; box-sizing:border-box; min-height:180px; padding:18px 20px; border:1px solid #16130f; border-radius:0; background:#fdfbf7; color:#16130f; font:inherit; font-size:18px; line-height:1.5; resize:vertical; }
+.row { display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+.addButton { display:inline-flex; align-items:center; min-height:52px; padding:0 24px; background:#ee5b23; color:#fbf7f0; border:0; border-radius:0; font:inherit; font-size:17px; font-weight:600; cursor:pointer; }
+.addButton:hover { background:#d14e16; }
+.addButton:disabled { opacity:.5; cursor:pointer; }
+.lateLink,.older { display:inline-flex; align-items:center; min-height:44px; padding:0; border:0; background:none; color:#57534a; font:inherit; font-size:16px; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.lateLink:hover,.older:hover { color:#16130f; }
+.older { margin-top:20px; }
+.older:disabled { opacity:.5; cursor:pointer; }
+.alert { margin:0; font-size:15px; color:#a52b16; }
+
+/* Main: the Earlier list. The cards themselves are the shared reporting-entry-card. */
+.earlier { margin-top:72px; }
+.earlierTitle { font-family:var(--font-instrument-serif),Georgia,serif; font-size:32px; font-weight:400; margin:0 0 10px; letter-spacing:-.02em; }
+.earlierNote { margin:0 0 24px; font-size:16px; color:#57534a; max-width:60ch; }
+.entries { display:flex; flex-direction:column; gap:20px; }
+
+/* Main: the Team settings and Contact preference views. */
+.backButton { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:0; border:0; background:none; color:#57534a; font:inherit; font-size:15px; cursor:pointer; }
+.backButton:hover { color:#16130f; }
+.viewHeading { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(40px,5vw,56px); line-height:1; font-weight:400; letter-spacing:-.02em; margin:20px 0 32px; }
+.settingsForm { display:flex; flex-direction:column; gap:24px; max-width:520px; }
+.field { display:flex; flex-direction:column; gap:8px; }
+.select { min-height:48px; padding:0 12px; border:1px solid #16130f; border-radius:0; background:#fdfbf7; color:#16130f; font:inherit; }
+.textInput { min-height:48px; padding:0 14px; border:1px solid #16130f; border-radius:0; background:#fdfbf7; color:#16130f; font:inherit; }
+.hint { font-size:15px; color:#57534a; }
+.check { display:flex; align-items:flex-start; gap:14px; cursor:pointer; }
+.check input { width:22px; height:22px; margin:2px 0 0; accent-color:#ee5b23; flex:none; }
+/* No Telegram, so nothing to consent to: the row stays, faded, unchecked and inert. */
+.checkDisabled { opacity:.5; }
+.saveButton { display:inline-flex; align-items:center; min-height:52px; padding:0 24px; background:#16130f; color:#fbf7f0; border:0; border-radius:0; font:inherit; font-size:17px; font-weight:600; cursor:pointer; }
+.saveButton:hover { background:#342d24; }
+.saveButton:disabled { opacity:.5; cursor:pointer; }
+.saved { color:#2a604a; font-weight:600; }
+
+.shell input::placeholder,.shell textarea::placeholder { color:#57534a; opacity:1; }
+.shell a:focus-visible,.shell button:focus-visible,.shell input:focus-visible,.shell select:focus-visible,.shell textarea:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+
+/* One column: the main column first, then the aside with its three sections side by side and its footer in a row. */
+@media(max-width:960px) {
+  .shell { grid-template-columns:minmax(0,1fr); }
+  .main { order:-1; padding-top:40px; }
+  .aside { padding:36px clamp(20px,4vw,48px) 44px; gap:32px; }
+  .asideGrid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr)); gap:32px; }
+  .asideFoot { flex-direction:row; gap:28px; margin-top:0; }
+}
