@@ -474,3 +474,10 @@
     gap: 10px;
   }
 }
+
+/* Partner board cards are links; the .hq a:hover underline and accent
+ * must not take over a card whose text keeps the page colour. */
+.hq .hq-card-link:hover {
+  text-decoration: none;
+  color: inherit;
+}
