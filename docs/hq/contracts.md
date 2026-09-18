@@ -87,15 +87,15 @@ exists yet and none should be created before that phase.
 | CRM person identity | stable person id, account link, edition People references, explicit correction | `lib/hq/crm-identity.ts`, `lib/hq/queries.ts`, `lib/hq/actions/people.ts` | `normalizeColosseumUsername(raw)`, `ensurePersonForAccount(db, { userId, displayName })`, `ensurePersonForRosterMember(db, { colosseumUsername, displayName })`, `linkPersonToAccount(db, { personId, userId })` (each writes through the query handle it is given, so it joins the caller's `BuilderDatabase.transaction`), `correctPersonMatch(db, { personId, toUserId, reason, actor })` (detach, link, or merge into the account's own person; never by display name) and the operator action `correctPersonMatch({ personId, toUserId, reason })` | 1, used from 3 |
 | Audit | append only metadata events | `lib/hq/audit.ts`, `lib/hq/audit-sql.ts` | `recordAuditEvent(db, { kind, actor, subjectUserId?, hackathonId?, projectId?, metadata? })`, `listAuditEvents(filter, { limit, cursor })`; nothing else | 1 |
 | Actor aware response types | the smallest DTO per audience | new `lib/hq/view-models.ts` | `MemberTeamView`, `CaptainAssignmentView`, `PublicPersonView`, `CaptainLeaderboardView` (`{ rank, displayName, assignedCount, isYou }`; `assignedCount` and `isYou` filled by task T4.5, `toCaptainLeaderboardView`) | 1, filled by 4 |
-| Shell and navigation | capability driven member menu, one member route list | new `lib/hq/member-routes.ts`, new `lib/hq/member-nav.ts` (both pure and client-safe), new `components/hq/builder-nav.tsx`, `components/hq/builder-shell.tsx`, new `app/hq/(member)/layout.tsx` (a provider, **not** the auth boundary) | `MEMBER_PUBLIC_PATHS`, `isMemberPath(pathname)`, `safeMemberNext(value)` in `member-routes.ts`; `NavItem`, `MemberNavInput`, `getMemberNav({ capabilities, hasTelegram, hasTeams })`, `isNavItemCurrent(item, pathname)` in `member-nav.ts`; `MemberNavProvider`, `BuilderNav`, `BuilderAccount` in `builder-nav.tsx`. The menu is derived from the request-cached `currentActor()` plus the store's `hasTeams(userId)` existence check, never the team rows; the layout passes it to the provider and every page composes `BuilderShell` itself | 2 |
+| Shell and navigation | the member header and one member route list | `lib/hq/member-routes.ts` (pure and client-safe), `components/hq/builder-shell.tsx`, `components/hq/builder-account-menu.tsx`, `app/hq/(member)/layout.tsx` (a provider, **not** the auth boundary) | `MEMBER_PUBLIC_PATHS`, `CAPTAIN_PATH`, `isMemberPath(pathname)`, `safeMemberNext(value)`, `inviteLink(token)`, `joinLink(code)`, `parseJoinCode(pasted)` in `member-routes.ts`; `MemberAccountProvider`, `MemberAccountState`, `BuilderAccountMenu` in `builder-account-menu.tsx`. The redesign of 18 September 2026 replaced the capability-driven menu (`lib/hq/member-nav.ts`, `builder-nav.tsx`, both deleted) with a header of the brand and the avatar menu (the member's name, Account, Sign out); Home's poster tiles are the navigation. The layout hands the request-cached `currentActor()`'s display name to the provider, reads nothing else, and every page composes `BuilderShell` itself | 2, reshaped 18 September 2026 |
 | Colosseum integration | validated snapshots, normalized fields, source status | `lib/colosseum-api.ts` (HTTP and error taxonomy), `lib/colosseum-schema.ts` (the ONE place upstream field names are written down), `lib/hq/colosseum-snapshot.ts` (pure normalization and the submission interpretation), `lib/hq/project-import.ts` (the gate and the import/refresh entry points) | `fetchColosseumProject`, `fetchEditionSubmissionWindow` (the one reader of `hackathons[].projectSubmissionEndDate`), `isRetryable`; `interpretSubmission` (the ONE writer of `submission_status`; `DRAFT_SIGNAL_CONFIRMED` gates whether a null `submittedAt` may read as Not submitted), `toSnapshotFields`, `groupedMaterials`, `submittedOnTime`, `PROJECT_FALLBACK_IMAGE`; `gateProject`, `importColosseumTeam`, `refreshColosseumTeam`, `importFailureFor`, `inviteRetry`. `listCountryProjects` was never built: phase 9, the discovery list it existed for, was removed by the owner | 3, complete |
-| Captain service | invitations, redemptions, assignments, leaderboard | `lib/hq/captains.ts` (the service); `lib/hq/actions/captains.ts` (operator actions, gated `requireUser()`, scanned by `tests/hq/operator-imports.test.ts`); `lib/hq/actions/invite.ts` (the one member-gated action, its own module because `actions/captains.ts` is operator-scanned); `lib/hq/invite-exchange.ts` and `lib/hq/invite-continuation.ts` (the `/hq/invite/<token>` exchange and its short-lived continuation, written directly into `hq_auth_verification`) | Invitations: `createCaptainInvitation`, `readCaptainInvitationByToken`, `acceptCaptainInvitation`, `revokeCaptainInvitation`, `listCaptainInvitations`. Assignments: `assignCaptain`, `unassignCaptain`, `clearCaptainAssignments`, `countAssignmentsForCaptain`, `countAssignmentsForUsers`, `listAssignments`, `countAssignmentsByCaptain`. Reads: `leaderboard(db, hackathonId, viewerUserId?)`, `currentCaptainOfProject(db, projectId)`. Operator actions: `createCaptainInvitation`, `revokeCaptainInvitation`, `assignProjectCaptain`, `unassignProjectCaptain`, `bulkAssignProjectCaptain`. Member action: `acceptCaptainInvitationFromContinuation`. Route helpers: `inviteLink(token)`, `INVITE_CONTINUE_PATH` in `lib/hq/member-routes.ts` | 4, complete |
-| Record deletion | admin removal of a team and of a person | `lib/hq/record-deletion.ts`; operator actions in `lib/hq/actions/builders-admin.ts` (`deleteBuilderTeam`), `lib/hq/actions/people.ts` (`deletePerson`) and `lib/hq/actions/projects.ts` (`deleteProject`, which delegates here so there is one deletion, not two) | `teamRemovalImpact`, `deleteTeamRecord`, `personRemovalImpact`, `deletePersonRecord`. One transaction each, audited (`project.deleted`, `person.deleted`), real counts read before the destructive step and again inside it. Deleting a person NEVER deletes the `hq_builder_profiles` account behind them | 3 |
+| Captain service | invitations, redemptions, assignments, leaderboard | `lib/hq/captains.ts` (the service); `lib/hq/actions/captains.ts` (operator actions, gated `requireUser()`, scanned by `tests/hq/operator-imports.test.ts`); `lib/hq/actions/invite.ts` (the one member-gated action, its own module because `actions/captains.ts` is operator-scanned); `lib/hq/invite-exchange.ts` and `lib/hq/invite-continuation.ts` (the `/hq/invite/<token>` exchange and its short-lived continuation, written directly into `hq_auth_verification`) | Invitations: `createCaptainInvitation`, `readCaptainInvitationByToken`, `acceptCaptainInvitation`, `revokeCaptainInvitation`, `listCaptainInvitations`. Assignments: `assignCaptain`, `unassignCaptain`, `clearCaptainAssignments`, `countAssignmentsForCaptain`, `countAssignmentsForUsers`, `listAssignments`, `countAssignmentsByCaptain`. Reads: `leaderboard(db, hackathonId, viewerUserId?)`, `currentCaptainOfProject(db, projectId)`. Operator actions: `createCaptainInvitation`, `revokeCaptainInvitation`, `assignProjectCaptain`, `unassignProjectCaptain` (the bulk assignment of the old Projects board is gone with its Captain mode). Member action: `acceptCaptainInvitationFromContinuation`. Route helpers: `inviteLink(token)`, `INVITE_CONTINUE_PATH` in `lib/hq/member-routes.ts` | 4, complete |
+| Record deletion | admin removal of a team and of a person | `lib/hq/record-deletion.ts`; operator actions in `lib/hq/actions/people.ts` (`deletePerson`) and `lib/hq/actions/projects.ts` (`deleteProject`, the Projects board's two-step delete, which delegates here so there is one deletion, not two; the Admin page's separate Delete team control went with the redesign) | `teamRemovalImpact`, `deleteTeamRecord`, `personRemovalImpact`, `deletePersonRecord`. One transaction each, audited (`project.deleted`, `person.deleted`), real counts read before the destructive step and again inside it. Deleting a person NEVER deletes the `hq_builder_profiles` account behind them | 3 |
 | Reporting service | periods, eligibility, entries, revisions, completion, outcomes | `lib/hq/reporting.ts` (the one module a caller imports), `lib/hq/reporting-enrolment.ts` (schedule and eligibility, split out **only** so `builder-store.ts` can enrol a team inside the import transaction without `./authz -> ./actor -> ./member-auth -> ./builder-store` closing a cycle; everything it owns is re-exported unchanged), `lib/hq/reporting-periods.ts` (the pure generator, no `server-only`) | Schedule: `readReportingSchedule`, `listReportingPeriods`, `currentReportingPeriod`, `ensureReportingPeriods`, `previewReportingPeriods`. Eligibility: `reportingEligibility`, `listReportingEligibility`, `enableReporting`, `pauseReporting`. Entries: `createUpdate`, `editUpdate`, `voidUpdate`, `readAuthorizedUpdates`, `readRevisionHistory`, `MAX_BODY_LENGTH`. Status and outcomes: `reportingStatus`, `closePeriod`, `listPeriodOutcomes`, `correctOutcome`. Pure: `generateReportingPeriods`, `zonedDateTimeToUtc`, `addDays`, `periodForInstant` | 5, complete |
-| Reporting surfaces | the team, Captain and admin reporting screens and the actions behind them | `lib/hq/reporting-view.ts` (pure copy and presentation rules, client-safe), `lib/hq/reporting-contacts.ts` (the two opt-in contacts, no `./authz` import so operator queries reach it), `lib/hq/reporting-surface.ts` (the two member page reads), `lib/hq/actions/reporting.ts` (member gated), `lib/hq/actions/reporting-admin.ts` (operator gated, scanned by `tests/hq/operator-imports.test.ts`), `components/hq/reporting-member.tsx`, `components/hq/reporting-entry-card.tsx` (the entry card the team page and the Captains' Den share), `components/hq/reporting-admin.tsx`, `components/hq/reporting-project-panel.tsx` | Member actions: `addReportingUpdate`, `editReportingUpdate`, `saveTeamContact`, `saveCaptainContact`. Operator actions: `previewReportingSchedule`, `applyReportingSchedule`, `saveReportingConfiguration`, `enableProjectReporting`, `setProjectReportingPaused`, `voidReportingUpdate`, `correctReportingOutcome`, `loadProjectReporting`, `loadEntryRevisions`. Pure: `statusLabel`, `periodRangeLabel`, `periodRangeShortLabel`, `deadlineLabel`, `dueLabel`, `dueLine`, `weekOfLabel`, `dayMonthLabel`, `entryMetaLabel`, `captainMetaLabel`, `telegramContactHref`, `isWeekStarted`, `isWeekCurrent`, `shouldPromptUpdate`, `promptDismissKey`, `byOutstandingFirst`, `ADD_UPDATE_MESSAGES`, `EDIT_UPDATE_MESSAGES`, `AUDIENCE_NOTES`, `normalizeContact`, `MAX_CONTACT_LENGTH`. Reads: `teamReportingPanel`, `captainReportingBoard`, `readTeamContact(s)`, `readCaptainContact(s)`, `readCaptainHandle` (the Telegram username first, the typed contact as the fallback). A phase that writes reporting copy adds it to `reporting-view.ts`, so the em dash and middot scan keeps covering it | 6, complete |
+| Reporting surfaces | the team, Captain and admin reporting screens and the actions behind them | `lib/hq/reporting-view.ts` (pure copy and presentation rules, client-safe), `lib/hq/reporting-contacts.ts` (the team contact and the Captain handle, no `./authz` import so operator queries reach it), `lib/hq/reporting-surface.ts` (the member page reads), `lib/hq/actions/reporting.ts` (member gated), `lib/hq/actions/reporting-admin.ts` (operator gated, scanned by `tests/hq/operator-imports.test.ts`), `components/hq/team-workspace.tsx` and `components/hq/late-update-modal.tsx` (the Team dossier), `components/hq/reporting-entry-card.tsx` (the entry card the dossier and the Captains' Den share), `components/hq/builder-captain-den.tsx`, `components/hq/reporting-admin.tsx` (the Admin page's Reporting weeks, Reporting settings and Captain reminders sections) | Member actions: `addReportingUpdate`, `editReportingUpdate`, `loadTeamUpdates`, `saveTeamContact`. Operator actions: `previewReportingSchedule`, `applyReportingSchedule`, `saveReportingConfiguration`, `readColosseumDeadline`. Pure: `statusLabel`, `periodRangeLabel`, `periodRangeShortLabel`, `shortPeriodRange`, `deadlineLabel`, `dueLabel`, `dueLine`, `weekOfLabel`, `dayMonthLabel`, `fmtRetryAt`, `entryMetaLabel`, `captainMetaLabel`, `telegramContactHref`, `isWeekStarted`, `isWeekCurrent`, `byOutstandingFirst`, `mergeUpdatePages`, `missedLabel`, `ADD_UPDATE_MESSAGES`, `EDIT_UPDATE_MESSAGES`, `AUDIENCE_NOTES`, `normalizeContact`, `MAX_CONTACT_LENGTH`. Reads: `teamReportingPanel`, `memberWeekSummaries`, `captainReportingBoard`, `readTeamContact(s)`, `readCaptainContact(s)`, `readCaptainHandle` (the Telegram username first, the contact typed on the removed form as the fallback; nothing writes `captain_contact` any more). The operator Projects board has no per-project reporting panel and there are no operator update actions: the board shows the weekly state per row. A phase that writes reporting copy adds it to `reporting-view.ts`, so the em dash and middot scan keeps covering it | 6, reshaped 18 September 2026 |
 | Telegram adapter | authenticated chat commands, drafts, delivery | `lib/hq/telegram-bot.ts` (the deterministic flow), `lib/hq/telegram-bot-view.ts` (pure copy, escaping and keyboards, client-safe like `reporting-view.ts`), `lib/hq/telegram-bot-store.ts` (receipts, callback references, drafts, the outgoing queue and the chat binding), `lib/hq/telegram-bot-api.ts` (the transport, the only module that holds the token), `lib/hq/telegram-webhook.ts` (the endpoint's own rules), `app/api/telegram/webhook/route.ts` (the address) | Flow: `handleTelegramUpdate(update, { db?, now?, hqOrigin? })` returning `{ replies, answer, queued, outcome }`. Endpoint: `handleTelegramWebhookRequest(request, deps?)`, `secretMatches`, `telegramUpdateSchema`, `readBoundedBody`, `MAX_WEBHOOK_BODY_BYTES`, `SECRET_HEADER`. Transport: `telegramBotConfig(env)`, `isTelegramBotConfigured`, `telegramSender(config)`, `redactBotUrl`, `TelegramSender`. Store: `claimTelegramUpdate` (leased, so an interrupted update is retried), `finishTelegramUpdate`, `bindBotChat`, `deliverableBotChat`, `botMessagingEnabled`, `createBotAction`, `readBotAction` (resolves, never consumes), `consumeBotAction` (inside the writing transaction), `isWriteAction`, `isDraftAction`, `readBotDraft`, `startBotDraft` (new generation), `advanceBotDraft` (same generation, next revision), `claimBotDraft` (the logical-save claim), `clearBotDraft`, `enqueueBotMessage`, `flushBotMessages` (claimed batches, consent re-checked before dispatch), `purgeExpiredBotState`. Identity: `telegramMemberActor(telegramUserId, db?)` in `lib/hq/actor.ts` over `findTelegramIdentityByTelegramUserId` in `lib/hq/identity.ts`. View: `escapeHtml`, `inlineKeyboard`, `packMessages`, `chunkForEscaped`, `TELEGRAM_TEXT_LIMIT`, `BOT_COPY`, `LABELS`, `previewMessages`, `savedMessage`, `periodChangedMessages`, `conflictMessages`, `refusalMessages`, `ownNoteMessages`, `projectMessage`, `projectListLine`, `weekLine`, `snippet`, `page` | 7, complete |
 | Job runner | reminders, closures, bounded sync | `lib/hq/jobs.ts` (the one module a caller imports), `lib/hq/github-actions-auth.ts` parameterised by audience and workflow (`ScheduledJob`, `isTrustedJobClaims`, `isTrustedJobRequest`), `app/api/cron/hq-jobs/route.ts`, `.github/workflows/hq-jobs.yml`, `lib/hq/actions/jobs.ts` (operator gated, the manual retry and the admin read) | `dueReminders`, `prepareReminder`, `expireStaleReminders`, `reconcileReminderDeliveries`, `purgeReminderDeliveries`, `closeDuePeriods`, `listReminderDeliveries`, `runDueWork`; constants `REMINDER_TYPE_WEEKLY`, `REMINDER_MAX_AGE_MS`, `REMINDER_RETENTION_MS`; the `ReminderSkipReason` vocabulary. Its own OIDC audience (`HQ_JOBS_AUDIENCE`, `stnl-hq-jobs`) and its own workflow file, no shared privileges and no stored secret. Delivery is phase 7's, untouched: `deliverableBotChat` names the chat, `enqueueBotMessage` with a reminder `dedupeKey` writes the message inside the job's transaction, and `flushBotMessages` sends it and records the result. Operator actions: `runReportingJobsNow`, `loadReminderDeliveries` | 8, complete |
-| Final submission | material readiness, submission snapshots and historical reconciliation | `lib/hq/submission-readiness.ts` (pure checklist), `lib/hq/submission.ts` (snapshots and bounded jobs), `components/hq/submission-focus.tsx` (shared authorized view) | `readSubmissionSnapshots`, `readSubmissionReconciliations`, `listSubmissionReconciliations`, `dueSubmissionRefreshes`, `refreshDueSubmissions`, `openSubmissionReconciliations`, `reconcileSubmissions`; surface authorization stays in `reporting-surface.ts`, submission truth stays in `colosseum-snapshot.ts` | 10, complete |
+| Final submission | material readiness, submission snapshots and historical reconciliation | `lib/hq/submission-readiness.ts` (pure checklist), `lib/hq/submission.ts` (snapshots and bounded jobs); the authorized view is `submissionFocusFor` in `lib/hq/reporting-surface.ts`, rendered by the Team dossier and the Captains' Den | `readSubmissionSnapshots`, `readSubmissionReconciliations`, `listSubmissionReconciliations`, `dueSubmissionRefreshes`, `refreshDueSubmissions`, `openSubmissionReconciliations`, `reconcileSubmissions`; surface authorization stays in `reporting-surface.ts`, submission truth stays in `colosseum-snapshot.ts` | 10, complete |
 
 Audit event kinds, so that later phases extend one vocabulary instead of
 inventing their own: `capability.granted`, `capability.revoked`,
@@ -497,12 +497,12 @@ log. The per-task detail is in `docs/hq/implementation-log.md`.
   member response is built from a view model so it cannot carry an operator
   field; `CapabilityGrant`, `AuditEvent` and `Person.removal` are
   operator-only shapes and never reach one.
-- **Shell and routes.** `MEMBER_PUBLIC_PATHS`, `isMemberPath`, `safeMemberNext`,
-  `inviteLink`, `joinLink`, `parseJoinCode` in `lib/hq/member-routes.ts`;
-  `getMemberNav({ capabilities, hasTelegram, hasTeams })` and
-  `isNavItemCurrent` in `lib/hq/member-nav.ts`. A new member page is one entry
-  in `MEMBER_PUBLIC_PATHS` and, if it needs a menu item, one item in
-  `getMemberNav`.
+- **Shell and routes.** `MEMBER_PUBLIC_PATHS`, `CAPTAIN_PATH`, `isMemberPath`,
+  `safeMemberNext`, `inviteLink`, `joinLink`, `parseJoinCode` in
+  `lib/hq/member-routes.ts`. A new member page is one entry in
+  `MEMBER_PUBLIC_PATHS`; there is no menu list since the redesign, Home's
+  tiles (`components/hq/builder-menu.tsx`) and the avatar menu are the
+  navigation.
 - **Test helpers.** `applyMigrations(pg)` and `pgliteBuilderDatabase(pg)` in
   `tests/hq/helpers/db.ts`.
 - **Captain service (phase 4, complete).** `lib/hq/captains.ts`:
@@ -677,13 +677,17 @@ as `app/hq/(member)/captain/page.tsx` does. The group layout is **not** the
 auth boundary — layouts do not re-render on soft navigation, so it only
 provides the nav state — and its own comment says so. The page composes
 `<BuilderShell>` itself (`components/hq/builder-shell.tsx`, props
-`{ children, wide?, back? }`) and styles with
-`components/hq/builder-shell.module.css`, whose classes are exactly `page header nav navList brand account
-accountName signOut main wide card row status notice form field actions
-button secondary textButton choices choice check code details error success`. Add the
-route to `MEMBER_PUBLIC_PATHS` in `lib/hq/member-routes.ts` (the one list,
-enforced by `tests/hq/member-routes.test.ts`) and, if it needs a menu item,
-one item in `getMemberNav`.
+`{ children, back?, bare? }`; `bare` for a redesigned page that lays itself
+out edge to edge below the header with its own CSS module) and, for the
+legacy column, styles with `components/hq/builder-shell.module.css`, whose
+classes are exactly `page header brand accountMenu avatar menu menuName
+menuItem menuError back main bare form field button secondary textButton
+textLink choices choice notice inlineLink error success code actions row
+status check details importHelpFooter importHelpDialog importHelpHeader
+importHelpClose`. Add the route to `MEMBER_PUBLIC_PATHS` in
+`lib/hq/member-routes.ts` (the one list, enforced by
+`tests/hq/member-routes.test.ts`) and, if members should reach it from Home,
+a tile in `components/hq/builder-menu.tsx`.
 
 **An operator screen** extends the existing boards rather than adding a
 system of its own: `components/hq/projects.tsx`, `people.tsx` and
@@ -826,19 +830,24 @@ Actions behind them. It added no table.
    week, status and composer as an imported team; only the Colosseum detail
    differs. There is no reduced reporting row, and reintroducing one would
    undo the phase 5 ruling.
-5. **The two contacts are opt-in and self-set.**
-   `hq_project_onboarding.team_contact` (the team lead sets it, the assigned
-   Captain and admins read it) and `hq_builder_profiles.captain_contact` (the
-   Captain sets it, their teams and admins read it). Setting one is the
-   approval; nothing derives either from a login, a profile address or
-   Colosseum, and `MemberTeamView.captain.contact` is now populated from the
-   second. The Captain column shares a name, and nothing else, with
-   `hq_partners.captain_contact`, which is a partner organisation's contact
-   person.
-6. **The prompt's dismissal is per browser, keyed by project and period.** Not
-   a table: it has no audience and no history, the outstanding action stays
-   either way, and completion is what ends the prompt for good. It renders on
-   the server too, because its hydration snapshot answers "not dismissed".
+5. **The team contact is opt-in and self-set; the Captain's handle comes from
+   Telegram.** `hq_project_onboarding.team_contact` (the team lead sets it on
+   the dossier's Contact preference view, the assigned Captain and admins
+   read it) is the one contact a member types; setting it is the approval,
+   and nothing derives it from a login, a profile address or Colosseum. A
+   Captain is reached on the username of their linked Telegram identity
+   (`readCaptainHandle`), which the Den shows read-only and the Account page
+   has no field for. `hq_builder_profiles.captain_contact` stays as the
+   read-only fallback for a Captain without a Telegram username, holding
+   what they typed on the form the redesign removed; nothing writes it any
+   more. `MemberTeamView.captain.contact` is populated from that handle. The
+   column shares a name, and nothing else, with `hq_partners.captain_contact`,
+   which is a partner organisation's contact person.
+6. **There is no update prompt.** The Team dossier shows the week's status
+   and the composer inline, and Home's hackathon tile carries the Update due
+   flag, so phase 6's Monday and Tuesday prompt, with its per-browser
+   dismissal key, went with the redesign; nothing stores a dismissal and no
+   table was added for one.
 7. **A live date change is previewed before it is applied.** Admin shows
    `previewReportingPeriods`'s plan and every week it must not move, with the
    reason and the counts; applying is a separate press. `saveReportingConfiguration`
@@ -1209,8 +1218,10 @@ definition of a week.
     corrected twice.
 11. **One composition serves every audience.** `submissionFocusFor` in
     `lib/hq/reporting-surface.ts` builds the view once per edition, and the
-    team page and Captain card both read it. The admin panel reads the same
-    stored submission evidence through `loadProjectReporting`. A Captain and their team can therefore never read a
+    team page and Captain card both read it. The operator Projects board reads
+    the same stored submission evidence (`hq_project_onboarding`'s submission
+    columns, through `getProjects`); the per-project admin panel that once
+    read it through `loadProjectReporting` is gone. A Captain and their team can therefore never read a
     different submission state off two screens, and a test asserts the two are
     equal. `completedBySubmission` is derived from the project's OWN
     submission rather than from the period's `basis`, for the same reason
@@ -1218,12 +1229,13 @@ definition of a week.
     entries for would tell them a Captain wrote something they may not read.
 12. **The weekly vocabulary is untouched.** Submitted/Not submitted and
     Updated/Not updated stay separate words on separate lines everywhere,
-    including in the admin panel. A reconciliation is never a weekly status,
+    including on the operator Projects board. A reconciliation is never a weekly status,
     exactly as a reminder delivery never was.
 13. **Copy lives in `submission-readiness.ts`, and the scan follows it.**
-    `tests/hq/reporting-view.test.ts` now scans that module and
-    `components/hq/submission-focus.tsx` for em dashes and middots along with
-    the three reporting components. The contract's rule is that reporting copy
+    `tests/hq/reporting-view.test.ts` now scans that module for em dashes and
+    middots along with the reporting components (the Team dossier, its
+    late-update modal, the entry card, the Captains' Den and the Admin
+    reporting sections). The contract's rule is that reporting copy
     stays inside that scan; a phase that adds a fourth copy module adds it to
     the same list rather than inlining strings.
 14. **Phase 10 added one pointer at `hq_projects`, and said so.**

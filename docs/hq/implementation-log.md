@@ -6027,3 +6027,97 @@ Verification: `npx tsc --noEmit` clean; `npx eslint` 0 errors, 18
 pre-existing warnings, all in `public/deck/deck-stage.js`; `npx vitest run`
 69 files, 1,722 tests pass (1,700 before, 22 new: `tests/hq/people-view.test.ts`
 and three People cases in `tests/hq/builders-admin.test.ts`).
+
+## Colosseum HQ redesign, 18 September 2026
+
+Every member and operator screen was rebuilt to the design handoff
+(`docs/plans/design_handoff_colosseum_hq/`), seventeen screen branches
+implemented in parallel worktrees and merged one by one, followed by one
+integration pass. The surface is now named Colosseum HQ (the `/hq` metadata
+title) and the hackathon is written "Crypto World's Fair" everywhere.
+
+Member screens:
+
+- The header is the brand and an avatar menu (the member's name, Account,
+  Sign out); the capability-driven menu (`lib/hq/member-nav.ts`,
+  `components/hq/builder-nav.tsx`) is gone. `BuilderShell` keeps `back` for
+  a step in a flow and gained `bare` for a page that lays itself out below
+  the header; its `wide` and `fullWidth` props and the workspace rules went
+  with the last page that used them.
+- Login is the design's sign-in card (an email code or Telegram, the resend
+  cooldown at 30 seconds). The name step carries the Telegram bot consent
+  checkbox, persisted with the profile. Onboarding (Welcome,
+  Initialize, Join) keeps the legacy column; the per-edition hackathon page
+  and `MenuTile` are gone.
+- Home is the greeting and three poster tiles (the hackathon with the week
+  label and the Update due flag, the Member Portal, the Captains' Den) with
+  the hover tilt, skipped under reduced motion.
+- Team is a dossier: the ink aside, the update composer bound to the open
+  week, the Earlier list, the Team settings and Contact preference views,
+  and the late-update modal (`components/hq/team-workspace.tsx`,
+  `late-update-modal.tsx`). `components/hq/reporting-member.tsx`,
+  `submission-focus.tsx` and `team-reporting.module.css` are deleted with
+  the prompt helpers (`shouldPromptUpdate`, `promptDismissKey`,
+  `weekdayInZone`, `NO_UPDATES_YET`) nothing renders any more.
+- The Captains' Den is the design's aside and main column with the shared
+  `ReportingEntryCard`; the Captain's handle is read-only, from Telegram.
+- Account is the passport: the role and Team lines, the bot switch, and the
+  email change and the Telegram connect and disconnect in modals; the three
+  sub-routes (`/hq/account/add-email`, `connect-telegram`,
+  `disconnect-telegram`) removed. The invite pages follow the same scale.
+
+Operator screens:
+
+- The chrome is the five-tab bar (Dashboard, Projects, People, Events,
+  Admin) on the handoff type scale; the Links feature and `/hq/links` are
+  removed. Operator login and change-password submit buttons dim to
+  opacity .5 while pending.
+- Projects is the design's board: the Colosseum block in the expanded row,
+  the high potential toggle on the project row itself
+  (`hq_projects.high_potential`, `setProjectHighPotential`), the Import
+  requests section (`components/hq/import-requests.tsx`) in place of the
+  Imported teams panel, and the two-step delete. The per-project weekly
+  reporting panel, the bulk Captain assignment
+  (`bulkAssignProjectCaptain`), `deleteBuilderTeam`,
+  `markBuilderProjectPotential`, `getBuilderProjectReviews` and the operator
+  reporting actions only the panel called are deleted.
+- People has expandable rows, the Make/Remove Captain control
+  (`setPersonCaptain`) and the "Partner contact" role.
+- Admin is ten sections: Hackathons, Submission gates, Milestones, Builder
+  onboarding, Captain invitation links, Captain leaderboard, Reporting
+  weeks, Reporting settings and Captain reminders. Campaign numbers, Campaign
+  setup, HQ accounts, Event hosting and the reconciliation list are gone,
+  with `updateSettings`, `reviewBuilderHostRequest` and the accounts and
+  host-request reads behind them.
+- Dashboard shows the funnel without targets; the funnel numbers are
+  seed-only.
+
+Backend:
+
+- `hq_reporting_entries.counts_toward_completion`: a Captain's note never
+  completes a team's week.
+- The Captain contact is the linked Telegram username (`readCaptainHandle`);
+  `hq_builder_profiles.captain_contact` stays as a read-only fallback and
+  `saveCaptainContact` / `writeCaptainContact` are deleted.
+- `hq_projects.high_potential` with a one-off backfill from
+  `hq_project_onboarding` in `scripts/hq/upgrades.ts`.
+- `setPersonCaptain` (People) and `setProjectHighPotential` (Projects) are
+  the two new operator actions; `confirmEmailChange` is relaxed so an
+  account with a verified login email can change it too, the code going to
+  the new address only.
+- Dead code removed in the integration pass: `BuilderStore.dashboard()` and
+  the unread `hostingEnabled` flag, `getPartnerOptions` and `PartnerOption`,
+  the `columnHeader` and `smallSelect` atoms, `IconSparkles`, the
+  `BuilderProjectReviews` CSS rules, and the stale references in tests and
+  `docs/hq/contracts.md`.
+
+Product-owner rulings recorded with the work: no per-project reporting
+panel on Projects (the board shows the weekly state per row); the funnel
+numbers are seed-only, with no target settings in Admin; Change email
+verifies only the new address.
+
+Verification after the integration pass: `npx tsc --noEmit` clean; `npx
+eslint` 2 errors and 7 warnings, all pre-existing in the untracked design
+file `docs/plans/design_handoff_colosseum_hq/design/support.js`, plus the 18
+pre-existing warnings in `public/deck/deck-stage.js`, none in tracked source;
+`npx vitest run` 79 files, 1,781 tests pass; `npx next build` succeeds.
