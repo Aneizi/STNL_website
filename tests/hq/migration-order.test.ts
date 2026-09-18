@@ -278,7 +278,7 @@ describe("a populated database from before hackathon scoping", () => {
        VALUES ('cap', 'Cap', '$2b$10$fictionalhash.one', 3, false), ('lead', 'Lead', '$2b$10$fictionalhash.two', 1, true)`,
     );
     // The seeded partner-liaison role as scripts/hq/seed.ts wrote it before
-    // task T1.2 renamed it, with a card on it.
+    // task T1.2 and then the People redesign renamed it, with a card on it.
     await run(
       pg,
       `INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
@@ -340,12 +340,13 @@ describe("a populated database from before hackathon scoping", () => {
       expect(people).toHaveLength(4);
       expect(await run(pg, `SELECT count(*)::int AS n FROM hq_people WHERE person_id IS NOT NULL`)).toEqual([{ n: 0 }]);
 
-      // The partner-liaison role was renamed in place: same id, same cards,
-      // and the capability's name is free for the locked Captain tag.
+      // The partner-liaison role was renamed in place, twice, in one run:
+      // same id, same cards, the capability's name free for the Captain
+      // tag, and the label the People redesign gives the role.
       expect(await run(pg, `SELECT id, label, filter_label FROM hq_people_roles WHERE id = $1`, [liaisonRole])).toEqual([
-        { id: liaisonRole, label: "Partner captain", filter_label: "Partner captains" },
+        { id: liaisonRole, label: "Partner contact", filter_label: "Partner contacts" },
       ]);
-      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_people_roles WHERE label = 'Captain'`)).toEqual([{ n: 0 }]);
+      expect(await run(pg, `SELECT count(*)::int AS n FROM hq_people_roles WHERE label IN ('Captain', 'Partner captain')`)).toEqual([{ n: 0 }]);
       expect(await run(pg, `SELECT role_id FROM hq_people WHERE name = 'Liaison One'`)).toEqual([{ role_id: liaisonRole }]);
 
       // Second pass, over populated tables.

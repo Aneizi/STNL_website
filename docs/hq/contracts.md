@@ -130,6 +130,15 @@ A People card's tags are presentation: `PersonTag = { kind: "role" |
 "capability"; label; protected }`. The role tag is the editable role. The
 capability tag mirrors an active grant and nothing reads a tag back to decide
 access; access is checked against `hq_account_capabilities` per request.
+People grants and removes Captain through `setPersonCaptain(personId,
+captain)` (`lib/hq/actions/people.ts`): it resolves the card's own
+`builder_user_id` within the selected edition, refuses a hand-entered card,
+and delegates to `grantCaptainCapability` / `revokeCaptainCapability` with
+the fixed reasons "Granted from People" and "Removed from People", so the
+grant, its audit event and (on revoke) the clearing of current project
+assignments stay in `lib/hq/actions/capabilities.ts`. Editing a role or a tag
+still cannot grant `captain`: the grant is an explicit action on the linked
+account, never a role edit.
 
 Operator only fields stay in `lib/hq/types.ts`. The view models exist so that a
 member response cannot accidentally carry an operator field.
@@ -280,7 +289,8 @@ Where DDL goes:
    targets a builder-side table lives in `builder-schema.sql`, after the table
    it references, because `upgrades.ts` runs before that table exists.
    `hq_people.person_id` and `hq_project_members.person_id` are the examples.
-   Seeded-row edits such as the "Partner captain" rename stay in
+   Seeded-row edits such as the two liaison-role renames ("Captain" to
+   "Partner captain", then "Partner captain" to "Partner contact") stay in
    `upgrades.ts`, guarded by `to_regclass` and a `NOT EXISTS` on the new value.
 3. **Changes to existing builder or auth tables:**
    `ADD COLUMN IF NOT EXISTS` and `ALTER COLUMN ... DROP NOT NULL` are
