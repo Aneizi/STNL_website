@@ -51,7 +51,6 @@ export const MEMBER_PUBLIC_PATHS = [
   // link reaches. See joinLink() and parseJoinCode() below.
   JOIN_PATH_PREFIX,
   "/hq/team/",
-  "/hq/hackathon/",
   "/hq/account",
   "/hq/account/connect-telegram",
   "/hq/account/disconnect-telegram",
