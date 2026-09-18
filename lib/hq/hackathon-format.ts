@@ -13,9 +13,10 @@ function parts(iso: string): { y: number; m: number; d: number } {
 
 /**
  * The span printed under a hackathon's name. Full month names, the year said
- * once unless the span crosses into another: "September 14 – October 12, 2026",
- * "March 3 – 9, 2026", "December 1, 2026 – January 15, 2027". A single-day
- * hackathon reads "March 3, 2026".
+ * once unless the span crosses into another, and "to" between the ends,
+ * never a dash: "September 14 to October 12, 2026", "March 3 to 9, 2026",
+ * "December 1, 2026 to January 15, 2027". A single-day hackathon reads
+ * "March 3, 2026".
  */
 export function fmtDateRange(startIso: string, endIso: string): string {
   if (!startIso || !endIso) return "";
@@ -23,10 +24,10 @@ export function fmtDateRange(startIso: string, endIso: string): string {
   const b = parts(endIso);
   const month = (n: number) => MONTHS[n - 1] ?? "";
   if (a.y !== b.y) {
-    return `${month(a.m)} ${a.d}, ${a.y} – ${month(b.m)} ${b.d}, ${b.y}`;
+    return `${month(a.m)} ${a.d}, ${a.y} to ${month(b.m)} ${b.d}, ${b.y}`;
   }
-  if (a.m !== b.m) return `${month(a.m)} ${a.d} – ${month(b.m)} ${b.d}, ${a.y}`;
-  if (a.d !== b.d) return `${month(a.m)} ${a.d} – ${b.d}, ${a.y}`;
+  if (a.m !== b.m) return `${month(a.m)} ${a.d} to ${month(b.m)} ${b.d}, ${a.y}`;
+  if (a.d !== b.d) return `${month(a.m)} ${a.d} to ${b.d}, ${a.y}`;
   return `${month(a.m)} ${a.d}, ${a.y}`;
 }
 
