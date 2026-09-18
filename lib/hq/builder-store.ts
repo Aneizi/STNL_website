@@ -677,6 +677,12 @@ export class BuilderStore {
     return { tier: String(profile.rows[0]?.tier??'regular'), requests:requests.rows, enrollments:enrollments.rows, events:events.rows };
   }
 
+  /** The operator-set tier (updateBuilderTier), read on its own for the account page's role label: 'regular' until an operator grants 'member'. */
+  async tier(userId: string): Promise<'regular'|'member'> {
+    const { rows } = await this.db.query('SELECT tier FROM hq_builder_profiles WHERE id=$1', [userId]);
+    return rows[0]?.tier==='member'?'member':'regular';
+  }
+
   /** The last line of defence behind `authorizedTeam(... 'membership.change')`: the same verified-owner predicate the decision makes, so a caller that forgot the decision gets no looser rule. */
   async updateTeam(userId: string, projectId: string, stage: ProjectStage, leadUsername: string) {
     await this.db.transaction(async db => {
