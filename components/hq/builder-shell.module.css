@@ -74,8 +74,7 @@
 .details summary { cursor:pointer; text-decoration:underline; text-underline-offset:4px; padding:10px 0; }
 .importHelpFooter { margin-top:28px; text-align:center; }
 .importHelpFooter button { min-height:44px; }
-.importHelpFooter button:disabled { opacity:.5; cursor:default; }
-.importHelpDialog { position:fixed; inset:0; width:min(480px,calc(100% - 32px)); max-height:calc(100dvh - 48px); box-sizing:border-box; margin:auto; padding:28px; overflow:auto; border:1px solid var(--line); border-radius:12px; background:var(--cream); color:var(--ink); font:inherit; box-shadow:0 24px 80px color-mix(in srgb,var(--ink) 20%,transparent); }
+.importHelpDialog { position:fixed; inset:0; width:min(480px,calc(100% - 48px)); max-height:calc(100dvh - 48px); box-sizing:border-box; margin:auto; padding:28px; overflow:auto; border:1px solid var(--line); border-radius:12px; background:var(--cream); color:var(--ink); font:inherit; box-shadow:0 24px 80px color-mix(in srgb,var(--ink) 20%,transparent); }
 .importHelpDialog::backdrop { background:color-mix(in srgb,var(--ink) 42%,transparent); }
 .importHelpHeader { display:flex; align-items:flex-start; gap:16px; }
 .importHelpHeader h2 { flex:1; margin:0 0 14px; }
@@ -94,3 +93,7 @@
 .workspace small,.workspace .status,.workspace .row small,.workspace .row .secondary { font-size:17px; }
 .workspace p { max-width:72ch; }
 .workspace .choice strong { font-family:inherit; font-size:20px; font-weight:600; line-height:1.4; }
+/* The inline Colosseum link keeps its own colour and underline, at rest and on hover, against hq.css's `.hq a` rules, which outrank a bare class. */
+.page a.inlineLink,.page a.inlineLink:hover { color:#b74010; text-decoration:underline; text-underline-offset:4px; }
+/* Placeholders in the onboarding fields read as muted ink, not hq.css's faded operator tone. */
+.page .field input::placeholder,.page .field textarea::placeholder { color:#57534a; opacity:1; }

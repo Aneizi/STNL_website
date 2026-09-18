@@ -6,5 +6,5 @@ export const metadata:Metadata={title:'Join a team'};
 export const dynamic='force-dynamic';
 export default async function JoinPage(){
   await requireMember('/hq/join');
-  return <BuilderShell back='/hq/welcome'><h1>Join your <em>team.</em></h1><p>Paste your team’s join link.</p><BuilderJoin/></BuilderShell>;
+  return <BuilderShell back='/hq/welcome'><h1>Join your <em>team.</em></h1><BuilderJoin/></BuilderShell>;
 }

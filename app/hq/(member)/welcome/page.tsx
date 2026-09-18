@@ -7,6 +7,7 @@ export const metadata:Metadata={title:'Find your team'};
 export const dynamic='force-dynamic';
 export default async function WelcomePage(){
   await requireMember('/hq/welcome');
-  const hackathons=await builderStore().hackathons();
-  return <BuilderShell back='/colosseum/start'><h1>Find your <em>team.</em></h1><p>Choose how you’d like to take part.</p><BuilderWelcome hackathons={hackathons}/></BuilderShell>;
+  // Import goes to the open edition, live first; without one the Initialize page answers for itself.
+  const [edition]=await builderStore().hackathons();
+  return <BuilderShell back='/colosseum/start'><h1>Find your <em>team.</em></h1><p>Choose how you’d like to take part.</p><BuilderWelcome hackathonId={edition?.id??null}/></BuilderShell>;
 }

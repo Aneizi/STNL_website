@@ -1,39 +1,38 @@
 'use client';
 
 import { useEffect, useRef, useState, useTransition } from 'react';
-import { useRouter } from 'next/navigation';
+import { IconArrowRight } from 'symbols-react';
 import { requestBuilderReview } from '@/lib/hq/actions/builders';
 import styles from './builder-shell.module.css';
 
-export function BuilderImportHelp({ hackathonId, projectUrl, telegramConnected, disabled }: {
-  hackathonId: number;
-  projectUrl: string;
-  telegramConnected: boolean;
-  disabled: boolean;
-}) {
+/**
+ * The way in when Colosseum cannot return the project: a request that an
+ * operator creates the team by hand. The link field is the page's own
+ * (`url`/`onUrl`), so a link typed here is the one the page keeps. The
+ * request confirms in place and the modal stays open; nothing navigates.
+ */
+export function BuilderImportHelp({ hackathonId, url, onUrl }: { hackathonId: number; url: string; onUrl: (value: string) => void }) {
   const [open, setOpen] = useState(false);
   return <>
     <div className={styles.importHelpFooter}>
-      <button type='button' className={styles.textButton} aria-haspopup='dialog' disabled={disabled} onClick={() => setOpen(true)}>
-        Can’t import your project?
-      </button>
+      <button type='button' className={styles.textButton} aria-haspopup='dialog' onClick={() => setOpen(true)}>Can’t find your project?</button>
     </div>
-    {open && <ImportHelpDialog hackathonId={hackathonId} initialUrl={projectUrl} telegramConnected={telegramConnected} onClose={() => setOpen(false)}/>}
+    {open && <ImportHelpDialog hackathonId={hackathonId} url={url} onUrl={onUrl} onClose={() => setOpen(false)}/>}
   </>;
 }
 
-function ImportHelpDialog({ hackathonId, initialUrl, telegramConnected, onClose }: {
+function ImportHelpDialog({ hackathonId, url, onUrl, onClose }: {
   hackathonId: number;
-  initialUrl: string;
-  telegramConnected: boolean;
+  url: string;
+  onUrl: (value: string) => void;
   onClose: () => void;
 }) {
-  const router = useRouter();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const projectLinkRef = useRef<HTMLInputElement>(null);
-  const [url, setUrl] = useState(initialUrl);
+  // Always asked for: the action keeps the account's own Telegram identity
+  // when there is one and uses the typed handle only otherwise.
   const [telegramUsername, setTelegramUsername] = useState('');
-  const [needsTelegramUsername, setNeedsTelegramUsername] = useState(!telegramConnected);
+  const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
   const [usernameError, setUsernameError] = useState(false);
   const [pending, start] = useTransition();
@@ -55,16 +54,14 @@ function ImportHelpDialog({ hackathonId, initialUrl, telegramConnected, onClose 
     event.preventDefault();
     start(async () => {
       setError('');
+      setSent(false);
       setUsernameError(false);
       try {
-        const result = await requestBuilderReview({ hackathonId, url, telegramUsername: needsTelegramUsername ? telegramUsername : undefined });
-        if (result.ok) router.replace(result.data.url);
+        const result = await requestBuilderReview({ hackathonId, url, telegramUsername });
+        if (result.ok) setSent(true);
         else {
           setError(result.error);
-          if ('field' in result && result.field === 'telegramUsername') {
-            setNeedsTelegramUsername(true);
-            setUsernameError(true);
-          }
+          if ('field' in result && result.field === 'telegramUsername') setUsernameError(true);
         }
       } catch {
         setError('We couldn’t send your request. Please try again.');
@@ -80,19 +77,20 @@ function ImportHelpDialog({ hackathonId, initialUrl, telegramConnected, onClose 
       if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.currentTarget.close();
     }}>
     <div className={styles.importHelpHeader}>
-      <h2 id='import-help-title'>Let’s get your project in.</h2>
+      <h2 id='import-help-title'>Request help</h2>
       <button type='button' className={styles.importHelpClose} aria-label='Close import help' onClick={() => dialogRef.current?.close()}><span aria-hidden='true'>×</span></button>
     </div>
-    <p id='import-help-description'>Paste your project link and we’ll take a look.</p>
+    <p id='import-help-description'>If Colosseum can’t return your project yet, send us the link and your Telegram username. We’ll create your team in HQ by hand.</p>
     <form className={styles.form} onSubmit={submit} aria-busy={pending}>
-      <label className={styles.field}>Project link
-        <input ref={projectLinkRef} type='url' name='projectUrl' value={url} onChange={event => setUrl(event.target.value)} placeholder='https://colosseum.com/arena/projects/…' autoComplete='url' spellCheck={false} required maxLength={2048} disabled={pending}/>
+      <label className={styles.field}>Colosseum project link
+        <input ref={projectLinkRef} type='url' name='projectUrl' value={url} onChange={event => onUrl(event.target.value)} placeholder='https://colosseum.com/arena/projects/…' autoComplete='off' spellCheck={false} required maxLength={2048} disabled={pending}/>
       </label>
-      {needsTelegramUsername && <label className={styles.field}>Telegram username
+      <label className={styles.field}>Telegram username
         <input type='text' name='telegramUsername' value={telegramUsername} onChange={event => setTelegramUsername(event.target.value)} placeholder='@yourname' autoComplete='off' autoCapitalize='none' spellCheck={false} required maxLength={33} pattern='@?[A-Za-z0-9_]{1,32}' title='Enter your Telegram username, such as @yourname.' aria-invalid={usernameError || undefined} aria-describedby={usernameError ? 'import-help-error' : undefined} disabled={pending}/>
-      </label>}
+      </label>
+      <button type='submit' className={styles.button} disabled={pending}>{sent ? 'Sent' : 'Send request'}<IconArrowRight width={20} height={20} fill='currentColor' aria-hidden='true'/></button>
       {error && <p id='import-help-error' className={styles.error} role='alert'>{error}</p>}
-      <button type='submit' className={styles.button} disabled={pending}>{pending ? 'Sending…' : 'Request help'}</button>
+      {sent && <p className={styles.success} role='status'>Sent. We’ll be in touch on Telegram.</p>}
     </form>
   </dialog>;
 }
