@@ -171,8 +171,8 @@ describe("reading capabilities", () => {
 
   it("renders the role tag first and one locked tag per capability", () => {
     expect(personTags("Builder", [])).toEqual([{ kind: "role", label: "Builder", protected: false }]);
-    expect(personTags("Partner captain", ["captain"])).toEqual([
-      { kind: "role", label: "Partner captain", protected: false },
+    expect(personTags("Partner contact", ["captain"])).toEqual([
+      { kind: "role", label: "Partner contact", protected: false },
       { kind: "capability", label: "Captain", protected: true },
     ]);
   });

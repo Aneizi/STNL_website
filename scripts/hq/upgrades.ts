@@ -307,16 +307,24 @@ export async function applyUpgrades(sql: SqlRunner) {
 
   // The seeded partner-liaison People role was called "Captain". That name
   // now belongs to the admin-granted Captain capability (lib/hq/capabilities.ts),
-  // which People shows as a locked tag, so the ordinary role is renamed in
+  // which People shows as a Captain tag, so the ordinary role is renamed in
   // place: same id, so every card keeps its role. The NOT EXISTS guard makes
   // a re-run a no-op and leaves a database that already has both labels
-  // alone (ruling Q4, task T1.2).
+  // alone (ruling Q4, task T1.2). The People redesign then renamed the role
+  // once more, "Partner captain" to "Partner contact", the same way; the two
+  // steps run in order, so a database from before either lands on the
+  // current label in one migration.
   const [rolesTable] = await sql.query(`SELECT to_regclass('hq_people_roles') AS tbl`);
   if (rolesTable?.tbl) {
     await sql.query(`
       UPDATE hq_people_roles SET label = 'Partner captain', filter_label = 'Partner captains'
       WHERE label = 'Captain'
         AND NOT EXISTS (SELECT 1 FROM hq_people_roles WHERE label = 'Partner captain')
+    `);
+    await sql.query(`
+      UPDATE hq_people_roles SET label = 'Partner contact', filter_label = 'Partner contacts'
+      WHERE label = 'Partner captain'
+        AND NOT EXISTS (SELECT 1 FROM hq_people_roles WHERE label = 'Partner contact')
     `);
   }
 }
