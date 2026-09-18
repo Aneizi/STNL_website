@@ -1,5 +1,5 @@
 // The member shell stays on the member side. A static scan keeps the member
-// layout, the builder components and the two pure modules free of operator
+// layout, the builder components and the pure route module free of operator
 // imports (queries, chrome, session, operator actions), the way the auth
 // boundary test keeps every page gated; the render checks cover the captain
 // page's gate and the two Connect Telegram hints with the actor stubbed.
@@ -15,7 +15,6 @@ const mocks = vi.hoisted(() => ({
   requireMemberActor: vi.fn(),
   teams: vi.fn(),
   ownedProjects: vi.fn(),
-  hasTeams: vi.fn(),
   currentHackathonId: vi.fn(),
   teamById: vi.fn(),
   leaderboard: vi.fn(),
@@ -41,7 +40,6 @@ vi.mock("@/lib/hq/builder-store", () => ({
   builderStore: () => ({
     teams: mocks.teams,
     ownedProjects: mocks.ownedProjects,
-    hasTeams: mocks.hasTeams,
     currentHackathonId: mocks.currentHackathonId,
     teamById: mocks.teamById,
     dashboard: mocks.dashboard,
@@ -75,7 +73,6 @@ describe("the member shell imports nothing operator-side", () => {
   // builder-admin.tsx is the operator's panel about builders, rendered by the admin page; it is operator-side by design and forbidden below instead.
   const scanned = [
     "app/hq/(member)/layout.tsx",
-    "lib/hq/member-nav.ts",
     "lib/hq/member-routes.ts",
     // Phase 6's member reporting interface: a client component of the member
     // shell like the builder-* ones below, and held to the same rule.
@@ -97,10 +94,10 @@ describe("the member shell imports nothing operator-side", () => {
     }).map((path) => path.replace(/\.(tsx?|css)$/, ""));
   }
 
-  it("scans the layout, the two pure modules and every builder component", () => {
+  it("scans the layout, the pure route module and every builder component", () => {
     expect(scanned.length).toBeGreaterThanOrEqual(8);
     expect(scanned).toContain("components/hq/reporting-member.tsx");
-    expect(scanned).toContain("components/hq/builder-nav.tsx");
+    expect(scanned).toContain("components/hq/builder-account-menu.tsx");
     expect(scanned).toContain("components/hq/builder-shell.tsx");
   });
 
@@ -114,17 +111,16 @@ describe("the member shell imports nothing operator-side", () => {
     });
   }
 
-  it("keeps the two pure modules client-safe: no server-only, no environment, no runtime import of a server module", () => {
-    for (const file of ["lib/hq/member-nav.ts", "lib/hq/member-routes.ts"]) {
-      const source = readFileSync(join(ROOT, file), "utf8");
-      expect(source, file).not.toContain("server-only");
-      expect(source, file).not.toContain("process.env");
-      for (const target of runtimeImports(file)) expect(target.startsWith("lib/hq/"), `${file} imports ${target} at runtime`).toBe(false);
-    }
+  it("keeps the pure route module client-safe: no server-only, no environment, no runtime import of a server module", () => {
+    const file = "lib/hq/member-routes.ts";
+    const source = readFileSync(join(ROOT, file), "utf8");
+    expect(source, file).not.toContain("server-only");
+    expect(source, file).not.toContain("process.env");
+    for (const target of runtimeImports(file)) expect(target.startsWith("lib/hq/"), `${file} imports ${target} at runtime`).toBe(false);
   });
 
-  it("keeps the shell a server component that renders the client nav, and the nav a client component", () => {
-    expect(readFileSync(join(ROOT, "components/hq/builder-nav.tsx"), "utf8").startsWith("'use client'")).toBe(true);
+  it("keeps the shell a server component that renders the client account menu, and the menu a client component", () => {
+    expect(readFileSync(join(ROOT, "components/hq/builder-account-menu.tsx"), "utf8").startsWith("'use client'")).toBe(true);
     expect(readFileSync(join(ROOT, "components/hq/builder-shell.tsx"), "utf8")).not.toContain("use client");
     expect(readFileSync(join(ROOT, "app/hq/(member)/layout.tsx"), "utf8")).not.toContain("use client");
   });
@@ -345,37 +341,32 @@ describe("the member layout", () => {
   const shell = createElement(BuilderShell, null, createElement("p", null, "content"));
   const render = async () => renderToStaticMarkup(await HqMemberLayout({ children: shell }));
 
-  it("derives the menu and the account corner from the actor and the team existence check, for the shell a page renders", async () => {
+  it("hands the actor's name to the avatar menu of the shell a page renders, and reads nothing else", async () => {
     mocks.currentActor.mockResolvedValue(member({ capabilities: new Set(["captain"]) }));
-    mocks.hasTeams.mockResolvedValue(true);
-    mocks.pathname = "/hq/captain";
     const html = await render();
-    for (const label of ["Home", "My teams", "Captain", "Connect Telegram", "Account"]) expect(html).toContain(`>${label}</a>`);
-    expect(html).toContain("Fictional Builder");
-    expect(html).toMatch(/<button[^>]*>Sign out<\/button>/);
+    expect(html).toMatch(/<button[^>]*aria-label="Account menu"[^>]*aria-expanded="false"[^>]*>FB<\/button>/);
+    expect(html.match(/<a[^>]*aria-label="Superteam NL home"[^>]*>/)?.[0]).toContain('href="/hq/dashboard"');
     expect(html).toContain("<p>content</p>");
-    expect(html.match(/aria-current="page"/g)).toHaveLength(1);
-    expect(mocks.hasTeams).toHaveBeenCalledWith("acct-1");
-    // The dashboard loads the teams it renders; the menu never loads them to count them.
+    // The menu is closed in static markup: the name and its items appear only once it opens.
+    expect(html).not.toContain("Fictional Builder");
+    expect(html).not.toContain('role="menu"');
+    expect(html).not.toContain("<nav");
+    expect(html).not.toContain("HQ navigation");
+    for (const label of ["Home", "My teams", "Register team", "Captain", "Connect Telegram", "Account"]) expect(html).not.toContain(`>${label}</a>`);
+    // The header needs no team read: the Home page loads the teams it renders.
     expect(mocks.teams).not.toHaveBeenCalled();
+    expect(mocks.ownedProjects).not.toHaveBeenCalled();
+    expect(readFileSync(join(ROOT, "app/hq/(member)/layout.tsx"), "utf8")).not.toContain("builder-store");
   });
 
-  it("offers Register team while the existence check is false", async () => {
-    mocks.currentActor.mockResolvedValue(member());
-    mocks.hasTeams.mockResolvedValue(false);
-    const html = await render();
-    expect(html).toContain(">Register team</a>");
-    expect(html).not.toContain(">My teams</a>");
-  });
-
-  it("renders no menu for a visitor, and none for an operator session, which is not a member", async () => {
+  it("renders no avatar for a visitor, and none for an operator session, which is not a member", async () => {
     mocks.currentActor.mockResolvedValue(null);
-    expect(await render()).not.toContain("HQ navigation");
+    expect(await render()).not.toContain("Account menu");
     mocks.currentActor.mockResolvedValue({ kind: "operator", id: "op", displayName: "Operator" });
     const html = await render();
-    expect(html).not.toContain("HQ navigation");
+    expect(html).not.toContain("Account menu");
     expect(html).not.toContain("Operator");
     expect(html).not.toContain("Sign out");
-    expect(mocks.hasTeams).not.toHaveBeenCalled();
+    expect(html).toContain("Superteam NL");
   });
 });
