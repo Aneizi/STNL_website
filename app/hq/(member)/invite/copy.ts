@@ -5,7 +5,7 @@ import type { AcceptCaptainInvitationOutcome } from "@/lib/hq/actions/invite";
 // not-found only) and the accept form's post-submit result (the full
 // union). One table so the two never drift apart, and so "not-found" (the
 // exchange step found no matching token) and "invalid-continuation" (this
-// page found no valid continuation) read identically — a visitor is never
+// page found no valid continuation) read identically: a visitor is never
 // told which case it was.
 //
 // A member never sees who created a link, who else redeemed it, its
@@ -17,12 +17,23 @@ export type InviteOutcome = AcceptCaptainInvitationOutcome;
 
 export type InviteOutcomeCopy = { heading: string; emphasis: string; body: string; tone: "good" | "bad" };
 
+/** What accepting does, shown while the invitation is still open, to a signed-in and a signed-out visitor alike. */
+export const INVITE_INTRO =
+  "Accepting gives your HQ account Captain access, nothing else. It grants no admin access and no project assignment; an admin assigns your team separately, and nothing about your existing teams or roles changes.";
+
+const NOT_FOUND: InviteOutcomeCopy = {
+  heading: "Invitation",
+  emphasis: "not found.",
+  tone: "bad",
+  body: "This invitation link is not one we recognise. Ask the admin who sent it for a fresh one.",
+};
+
 const COPY: Record<InviteOutcome, InviteOutcomeCopy> = {
   granted: {
-    heading: "You're a",
+    heading: "You are now a",
     emphasis: "Captain.",
     tone: "good",
-    body: "Your HQ account now has Captain access. The Captain menu item appears the next time you load a page. An admin assigns your team separately — this does not change your existing teams or roles.",
+    body: "Captain access is on your account. An admin will assign your team; until then the Captain page shows no assignments.",
   },
   "already-redeemed": {
     heading: "Already",
@@ -40,19 +51,19 @@ const COPY: Record<InviteOutcome, InviteOutcomeCopy> = {
     heading: "Invitation",
     emphasis: "revoked.",
     tone: "bad",
-    body: "Whoever sent this link has revoked it. Ask them for a new one.",
+    body: "This invitation was withdrawn by an admin. Nothing on your account has changed.",
   },
   expired: {
     heading: "Invitation",
     emphasis: "expired.",
     tone: "bad",
-    body: "This invitation is past its expiry. Ask whoever sent it for a new one.",
+    body: "This invitation has passed its expiry. Ask the admin who sent it for a fresh one.",
   },
   full: {
     heading: "Invitation",
-    emphasis: "full.",
+    emphasis: "used up.",
     tone: "bad",
-    body: "This invitation has reached its limit and is no longer accepting new Captains. Ask whoever sent it for a new one.",
+    body: "Every seat on this invitation has been taken. Ask the admin who sent it for a fresh one.",
   },
   unverified: {
     heading: "Verify your",
@@ -60,24 +71,14 @@ const COPY: Record<InviteOutcome, InviteOutcomeCopy> = {
     tone: "bad",
     body: "Add a verified email or connect Telegram to your HQ account, then use this link again.",
   },
-  "not-found": {
-    heading: "Invalid",
-    emphasis: "link.",
-    tone: "bad",
-    body: "This invitation link isn't valid. It may be mistyped or out of date. Ask whoever sent it for a new one.",
-  },
+  "not-found": NOT_FOUND,
   "no-profile": {
     heading: "Almost",
     emphasis: "there.",
     tone: "bad",
     body: "Your account is still finishing setup. Try this link again in a moment.",
   },
-  "invalid-continuation": {
-    heading: "Invalid",
-    emphasis: "link.",
-    tone: "bad",
-    body: "This invitation link isn't valid. It may be mistyped or out of date. Ask whoever sent it for a new one.",
-  },
+  "invalid-continuation": NOT_FOUND,
 };
 
 export function inviteOutcomeCopy(outcome: InviteOutcome): InviteOutcomeCopy {
