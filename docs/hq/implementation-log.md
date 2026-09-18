@@ -5977,3 +5977,53 @@ mobile browser previews verified the layout. Deployment
 `dpl_D5Y7GZBS5ZY7oGqV2gc9evETDrbv` passed the hosted build, an explicit check
 that the logo is bundled with the auth function, and all 14 staging HTTPS checks.
 No live verification emails were sent during this change.
+
+## People redesign, 18 September 2026
+
+The operator People page was rebuilt to the design handoff
+(`docs/plans/design_handoff_colosseum_hq/design/admin/People.dc.html`).
+
+- Columns are Name, Tags, Contact and a chevron; a row expands in place to
+  its editor (Name, Role, Notes), the linked account and the Captain
+  control, one row at a time, reachable from the keyboard (`role="button"`,
+  Enter or Space). The Organization, Partner, Notes and Edit columns, the
+  partner filter, the "Linked partner" field and the locked-tag hint
+  ("Granted in Admin") are gone. Rows draw no rule lines.
+- The New person card takes Name, Role, Telegram and Email. A card keeps one
+  contact (`hq_people.contact`): the handle, stored as "@handle", else the
+  email. `createPerson` validates the handle (5 to 32 letters, digits or
+  underscores) and the email; `updatePerson` accepts name, roleId and notes
+  only. `hq_people.org` and `hq_people.partner_id` stay as columns, unread
+  and unwritten; `searchAll` no longer matches on org and a Person result's
+  meta is the role label alone.
+- `Person` (`lib/hq/types.ts`) lost `org`, `partnerId` and `partnerName`
+  and gained `account` (`{ email, telegramUsername }` of the linked account,
+  null for a hand-entered card) and `captain`. `getPeople` reads the login
+  through the same profile and Telegram identity join Admin uses, still in
+  one `operatorQuery()` call for the grants, and `contact` is resolved
+  server-side: the account's handle, else the stored contact, else the
+  login email.
+- The expanded panel's Captain control ("Make Captain" / "Remove Captain")
+  calls the new `setPersonCaptain(personId, captain)` in
+  `lib/hq/actions/people.ts`, which resolves the account from the card
+  within the selected edition, refuses a hand-entered card ("This person has
+  no HQ account yet."), and delegates to `grantCaptainCapability` /
+  `revokeCaptainCapability` with the fixed reasons "Granted from People" and
+  "Removed from People", so the grant, the audit event and (on revoke) the
+  clearing of current project assignments stay in one module. Removing
+  Captain is confirmed in the browser first ("Remove Captain from {name}?
+  Their current project assignments are cleared."). A card without an
+  account shows the control disabled at half opacity with "No HQ account
+  yet."
+- The seeded liaison role is "Partner contact" ("Partner contacts"). A
+  second guarded step in `scripts/hq/upgrades.ts` renames "Partner captain"
+  in place, same id, right after the existing "Captain" step, so a database
+  from before either rename lands on the current label in one migration.
+- Action failures render inline as `role="alert"` in the panel or in the
+  New person card, with the drafts kept; the operator toast stays for the
+  two successes it already announced (match cleared, person deleted).
+
+Verification: `npx tsc --noEmit` clean; `npx eslint` 0 errors, 18
+pre-existing warnings, all in `public/deck/deck-stage.js`; `npx vitest run`
+69 files, 1,722 tests pass (1,700 before, 22 new: `tests/hq/people-view.test.ts`
+and three People cases in `tests/hq/builders-admin.test.ts`).
