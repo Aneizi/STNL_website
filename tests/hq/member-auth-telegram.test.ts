@@ -1003,17 +1003,30 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(html).toContain('name="name"');
     expect(html).not.toContain('type="email"');
     expect(html).not.toContain("placeholder.invalid");
+    // A Telegram account can be messaged, so the bot box is offered, ticked; the brand is plain text here.
+    expect(html).toMatch(/<input[^>]*type="checkbox"[^>]*name="botAllowed"[^>]*checked=""/);
+    expect(html).toContain("Allow the Superteam NL bot to reach you on Telegram for reminders");
+    expect(html).toContain("Superteam NL");
+    expect(html).not.toContain("superteam NL");
+    expect(html).not.toMatch(/<a[^>]*href="\/"/);
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toMatch(/[—·]/);
 
     const { completeMemberProfile } = await import("@/app/hq/(member)/profile/actions");
     const form = new FormData();
     form.set("name", "Named Builder");
     form.set("next", "/hq/welcome");
+    form.set("botAllowed", "on");
     await expect(completeMemberProfile(null, form)).rejects.toThrow("REDIRECT:/hq/welcome");
     expect((await state.pg!.query("SELECT name FROM hq_auth_user")).rows).toEqual([{ name: "Named Builder" }]);
     expect((await state.pg!.query("SELECT email, name FROM hq_builder_profiles")).rows).toEqual([{ email: null, name: "Named Builder" }]);
     expect(state.synced).toHaveBeenCalledWith({ id: expect.any(String), email: null, name: "Named Builder" });
     expect(state.sent).toEqual([]);
     expect((await requireMember("/hq/welcome")).name).toBe("Named Builder");
+    // The ticked box is the consent the bot needs, recorded for this Telegram account with its audit event.
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
+    expect(await getBotConsent(userId)).toMatchObject({ userId, telegramUserId: String(TELEGRAM_ID), messagingEnabled: true, revokedAt: null });
+    expect(await auditEvents()).toEqual([identityEvent("identity.linked", userId), memberEvent("bot.consent_changed", userId, { enabled: true })]);
   });
 
   it("stays stale through the library's own session refresh", async () => {

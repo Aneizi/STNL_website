@@ -57,3 +57,9 @@
   .brand { font-size: 16px; }
   .brand img { width: 25px; }
 }
+
+/* The name step only: the orange "name?", the bot checkbox and an error that sits in the form grid. */
+.content h1 em { color: #ee5b23; font-weight: 400; font-style: italic; }
+.check { display: flex; align-items: flex-start; gap: 14px; font-size: 17px; cursor: pointer; }
+.check input { width: 22px; height: 22px; margin: 3px 0 0; accent-color: #ee5b23; flex: none; }
+.form .error { margin: 0; }

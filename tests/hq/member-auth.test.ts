@@ -232,12 +232,18 @@ describe("public HQ sign-in through Better Auth", () => {
     const { completeMemberProfile } = await import("@/app/hq/(member)/profile/actions");
     const empty = new FormData();
     empty.set("name", "   ");
-    expect(await completeMemberProfile(null, empty)).toEqual({ error: "Enter your name, using 120 characters or fewer." });
+    expect(await completeMemberProfile(null, empty)).toEqual({ error: "Enter your name." });
+    const long = new FormData();
+    long.set("name", "N".repeat(121));
+    expect(await completeMemberProfile(null, long)).toEqual({ error: "Enter your name, using 120 characters or fewer." });
     const form = new FormData();
     form.set("name", "Recovered Builder");
     form.set("next", "/hq/join?code=abc");
+    // Without Telegram there is nobody to message: the page never offers the box, and a ticked value stores nothing.
+    form.set("botAllowed", "on");
     await expect(completeMemberProfile(null, form)).rejects.toThrow("REDIRECT:/hq/join?code=abc");
     expect((await state.pg!.query("SELECT name FROM hq_people")).rows).toEqual([{ name: "Recovered Builder" }]);
+    expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_telegram_bot_consent")).rows).toEqual([{ n: 0 }]);
     expect((await requireMember("/hq/join?code=abc")).name).toBe("Recovered Builder");
   });
 
@@ -307,6 +313,9 @@ describe("public HQ sign-in through Better Auth", () => {
     expect((await state.pg!.query("SELECT id, email, contact_email, name FROM hq_builder_profiles")).rows).toEqual([{ id, email: null, contact_email: null, name: "Named Telegram Builder" }]);
     expect((await state.pg!.query("SELECT name, contact, hackathon_id FROM hq_people")).rows).toEqual([{ name: "Named Telegram Builder", contact: "", hackathon_id: 41 }]);
     expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_people WHERE contact ILIKE '%placeholder.invalid%'")).rows).toEqual([{ n: 0 }]);
+    // The bot box was left unticked (the field is absent): a fresh account records no decision and no audit event.
+    expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_telegram_bot_consent")).rows).toEqual([{ n: 0 }]);
+    expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_audit_events WHERE kind = 'bot.consent_changed'")).rows).toEqual([{ n: 0 }]);
     expect((await requireMember("/hq/dashboard")).name).toBe("Named Telegram Builder");
   });
 
