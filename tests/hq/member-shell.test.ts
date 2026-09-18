@@ -56,7 +56,10 @@ vi.mock("@/lib/hq/captains", () => ({ leaderboard: mocks.leaderboard, listAssign
 // reads above, so this file stays a unit test of the shell and the gate.
 vi.mock("@/lib/hq/reporting-surface", () => ({ captainReportingBoard: mocks.captainReportingBoard, memberWeekSummaries: mocks.memberWeekSummaries }));
 // The icon package ships its source; the pages here render markup, not icons.
-vi.mock("symbols-react", () => ({ IconArrowRight: (props: Record<string, unknown>) => createElement("svg", props) }));
+vi.mock("symbols-react", () => ({
+  IconArrowLeft: (props: Record<string, unknown>) => createElement("svg", props),
+  IconArrowRight: (props: Record<string, unknown>) => createElement("svg", props),
+}));
 
 import HqMemberLayout from "@/app/hq/(member)/layout";
 import CaptainPage from "@/app/hq/(member)/captain/page";
@@ -129,24 +132,49 @@ describe("the member shell imports nothing operator-side", () => {
 });
 
 describe("the captain page", () => {
+  const week = { periodId: "week-1", periodSequence: 1, startDate: "2026-09-14", endDate: "2026-09-20", startsAt: "2026-09-13T22:00:00.000Z", endsAt: "2026-09-20T22:00:00.000Z", completed: false };
+  // The service row the page orders by and never serializes: it carries the Captain's account id and the eligibility date.
+  const status = {
+    projectId: "p1", projectName: "Solo Project", hackathonId: 41, imported: true,
+    eligibleFrom: "2026-01-01T00:00:00.000Z", paused: false, captainUserId: "acct-1",
+    submissionStatus: "not_checked", current: null, missedPeriods: 0, history: [],
+  };
+  const card = { status, current: week, weeks: [week], teamContact: "@nienkev", entries: [], nextCursor: null, submissionFocus: null };
+  const board = (overrides: Record<string, unknown> = {}) => ({ hackathonId: 41, timezone: "Europe/Amsterdam", cards: [], week: null, captainContact: null, ...overrides });
+  const team = {
+    id: "p1", name: "Solo Project", hackathonId: 41, hackathonName: "Edition A",
+    projectUrl: "https://colosseum.com/arena/projects/explore/solo", description: "internal only", stage: "mvp",
+    verification: "verified", ownerId: "acct-1", leadUsername: "acct1_handle",
+    members: [
+      { id: "m1", name: "Fictional Builder", username: "acct1_handle", avatarUrl: null, joined: true },
+      { id: "m2", name: "Sofie Jansen", username: "sofiej", avatarUrl: null, joined: false },
+    ],
+    source: {
+      category: null, tracks: [], twitterHandle: null, website: null, repoLink: null,
+      presentationLink: null, technicalDemoLink: null, pitchVideoLink: null, demoVideoLink: null,
+      imageUrl: null, submissionStatus: "not_checked", submittedAt: null, completion: null,
+      sourceStatus: "never", sourceCheckedAt: null, sourceErrorCode: null,
+    },
+  };
+  const captain = () => member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } });
+  const render = async () => renderToStaticMarkup(await CaptainPage());
+
   beforeEach(() => {
     vi.clearAllMocks();
-    // The captain-with-nothing-yet defaults every test starts from; tests
-    // that need real assignment or leaderboard data override these.
+    // The Captain-with-nothing-yet defaults every test starts from; tests
+    // that need an assignment override the board.
     mocks.currentHackathonId.mockResolvedValue(41);
-    mocks.listAssignments.mockResolvedValue([]);
-    mocks.captainReportingBoard.mockResolvedValue({ hackathonId: 41, timezone: "Europe/Amsterdam", cards: [], captainContact: null });
-    mocks.leaderboard.mockResolvedValue([]);
+    mocks.captainReportingBoard.mockResolvedValue(board());
     mocks.teamById.mockResolvedValue(null);
     mocks.builderDatabase.mockReturnValue({});
   });
 
-  it("is not found without the capability, whatever else the account holds", async () => {
+  it("is not found without the capability, whatever else the account holds, before any read", async () => {
     mocks.requireMemberActor.mockResolvedValue(member({ telegram: { userId: "7000000000123" } }));
     await expect(CaptainPage()).rejects.toThrow("NOT_FOUND");
     expect(mocks.requireMemberActor).toHaveBeenCalledWith("/hq/captain");
-    expect(mocks.listAssignments).not.toHaveBeenCalled();
-    expect(mocks.leaderboard).not.toHaveBeenCalled();
+    expect(mocks.captainReportingBoard).not.toHaveBeenCalled();
+    expect(mocks.teamById).not.toHaveBeenCalled();
   });
 
   it("sends a signed-out visitor to sign in with the captain URL as the destination", async () => {
@@ -154,84 +182,95 @@ describe("the captain page", () => {
     await expect(CaptainPage()).rejects.toThrow(`REDIRECT:/hq/login?next=${encodeURIComponent("/hq/captain")}`);
   });
 
-  it("shows the empty state and the Connect Telegram hint for a captain without a Telegram identity", async () => {
+  it("renders the empty Den for a Captain with no assignments: the aside, one line in the main column, no hints", async () => {
     mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]) }));
-    const html = renderToStaticMarkup(await CaptainPage());
-    expect(html).toContain("No assignments yet. Assignments appear here once an admin assigns you a team.");
-    expect(html).toContain("Connect Telegram");
-    expect(html).toMatch(/<a[^>]*href="\/hq\/account"[^>]*>Connect Telegram<\/a>/);
+    const html = await render();
+    expect(html).toContain("Captains&#x27;");
+    expect(html).toContain("Your teams");
+    expect(html).toContain("Your contact");
+    expect(html).toContain("Not shared yet.");
+    expect(html).toContain("No teams assigned yet.");
+    expect(html).toMatch(/<a[^>]*href="\/hq\/dashboard"[^>]*>(?:(?!<\/a>).)*Home<\/a>/);
+    for (const copy of ["No assignments yet", "Connect Telegram", "leaderboard", "Week ", "<textarea"]) expect(html).not.toContain(copy);
     expect(html).not.toMatch(/[—·]/);
     expect(html.toLowerCase()).not.toMatch(/operator|hq-chrome/);
   });
 
-  it("drops the hint once Telegram is linked", async () => {
-    mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]), telegram: { userId: "7000000000123" } }));
-    const html = renderToStaticMarkup(await CaptainPage());
-    expect(html).toContain("No assignments yet.");
-    expect(html).not.toContain("Connect Telegram");
-  });
-
-  it("reads the current edition once, and asks its two data reads for exactly the signed-in Captain's own id", async () => {
-    const actor = member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } });
+  it("reads the current edition once, and asks the board for exactly the signed-in Captain at one instant", async () => {
+    const actor = captain();
     mocks.requireMemberActor.mockResolvedValue(actor);
     const db = { marker: "builder-pool" };
     mocks.builderDatabase.mockReturnValue(db);
     await CaptainPage();
     expect(mocks.currentHackathonId).toHaveBeenCalledTimes(1);
-    // Phase 6: the assignments are read inside captainReportingBoard, which
-    // narrows them to this actor's own id the same way the page used to.
-    // Phase 10 added the fourth argument: the page reads ONE request instant
-    // and passes it in, so the week the board decided, the final period it
-    // decided was open and the prompt the page renders all answer to the same
-    // moment rather than to three separate clock reads.
+    expect(mocks.captainReportingBoard).toHaveBeenCalledTimes(1);
     expect(mocks.captainReportingBoard).toHaveBeenCalledWith(actor, 41, db, expect.any(Number));
-    expect(mocks.leaderboard).toHaveBeenCalledWith(db, 41, "acct-1");
   });
 
-  it("renders the Captain's own assignment and the leaderboard, marking their own row, with no other project's name", async () => {
-    mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]), telegram: { userId: "7" } }));
-    mocks.captainReportingBoard.mockResolvedValue({
-      hackathonId: 41,
-      timezone: "Europe/Amsterdam",
-      captainContact: null,
-      cards: [{
-        status: {
-          projectId: "p1", projectName: "Solo Project", hackathonId: 41, imported: true,
-          eligibleFrom: "2026-01-01T00:00:00.000Z", paused: false, captainUserId: "acct-1",
-          submissionStatus: "not_checked", current: null, missedPeriods: 0, history: [],
-        },
-        current: null,
-        weeks: [],
-        teamContact: null,
-        entries: [],
-        nextCursor: null,
-      }],
-    });
-    mocks.teamById.mockResolvedValue({
-      id: "p1", name: "Solo Project", hackathonId: 41, hackathonName: "Edition A",
-      projectUrl: "https://colosseum.com/arena/projects/explore/solo", description: "internal only", stage: "mvp",
-      verification: "verified", ownerId: "acct-1", leadUsername: "acct1_handle",
-      members: [{ id: "m1", name: "Fictional Builder", username: "acct1_handle", avatarUrl: null, joined: true }],
-      source: {
-        category: null, tracks: [], twitterHandle: null, website: null, repoLink: null,
-        presentationLink: null, technicalDemoLink: null, pitchVideoLink: null, demoVideoLink: null,
-        imageUrl: null, submissionStatus: "not_checked", submittedAt: null, completion: null,
-        sourceStatus: "never", sourceCheckedAt: null, sourceErrorCode: null,
-      },
-    });
-    // Another Captain's name and count are allowed on the leaderboard; their
-    // project id, title or link are not part of this shape at all.
-    mocks.leaderboard.mockResolvedValue([
-      { rank: 1, displayName: "Fictional Builder", assignedCount: 1, isYou: true },
-      { rank: 2, displayName: "Other Captain", assignedCount: 0, isYou: false },
-    ]);
-    const html = renderToStaticMarkup(await CaptainPage());
-    expect(html).not.toContain("No assignments yet.");
-    expect(html).toContain("Solo Project");
-    expect(html).toContain("Other Captain");
-    expect(html).toContain("(you)");
-    // The description field never reaches a Captain's own copy of their team either.
-    expect(html).not.toContain("internal only");
+  it("reads no board without a current edition, and still renders the Den", async () => {
+    mocks.requireMemberActor.mockResolvedValue(captain());
+    mocks.currentHackathonId.mockResolvedValue(null);
+    const html = await render();
+    expect(mocks.captainReportingBoard).not.toHaveBeenCalled();
+    expect(html).toContain("No teams assigned yet.");
+  });
+
+  it("renders the Captain's own team: the week, the due line, the builders and their tags, the contact link and the note form, and nothing internal", async () => {
+    mocks.requireMemberActor.mockResolvedValue(captain());
+    mocks.captainReportingBoard.mockResolvedValue(board({ cards: [card], week: { sequence: 1, total: 4 }, captainContact: "@femkedj" }));
+    mocks.teamById.mockResolvedValue(team);
+    const html = await render();
+    expect(mocks.teamById).toHaveBeenCalledWith("p1");
+    // The aside.
+    expect(html).toContain("Week 1 of 4");
+    expect(html).toContain("@femkedj");
+    expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>(?:(?!<\/button>).)*Solo Project/);
+    expect(html).toContain('aria-label="Not updated"');
+    expect(html).not.toContain(">Updated</span>");
+    // The main column for that team.
+    expect(html).toContain("Team not updated. Due Sunday 20 September, 23:59 CEST");
+    expect(html).toContain("Fictional Builder");
+    expect(html).toContain(">Lead</span>");
+    expect(html).toContain("Sofie Jansen");
+    expect(html).toContain(">Not joined</span>");
+    expect(html).toMatch(/<a[^>]*href="https:\/\/t\.me\/nienkev"[^>]*target="_blank"[^>]*rel="noopener noreferrer"[^>]*>@nienkev<\/a>/);
+    expect(html).toContain("No update from the team this week.");
+    expect(html).toMatch(/<a[^>]*href="https:\/\/colosseum\.com\/arena\/projects\/explore\/solo"[^>]*>View on Colosseum<\/a>/);
+    expect(html).toContain(">Your note</p>");
+    expect(html).toContain('placeholder="What you saw, what you told them, what to watch."');
+    expect(html).toContain('maxLength="4000"');
+    expect(html).toContain("Keep private");
+    expect(html).toContain("Add note");
+    expect(html).toMatch(/<span id="priv-tip" role="tooltip"[^>]*hidden=""[^>]*>Only visible to you and HQ admins<\/span>/);
+    expect(html).not.toContain("Earlier");
+    // Neither the team's internal description nor the service row's fields reach the markup.
+    for (const secret of ["internal only", "acct-1", "2026-01-01", "eligibleFrom", "captainUserId"]) expect(html).not.toContain(secret);
+    expect(html).not.toMatch(/[—·]/);
+  });
+
+  it("shows a completed week as updated with the note optional, and an earlier private note with its tag and no Edit control", async () => {
+    mocks.requireMemberActor.mockResolvedValue(captain());
+    const entries = [
+      { id: "e1", projectId: "p1", periodId: "week-1", periodSequence: 1, body: "Shipped the QR checkout flow on devnet.", visibility: "shared", source: "hq", version: 1, late: false, edited: false, submittedAt: "2026-09-16T10:00:00.000Z", updatedAt: "2026-09-16T10:00:00.000Z", authorName: "Fictional Builder", authorIsYou: false, canEdit: false, voided: false },
+      { id: "e2", projectId: "p1", periodId: "week-1", periodSequence: 1, body: "Team dynamics look healthy.", visibility: "sensitive", source: "hq", version: 1, late: false, edited: false, submittedAt: "2026-09-15T10:00:00.000Z", updatedAt: "2026-09-15T10:00:00.000Z", authorName: "Fictional Captain", authorIsYou: true, canEdit: true, voided: false },
+    ];
+    mocks.captainReportingBoard.mockResolvedValue(board({ cards: [{ ...card, current: { ...week, completed: true }, entries }], week: { sequence: 1, total: 4 } }));
+    mocks.teamById.mockResolvedValue(team);
+    const html = await render();
+    expect(html).toContain("Team updated this week. No note needed");
+    expect(html).toContain(">Updated</span>");
+    expect(html).not.toContain('aria-label="Not updated"');
+    expect(html).toContain("Your note (optional)");
+    expect(html).toContain("Last update: Fictional Builder, 16 September.");
+    expect(html).toContain("Earlier");
+    expect(html).toContain("Shipped the QR checkout flow on devnet.");
+    expect(html).toContain("<span>Fictional Builder, 16 September</span>");
+    expect(html).toContain("<span>You, 15 September</span>");
+    expect(html).toContain('title="Only visible to you and HQ admins"');
+    expect(html.match(/>Private<\/span>/g)).toHaveLength(1);
+    expect(html).not.toMatch(/>Edit</);
+    expect(html).not.toContain("Show older notes");
+    expect(html).not.toMatch(/[—·]/);
   });
 });
 
