@@ -140,8 +140,10 @@ describe("the approved fallback image", () => {
     // Missing source, and an onError that swaps to the fallback.
     expect(source).toMatch(/if \(!src \|\| failed\) return <Image/);
     expect(source).toMatch(/onError=\{\(\) => setFailedSource\(src\)\}/);
-    // Contained proportions and one consistent size prop.
-    expect(source).toContain('objectFit: "contain"');
+    // Contained proportions by default, one consistent size prop; a page that
+    // treats the logo as a photo asks for `fit="cover"` explicitly.
+    expect(source).toContain('fit = "contain"');
+    expect(source).toContain("objectFit: fit");
     // Remote images remain direct; only the trusted local fallback is optimized.
     const remote = renderToStaticMarkup(createElement(BuilderProjectImage, { src: "https://images.example.com/team.png", name: "Team" }));
     expect(remote).toContain('src="https://images.example.com/team.png"');

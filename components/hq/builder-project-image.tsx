@@ -20,16 +20,20 @@ import { PROJECT_FALLBACK_IMAGE } from "@/lib/hq/colosseum-snapshot";
  * This is decorative project imagery. It is never a fallback for a human
  * avatar: a roster member with no picture gets no picture.
  */
-export function BuilderProjectImage({ src, name, size = 64, className }: {
+export function BuilderProjectImage({ src, name, size = 64, radius = 8, fit = "contain", className }: {
   src: string | null;
   /** The project's name. Used for the accessible description, never rendered as markup. */
   name: string;
   size?: number;
+  /** Corner radius in px. The redesigned member pages render the logo square. */
+  radius?: number;
+  /** How the image fills its box: contained by default, covered where a page treats it as a photo. */
+  fit?: "contain" | "cover";
   className?: string;
 }) {
   const [failedSource, setFailedSource] = useState<string | null>(null);
   const failed = src === failedSource;
-  const imageStyle = { width: size, height: size, maxWidth: "100%", objectFit: "contain" as const, borderRadius: 8, flexShrink: 0 };
+  const imageStyle = { width: size, height: size, maxWidth: "100%", objectFit: fit, borderRadius: radius, flexShrink: 0 };
   // Only the trusted local asset goes through the image optimizer. Sending
   // its full 1 MB original for a 64 px avatar wastes bandwidth on mobile.
   if (!src || failed) return <Image src={PROJECT_FALLBACK_IMAGE} alt="" aria-hidden width={size} height={size} sizes={`${size}px`} className={className} style={imageStyle} />;

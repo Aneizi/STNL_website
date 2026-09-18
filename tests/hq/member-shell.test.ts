@@ -80,6 +80,8 @@ describe("the member shell imports nothing operator-side", () => {
     // Phase 6's member reporting interface: a client component of the member
     // shell like the builder-* ones below, and held to the same rule.
     "components/hq/reporting-member.tsx",
+    // The entry card the team page and the Captains' Den share.
+    "components/hq/reporting-entry-card.tsx",
     ...readdirSync(join(ROOT, "components/hq")).filter((name) => name.startsWith("builder-") && name.endsWith(".tsx") && !name.startsWith("builder-admin")).map((name) => `components/hq/${name}`),
   ];
   // Operator-side modules: data, session, chrome, the admin builder panel, and every operator-gated action module (tests/hq/auth-boundary.test.ts holds the gate map).
