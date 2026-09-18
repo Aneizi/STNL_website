@@ -19,7 +19,6 @@ import type {
   Milestone,
   Partner,
   PartnerDetail,
-  PartnerOption,
   Person,
   Project,
   Role,
@@ -565,15 +564,6 @@ export async function getEventOptions(hackathonId: number): Promise<EventOption[
     options.push({ id: r.id, name: r.name });
   }
   return options;
-}
-
-/** Id/name pairs for partner dropdowns — no captain contact or metadata. */
-export async function getPartnerOptions(hackathonId: number): Promise<PartnerOption[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT id, name FROM hq_partners WHERE hackathon_id = ${hackathonId} ORDER BY created_at
-  `;
-  return rows.map((r) => ({ id: r.id, name: r.name }));
 }
 
 export async function getActivity(hackathonId: number, limit = 40): Promise<ActivityItem[]> {

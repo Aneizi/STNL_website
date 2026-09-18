@@ -15,7 +15,7 @@
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(288px, 100%), 1fr)); gap: 16px; margin-top: 20px; }
 .gridSettings { grid-template-columns: repeat(auto-fit, minmax(min(264px, 100%), 1fr)); gap: 20px; }
 .field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.field input, .field textarea, .field select, .tier select { width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid var(--sep); background: transparent; color: var(--label-1); font: inherit; box-sizing: border-box; }
+.field input, .field textarea, .field select { width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid var(--sep); background: transparent; color: var(--label-1); font: inherit; box-sizing: border-box; }
 .field textarea { resize: vertical; }
 .sectionLg .field input, .sectionLg .field select { font-size: 18px; }
 .fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
@@ -85,16 +85,6 @@
 .reminderDetail { font-size: 17px; color: var(--label-2); }
 
 .row { border-top: 1px solid var(--sep); padding-top: 20px; margin-top: 20px; min-width: 0; }
-.rowHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .badge { display: inline-flex; padding: 4px 8px; background: var(--fill-3); color: var(--label-2); font-weight: 600; white-space: nowrap; }
-.potential { background: var(--accent-fill); color: var(--accent-deep); }
-.roster { padding: 0; list-style: none; margin: 16px 0; }
-.roster li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--sep); }
-.tier { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-top: 12px; }
-.tier label { display: flex; flex-direction: column; gap: 8px; }
-.tier select { min-width: 150px; }
-.review { margin-top: 20px; }
-.review summary { cursor: pointer; min-height: 44px; display: list-item; align-content: center; font-weight: 600; }
-.review .field { margin-top: 16px; }
 .section :is(a, button, input, select, textarea, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 @media (max-width: 599px) { .section { padding: 16px; } }

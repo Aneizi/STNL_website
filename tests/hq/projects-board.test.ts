@@ -23,7 +23,7 @@ vi.mock("@/lib/hq/actions/captains", () => ({
 }));
 vi.mock("@/lib/hq/actions/builders-admin", () => ({
   updateBuilderProjectLead: vi.fn(), attachColosseumProject: vi.fn(), createProjectFromImportRequest: vi.fn(),
-  resolveBuilderImportRequest: vi.fn(), reviewBuilderHostRequest: vi.fn(), updateBuilderOnboardingConfig: vi.fn(), updateBuilderTier: vi.fn(),
+  resolveBuilderImportRequest: vi.fn(), updateBuilderOnboardingConfig: vi.fn(), updateBuilderTier: vi.fn(),
 }));
 vi.mock("@/lib/hq/actions/capabilities", () => ({ grantCaptainCapability: vi.fn(), revokeCaptainCapability: vi.fn() }));
 

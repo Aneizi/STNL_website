@@ -254,8 +254,6 @@ export type DemoProject = {
 
 export type Judge = { id: string; name: string };
 
-export type PartnerOption = { id: string; name: string };
-
 export type EventOption = { id: string; name: string };
 
 export type ActivityItem = {

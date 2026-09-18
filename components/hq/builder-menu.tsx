@@ -141,23 +141,3 @@ export function CaptainTile({ captain, teamCount }: { captain: boolean; teamCoun
       </span>}
   </li>;
 }
-
-/**
- * One team as a tile. Only the per-edition hackathon page still renders
- * these, one per project; Home links straight to the team instead.
- */
-export function MenuTile({ href, label, needsAttention = false }: { href: string; label: string; needsAttention?: boolean }) {
-  const tilt = useTilt();
-  return <li className={styles.item3d}>
-    <Link className={`${styles.tile} ${styles.live} ${styles.ink}`} href={href} {...tilt}>
-      <span className={`${styles.kicker} ${styles.kickerRow}`}>
-        <span/>
-        {needsAttention && <UpdateDue/>}
-      </span>
-      <span className={styles.body}>
-        <span className={styles.title}>{label}</span>
-        <ReservedLine/>
-      </span>
-    </Link>
-  </li>;
-}

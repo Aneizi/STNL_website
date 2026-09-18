@@ -892,21 +892,18 @@ describe("Captain assignment races with membership acceptance", () => {
   });
 });
 
-describe("manual requests and the dashboard read", () => {
+describe("manual requests", () => {
   it("stores an idempotent manual request without fabricating a CRM project", async () => {
     const url = "https://colosseum.com/arena/projects/explore/unpublished";
     await store.requestReview(OWNER, 42, url, "Project access is not open yet.");
     await store.requestReview(OWNER, 42, url, "Please help us when access opens.");
     await store.requestReview(OUTSIDER, 41, `${url}-other`, "Another account's request.");
-    const dashboard = await store.dashboard(OWNER.id);
-    expect(dashboard.tier).toBe("regular");
-    expect(dashboard.requests).toHaveLength(1);
-    expect(dashboard.requests[0]).toMatchObject({ project_url: url, status: "pending", name: "Next builders" });
-    expect(await rows("SELECT note FROM hq_project_import_requests WHERE user_id=$1", [OWNER.id]))
-      .toEqual([{ note: "Please help us when access opens." }]);
+    expect(await store.tier(OWNER.id)).toBe("regular");
+    expect(await rows("SELECT r.project_url,r.status,r.note,h.name FROM hq_project_import_requests r JOIN hq_hackathons h ON h.id=r.hackathon_id WHERE r.user_id=$1", [OWNER.id]))
+      .toEqual([{ project_url: url, status: "pending", note: "Please help us when access opens.", name: "Next builders" }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
-    expect(dashboard.enrollments.map(row => row.hackathon_id).sort()).toEqual([41, 42]);
-    expect((await store.dashboard(TEAMMATE.id)).requests).toEqual([]);
+    expect((await rows("SELECT hackathon_id FROM hq_builder_enrollments WHERE user_id=$1", [OWNER.id])).map(row => row.hackathon_id).sort()).toEqual([41, 42]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_project_import_requests WHERE user_id=$1", [TEAMMATE.id])).toEqual([{ n: 0 }]);
   });
 
   it("bounds per-account action attempts and resets the expired window", async () => {
@@ -989,7 +986,7 @@ describe("public builder actions", () => {
     // The route parses the link locally and records the request; it never
     // depends on the source being reachable, which is the whole point of it.
     expect(fetcher).not.toHaveBeenCalled();
-    expect((await store.dashboard(OWNER.id)).requests).toMatchObject([
+    expect(await rows("SELECT project_url FROM hq_project_import_requests WHERE user_id=$1", [OWNER.id])).toEqual([
       { project_url: `https://colosseum.com/arena/projects/${PROJECT.slug}` },
     ]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
@@ -1031,7 +1028,7 @@ describe("public builder actions", () => {
       .toEqual({ ok: true, data: { url: "/hq/dashboard" } });
     expect(await requestBuilderReview({ hackathonId: 41, url: `${longUrl}a`, telegramUsername: "builder" }))
       .toEqual({ ok: false, error: "Check the details and try again." });
-    expect((await store.dashboard(OWNER.id)).requests).toMatchObject([
+    expect(await rows("SELECT project_url FROM hq_project_import_requests WHERE user_id=$1", [OWNER.id])).toEqual([
       { project_url: `https://colosseum.com/arena/projects/${PROJECT.slug}` },
     ]);
   });

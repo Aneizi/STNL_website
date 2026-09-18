@@ -203,13 +203,13 @@ export class BuilderStore {
   async hackathons(): Promise<BuilderHackathon[]> {
     const { rows } = await this.db.query(`SELECT h.id,h.name,h.start_date::text,h.end_date::text,
       o.external_hackathon_id,o.external_hackathon_slug,o.projects_open,o.projects_available_at,
-      o.signup_url,o.hosting_enabled FROM hq_hackathons h
+      o.signup_url FROM hq_hackathons h
       LEFT JOIN hq_hackathon_onboarding o ON o.hackathon_id=h.id
       WHERE h.archived_at IS NULL ORDER BY (h.end_date >= current_date) DESC,h.start_date`);
     return rows.map(r => ({ id: Number(r.id), name: String(r.name), startDate: String(r.start_date), endDate: String(r.end_date),
       externalId: r.external_hackathon_id == null ? null : Number(r.external_hackathon_id), externalSlug: r.external_hackathon_slug as string | null,
       projectsOpen: Boolean(r.projects_open), projectsAvailableAt: asDate(r.projects_available_at),
-      signupUrl: String(r.signup_url || 'https://colosseum.com/signup'), hostingEnabled: Boolean(r.hosting_enabled) }));
+      signupUrl: String(r.signup_url || 'https://colosseum.com/signup') }));
   }
 
   async hackathon(id: number): Promise<BuilderHackathon> {
@@ -665,16 +665,6 @@ export class BuilderStore {
       await db.query('INSERT INTO hq_activity(hackathon_id,message) VALUES($1,$2)', [invite.hackathon_id,`${user.name} joined an imported team`]);
       return String(invite.project_id);
     });
-  }
-
-  async dashboard(userId: string) {
-    const [profile, requests, enrollments, events] = await Promise.all([
-      this.db.query('SELECT tier FROM hq_builder_profiles WHERE id=$1', [userId]),
-      this.db.query(`SELECT r.id,r.hackathon_id,r.project_url,r.status,h.name FROM hq_project_import_requests r JOIN hq_hackathons h ON h.id=r.hackathon_id WHERE r.user_id=$1 ORDER BY r.created_at DESC`, [userId]),
-      this.db.query('SELECT hackathon_id,participation FROM hq_builder_enrollments WHERE user_id=$1', [userId]),
-      this.db.query('SELECT e.id,e.hackathon_id,e.title,e.status,h.name FROM hq_event_host_requests e JOIN hq_hackathons h ON h.id=e.hackathon_id WHERE e.user_id=$1 ORDER BY e.created_at DESC', [userId]),
-    ]);
-    return { tier: String(profile.rows[0]?.tier??'regular'), requests:requests.rows, enrollments:enrollments.rows, events:events.rows };
   }
 
   /** The operator-set tier (updateBuilderTier), read on its own for the account page's role label: 'regular' until an operator grants 'member'. */

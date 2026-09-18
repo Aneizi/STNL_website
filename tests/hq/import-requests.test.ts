@@ -11,7 +11,7 @@ import type { BuilderImportRequest } from "@/lib/hq/builder-admin-queries";
 // bring the database imports with them; static markup needs their names.
 vi.mock("@/lib/hq/actions/builders-admin", () => ({
   attachColosseumProject: vi.fn(), createProjectFromImportRequest: vi.fn(), resolveBuilderImportRequest: vi.fn(),
-  reviewBuilderHostRequest: vi.fn(), updateBuilderOnboardingConfig: vi.fn(), updateBuilderTier: vi.fn(),
+  updateBuilderOnboardingConfig: vi.fn(), updateBuilderTier: vi.fn(),
 }));
 vi.mock("@/lib/hq/actions/capabilities", () => ({ grantCaptainCapability: vi.fn(), revokeCaptainCapability: vi.fn() }));
 vi.mock("@/lib/hq/actions/captains", () => ({ createCaptainInvitation: vi.fn(), revokeCaptainInvitation: vi.fn() }));

@@ -90,7 +90,7 @@ export type BuilderHackathon = {
   id: number; name: string; startDate: string; endDate: string;
   externalId: number | null; externalSlug: string | null;
   projectsOpen: boolean; projectsAvailableAt: string | null;
-  signupUrl: string; hostingEnabled: boolean;
+  signupUrl: string;
 };
 /**
  * The normalized Colosseum snapshot stored beside a team, as every surface

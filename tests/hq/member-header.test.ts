@@ -132,9 +132,9 @@ describe("the shell", () => {
   });
 
   it("bare: the header, then the children in a main with none of the column's classes and no Back link", () => {
-    const html = provided(withChildren(BuilderShell, { bare: true, back: "/hq/welcome", wide: true }, content), member);
+    const html = provided(withChildren(BuilderShell, { bare: true, back: "/hq/welcome" }, content), member);
     expect(html).toMatch(/<main class="[^"]*bare[^"]*"><p>content<\/p><\/main>/);
-    expect(html).not.toMatch(/<main class="[^"]*(main|wide|workspace)[^"]*"/);
+    expect(html).not.toMatch(/<main class="[^"]*main[^"]*"/);
     expect(html).not.toContain(">Back<");
     expect(html).toContain('aria-label="Account menu"');
   });
