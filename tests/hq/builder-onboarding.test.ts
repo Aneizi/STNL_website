@@ -17,7 +17,7 @@ vi.mock("server-only", () => ({}));
 const actionMocks = vi.hoisted(() => ({ requireMember: vi.fn() }));
 vi.mock("@/lib/hq/member-auth", () => ({ requireMember: actionMocks.requireMember }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-import { acceptBuilderInvite, chooseBuilderPath, importBuilderTeam, requestBuilderReview } from "@/lib/hq/actions/builders";
+import { acceptBuilderInvite, importBuilderTeam, requestBuilderReview } from "@/lib/hq/actions/builders";
 import { joinLink, parseJoinCode } from "@/lib/hq/member-routes";
 import { gateProject, previewColosseumTeam, previewTeamInvitation } from "@/lib/hq/project-import";
 
@@ -892,7 +892,7 @@ describe("Captain assignment races with membership acceptance", () => {
   });
 });
 
-describe("manual requests, dashboard and member privileges", () => {
+describe("manual requests and the dashboard read", () => {
   it("stores an idempotent manual request without fabricating a CRM project", async () => {
     const url = "https://colosseum.com/arena/projects/explore/unpublished";
     await store.requestReview(OWNER, 42, url, "Project access is not open yet.");
@@ -907,20 +907,6 @@ describe("manual requests, dashboard and member privileges", () => {
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
     expect(dashboard.enrollments.map(row => row.hackathon_id).sort()).toEqual([41, 42]);
     expect((await store.dashboard(TEAMMATE.id)).requests).toEqual([]);
-  });
-
-  it("requires member tier, edition enrollment and the admin hosting toggle together", async () => {
-    await expect(store.requestEvent(OWNER.id, 41, "Workshop", "Details about the workshop.")).rejects.toThrow("not open");
-    await db.query("UPDATE hq_hackathon_onboarding SET hosting_enabled=true WHERE hackathon_id=41");
-    await expect(store.requestEvent(OWNER.id, 41, "Workshop", "Details about the workshop.")).rejects.toThrow("not open");
-    await db.query("UPDATE hq_builder_profiles SET tier='member' WHERE id=$1", [OWNER.id]);
-    await expect(store.requestEvent(OWNER.id, 42, "Workshop", "Details about the workshop.")).rejects.toThrow("not open");
-    await store.requestEvent(OWNER.id, 41, "Workshop", "Details about the workshop.");
-    expect((await store.dashboard(OWNER.id)).events).toHaveLength(1);
-    expect((await store.dashboard(OUTSIDER.id)).events).toEqual([]);
-    await db.query("UPDATE hq_hackathon_onboarding SET hosting_enabled=false WHERE hackathon_id=41");
-    await expect(store.requestEvent(OWNER.id, 41, "Another event", "More workshop details.")).rejects.toThrow("not open");
-    expect(await rows("SELECT count(*)::int AS n FROM hq_event_host_requests")).toEqual([{ n: 1 }]);
   });
 
   it("bounds per-account action attempts and resets the expired window", async () => {
@@ -993,17 +979,6 @@ describe("public builder actions", () => {
     expect(fetcher).toHaveBeenCalledOnce();
     expect(await store.joinedSeat(item.projectId,TEAMMATE.id)).toBeNull();
     expect(await store.invitation(item.code)).toMatchObject({ ok: true });
-  });
-
-  it.each(["initialize", "join"] as const)("does not enroll an abandoned %s path in a second hackathon", async (path) => {
-    expect(await chooseBuilderPath({ hackathonId: 42, path })).toEqual({ ok: true, data: { url: `/hq/${path}?hackathon=42` } });
-    expect(await rows("SELECT hackathon_id FROM hq_builder_enrollments WHERE user_id=$1", [OWNER.id])).toEqual([{ hackathon_id: 41 }]);
-    expect(await rows("SELECT hackathon_id FROM hq_people WHERE builder_user_id=$1", [OWNER.id])).toEqual([{ hackathon_id: 41 }]);
-  });
-
-  it("immediately enrolls a supporter in the selected edition", async () => {
-    expect(await chooseBuilderPath({ hackathonId: 42, path: "supporter" })).toEqual({ ok: true, data: { url: "/hq/dashboard" } });
-    expect(await rows("SELECT participation FROM hq_builder_enrollments WHERE user_id=$1 AND hackathon_id=42", [OWNER.id])).toEqual([{ participation: "supporter" }]);
   });
 
   it("keeps the Request help route usable when Colosseum cannot be fetched at all", async () => {
