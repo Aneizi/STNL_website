@@ -7,7 +7,7 @@ import { builderDatabase } from "@/lib/hq/builder-db";
 import { INVITE_CONTINUATION_COOKIE, readInviteContinuation } from "@/lib/hq/invite-continuation";
 import { currentMember } from "@/lib/hq/member-auth";
 import { INVITE_CONTINUE_PATH } from "@/lib/hq/member-routes";
-import { inviteOutcomeCopy, type InviteOutcome } from "../copy";
+import { INVITE_INTRO, inviteOutcomeCopy, type InviteOutcome } from "../copy";
 import { AcceptInvitationForm } from "./accept-form";
 
 export const metadata: Metadata = { title: "Captain invitation" };
@@ -29,7 +29,7 @@ function DeadEnd({ outcome }: { outcome: InviteOutcome }) {
 /**
  * Step 2 of the Captain invitation flow: the tokenless page the exchange
  * step (app/hq/(member)/invite/[token]/route.ts) redirects to. Reachable by
- * anyone, signed in or not — the invitation is explained here, and only
+ * anyone, signed in or not: the invitation is explained here, and only
  * `AcceptInvitationForm`'s own Server Action ever grants anything.
  *
  * currentMember() is the literal member gate this page carries
@@ -37,6 +37,11 @@ function DeadEnd({ outcome }: { outcome: InviteOutcome }) {
  * away, because they must see this same explanation and a way back here
  * after signing in. Nothing member-specific renders without it: a signed-out
  * visitor gets the explanation and a sign-in link, never the accept control.
+ *
+ * The explanation goes into the form as children rather than beside it, so
+ * it leaves the page together with the Accept button once a result has
+ * replaced them; the shell renders no avatar for a signed-out visitor on
+ * its own.
  */
 export default async function InviteContinuePage() {
   const member = await currentMember();
@@ -57,18 +62,19 @@ export default async function InviteContinuePage() {
       <h1>
         Become a <em>Captain.</em>
       </h1>
-      <p>
-        Accepting gives your HQ account Captain access — and nothing else. It grants no admin access and no project
-        assignment; an admin assigns your team separately, and nothing about your existing teams or roles changes.
-      </p>
       {member ? (
-        <AcceptInvitationForm />
+        <AcceptInvitationForm>
+          <p>{INVITE_INTRO}</p>
+        </AcceptInvitationForm>
       ) : (
-        <div className={styles.actions}>
-          <Link className={styles.button} href={`/hq/login?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`}>
-            Sign in to continue
-          </Link>
-        </div>
+        <>
+          <p>{INVITE_INTRO}</p>
+          <div className={styles.actions}>
+            <Link className={styles.button} href={`/hq/login?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`}>
+              Sign in to continue
+            </Link>
+          </div>
+        </>
       )}
     </BuilderShell>
   );
