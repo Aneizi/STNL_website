@@ -45,8 +45,9 @@ function toIdentity(row: Record<string, unknown>): TelegramIdentity {
   };
 }
 
-export async function getTelegramIdentity(userId: string): Promise<TelegramIdentity | null> {
-  const { rows } = await builderDatabase().query(`SELECT ${COLUMNS} FROM hq_auth_telegram_identity i WHERE user_id = $1 AND ${activeTelegramIdentitySql()}`, [userId]);
+/** The account's active Telegram identity, or null. Takes the query handle so a surface can read it through the handle it was given. */
+export async function getTelegramIdentity(userId: string, db: BuilderQuery = builderDatabase()): Promise<TelegramIdentity | null> {
+  const { rows } = await db.query(`SELECT ${COLUMNS} FROM hq_auth_telegram_identity i WHERE user_id = $1 AND ${activeTelegramIdentitySql()}`, [userId]);
   return rows.length ? toIdentity(rows[0]) : null;
 }
 

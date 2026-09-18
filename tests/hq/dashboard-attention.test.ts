@@ -8,7 +8,7 @@ const current: NonNullable<MemberWeekSummary["current"]> = {
 };
 const summary: MemberWeekSummary = {
   projectId: "team", projectName: "Team", hackathonId: 1, timezone: "Europe/Amsterdam",
-  enrolled: true, paused: false, current, missedPeriods: 0,
+  enrolled: true, paused: false, current, missedPeriods: 0, totalPeriods: 4,
 };
 const during = Date.parse("2026-09-16T10:00:00Z");
 const complete = { ...summary, current: { ...current, completed: true } };

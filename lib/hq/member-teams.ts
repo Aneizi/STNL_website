@@ -6,7 +6,7 @@ import { builderDatabase } from "./builder-db";
 import { builderStore } from "./builder-store";
 import type { BuilderTeam } from "./builder-types";
 import { currentCaptainOfProject } from "./captains";
-import { readCaptainContact } from "./reporting-contacts";
+import { readCaptainHandle } from "./reporting-contacts";
 import { toMemberTeamView, type MemberTeamView } from "./view-models";
 
 /**
@@ -77,7 +77,7 @@ export async function memberProjectView(actor: MemberActor, projectId: string): 
   if (!project) return null;
   const membership = await loadTeamMembership(db, { userId: actor.id, projectId });
   const captain = await currentCaptainOfProject(db, projectId);
-  const contact = captain ? await readCaptainContact(db, captain.captainUserId) : null;
+  const contact = captain ? await readCaptainHandle(db, captain.captainUserId) : null;
   return {
     id: project.id,
     name: project.name,
@@ -93,9 +93,8 @@ export async function memberTeamView(actor: MemberActor, projectId: string): Pro
   const team = await builderStore().teamById(projectId);
   if (!team) return null;
   const captain = await currentCaptainOfProject(builderDatabase(), projectId);
-  // The contact the Captain approved for the teams they hold, or null when
-  // they have not set one. Phase 6 gave that field its writer (/hq/captain);
-  // before it there was none, which is why it read null for everyone.
-  const contact = captain ? await readCaptainContact(builderDatabase(), captain.captainUserId) : null;
+  // The Captain's Telegram handle, or the contact they typed before the Den
+  // stopped taking one, or null: the same source the Den itself shows them.
+  const contact = captain ? await readCaptainHandle(builderDatabase(), captain.captainUserId) : null;
   return toMemberTeamView(team, actor, captain ? { displayName: captain.captainName, contact } : null);
 }
