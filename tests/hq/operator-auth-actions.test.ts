@@ -342,14 +342,14 @@ describe("operator changePassword", () => {
     const issued = issuedCookie()!.value;
 
     expect(await actions.changePassword(null, form({ password: "short", confirm: "short" }))).toEqual(
-      { ok: false, error: "Password must be at least 12 characters." },
+      { ok: false, error: "Use at least 12 characters." },
     );
     expect(
       await actions.changePassword(
         null,
         form({ password: NEXT_PASSWORD, confirm: "a-different-passphrase" }),
       ),
-    ).toEqual({ ok: false, error: "Passwords do not match." });
+    ).toEqual({ ok: false, error: "The passwords do not match." });
 
     const [user] = await rows<{ password_version: number; password_hash: string }>(
       "SELECT password_version, password_hash FROM hq_users",
