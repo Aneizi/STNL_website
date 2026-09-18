@@ -744,6 +744,10 @@ describe("phase 5: the reporting tables", () => {
       for (const table of ["hq_reporting_config", "hq_reporting_periods", "hq_reporting_eligibility", "hq_reporting_entries", "hq_reporting_entry_revisions", "hq_reporting_outcomes"]) {
         expect(await exists(pg, table), table).toBe(true);
       }
+      // The Captains' Den rule: an entry says whether it can complete the
+      // team's week. Added by ALTER TABLE so a database from before the
+      // column gets it on the same pass a fresh one does.
+      expect(await column(pg, "hq_reporting_entries", "counts_toward_completion")).toEqual({ data_type: "boolean", is_nullable: "NO" });
     } finally {
       await pg.close();
     }
