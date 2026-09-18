@@ -2,7 +2,7 @@
 //
 // No `server-only`, no database handle and no session: this module is
 // imported by client components and by tests alike, following the
-// `lib/hq/member-nav.ts` and `lib/hq/reporting-periods.ts` pattern. Every
+// `lib/hq/member-routes.ts` and `lib/hq/reporting-periods.ts` pattern. Every
 // decision here is about wording and layout. Nothing here is authorization,
 // and nothing here re-derives what the service already answered: completion
 // comes from `ProjectReportingStatus.current.completed`, a week's dates from

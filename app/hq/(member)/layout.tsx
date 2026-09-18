@@ -1,28 +1,16 @@
-import { MemberNavProvider, type MemberNavState } from "@/components/hq/builder-nav";
+import { MemberAccountProvider, type MemberAccountState } from "@/components/hq/builder-account-menu";
 import { currentActor } from "@/lib/hq/actor";
-import { builderStore } from "@/lib/hq/builder-store";
-import { getMemberNav } from "@/lib/hq/member-nav";
 
 // NOT the auth boundary and NOT authorization. Layouts don't re-render on
 // soft navigation, so every page under this group keeps its own gate
 // (requireMember, requireMemberActor) and decides again from the grants at
-// request time. This layout only derives what the shell's menu shows, from
-// the request-cached actor the pages read as well, and hands it to the
-// shell each page renders through the provider. It imports nothing from the
-// operator side: no queries, no chrome, no hackathon selection.
+// request time. This layout only hands the signed-in member's display name
+// to the header's avatar menu, from the request-cached actor the pages read
+// as well, through the provider the shell each page renders reads back. It
+// makes no read of its own and imports nothing from the operator side: no
+// queries, no chrome, no hackathon selection.
 export default async function HqMemberLayout({ children }: { children: React.ReactNode }) {
-  return <MemberNavProvider value={await memberNavState()}>{children}</MemberNavProvider>;
-}
-
-/** The menu for a signed-in member; null for anyone else, so the pre-auth screens and a signed-out skeleton carry no menu. */
-async function memberNavState(): Promise<MemberNavState> {
   const actor = await currentActor();
-  if (actor?.kind !== "member") return null;
-  // actor.telegram is the linked identity row, the same read getLoginMethods() makes for the account page.
-  // hasTeams() is an existence check: the menu must not load the teams the dashboard loads anyway.
-  const hasTeams = await builderStore().hasTeams(actor.id);
-  return {
-    items: getMemberNav({ capabilities: actor.capabilities, hasTelegram: actor.telegram !== null, hasTeams }),
-    account: { name: actor.name },
-  };
+  const value: MemberAccountState = actor?.kind === "member" ? { name: actor.name } : null;
+  return <MemberAccountProvider value={value}>{children}</MemberAccountProvider>;
 }

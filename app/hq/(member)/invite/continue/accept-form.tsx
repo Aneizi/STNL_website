@@ -22,8 +22,8 @@ export function AcceptInvitationForm() {
   const [result, action, pending] = useActionState(acceptCaptainInvitationFromContinuation, INITIAL);
 
   useEffect(() => {
-    // Refreshes the shell so the Captain menu item (capability-driven,
-    // lib/hq/member-nav.ts) shows up without a manual reload.
+    // Refreshes the server-rendered tree so every capability-driven surface
+    // (the Captains' Den tile on Home) picks the grant up without a reload.
     if (result?.outcome === "granted") router.refresh();
   }, [result, router]);
 

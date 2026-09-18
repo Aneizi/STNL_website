@@ -44,11 +44,10 @@ export async function acceptCaptainInvitationFromContinuation(
   const continuation = continuationId ? await readInviteContinuation(builderDatabase(), continuationId) : null;
   if (!continuation) return { outcome: "invalid-continuation" };
   const result = await acceptCaptainInvitation(builderDatabase(), { invitationId: continuation.invitationId, userId: actor.id });
-  // The Captain menu item is capability-driven (lib/hq/member-nav.ts, read
-  // from the member layout on every request); this only clears the cached
-  // route tree so the next navigation picks the new grant up immediately,
-  // the same revalidation lib/hq/actions/builders.ts does for its own
-  // member mutations.
+  // The Captains' Den is capability-driven (the actor's grants, read on every
+  // request); this only clears the cached route tree so the next navigation
+  // picks the new grant up immediately, the same revalidation
+  // lib/hq/actions/builders.ts does for its own member mutations.
   if (result.outcome === "granted") revalidatePath("/hq", "layout");
   return { outcome: result.outcome };
 }
