@@ -57,10 +57,6 @@ export const MEMBER_PUBLIC_PATHS = [
   "/hq/account/disconnect-telegram",
   "/hq/account/add-email",
   CAPTAIN_PATH,
-  // The Captain's own notes, kept reachable after a reassignment: the page
-  // returns nothing but what this account wrote itself, so it is not a way
-  // back into a former team's records.
-  `${CAPTAIN_PATH}/notes`,
   INVITE_PATH_PREFIX,
 ] as const;
 
