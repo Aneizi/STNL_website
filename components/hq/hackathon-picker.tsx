@@ -74,7 +74,7 @@ export function HackathonPicker({
             alignItems: "baseline",
             gap: 10,
             marginTop: 26,
-            fontSize: 12,
+            fontSize: 14,
             color: "var(--label-3)",
           }}
         >
@@ -89,7 +89,7 @@ export function HackathonPicker({
               background: "none",
               cursor: "pointer",
               padding: 0,
-              fontSize: 12,
+              fontSize: 14,
               fontWeight: 600,
               color: "var(--label-2)",
             }}
@@ -136,7 +136,7 @@ export function HackathonBanner({
             fill
             sizes="(max-width: 940px) 100vw, 880px"
             quality={90}
-            priority
+            preload
             className="hq-banner-bg"
           />
           <span className="hq-banner-shade" aria-hidden="true" />
@@ -152,7 +152,7 @@ export function HackathonBanner({
             width={932}
             height={73}
             sizes="(max-width: 940px) 56vw, 500px"
-            priority
+            preload
             className="hq-banner-wordmark"
             style={{ width: `${art.wordmarkWidth * 100}%`, height: "auto" }}
           />
@@ -208,7 +208,6 @@ function ArchivedRow({ hackathon, current }: { hackathon: Hackathon; current: bo
         width: "100%",
         boxSizing: "border-box",
         border: "none",
-        borderBottom: "1px solid var(--sep)",
         background: "none",
         cursor: pending ? "progress" : "pointer",
         padding: "11px 14px",
@@ -217,16 +216,16 @@ function ArchivedRow({ hackathon, current }: { hackathon: Hackathon; current: bo
         opacity: pending ? 0.7 : 1,
       }}
     >
-      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--label-1)" }}>
+      <span style={{ fontSize: 17, fontWeight: 600, color: "var(--label-1)" }}>
         {hackathon.name}
       </span>
-      <span style={{ fontSize: 12, color: "var(--label-3)", flex: 1 }}>
+      <span style={{ fontSize: 14, color: "var(--label-3)", flex: 1 }}>
         {fmtDateRange(hackathon.startDate, hackathon.endDate)}
       </span>
       {current ? (
         <span
           style={{
-            fontSize: 10,
+            fontSize: 12,
             fontWeight: 600,
             letterSpacing: "0.12em",
             textTransform: "uppercase",
@@ -236,7 +235,7 @@ function ArchivedRow({ hackathon, current }: { hackathon: Hackathon; current: bo
           Current
         </span>
       ) : null}
-      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--label-2)" }}>Open</span>
+      <span style={{ fontSize: 14, fontWeight: 600, color: "var(--label-2)" }}>Open</span>
     </button>
   );
 }
@@ -274,8 +273,8 @@ function FirstHackathonForm() {
         padding: "22px 24px",
       }}
     >
-      <div style={{ fontFamily: "var(--serif)", fontSize: 24 }}>Add the first hackathon</div>
-      <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 4 }}>
+      <div style={{ fontFamily: "var(--serif)", fontSize: 28 }}>Add the first hackathon</div>
+      <div style={{ fontSize: 16, color: "var(--label-2)", marginTop: 4 }}>
         Everything in HQ belongs to a hackathon. Give the edition Colosseum&apos;s hackathon
         id, its name and its dates to begin.
       </div>
@@ -331,7 +330,7 @@ function FirstHackathonForm() {
         </button>
       </div>
       {error ? (
-        <div style={{ fontSize: 12, color: "var(--red)", marginTop: 10 }}>{error}</div>
+        <div style={{ fontSize: 14, color: "var(--red)", marginTop: 10 }}>{error}</div>
       ) : null}
     </div>
   );
