@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import type { CSSProperties } from "react";
-import { startTransition, useEffect, useOptimistic, useState } from "react";
+import { startTransition, useEffect, useOptimistic, useRef, useState } from "react";
 import { card, cardTitle, pageTitle } from "@/components/hq/ui";
 import { useConfirmDelete } from "@/components/hq/ui-client";
 import {
@@ -32,15 +32,32 @@ type AwardPatch =
   | { type: "winner"; id: string; projectId: string | null };
 type ScorePatch = { type: "add"; item: Score } | { type: "clear"; projectId: string };
 
+// The two light cards sit in a column whose gap separates them, so the
+// shared atom's top margin is dropped here.
+const demoCard: CSSProperties = { ...card, marginTop: 0 };
+
 const strongInput: CSSProperties = {
   padding: "11px 12px",
   border: "1px solid var(--label-1)",
   borderRadius: 0,
   background: "transparent",
   color: "var(--label-1)",
-  fontSize: 15,
+  fontSize: 18,
   fontWeight: 500,
 };
+
+const addButton: CSSProperties = {
+  border: "none",
+  cursor: "pointer",
+  padding: "11px 18px",
+  borderRadius: 0,
+  fontSize: 17,
+  fontWeight: 600,
+  background: "var(--label-1)",
+  color: "var(--bg)",
+};
+
+const errorLine: CSSProperties = { fontSize: 14, color: "var(--red)", marginTop: 8 };
 
 const pickerButton: CSSProperties = {
   display: "flex",
@@ -54,7 +71,7 @@ const pickerButton: CSSProperties = {
   border: "1px solid var(--sep)",
   borderRadius: 0,
   background: "transparent",
-  fontSize: 13,
+  fontSize: 16,
 };
 
 const pickerOption: CSSProperties = {
@@ -64,7 +81,7 @@ const pickerOption: CSSProperties = {
   cursor: "pointer",
   border: "none",
   padding: "7px 12px",
-  fontSize: 13,
+  fontSize: 16,
   color: "var(--label-1)",
 };
 
@@ -72,7 +89,7 @@ const modalField: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 4,
-  fontSize: 12,
+  fontSize: 14,
   color: "var(--label-2)",
   position: "relative",
 };
@@ -86,8 +103,12 @@ const scoreInput: CSSProperties = {
   borderRadius: 0,
   background: "transparent",
   color: "var(--label-1)",
-  fontSize: 13,
+  fontSize: 16,
 };
+
+// The last track is 62px so the delete's armed "Sure?" label is never
+// clipped at the row's 16px type.
+const resultsColumns = "26px 1fr 96px 96px 62px";
 
 export function DemoDay({
   projects,
@@ -149,9 +170,18 @@ export function DemoDay({
   const [projectSel, setProjectSel] = useState("");
   const [scoreError, setScoreError] = useState<string | null>(null);
   // The cap and eligibility rules live in the server action, so a rejected
-  // add has to say why — the optimistic row reverts on its own.
+  // add has to say why; the optimistic row reverts on its own.
   const [finalistError, setFinalistError] = useState<string | null>(null);
   const [awardError, setAwardError] = useState<string | null>(null);
+
+  // Whichever way the modal closes (Escape, overlay, Cancel, a save), focus
+  // goes back to the button that opened it.
+  const scoresTrigger = useRef<HTMLButtonElement>(null);
+  const modalWasOpen = useRef(false);
+  useEffect(() => {
+    if (modalWasOpen.current && !modalOpen) scoresTrigger.current?.focus();
+    modalWasOpen.current = modalOpen;
+  }, [modalOpen]);
 
   const finalistIds = new Set(finalists.map((f) => f.projectId));
   const isVerified = (p: DemoProject) => p.gatesDone === gatesTotal;
@@ -308,7 +338,7 @@ export function DemoDay({
 
   return (
     <div>
-      <Link href="/hq/projects" style={{ color: "var(--accent)", fontSize: 14, padding: 0 }}>
+      <Link href="/hq/projects" style={{ color: "var(--accent)", fontSize: 17, padding: 0 }}>
         &#8249; Projects
       </Link>
       <h1 style={{ ...pageTitle, margin: "8px 0 0" }}>Demo day</h1>
@@ -330,7 +360,7 @@ export function DemoDay({
             gap: 14,
           }}
         >
-          <div style={card}>
+          <div style={demoCard}>
             <div
               style={{
                 display: "flex",
@@ -341,7 +371,7 @@ export function DemoDay({
               <div style={cardTitle}>Finalists</div>
               <span
                 style={{
-                  fontSize: 13,
+                  fontSize: 16,
                   color: countColor,
                   fontVariantNumeric: "tabular-nums",
                 }}
@@ -353,6 +383,7 @@ export function DemoDay({
               <select
                 value={draftFinalist}
                 onChange={(e) => setDraftFinalist(e.target.value)}
+                aria-label="Project to add"
                 style={{ ...strongInput, flex: 1, minWidth: 0 }}
               >
                 <option value="">Pick a project to add</option>
@@ -362,24 +393,12 @@ export function DemoDay({
                   </option>
                 ))}
               </select>
-              <button
-                onClick={onAddFinalist}
-                style={{
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "11px 18px",
-                  borderRadius: 0,
-                  fontSize: 14,
-                  fontWeight: 600,
-                  background: "var(--label-1)",
-                  color: "var(--bg)",
-                }}
-              >
+              <button type="button" onClick={onAddFinalist} style={addButton}>
                 Add
               </button>
             </div>
             {finalistError ? (
-              <div style={{ fontSize: 12, color: "var(--red)", marginTop: 8 }}>
+              <div role="alert" style={errorLine}>
                 {finalistError}
               </div>
             ) : null}
@@ -396,17 +415,16 @@ export function DemoDay({
                     alignItems: "center",
                     gap: 8,
                     padding: "8px 0",
-                    borderBottom: "1px solid var(--sep)",
                   }}
                 >
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 600 }}>{f.name}</div>
-                    <div style={{ fontSize: 12, color: "var(--label-3)" }}>{f.source}</div>
+                    <div style={{ fontSize: 17, fontWeight: 600 }}>{f.name}</div>
+                    <div style={{ fontSize: 14, color: "var(--label-3)" }}>{f.source}</div>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "none" }}>
                     <span
                       style={{
-                        fontSize: 12,
+                        fontSize: 14,
                         fontWeight: 600,
                         color:
                           f.gatesDone === f.gatesTotal ? "var(--green)" : "var(--orange)",
@@ -417,6 +435,7 @@ export function DemoDay({
                         : `${f.gatesDone}/${f.gatesTotal} gates`}
                     </span>
                     <button
+                      type="button"
                       className="hq-hover-accent"
                       onClick={del.onClick}
                       title={del.title}
@@ -425,7 +444,7 @@ export function DemoDay({
                         cursor: "pointer",
                         background: "none",
                         color: del.color,
-                        fontSize: 12,
+                        fontSize: 14,
                         fontWeight: del.fontWeight,
                         whiteSpace: "nowrap",
                       }}
@@ -437,9 +456,9 @@ export function DemoDay({
               );
             })}
           </div>
-          <div style={card}>
+          <div style={demoCard}>
             <div style={cardTitle}>Awards</div>
-            <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 2 }}>
+            <div style={{ fontSize: 16, color: "var(--label-2)", marginTop: 2 }}>
               {awards.length} categories
             </div>
             <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
@@ -447,6 +466,7 @@ export function DemoDay({
                 value={awardName}
                 onChange={(e) => setAwardName(e.target.value)}
                 placeholder="New award"
+                aria-label="New award"
                 style={{ ...strongInput, flex: 1, minWidth: 0 }}
               />
               <input
@@ -455,25 +475,19 @@ export function DemoDay({
                 value={awardAmount}
                 onChange={(e) => setAwardAmount(e.target.value)}
                 placeholder="$"
+                aria-label="Amount"
                 style={{ ...strongInput, width: 86, flex: "none", boxSizing: "border-box" }}
               />
-              <button
-                onClick={onAddAward}
-                style={{
-                  border: "none",
-                  cursor: "pointer",
-                  padding: "11px 18px",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  background: "var(--label-1)",
-                  color: "var(--bg)",
-                }}
-              >
+              <button type="button" onClick={onAddAward} style={addButton}>
                 Add
               </button>
             </div>
+            {/* Not drawn in the design: the server refuses a winner that is
+                no longer a finalist, and that refusal has to land somewhere. */}
             {awardError ? (
-              <div style={{ fontSize: 12, color: "var(--red)", marginTop: 8 }}>{awardError}</div>
+              <div role="alert" style={errorLine}>
+                {awardError}
+              </div>
             ) : null}
             <div style={{ marginTop: 4 }}>
               {awards.map((a) => {
@@ -487,12 +501,11 @@ export function DemoDay({
                       alignItems: "center",
                       gap: 10,
                       padding: "6px 0",
-                      borderBottom: "1px solid var(--sep)",
                     }}
                   >
                     <div style={{ minWidth: 0 }}>
-                      <div style={{ fontSize: 14 }}>{a.name}</div>
-                      <div style={{ fontSize: 11, color: "var(--label-3)" }}>
+                      <div style={{ fontSize: 17 }}>{a.name}</div>
+                      <div style={{ fontSize: 13, color: "var(--label-3)" }}>
                         {[a.sponsor, a.amount ? fmtMoney(a.amount) : ""]
                           .filter(Boolean)
                           .join(", ")}
@@ -502,13 +515,14 @@ export function DemoDay({
                       <select
                         value={a.winnerProjectId ?? ""}
                         onChange={(e) => onWinner(a.id, e.target.value)}
+                        aria-label={`Winner of ${a.name}`}
                         style={{
                           padding: "5px 8px",
                           border: "1px solid var(--sep)",
                           borderRadius: 0,
                           background: "transparent",
                           color: "var(--label-1)",
-                          fontSize: 12,
+                          fontSize: 14,
                           maxWidth: 140,
                         }}
                       >
@@ -520,6 +534,7 @@ export function DemoDay({
                         ))}
                       </select>
                       <button
+                        type="button"
                         className="hq-hover-accent"
                         onClick={del.onClick}
                         title={del.title}
@@ -528,7 +543,7 @@ export function DemoDay({
                           cursor: "pointer",
                           background: "none",
                           color: del.color,
-                          fontSize: 12,
+                          fontSize: 14,
                           fontWeight: del.fontWeight,
                           lineHeight: 1,
                           padding: 2,
@@ -543,10 +558,10 @@ export function DemoDay({
               })}
             </div>
             <div style={{ paddingTop: 10 }}>
-              <div style={{ fontSize: 14 }}>Total</div>
+              <div style={{ fontSize: 17 }}>Total</div>
               <div
                 style={{
-                  fontSize: 11,
+                  fontSize: 13,
                   color: "var(--label-3)",
                   fontVariantNumeric: "tabular-nums",
                 }}
@@ -565,19 +580,6 @@ export function DemoDay({
             gap: 14,
           }}
         >
-          {modalOpen ? (
-            <ScoreModal
-              judges={judges}
-              finalists={finalistOptions}
-              judgeSel={judgeSel}
-              projectSel={projectSel}
-              error={scoreError}
-              onPickJudge={setJudgeSel}
-              onPickFinalist={setProjectSel}
-              onSubmit={submitScore}
-              onClose={closeModal}
-            />
-          ) : null}
           <div style={{ background: "var(--label-1)", color: "var(--bg)", padding: "18px 20px" }}>
             <div
               style={{
@@ -589,12 +591,16 @@ export function DemoDay({
             >
               <div style={cardTitle}>Results</div>
               <button
+                ref={scoresTrigger}
+                type="button"
                 onClick={openModal}
+                aria-haspopup="dialog"
                 style={{
                   border: "none",
                   cursor: "pointer",
                   padding: "7px 14px",
-                  fontSize: 12,
+                  borderRadius: 0,
+                  fontSize: 14,
                   fontWeight: 600,
                   textTransform: "uppercase",
                   letterSpacing: "0.08em",
@@ -606,17 +612,15 @@ export function DemoDay({
               </button>
             </div>
             {results.length > 0 ? (
-              // The last track is 52px so the delete's armed "Sure?" label
-              // is never clipped (at 24px it was unreadable).
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "26px 1fr 80px 80px 52px",
+                  gridTemplateColumns: resultsColumns,
                   gap: 8,
                   marginTop: 14,
                   padding: "10px 0 6px",
                   borderBottom: "1px solid rgba(251,247,240,0.2)",
-                  fontSize: 11,
+                  fontSize: 13,
                   fontWeight: 600,
                   color: "rgba(251,247,240,0.55)",
                   textTransform: "uppercase",
@@ -637,11 +641,11 @@ export function DemoDay({
                   key={r.pid}
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "26px 1fr 80px 80px 52px",
+                    gridTemplateColumns: resultsColumns,
                     gap: 8,
                     padding: "9px 0",
                     borderBottom: "1px solid rgba(251,247,240,0.14)",
-                    fontSize: 13,
+                    fontSize: 16,
                     alignItems: "baseline",
                   }}
                 >
@@ -674,6 +678,7 @@ export function DemoDay({
                   {/* This card is inverted, so the hook's label-3 rest colour
                       is swapped for the card's own muted cream. */}
                   <button
+                    type="button"
                     onClick={del.onClick}
                     title={del.title}
                     style={{
@@ -681,7 +686,7 @@ export function DemoDay({
                       cursor: "pointer",
                       background: "none",
                       color: del.armed ? "var(--accent)" : "rgba(251,247,240,0.45)",
-                      fontSize: 12,
+                      fontSize: 14,
                       fontWeight: del.fontWeight,
                       lineHeight: 1,
                       padding: 0,
@@ -695,18 +700,31 @@ export function DemoDay({
               );
             })}
             {results.length === 0 ? (
-              <div style={{ fontSize: 13, color: "rgba(251,247,240,0.55)", marginTop: 8 }}>
+              <div style={{ fontSize: 16, color: "rgba(251,247,240,0.55)", marginTop: 8 }}>
                 No scores entered yet.
               </div>
             ) : null}
           </div>
         </div>
       </div>
+      {modalOpen ? (
+        <ScoreModal
+          judges={judges}
+          finalists={finalistOptions}
+          judgeSel={judgeSel}
+          projectSel={projectSel}
+          error={scoreError}
+          onPickJudge={setJudgeSel}
+          onPickFinalist={setProjectSel}
+          onSubmit={submitScore}
+          onClose={closeModal}
+        />
+      ) : null}
     </div>
   );
 }
 
-function ScoreModal({
+export function ScoreModal({
   judges,
   finalists,
   judgeSel,
@@ -762,6 +780,9 @@ function ScoreModal({
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="demo-score-title"
         className="hq-pop-in-modal"
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -774,16 +795,21 @@ function ScoreModal({
           transformOrigin: "top center",
         }}
       >
-        <div style={{ fontFamily: "var(--serif)", fontSize: 24, fontWeight: 400 }}>
+        <div
+          id="demo-score-title"
+          style={{ fontFamily: "var(--serif)", fontSize: 28, fontWeight: 400 }}
+        >
           Enter judge scores
         </div>
-        <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 2 }}>
+        <div style={{ fontSize: 16, color: "var(--label-2)", marginTop: 2 }}>
           2 minute pitch plus Q&amp;A, one score from 1 to 10
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
           <div style={modalField}>
             Judge
             <button
+              type="button"
+              aria-expanded={judgeOpen}
               onClick={() => {
                 setJudgeOpen((o) => !o);
                 setFinalistOpen(false);
@@ -794,7 +820,9 @@ function ScoreModal({
               }}
             >
               <span>{selectedJudge ? selectedJudge.name : "Select a judge"}</span>
-              <span style={{ color: "var(--label-3)", fontSize: 10 }}>{"▼"}</span>
+              <span aria-hidden="true" style={{ color: "var(--label-3)", fontSize: 12 }}>
+                {"▼"}
+              </span>
             </button>
             {judgeOpen ? (
               <div
@@ -815,6 +843,7 @@ function ScoreModal({
                 {judges.map((judge) => (
                   <button
                     key={judge.id}
+                    type="button"
                     className="hq-hover-fill"
                     onClick={() => {
                       onPickJudge(judge.id);
@@ -837,6 +866,8 @@ function ScoreModal({
           <div style={modalField}>
             Finalist
             <button
+              type="button"
+              aria-expanded={finalistOpen}
               onClick={() => {
                 setFinalistOpen((o) => !o);
                 setJudgeOpen(false);
@@ -848,7 +879,9 @@ function ScoreModal({
               }}
             >
               <span>{selectedFinalist ? selectedFinalist.name : "Select a finalist"}</span>
-              <span style={{ color: "var(--label-3)", fontSize: 10 }}>{"▼"}</span>
+              <span aria-hidden="true" style={{ color: "var(--label-3)", fontSize: 12 }}>
+                {"▼"}
+              </span>
             </button>
             {finalistOpen ? (
               <div
@@ -869,12 +902,11 @@ function ScoreModal({
                     alignItems: "center",
                     gap: 8,
                     padding: "9px 12px 8px",
-                    borderBottom: "1px solid var(--sep)",
                   }}
                 >
                   <span
                     style={{
-                      fontSize: 11,
+                      fontSize: 13,
                       letterSpacing: "0.06em",
                       textTransform: "uppercase",
                       color: "var(--label-3)",
@@ -886,6 +918,7 @@ function ScoreModal({
                   <input
                     autoFocus
                     placeholder="Type a name"
+                    aria-label="Search finalists"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     style={{
@@ -897,7 +930,7 @@ function ScoreModal({
                       outline: "none",
                       background: "transparent",
                       color: "var(--label-1)",
-                      fontSize: 13,
+                      fontSize: 16,
                     }}
                   />
                 </div>
@@ -906,6 +939,7 @@ function ScoreModal({
                     {matches.map((o) => (
                       <button
                         key={o.id}
+                        type="button"
                         className="hq-hover-fill"
                         onClick={() => {
                           onPickFinalist(o.id);
@@ -923,7 +957,7 @@ function ScoreModal({
                       </button>
                     ))}
                     {matches.length === 0 ? (
-                      <div style={{ padding: "10px 12px", fontSize: 12, color: "var(--label-3)" }}>
+                      <div style={{ padding: "10px 12px", fontSize: 14, color: "var(--label-3)" }}>
                         No finalists match.
                       </div>
                     ) : null}
@@ -960,28 +994,37 @@ function ScoreModal({
               min={1}
               max={10}
               placeholder="Score"
+              aria-label="Score"
               value={score}
               onChange={(e) => setScore(e.target.value)}
               style={scoreInput}
             />
             <input
               placeholder="Note"
+              aria-label="Note"
+              maxLength={500}
               value={note}
               onChange={(e) => setNote(e.target.value)}
               style={scoreInput}
             />
           </div>
-          {error ? <div style={{ fontSize: 12, color: "var(--red)" }}>{error}</div> : null}
+          {error ? (
+            <div role="alert" style={{ fontSize: 14, color: "var(--red)" }}>
+              {error}
+            </div>
+          ) : null}
           <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
             <button
+              type="button"
               onClick={onClose}
               style={{
                 flex: 1,
                 border: "1px solid var(--sep)",
+                borderRadius: 0,
                 cursor: "pointer",
                 padding: 9,
                 background: "none",
-                fontSize: 14,
+                fontSize: 17,
                 fontWeight: 600,
                 color: "var(--label-2)",
               }}
@@ -989,13 +1032,15 @@ function ScoreModal({
               Cancel
             </button>
             <button
+              type="button"
               onClick={() => onSubmit(score, note)}
               style={{
                 flex: 1,
                 border: "none",
+                borderRadius: 0,
                 cursor: "pointer",
                 padding: 9,
-                fontSize: 14,
+                fontSize: 17,
                 fontWeight: 600,
                 background: "var(--label-1)",
                 color: "var(--bg)",
