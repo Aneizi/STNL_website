@@ -10,26 +10,27 @@ import {
   type ReportingScheduleView,
 } from "@/lib/hq/actions/reporting-admin";
 import type { ReportingAdminData } from "@/lib/hq/builder-admin-queries";
-import type { ReportingPeriodConflict, ReportingScheduleProblem } from "@/lib/hq/reporting";
-import { utcToZonedDateTime } from "@/lib/hq/reporting-periods";
 import type { ReminderDeliveryView } from "@/lib/hq/jobs";
-import { periodRangeLabel } from "@/lib/hq/reporting-view";
-import type { SubmissionReconciliation } from "@/lib/hq/submission";
-import { MATERIAL_KEYS, MATERIAL_LABELS } from "@/lib/hq/submission-readiness";
+import type { ReportingPeriod } from "@/lib/hq/reporting";
+import { utcToZonedDateTime } from "@/lib/hq/reporting-periods";
+import { fmtRetryAt, shortPeriodRange } from "@/lib/hq/reporting-view";
+import {
+  MATERIAL_KEYS, MATERIAL_LABELS, REQUIREMENT_LABELS, materialRequirements, type MaterialKey, type MaterialRequirement,
+} from "@/lib/hq/submission-readiness";
 import styles from "./builder-admin.module.css";
 
 /**
- * Admin's weekly reporting panel: the schedule, what a date change would do
- * to it, and the settings that are not the edition's own dates.
+ * Admin's three reporting sections: the stored weeks, the settings that are
+ * not the edition's own dates, and the Captain reminder history.
  *
  * The reporting window is `hq_hackathons.start_date`/`end_date` and the
  * timezone is `hq_settings.timezone`, both edited above in this same page.
  * Nothing here copies either: that would be the competing source of truth
- * the data contract forbids. What this panel adds is the step between
+ * the data contract forbids. What Reporting weeks adds is the step between
  * changing those dates and the stored weeks changing, which the plan
  * requires: `previewReportingPeriods` says what applying them would add,
- * move or remove, and names every week it must not touch because people
- * have already reported against it. Applying is a separate, explicit press.
+ * move or remove, and refuses a change that would leave a day in no week or
+ * in two. Applying is a separate, explicit press.
  */
 
 const WEEKDAYS = [
@@ -42,141 +43,85 @@ const WEEKDAYS = [
   { value: 7, label: "Sunday" },
 ];
 
-/**
- * What each recorded reminder outcome means, in a sentence rather than a
- * code. Every one of these is about the MESSAGE, never about the week: a
- * Captain nobody could reach does not make a team's week anything other than
- * Updated or Not updated, which is the plan's "visible to admins without
- * becoming new weekly project statuses".
- */
-const REMINDER_STATES: Record<ReminderDeliveryView["state"], string> = {
-  queued: "Waiting to send",
-  sent: "Sent",
-  skipped: "Not sent",
-  failed: "Could not be sent",
-};
+const REQUIREMENTS: MaterialRequirement[] = ["required", "optional", "unknown"];
+
+type WeekState = "closed" | "open" | "upcoming";
 
 /**
- * The badge for one reminder. A delivery that ended without an answer from
- * Telegram is not the same claim as one that failed: the message may well
- * have arrived, and an admin deciding whether to chase a Captain needs to
- * know which of the two they are looking at.
+ * A week's pill is decided by the calendar, not by `closedAt`: a week whose
+ * last day has passed reads Closed whether or not the closure job has run,
+ * which is the answer an admin looking at the dates expects. `today` is the
+ * campaign-timezone date the server rendered with, so the client agrees.
  */
-function reminderBadge(reminder: ReminderDeliveryView): string {
-  if (reminder.deliveryUncertain && reminder.state !== "sent") {
-    return reminder.state === "queued" ? "Trying again" : "Not confirmed";
-  }
-  if (reminder.state === "queued" && reminder.attempts > 0) return "Trying again";
-  return REMINDER_STATES[reminder.state];
+function weekState(period: ReportingPeriod, today: string): WeekState {
+  if (today > period.endDate) return "closed";
+  return today >= period.startDate ? "open" : "upcoming";
 }
 
-/** What is known about a delivery that has not landed, in a sentence. Empty when there is nothing to add. */
-function reminderProgress(reminder: ReminderDeliveryView): string {
-  const parts: string[] = [];
-  if (reminder.attempts > 0) parts.push(`${reminder.attempts} ${reminder.attempts === 1 ? "attempt" : "attempts"}`);
-  if (reminder.deliveryUncertain) {
-    parts.push(
-      reminder.state === "queued"
-        ? "the last one got no answer from Telegram, so it may or may not have arrived"
-        : "the attempts ran out without an answer from Telegram, so it may or may not have arrived",
-    );
-  }
-  if (reminder.state === "queued" && reminder.nextAttemptAt) {
-    parts.push(`next attempt ${new Date(reminder.nextAttemptAt).toLocaleString("en-GB", { hour12: false })}`);
-  }
-  if (!parts.length) return "";
-  return ` ${parts.join(", ")}.`;
+const WEEK_LABELS: Record<WeekState, string> = { closed: "Closed", open: "Open", upcoming: "Upcoming" };
+const WEEK_PILLS: Record<WeekState, string> = { closed: styles.pill, open: `${styles.pill} ${styles.pillGreen}`, upcoming: `${styles.pill} ${styles.pillFaint}` };
+
+/** "7 projects report, 1 paused." */
+function enrolledLine(enrolled: number, paused: number): string {
+  return `${enrolled} project${enrolled === 1 ? "" : "s"} report${enrolled === 1 ? "s" : ""}, ${paused} paused.`;
 }
 
-const REMINDER_REASONS: Record<string, string> = {
-  nothing_outstanding: "every assigned team had already updated, so there was nothing to send",
-  no_assignments: "the Captain had no assigned teams by then",
-  capability_revoked: "Captain access had been removed",
-  telegram_disconnected: "the Captain has not connected Telegram",
-  messaging_disabled: "the Captain has bot messages turned off",
-  no_chat: "the Captain has never opened a chat with the bot",
-  chat_changed: "the Captain moved to a new chat with the bot",
-  not_authorized: "the Captain no longer holds the team it named",
-  period_over: "the week ended before Telegram accepted it",
-  too_old: "it waited too long to still be accurate",
-  message_too_long: "the message was too long for Telegram",
-};
-
-/** The reason line, which falls back to Telegram's own code rather than swallowing something we have no sentence for. */
-function reminderReason(reminder: ReminderDeliveryView): string {
-  if (!reminder.reason || reminder.state === "queued") return "";
-  return REMINDER_REASONS[reminder.reason] ?? `Telegram refused it (${reminder.reason})`;
-}
-
-const CONFLICT_REASONS: Record<ReportingPeriodConflict["reason"], string> = {
-  has_entries: "teams have already written updates in it",
-  has_outcomes: "its result is already recorded",
-  closed: "it is closed",
-};
-
-/** What applying the current dates would do, in a sentence rather than three counts. */
+/** What applying the current dates would do, in one sentence rather than three counts. */
 function planSummary(plan: ReportingAdminData["plan"]): string {
   const parts: string[] = [];
   if (plan.added) parts.push(`add ${plan.added} week${plan.added === 1 ? "" : "s"}`);
   if (plan.updated) parts.push(`move ${plan.updated} week${plan.updated === 1 ? "" : "s"}`);
   if (plan.removed) parts.push(`remove ${plan.removed} week${plan.removed === 1 ? "" : "s"}`);
-  if (!parts.length) return "The stored weeks already match the hackathon dates. Applying would change nothing.";
+  if (!parts.length) return "Weeks already match the hackathon dates.";
   const change = `Applying the hackathon dates would ${parts.join(", ")}.`;
-  return plan.blocked ? `${change} It is refused, because of what it would leave behind.` : change;
+  // A week that already holds updates keeps its own dates whatever the
+  // hackathon dates say, so the weeks around it can leave a day in no week
+  // at all, or in two. That is refused as a whole.
+  return plan.blocked ? `${change} Refused, because it would leave a day in no week or in two.` : change;
 }
 
 /**
- * Why a change is refused, in days rather than in the word "discontinuous".
- * A week that already holds updates keeps its own dates whatever the hackathon
- * dates say, and the weeks around it do not, so the two can end up leaving a
- * day in no week at all or a day in two.
+ * The three pills. Every one of these is about the MESSAGE, never about the
+ * week: a Captain nobody could reach does not make a team's week anything
+ * other than Updated or Not updated. A queued delivery is Retrying whether
+ * it has been tried yet or not; what is known about it goes in the text.
  */
-function problemLine(problem: ReportingScheduleProblem): string {
-  if (problem.kind === "overlap") {
-    return `Week ${problem.sequence} would still run to ${problem.beforeEndDate}, and the week after it would already have started on ${problem.afterStartDate}. Those days would belong to two weeks at once.`;
-  }
-  if (problem.kind === "gap") {
-    return `Week ${problem.sequence} would end on ${problem.beforeEndDate} and the next week would not start until ${problem.afterStartDate}. The days in between would belong to no week, so an update written on one of them would have nowhere to go.`;
-  }
-  return "The weeks would no longer be numbered one after another.";
+function reminderPill(state: ReminderDeliveryView["state"]): { label: string; className: string } {
+  if (state === "sent") return { label: "Sent", className: `${styles.pill} ${styles.pillGreen}` };
+  if (state === "queued") return { label: "Retrying", className: `${styles.pill} ${styles.pillOrange}` };
+  return { label: "Not sent", className: `${styles.pill} ${styles.pillRed}` };
 }
 
+/** Why a reminder was not sent, as a comma phrase for the reminder row. */
+const REMINDER_REASONS: Record<string, string> = {
+  nothing_outstanding: "every team had already updated",
+  no_assignments: "no teams assigned",
+  capability_revoked: "Captain access removed",
+  telegram_disconnected: "Telegram not connected",
+  messaging_disabled: "bot messages turned off",
+  no_chat: "no chat with the bot yet",
+  chat_not_bound: "bot chat not linked to their Telegram",
+  chat_changed: "moved to a new bot chat",
+  not_authorized: "no longer holds the team named",
+  period_over: "the week ended first",
+  too_old: "waited too long to still be accurate",
+  message_too_long: "message too long for Telegram",
+  edition_archived: "hackathon archived",
+  reminder_missing: "reminder record missing",
+};
+
 /**
- * What HQ has established about each team's Colosseum submission after the
- * final period closed.
- *
- * Three answers, never collapsed into two. Confirmed and on time is a fact.
- * Confirmed and late is also a fact, and the week it belongs to stays exactly
- * as it was recorded. "Not established" is the third, and it is what an
- * outage produces: HQ could not reach Colosseum, so it claims nothing, and
- * the job keeps trying on every later pass.
+ * "Week 1, 2 teams outstanding, bot messages turned off": the week, the
+ * count, then whatever is known about a delivery that has not landed. The
+ * reason falls back to Telegram's own code rather than swallowing something
+ * there is no phrase for.
  */
-function SubmissionReconciliations({ rows }: { rows: SubmissionReconciliation[] }) {
-  if (rows.length === 0) {
-    return <p>Nothing to reconcile yet. Rows appear here once the final submission period has closed.</p>;
-  }
-  return (
-    <ul className={styles.roster} aria-label="Submission reconciliation">
-      {rows.map((row) => (
-        <li key={`${row.periodId}:${row.projectId}`}>
-          <span>
-            {row.state === "pending"
-              ? `Not established yet. ${row.attempts} ${row.attempts === 1 ? "attempt" : "attempts"} so far${row.lastError ? ", the last one did not get through" : ""}. Nothing has been recorded against the team.`
-              : row.submissionStatus === "submitted"
-                ? row.onTime
-                  ? `Submitted on time${row.submittedAt ? ` on ${row.submittedAt.slice(0, 10)}` : ""}.${row.outcomeCorrected ? " The recorded period was corrected to Updated, with an audit event." : ""}`
-                  : `Submitted after the deadline${row.submittedAt ? ` on ${row.submittedAt.slice(0, 10)}` : ""}. The recorded period is unchanged.`
-                : row.submissionStatus === "not_submitted"
-                  ? "Colosseum has no submission for this team."
-                  : "Colosseum answered, but had nothing to say about a submission."}
-          </span>
-          <span className={styles.badge}>
-            {row.state === "pending" ? "Not established" : row.submissionStatus === "submitted" ? (row.onTime ? "On time" : "Late") : "No submission"}
-          </span>
-        </li>
-      ))}
-    </ul>
-  );
+function reminderLine(reminder: ReminderDeliveryView, timezone: string): string {
+  const parts = [`Week ${reminder.periodSequence}`, `${reminder.projectCount} team${reminder.projectCount === 1 ? "" : "s"} outstanding`];
+  if (reminder.reason && reminder.state !== "queued") parts.push(REMINDER_REASONS[reminder.reason] ?? `Telegram refused it (${reminder.reason})`);
+  if (reminder.deliveryUncertain) parts.push("no answer from Telegram");
+  if (reminder.state === "queued" && reminder.nextAttemptAt) parts.push(`retry ${fmtRetryAt(reminder.nextAttemptAt, timezone)}`);
+  return parts.join(", ");
 }
 
 export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
@@ -185,13 +130,47 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
   const [applying, startApply] = useTransition();
   const [saving, startSave] = useTransition();
   const [saved, setSaved] = useState("");
+  const [saveError, setSaveError] = useState(false);
+  // Shown and taken in the campaign timezone, both ways through the same
+  // pair of functions: a datetime-local field carries no offset, so slicing
+  // the stored UTC string would show the wrong clock and save it back two
+  // hours out on the next edit. Controlled, so a read from Colosseum can land
+  // in the field without a reload.
+  const [deadline, setDeadline] = useState(
+    data.config.officialSubmissionDeadline ? utcToZonedDateTime(data.config.officialSubmissionDeadline, timezone) : "",
+  );
+  // Which materials this edition asks for. Nothing is required until an
+  // admin says so: Colosseum publishes no per-field requirement HQ can read,
+  // so an edition nobody has configured shows every material as Not known
+  // rather than inventing a checklist.
+  const [materials, setMaterials] = useState<Record<MaterialKey, MaterialRequirement>>(() => materialRequirements(data.config));
+  const [readingDeadline, startDeadline] = useTransition();
+  const [deadlineNote, setDeadlineNote] = useState("");
+  const [deadlineError, setDeadlineError] = useState(false);
   const [reminders, setReminders] = useState(data.reminders);
   const [running, startRun] = useTransition();
   const [ranSummary, setRanSummary] = useState("");
   const [reminderLimit, setReminderLimit] = useState(reminders.length);
   const [loadingMore, startLoadMore] = useTransition();
-  const [readingDeadline, startDeadline] = useTransition();
-  const [deadlineNote, setDeadlineNote] = useState("");
+
+  const apply = () =>
+    startApply(async () => {
+      const result: { ok: true; schedule: ReportingScheduleView } | { ok: false; error: string } = await applyReportingSchedule();
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      setPlan(result.schedule.plan);
+      if (result.schedule.plan.blocked) {
+        showToast("Nothing was changed. These dates would leave a gap or an overlap between the weeks.");
+        return;
+      }
+      showToast(
+        result.schedule.plan.conflicts.length
+          ? `Applied. ${result.schedule.plan.conflicts.length} week${result.schedule.plan.conflicts.length === 1 ? " was" : "s were"} left exactly as recorded.`
+          : "Applied.",
+      );
+    });
 
   // Colosseum's own cutoff, read from the edition's listing envelope rather
   // than typed. A failure keeps its own sentence and never erases a deadline
@@ -199,20 +178,15 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
   const readDeadline = () =>
     startDeadline(async () => {
       setDeadlineNote("");
+      setDeadlineError(false);
       const result = await readColosseumDeadline();
-      setDeadlineNote(result.ok ? "Read from Colosseum and saved. Reload to see it in the field above." : result.error);
-    });
-
-  const showMoreReminders = () =>
-    startLoadMore(async () => {
-      const next = reminderLimit + 50;
-      const result = await loadMoreReminderDeliveries(next);
-      if (!result.ok) {
-        showToast(result.error);
+      if (result.ok) {
+        if (result.deadline) setDeadline(utcToZonedDateTime(result.deadline, timezone));
+        setDeadlineNote("Read from Colosseum and saved");
         return;
       }
-      setReminders(result.view.deliveries);
-      setReminderLimit(next);
+      setDeadlineError(true);
+      setDeadlineNote(result.error);
     });
 
   const runJobs = () =>
@@ -241,266 +215,185 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
       setRanSummary(`${parts.join(", ")}.`);
     });
 
-  const apply = () =>
-    startApply(async () => {
-      const result: { ok: true; schedule: ReportingScheduleView } | { ok: false; error: string } = await applyReportingSchedule();
+  const showMoreReminders = () =>
+    startLoadMore(async () => {
+      const next = reminderLimit + 50;
+      const result = await loadMoreReminderDeliveries(next);
       if (!result.ok) {
         showToast(result.error);
         return;
       }
-      setPlan(result.schedule.plan);
-      if (result.schedule.plan.blocked) {
-        showToast("Nothing was changed. These dates would leave a gap or an overlap between the weeks; see below.");
-        return;
-      }
-      showToast(
-        result.schedule.plan.conflicts.length
-          ? `Applied. ${result.schedule.plan.conflicts.length} week${result.schedule.plan.conflicts.length === 1 ? " was" : "s were"} left exactly as recorded.`
-          : "Applied.",
-      );
+      setReminders(result.view.deliveries);
+      setReminderLimit(next);
     });
 
+  const nudgeDay = WEEKDAYS.find((day) => day.value === data.config.nudgeWeekday)?.label ?? "the day set above";
+
   return (
-    <section className={styles.section} aria-labelledby="reporting-admin-title">
-      <h2 id="reporting-admin-title">Weekly reporting</h2>
-      <p>
-        {data.schedule
-          ? `Weeks run over ${data.hackathonName}'s own dates, ${data.schedule.startDate} to ${data.schedule.endDate}, in ${data.schedule.timezone}. Change those dates in Hackathons above; this panel is where a change reaches the stored weeks.`
-          : "This hackathon has no dates recorded, so it has no reporting weeks."}
-      </p>
-      <p>{data.enrolled === 0 ? "No project is in weekly reporting yet." : `${data.enrolled} project${data.enrolled === 1 ? " is" : "s are"} in weekly reporting${data.paused ? `, ${data.paused} of them paused` : ""}.`}</p>
-
-      <h3>Stored weeks</h3>
-      {plan.periods.length === 0 && <p>No weeks are stored yet. They are created the first time a team enters reporting, or when you apply the schedule below.</p>}
-      {plan.periods.length > 0 && (
-        <ul className={styles.roster} aria-label="Reporting weeks">
-          {plan.periods.map((period) => (
-            <li key={period.id}>
-              <span>
-                Week {period.sequence}: {periodRangeLabel(period.startDate, period.endDate)}
-                {period.mode === "submission" ? " (final submission period)" : ""}
-              </span>
-              <span className={styles.badge}>{period.closedAt ? "Closed" : "Open"}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <h3>Before you change the dates</h3>
-      <p>{planSummary(plan)}</p>
-      {plan.problems.length > 0 && (
-        <>
-          <p>Nothing is written while this is true. Change the hackathon dates again, or leave them, and the stored weeks stay exactly as they are.</p>
-          <ul className={styles.roster} aria-label="Why these dates cannot be applied">
-            {plan.problems.map((problem, index) => <li key={`${problem.kind}-${problem.sequence}-${index}`}><span>{problemLine(problem)}</span></li>)}
-          </ul>
-        </>
-      )}
-      {plan.conflicts.length > 0 && (
-        <>
-          <p>
-            These weeks stay exactly as they are, whatever the dates say. Reporting is recorded against a week, so moving one would move updates
-            and results that were written for a different set of days.
-          </p>
-          <ul className={styles.roster} aria-label="Weeks a date change cannot move">
-            {plan.conflicts.map((conflict) => (
-              <li key={conflict.periodId}>
-                <span>
-                  Week {conflict.sequence}, {periodRangeLabel(conflict.storedStartDate, conflict.storedEndDate)}
-                  {conflict.generatedStartDate && conflict.generatedEndDate
-                    ? `, which the dates would make ${periodRangeLabel(conflict.generatedStartDate, conflict.generatedEndDate)}`
-                    : ", which the dates no longer have a week for"}
-                  . Kept because {CONFLICT_REASONS[conflict.reason]} ({conflict.entries} update{conflict.entries === 1 ? "" : "s"}, {conflict.outcomes} recorded result{conflict.outcomes === 1 ? "" : "s"}).
+    <>
+      <section className={`${styles.section} ${styles.sectionLg}`} aria-labelledby="reporting-weeks-title">
+        <h2 id="reporting-weeks-title">Reporting weeks</h2>
+        <p>{enrolledLine(data.enrolled, data.paused)}</p>
+        <ol className={styles.weeks} aria-label="Reporting weeks">
+          {plan.periods.map((period) => {
+            const state = weekState(period, data.today);
+            return (
+              <li key={period.id}>
+                <span className={styles.kicker}>Week {period.sequence}</span>
+                <span className={styles.weekRange}>
+                  <span className={styles.strong}>{shortPeriodRange(period.startDate, period.endDate)}</span>
+                  {period.mode === "submission" && <span className={styles.hint}>Final submission period</span>}
                 </span>
+                <span className={WEEK_PILLS[state]}>{WEEK_LABELS[state]}</span>
               </li>
-            ))}
-          </ul>
-        </>
-      )}
-      <div className={styles.actions}>
-        <button className={styles.button} type="button" onClick={apply} disabled={applying}>
-          {applying ? "Applying…" : "Apply the hackathon dates to the weeks"}
-        </button>
-      </div>
+            );
+          })}
+        </ol>
+        <div className={`${styles.actions} ${styles.actionsWide}`} style={{ marginTop: 20 }}>
+          <button
+            className={`${styles.secondary} ${styles.buttonLg}`}
+            type="button"
+            onClick={apply}
+            disabled={applying}
+            style={{ opacity: applying ? 0.55 : 1 }}
+          >
+            {applying ? "Applying…" : "Apply hackathon dates"}
+          </button>
+          <span className={styles.planSummary}>{planSummary(plan)}</span>
+        </div>
+      </section>
 
-      <h3>Reporting settings</h3>
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          const form = event.currentTarget;
-          const formData = new FormData(form);
-          startSave(async () => {
-            setSaved("");
-            const refresh = String(formData.get("submissionRefresh") ?? "").trim();
-            const result = await saveReportingConfiguration({
-              finalPeriodStartDate: String(formData.get("finalStart") ?? ""),
-              officialSubmissionDeadline: String(formData.get("officialDeadline") ?? ""),
-              nudgeWeekday: Number(formData.get("nudgeWeekday")),
-              nudgeTime: String(formData.get("nudgeTime") ?? "12:00"),
-              // Checkboxes submit only what is ticked, so both arrays are
-              // always sent: an untouched form would otherwise read as
-              // "leave the materials alone" and unticking the last one
-              // would never save.
-              requiredMaterials: formData.getAll("required").map(String),
-              optionalMaterials: formData.getAll("optional").map(String),
-              submissionRefreshMinutes: refresh === "" ? 0 : Number(refresh),
+      <section className={`${styles.section} ${styles.sectionLg}`} aria-labelledby="reporting-settings-title">
+        <h2 id="reporting-settings-title">Reporting settings</h2>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            const formData = new FormData(event.currentTarget);
+            startSave(async () => {
+              setSaved("");
+              setSaveError(false);
+              const refresh = String(formData.get("submissionRefresh") ?? "").trim();
+              const result = await saveReportingConfiguration({
+                finalPeriodStartDate: String(formData.get("finalStart") ?? ""),
+                officialSubmissionDeadline: deadline,
+                nudgeWeekday: Number(formData.get("nudgeWeekday")),
+                nudgeTime: String(formData.get("nudgeTime") ?? "12:00"),
+                // Both arrays are always sent: an untouched form would
+                // otherwise read as "leave the materials alone" and setting
+                // the last one back to Not known would never save.
+                requiredMaterials: MATERIAL_KEYS.filter((key) => materials[key] === "required"),
+                optionalMaterials: MATERIAL_KEYS.filter((key) => materials[key] === "optional"),
+                submissionRefreshMinutes: refresh === "" ? 0 : Number(refresh),
+              });
+              setSaveError(!result.ok);
+              setSaved(result.ok ? "Saved" : result.error ?? "Could not save. Try again.");
             });
-            setSaved(result.ok ? "Saved. Check the weeks above, then apply." : result.error ?? "Could not save. Try again.");
-          });
-        }}
-        aria-busy={saving}
-      >
-        <fieldset disabled={saving} className={styles.fieldset}>
-          <div className={styles.grid}>
-            <label className={styles.field}>
-              Final submission period starts
-              <input name="finalStart" type="date" defaultValue={data.config.finalPeriodStartDate ?? ""} />
-            </label>
-            <label className={styles.field}>
-              {`Colosseum submission deadline, in ${timezone} (optional)`}
-              {/* Shown and taken in the campaign timezone, both ways through
-                  the same pair of functions: a datetime-local field carries no
-                  offset, so slicing the stored UTC string would show the wrong
-                  clock and save it back two hours out on the next edit. */}
-              <input
-                name="officialDeadline"
-                type="datetime-local"
-                defaultValue={data.config.officialSubmissionDeadline ? utcToZonedDateTime(data.config.officialSubmissionDeadline, timezone) : ""}
-              />
-            </label>
-            <label className={styles.field}>
-              Reminder day
-              <select name="nudgeWeekday" defaultValue={data.config.nudgeWeekday}>
-                {WEEKDAYS.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}
-              </select>
-            </label>
-            <label className={styles.field}>
-              Reminder time
-              <input name="nudgeTime" type="time" defaultValue={data.config.nudgeTime} required />
-            </label>
-            <label className={styles.field}>
-              Check submissions automatically, every (minutes)
-              <input
-                name="submissionRefresh"
-                type="number"
-                min={0}
-                step={5}
-                placeholder="off"
-                defaultValue={data.config.submissionRefreshMinutes ?? ""}
-              />
-            </label>
-          </div>
-
-          {/* Which materials this edition actually asks for. Nothing is
-              required until an admin says so: Colosseum publishes no
-              per-field requirement HQ can read, so an edition nobody has
-              configured shows every material as Not known rather than
-              inventing a checklist. */}
-          <h4>Submission materials this hackathon asks for</h4>
-          <div className={styles.grid}>
-            {MATERIAL_KEYS.map((key) => (
-              <div key={key} className={styles.field}>
-                {MATERIAL_LABELS[key]}
-                <span style={{ display: "flex", gap: 12, fontSize: 13 }}>
-                  <label>
-                    <input type="checkbox" name="required" value={key} defaultChecked={data.config.requiredMaterials.includes(key)} />
-                    {" "}Required
-                  </label>
-                  <label>
-                    <input type="checkbox" name="optional" value={key} defaultChecked={data.config.optionalMaterials.includes(key)} />
-                    {" "}Optional
-                  </label>
-                </span>
+          }}
+          aria-busy={saving}
+        >
+          <fieldset disabled={saving} className={styles.fieldset}>
+            <div className={`${styles.grid} ${styles.gridSettings}`}>
+              <label className={styles.field}>
+                <span className={styles.kicker}>Final period starts</span>
+                <input name="finalStart" type="date" defaultValue={data.config.finalPeriodStartDate ?? ""} />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.kicker}>Reminder day</span>
+                <select name="nudgeWeekday" defaultValue={data.config.nudgeWeekday}>
+                  {WEEKDAYS.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}
+                </select>
+              </label>
+              <label className={styles.field}>
+                <span className={styles.kicker}>Reminder time</span>
+                <input name="nudgeTime" type="time" defaultValue={data.config.nudgeTime} required />
+              </label>
+              <label className={styles.field}>
+                <span className={styles.kicker}>Auto-check submissions</span>
+                <input name="submissionRefresh" type="number" min={0} step={5} placeholder="Off" defaultValue={data.config.submissionRefreshMinutes ?? ""} />
+                <span className={styles.hint}>Minutes, final period only</span>
+              </label>
+            </div>
+            <div className={styles.settingsBlock}>
+              <label className={styles.kicker} htmlFor="reporting-deadline">Colosseum deadline</label>
+              <div className={styles.deadline}>
+                <input id="reporting-deadline" name="officialDeadline" type="datetime-local" value={deadline} onChange={(event) => setDeadline(event.target.value)} />
+                <button className={`${styles.secondary} ${styles.buttonLg}`} type="button" onClick={readDeadline} disabled={readingDeadline}>
+                  {readingDeadline ? "Asking Colosseum…" : "Read from Colosseum"}
+                </button>
               </div>
-            ))}
+              <p className={styles.hintLine}>Colosseum&apos;s cutoff. Does not move the weeks.</p>
+              {deadlineNote && (
+                <div className={deadlineError ? `${styles.note} ${styles.error}` : styles.note} role={deadlineError ? "alert" : "status"}>{deadlineNote}</div>
+              )}
+            </div>
+            <div className={styles.settingsBlock}>
+              <span className={styles.kicker}>Submission materials</span>
+              <div className={styles.materials}>
+                {MATERIAL_KEYS.map((key) => (
+                  <div key={key} className={styles.materialRow}>
+                    <span>{MATERIAL_LABELS[key]}</span>
+                    <div className={styles.segmented} role="group" aria-label={MATERIAL_LABELS[key]}>
+                      {REQUIREMENTS.map((value) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className={materials[key] === value ? styles.segmentedOn : undefined}
+                          aria-pressed={materials[key] === value}
+                          onClick={() => setMaterials((current) => ({ ...current, [key]: value }))}
+                        >
+                          {REQUIREMENT_LABELS[value]}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className={`${styles.actions} ${styles.actionsWide}`} style={{ marginTop: 24 }}>
+              <button className={`${styles.button} ${styles.buttonLg}`} type="submit">Save settings</button>
+              {(saving || saved) && (
+                <span className={saveError ? `${styles.status} ${styles.error}` : styles.status} role={saveError ? "alert" : "status"}>
+                  {saving ? "Saving…" : saved}
+                </span>
+              )}
+            </div>
+          </fieldset>
+        </form>
+      </section>
+
+      <section className={`${styles.section} ${styles.sectionLg}`} aria-labelledby="captain-reminders-title">
+        <div className={`${styles.header} ${styles.headerTop}`}>
+          <div>
+            <h2 id="captain-reminders-title">Captain reminders</h2>
+            <p>Each {nudgeDay}, Captains are told which teams still owe an update.</p>
           </div>
-          <p className={styles.muted}>
-            The final period merges the last weeks into one submission-focused window that runs to the hackathon&apos;s end date. The Colosseum
-            deadline is that platform&apos;s own cutoff and never moves these weeks; it only decides whether a submission counted as on time. Type
-            it as the clock reads in {timezone}, which is how it is shown above and how it is stored.
-            The reminder day and time decide when the Wednesday Captain reminder goes out, and a change takes effect for every week whose
-            reminder has not been recorded yet.
-          </p>
-          <p className={styles.muted}>
-            A material that is neither required nor optional is shown to teams as Not known, which is the honest answer: Colosseum does not tell us
-            what this edition asks for. Automatic submission checks only run during the final period, no more often than every 15 minutes, and
-            never more than a handful of projects at a time. Leave the field empty to turn them off and let teams press Check submission themselves.
-          </p>
-          <div className={styles.actions}>
-            <button className={styles.secondary} type="submit">Save reporting settings</button>
-          </div>
-        </fieldset>
-        {(saving || saved) && <div className={styles.feedback} role="status">{saving ? "Saving…" : saved}</div>}
-      </form>
-
-      <div className={styles.actions}>
-        <button className={styles.secondary} type="button" onClick={readDeadline} disabled={readingDeadline}>
-          {readingDeadline ? "Asking Colosseum…" : "Read the deadline from Colosseum"}
-        </button>
-      </div>
-      <p className={styles.muted}>
-        {data.config.officialDeadlineSource === "colosseum"
-          ? "The deadline above came from Colosseum."
-          : data.config.officialDeadlineSource === "admin"
-            ? "The deadline above was typed in here."
-            : "No submission deadline is recorded, so a submission is judged against the end of the final period."}
-        {data.config.officialDeadlineCheckedAt
-          ? ` Last asked Colosseum on ${data.config.officialDeadlineCheckedAt.slice(0, 10)}.`
-          : " Colosseum has not been asked for it yet."}
-        {" Reading it needs this hackathon's Colosseum edition id, set under Builder onboarding. An edition whose project directory is still closed has no published deadline to read."}
-      </p>
-      {(readingDeadline || deadlineNote) && (
-        <div className={styles.feedback} role="status">{readingDeadline ? "Asking Colosseum…" : deadlineNote}</div>
-      )}
-
-      <h3>Final submission period</h3>
-      <SubmissionReconciliations rows={data.reconciliations} />
-
-      <h3>Wednesday Captain reminders</h3>
-      <p>
-        {`Reminders go to Captains only, on ${WEEKDAYS.find((day) => day.value === data.config.nudgeWeekday)?.label ?? "the day set above"} at ${data.config.nudgeTime} ${timezone}, naming just the teams that still owe an update that week. Teams and admins are never messaged automatically.`}
-      </p>
-      <p>
-        {data.botConfigured
-          ? "The scheduled job runs every half hour and works out what is outstanding when it runs, so a late or missed run catches up on its own. Run it now if you would rather not wait."
-          : "This deployment has no Telegram bot configured, so reminders are worked out and recorded here and nothing is delivered. Set the bot up and the waiting messages go out on the next run."}
-      </p>
-      <div className={styles.actions}>
-        <button className={styles.secondary} type="button" onClick={runJobs} disabled={running}>
-          {running ? "Running…" : "Run the reminder and closure job now"}
-        </button>
-      </div>
-      <p className={styles.muted}>
-        This runs due reminders, period closure and submission checks for all editions in this deployment.
-        The history below shows the selected edition.
-      </p>
-      {(running || ranSummary) && <div className={styles.feedback} role="status">{running ? "Running…" : ranSummary}</div>}
-      {reminders.length === 0 && <p>No reminder has been recorded for this hackathon yet.</p>}
-      {reminders.length > 0 && (
-        <ul className={styles.roster} aria-label="Reminder history">
+          <button className={`${styles.secondary} ${styles.buttonLg}`} type="button" onClick={runJobs} disabled={running} style={{ flex: "none" }}>
+            {running ? "Running…" : "Run now"}
+          </button>
+        </div>
+        {ranSummary && <div className={styles.summary} role="status">{ranSummary}</div>}
+        <ul className={styles.reminders} aria-label="Reminder history">
           {reminders.map((reminder) => {
-            const reason = reminderReason(reminder);
+            const pill = reminderPill(reminder.state);
             return (
               <li key={reminder.id}>
-                <span>
-                  {reminder.captainName}, week {reminder.periodSequence} ({periodRangeLabel(reminder.periodStartDate, reminder.periodEndDate)}).{" "}
-                  {reminder.projectCount === 1 ? "1 team outstanding" : `${reminder.projectCount} teams outstanding`}.
-                  {reason ? ` Not sent because ${reason}.` : ""}
-                  {reminderProgress(reminder)}
+                <span className={styles.reminderText}>
+                  <span className={styles.strong}>{reminder.captainName}</span>
+                  <span className={styles.reminderDetail}>{reminderLine(reminder, timezone)}</span>
                 </span>
-                <span className={styles.badge}>{reminderBadge(reminder)}</span>
+                <span className={pill.className}>{pill.label}</span>
               </li>
             );
           })}
         </ul>
-      )}
-      {reminders.length >= reminderLimit && reminders.length > 0 && (
-        <div className={styles.actions}>
-          <button className={styles.secondary} type="button" onClick={showMoreReminders} disabled={loadingMore}>
-            {loadingMore ? "Loading…" : "Show earlier reminders"}
-          </button>
-        </div>
-      )}
-    </section>
+        {reminders.length >= reminderLimit && reminders.length > 0 && (
+          <div className={styles.actions}>
+            <button className={`${styles.secondary} ${styles.buttonLg}`} type="button" onClick={showMoreReminders} disabled={loadingMore}>
+              {loadingMore ? "Loading…" : "Show earlier reminders"}
+            </button>
+          </div>
+        )}
+      </section>
+    </>
   );
 }

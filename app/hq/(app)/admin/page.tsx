@@ -23,6 +23,8 @@ export default async function AdminPage() {
     requireUser(),
     getHackathon(hackathonId),
     getHackathons(),
+    // Only the campaign timezone is still read from settings here, for the
+    // invitation expiry preview.
     getSettings(hackathonId),
     getMilestones(hackathonId),
     getClassifiers(hackathonId),
@@ -32,13 +34,7 @@ export default async function AdminPage() {
   const current = ensureHackathon(hackathon);
   return (
     <>
-      <Admin
-      current={current}
-      hackathons={hackathons}
-      settings={settings}
-      milestones={milestones}
-      gates={classifiers.gates}
-      />
+      <Admin current={current} hackathons={hackathons} milestones={milestones} gates={classifiers.gates} />
       <BuilderAdmin {...onboarding} timezone={settings.timezone} />
       <ReportingAdmin data={reporting} />
     </>

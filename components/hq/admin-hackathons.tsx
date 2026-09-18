@@ -23,6 +23,7 @@ import type { Gate, Hackathon } from "@/lib/hq/types";
 const field: CSSProperties = { ...input, boxSizing: "border-box" };
 const dateField: CSSProperties = { ...input, padding: "7px 10px", boxSizing: "border-box" };
 const rowField: CSSProperties = { ...smallInput, padding: "6px 8px", boxSizing: "border-box" };
+const addBtn: CSSProperties = { ...primaryBtn, padding: "9px 16px" };
 
 const rowAction: CSSProperties = {
   flex: "none",
@@ -30,14 +31,28 @@ const rowAction: CSSProperties = {
   cursor: "pointer",
   background: "none",
   color: "var(--label-2)",
-  fontSize: 12,
+  fontSize: 14,
   fontWeight: 600,
   padding: "0 4px",
   whiteSpace: "nowrap",
 };
 
+const chip: CSSProperties = {
+  flex: "none",
+  fontSize: 13,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  padding: "0 4px",
+};
+
+const createRow: CSSProperties = { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" };
+const rowList: CSSProperties = { display: "flex", flexDirection: "column", marginTop: 8 };
+const hint: CSSProperties = { fontSize: 14, color: "var(--label-3)", marginTop: 8 };
+const errorLine: CSSProperties = { fontSize: 14, color: "var(--red)", marginTop: 8 };
+
 /** Two-step delete props from a useConfirmDelete instance. */
-type Armed = {
+export type Armed = {
   label: string;
   color: string;
   fontWeight: number;
@@ -45,7 +60,8 @@ type Armed = {
   onClick: (e?: React.MouseEvent) => void;
 };
 
-function DeleteButton({ del, disabled }: { del: Armed; disabled?: boolean }) {
+/** The "×" that arms to "Sure?", shared by every row on this page. */
+export function DeleteButton({ del, disabled }: { del: Armed; disabled?: boolean }) {
   return (
     <button
       type="button"
@@ -59,7 +75,7 @@ function DeleteButton({ del, disabled }: { del: Armed; disabled?: boolean }) {
         cursor: disabled ? "not-allowed" : "pointer",
         background: "none",
         color: disabled ? "var(--faded)" : del.color,
-        fontSize: 12,
+        fontSize: 14,
         fontWeight: del.fontWeight,
         lineHeight: 1,
         padding: 2,
@@ -137,7 +153,6 @@ function HackathonRow({
         alignItems: "center",
         flexWrap: "wrap",
         padding: "8px 0",
-        borderBottom: "1px solid var(--sep)",
         opacity: hackathon.archived ? 0.62 : 1,
       }}
     >
@@ -146,7 +161,7 @@ function HackathonRow({
         style={{
           flex: "none",
           width: 44,
-          fontSize: 12,
+          fontSize: 14,
           fontWeight: 600,
           color: "var(--label-3)",
           fontVariantNumeric: "tabular-nums",
@@ -178,35 +193,9 @@ function HackathonRow({
         aria-label="End date"
         style={{ ...rowField, width: 150, flex: "none" }}
       />
-      {hackathon.archived ? (
-        <span
-          style={{
-            flex: "none",
-            fontSize: 11,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            color: "var(--label-3)",
-            padding: "0 4px",
-          }}
-        >
-          Archived
-        </span>
-      ) : null}
+      {hackathon.archived ? <span style={{ ...chip, color: "var(--label-3)" }}>Archived</span> : null}
       {current ? (
-        <span
-          style={{
-            flex: "none",
-            fontSize: 11,
-            fontWeight: 600,
-            textTransform: "uppercase",
-            letterSpacing: "0.08em",
-            color: "var(--accent)",
-            padding: "0 4px",
-          }}
-        >
-          Current
-        </span>
+        <span style={{ ...chip, color: "var(--accent)" }}>Current</span>
       ) : (
         <button type="button" className="hq-hover-accent" onClick={open} style={rowAction}>
           Open
@@ -286,15 +275,9 @@ export function HackathonsCard({
   };
 
   return (
-    <div style={{ ...card, marginTop: 16 }} id="hackathons">
+    <div style={card} id="hackathons">
       <div style={cardTitle}>Hackathons</div>
-      <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 2 }}>
-        Each hackathon is its own CRM. A new one starts with this edition&apos;s targets and
-        submission gates, and nothing else. An edition stays open until you archive it -
-        its end date passing changes nothing, so demo day can follow the hackathon.
-        Deleting one removes everything filed under it.
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", marginTop: 8 }}>
+      <div style={rowList}>
         {hackathons.map((h) => (
           <HackathonRow
             key={h.id}
@@ -305,15 +288,7 @@ export function HackathonsCard({
           />
         ))}
       </div>
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          flexWrap: "wrap",
-          alignItems: "flex-end",
-          marginTop: 14,
-        }}
-      >
+      <div style={{ ...createRow, marginTop: 14 }}>
         <FormField
           label="ID"
           hint="An unused internal HQ ID. Configure the Colosseum ID separately in builder onboarding settings."
@@ -354,16 +329,12 @@ export function HackathonsCard({
             style={dateField}
           />
         </FormField>
-        <button type="button" onClick={add} style={{ ...primaryBtn, padding: "9px 16px" }}>
+        <button type="button" onClick={add} style={addBtn}>
           Add
         </button>
       </div>
-      {draftStart && draftEnd ? (
-        <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 8 }}>
-          {fmtDateRange(draftStart, draftEnd)}
-        </div>
-      ) : null}
-      {error ? <div style={{ fontSize: 12, color: "var(--red)", marginTop: 8 }}>{error}</div> : null}
+      {draftStart && draftEnd ? <div style={hint}>{fmtDateRange(draftStart, draftEnd)}</div> : null}
+      {error ? <div style={errorLine}>{error}</div> : null}
     </div>
   );
 }
@@ -393,15 +364,7 @@ function GateRow({ gate, del }: { gate: Gate; del: Armed }) {
   };
 
   return (
-    <div
-      style={{
-        display: "flex",
-        gap: 10,
-        alignItems: "center",
-        padding: "8px 0",
-        borderBottom: "1px solid var(--sep)",
-      }}
-    >
+    <div style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0" }}>
       <input
         ref={ref}
         defaultValue={gate.label}
@@ -442,21 +405,9 @@ export function GatesCard({ gates }: { gates: Gate[] }) {
   };
 
   return (
-    <div style={{ ...card, marginTop: 12 }}>
+    <div style={card}>
       <div style={cardTitle}>Submission gates</div>
-      <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 2 }}>
-        The checklist every project works through; a project that has ticked all of them
-        counts as a verified submission. Removing a gate also clears it on every project.
-      </div>
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
-          flexWrap: "wrap",
-          alignItems: "flex-end",
-          marginTop: 10,
-        }}
-      >
+      <div style={{ ...createRow, marginTop: 10 }}>
         <FormField label="Gate" flex={1} minWidth={220}>
           <input
             value={draft}
@@ -470,20 +421,15 @@ export function GatesCard({ gates }: { gates: Gate[] }) {
             style={field}
           />
         </FormField>
-        <button type="button" onClick={add} style={{ ...primaryBtn, padding: "9px 16px" }}>
+        <button type="button" onClick={add} style={addBtn}>
           Add
         </button>
       </div>
-      {error ? <div style={{ fontSize: 12, color: "var(--red)", marginTop: 8 }}>{error}</div> : null}
-      <div style={{ display: "flex", flexDirection: "column", marginTop: 8 }}>
+      {error ? <div style={errorLine}>{error}</div> : null}
+      <div style={rowList}>
         {rows.map((g) => (
           <GateRow key={g.id} gate={g} del={armed(`gate-${g.id}`, "×", () => remove(g.id))} />
         ))}
-        {rows.length === 0 && (
-          <div style={{ fontSize: 13, color: "var(--label-3)", padding: "10px 0" }}>
-            No gates yet. Without any, every project counts as verified.
-          </div>
-        )}
       </div>
     </div>
   );

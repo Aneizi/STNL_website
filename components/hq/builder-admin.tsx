@@ -3,20 +3,18 @@
 import { useRef, useState, useSyncExternalStore, useTransition, type FormEvent, type ReactNode } from "react";
 import {
   attachColosseumProject, createProjectFromImportRequest,
-  deleteBuilderTeam, markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
-  updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
+  deleteBuilderTeam, markBuilderProjectPotential, resolveBuilderImportRequest,
+  updateBuilderOnboardingConfig, updateBuilderProjectLead,
 } from "@/lib/hq/actions/builders-admin";
-import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import { createCaptainInvitation, revokeCaptainInvitation } from "@/lib/hq/actions/captains";
 import type {
-  AccountLogin, ActiveCaptain, BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
+  AccountLogin, AdminCaptainLeaderboardRow, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
 } from "@/lib/hq/builder-admin-queries";
-import type { CaptainInvitationListing, CurrentCaptainAssignment } from "@/lib/hq/captains";
+import type { CaptainInvitationListing } from "@/lib/hq/captains";
 import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtWithZone } from "@/lib/hq/format";
 import { inviteLink } from "@/lib/hq/member-routes";
 import type { ActionResult } from "@/lib/hq/types";
-import type { CaptainLeaderboardView } from "@/lib/hq/view-models";
 import { BuilderProjectImage } from "./builder-project-image";
 import { CopyButton } from "./ui-client";
 import styles from "./builder-admin.module.css";
@@ -97,117 +95,33 @@ function projectHref(value: string): string | undefined {
   return undefined;
 }
 
-export function BuilderAdmin({
-  config, hackathonName, accounts, captains, hostRequests, captainInvitations, captainLeaderboard, captainAssignments, timezone,
-}: {
-  config: OnboardingConfig; hackathonName: string; accounts: BuilderAccount[]; captains: ActiveCaptain[]; hostRequests: BuilderHostRequest[];
-  captainInvitations: CaptainInvitationListing[]; captainLeaderboard: CaptainLeaderboardView[]; captainAssignments: CurrentCaptainAssignment[];
-  timezone: string;
+export function BuilderAdmin({ config, captainInvitations, captainLeaderboard, timezone }: {
+  config: OnboardingConfig; captainInvitations: CaptainInvitationListing[]; captainLeaderboard: AdminCaptainLeaderboardRow[]; timezone: string;
 }) {
   return (
     <>
       <section className={styles.section} aria-labelledby="builder-onboarding-title">
         <h2 id="builder-onboarding-title">Builder onboarding</h2>
-        <p>Settings for {hackathonName}. Colosseum IDs are separate from HQ IDs. Leave project imports off until Colosseum provides access.</p>
         <ActionForm action={(data) => updateBuilderOnboardingConfig({
           externalHackathonId: String(data.get("externalId") ?? "").trim() ? Number(data.get("externalId")) : null,
           externalHackathonSlug: String(data.get("externalSlug") ?? ""),
           projectsOpen: data.has("projectsOpen"),
           projectsAvailableAt: data.get("availableAt") ? new Date(`${data.get("availableAt")}:00Z`).toISOString() : "",
           signupUrl: String(data.get("signupUrl") ?? ""),
-          hostingEnabled: data.has("hostingEnabled"),
         })}>
           <div className={styles.grid}>
-            <label className={styles.field}>Colosseum hackathon ID<input name="externalId" inputMode="numeric" pattern="[0-9]+" defaultValue={config.externalHackathonId ?? ""} /></label>
-            <label className={styles.field}>Colosseum hackathon slug<input name="externalSlug" defaultValue={config.externalHackathonSlug} maxLength={200} spellCheck={false} /></label>
+            <label className={styles.field}>Hackathon ID<input name="externalId" inputMode="numeric" pattern="[0-9]+" defaultValue={config.externalHackathonId ?? ""} /></label>
+            <label className={styles.field}>Slug<input name="externalSlug" defaultValue={config.externalHackathonSlug} maxLength={200} spellCheck={false} /></label>
             <label className={styles.field}>Project access date (UTC)<input name="availableAt" type="datetime-local" defaultValue={localDateTime(config.projectsAvailableAt)} /></label>
-            <label className={styles.field}>Colosseum signup URL<input name="signupUrl" type="url" defaultValue={config.signupUrl} required /></label>
+            <label className={styles.field}>Signup URL<input name="signupUrl" type="url" defaultValue={config.signupUrl} required /></label>
           </div>
           <label className={styles.checkbox}>Enable project imports<input name="projectsOpen" type="checkbox" defaultChecked={config.projectsOpen} /></label>
-          <label className={styles.checkbox}>Allow Members to apply to host events<input name="hostingEnabled" type="checkbox" defaultChecked={config.hostingEnabled} /></label>
-          <div className={styles.actions}><button className={styles.button} type="submit">Save onboarding settings</button></div>
+          <div className={styles.actions}><button className={styles.button} type="submit">Save</button></div>
         </ActionForm>
       </section>
-      <BuilderAccounts accounts={accounts} captains={captains} />
       <CaptainInvitations invitations={captainInvitations} timezone={timezone} />
-      <CaptainLeaderboard hackathonName={hackathonName} leaderboard={captainLeaderboard} assignments={captainAssignments} />
-      <section className={styles.section} aria-labelledby="hosting-requests-title">
-        <h2 id="hosting-requests-title">Event hosting requests</h2>
-        <p>{config.hostingEnabled ? "Members can apply to host an event." : "Applications are disabled. Enable them in onboarding settings when ready."}</p>
-        {hostRequests.length === 0 && <p>No hosting requests yet.</p>}
-        {hostRequests.map((request) => (
-          <article className={styles.row} key={request.id}>
-            <div className={styles.rowHeader}><h3>{request.title}</h3><span className={styles.badge}>{request.status}</span></div>
-            <p>{request.name} ({loginLabel(request)})</p><p>{request.details}</p>
-            {request.status === "pending" && <ActionForm action={(data) => reviewBuilderHostRequest(request.id, data.get("decision") === "approved" ? "approved" : "declined")}>
-              <div className={styles.actions}>
-                <button className={styles.button} name="decision" value="approved" type="submit">Approve request</button>
-                <button className={styles.secondary} name="decision" value="declined" type="submit">Decline</button>
-              </div>
-            </ActionForm>}
-          </article>
-        ))}
-      </section>
+      <CaptainLeaderboard rows={captainLeaderboard} />
     </>
-  );
-}
-
-export function BuilderAccounts({ accounts, captains }: { accounts: BuilderAccount[]; captains: ActiveCaptain[] }) {
-  return (
-    <section className={styles.section} aria-labelledby="builder-accounts-title">
-      <h2 id="builder-accounts-title">HQ accounts</h2>
-      <p>Accounts in this hackathon&apos;s People list. Membership applies across all hackathons and never grants admin access.</p>
-      <p>Captain access is an account capability, separate from People roles and from membership. It shows as a locked Captain tag in People and opens no project until a Captain is assigned to it.</p>
-      <p>{captains.length === 0 ? "No account holds Captain access yet." : `Active Captains across all hackathons: ${captains.length}.`}</p>
-      {captains.length > 0 && <ul className={styles.roster} aria-label="Active Captains">
-        {captains.map((captain) => <li key={captain.userId}>
-          <span>{captain.name}{captain.reason ? ` (${captain.reason})` : ""}</span>
-          <span className={styles.badge}>Since {captain.grantedAt.slice(0, 10)}</span>
-        </li>)}
-      </ul>}
-      {accounts.length === 0 && <p>No HQ accounts have joined this hackathon yet.</p>}
-      {accounts.map((account) => (
-        <article className={styles.row} key={account.id}>
-          <div className={styles.rowHeader}>
-            <h3>{account.name}</h3>
-            {account.captain && <span className={`${styles.badge} ${styles.potential}`}>Captain</span>}
-          </div>
-          <p>{loginLabel(account)}</p>
-          {account.contactEmail && <p>Contact email: {account.contactEmail}</p>}
-          {/* Two different facts, so they are said separately: a linked
-              Telegram account proves who someone is, and bot messaging is
-              their separate agreement to be messaged. The Wednesday
-              reminders in phase 8 need the second one, not the first. */}
-          <p>{account.telegram
-            ? account.botMessaging ? "Telegram connected, bot messages allowed." : "Telegram connected, bot messages not allowed yet."
-            : "No Telegram connection, so the bot cannot reach this account."}</p>
-          {account.captain && <p>Contact for their teams: {account.captainContact ?? "none shared yet"}</p>}
-          <ActionForm action={(data) => updateBuilderTier(account.id, data.get("tier") === "member" ? "member" : "regular")}>
-            <div className={styles.tier}>
-              <label>Membership<select name="tier" defaultValue={account.tier}><option value="regular">Regular</option><option value="member">Member</option></select></label>
-              <button className={styles.secondary} type="submit">Save membership</button>
-            </div>
-          </ActionForm>
-          <details className={styles.review}>
-            <summary>{account.captain ? "Revoke Captain access" : "Grant Captain access"}</summary>
-            <ActionForm resetOnSuccess action={(data) => (account.captain ? revokeCaptainCapability : grantCaptainCapability)(account.id, String(data.get("reason") ?? ""))}>
-              <label className={styles.field}>Reason<input name="reason" required minLength={3} maxLength={500} placeholder={account.captain ? "Why this account loses Captain access." : "Why this account gets Captain access."} /></label>
-              <label className={styles.checkbox}>
-                {account.captain
-                  ? account.captainAssignmentCount > 0
-                    ? `I confirm this account should lose Captain access. It currently captains ${account.captainAssignmentCount} project${account.captainAssignmentCount === 1 ? "" : "s"}; revoking clears ${account.captainAssignmentCount === 1 ? "it" : "all of them"} in the same action.`
-                    : "I confirm this account should lose Captain access. It captains no project right now."
-                  : "I confirm this account should have Captain access. It opens no project until an assignment exists."}
-                <input name="confirm" type="checkbox" required />
-              </label>
-              <div className={styles.actions}>
-                <button className={account.captain ? styles.secondary : styles.button} type="submit">{account.captain ? "Revoke Captain" : "Grant Captain"}</button>
-              </div>
-            </ActionForm>
-          </details>
-        </article>
-      ))}
-    </section>
   );
 }
 
@@ -217,9 +131,9 @@ const INVITATION_STATE_LABELS: Record<CaptainInvitationListing["state"], string>
 
 /**
  * The moment this form hydrated on the client, or null on the server and on
- * the client's own first (hydrating) render. Date.now() is impure — calling
+ * the client's own first (hydrating) render. Date.now() is impure: calling
  * it directly in a component body is against the rules of React (it would
- * also disagree with the server's render, a hydration mismatch) — so the one
+ * also disagree with the server's render, a hydration mismatch), so the one
  * read lives inside useSyncExternalStore's getSnapshot, its documented seam
  * for reading an external, non-React value, cached in a ref so repeated
  * calls agree with themselves instead of drifting with the clock. No
@@ -238,7 +152,7 @@ function useClientNow(): number | null {
 /**
  * Days from now, formatted with its zone, for the create form's expiry
  * preview. Null on the server and on the client's first render (see
- * useClientNow), so the first client render still matches the server's —
+ * useClientNow), so the first client render still matches the server's,
  * the same hydration problem localDateTime above solves a different way, by
  * only ever formatting a fixed UTC value instead of "now".
  */
@@ -249,10 +163,8 @@ function useExpiryPreview(days: number, timezone: string): string {
 }
 
 /**
- * Captain invitations: admin-generated links that grant the Captain
+ * Captain invitation links: admin-generated links that grant the Captain
  * capability only, never operator access and never a project assignment.
- * Rendered near BuilderAccounts' own Captain copy, since both surfaces touch
- * the same hq_account_capabilities grant, just by two different routes.
  *
  * The create form is not an ActionForm: createCaptainInvitation returns a
  * distinct { token, invitation } shape (never ActionResult) so the plaintext
@@ -285,8 +197,8 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
         form.reset();
         setDays(7);
       } catch {
-        // requireUser() throws on an expired or lost operator session — the
-        // most likely failure on a long-open Admin tab — and the action
+        // requireUser() throws on an expired or lost operator session, the
+        // most likely failure on a long-open Admin tab, and the action
         // rethrows anything that is not a BuilderError.
         setError("Could not create the invitation. Try again.");
       }
@@ -297,55 +209,55 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
 
   return (
     <section className={styles.section} aria-labelledby="captain-invitations-title">
-      <h2 id="captain-invitations-title">Captain invitations</h2>
-      <p>A link grants Captain access only — never operator access and never a project assignment. Assigning a Captain to a project is a separate step.</p>
-      <p>A multi-use link authorizes several verified accounts at once. Keep Maximum connected accounts at 1 unless several people genuinely share this link — the default is deliberately one-use.</p>
+      <h2 id="captain-invitations-title">Captain invitation links</h2>
       <form onSubmit={submit} aria-busy={pending}>
         <fieldset disabled={pending} className={styles.fieldset}>
           <div className={styles.grid}>
-            <label className={styles.field}>Internal label (optional)<input name="label" maxLength={200} placeholder="e.g. Rotterdam meetup" /></label>
-            <label className={styles.field}>Maximum connected accounts<input name="maxRedemptions" type="number" inputMode="numeric" min={1} max={500} defaultValue={1} required /></label>
+            <label className={styles.field}>Label<input name="label" maxLength={200} placeholder="e.g. Rotterdam meetup" /></label>
+            <label className={styles.field}>Max accounts<input name="maxRedemptions" type="number" inputMode="numeric" min={1} max={500} defaultValue={1} required /></label>
             <label className={styles.field}>Valid for (days)<input name="validForDays" type="number" inputMode="numeric" min={1} max={365} defaultValue={7} required onChange={(event) => setDays(Number(event.currentTarget.value))} /></label>
           </div>
-          <p className={styles.muted}>{preview ? `Expires ${preview}, unless revoked sooner.` : "Choose a duration to see the expiry."}</p>
-          <div className={styles.actions}><button className={styles.button} type="submit">Create invitation link</button></div>
+          <div className={`${styles.actions} ${styles.actionsWide}`}>
+            <button className={styles.button} type="submit">Create link</button>
+            <span className={styles.hint}>{preview ? `Expires ${preview}` : "Choose a duration to see the expiry."}</span>
+          </div>
         </fieldset>
         {(pending || error) && <div className={`${styles.feedback} ${error ? styles.error : ""}`} role={error ? "alert" : "status"}>{pending ? "Creating…" : error}</div>}
       </form>
       {created && (
-        <div className={styles.row} role="status">
-          <p><strong>Copy this link now — it will not be shown again.</strong></p>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-            <span style={{ fontFamily: "var(--mono)", fontSize: 12, overflowWrap: "anywhere" }}>{link}</span>
+        <div className={styles.block} role="status">
+          <p className={styles.lead}>Copy now. This link is not shown again.</p>
+          <div className={styles.linkRow}>
+            <span className={styles.link}>{link}</span>
             <CopyButton value={link} />
           </div>
         </div>
       )}
-      {invitations.length === 0 && <p>No Captain invitations yet.</p>}
       {invitations.map((invitation) => (
-        <article className={styles.row} key={invitation.id}>
-          <div className={styles.rowHeader}>
+        <article className={styles.block} key={invitation.id}>
+          <div className={styles.blockHeader}>
             <h3>{invitation.label || "Untitled invitation"}</h3>
-            <span className={styles.badge}>{INVITATION_STATE_LABELS[invitation.state]}</span>
+            <span className={styles.pill}>{INVITATION_STATE_LABELS[invitation.state]}</span>
           </div>
-          <p>{invitation.usedCount} of {invitation.maxRedemptions} accounts used. Expires {fmtWithZone(invitation.expiresAt, timezone)}.</p>
-          <p>Created by {invitation.createdByName ?? "a since-removed operator"} on {invitation.createdAt.slice(0, 10)}.</p>
+          <p>
+            {invitation.usedCount} of {invitation.maxRedemptions} used. Expires {fmtWithZone(invitation.expiresAt, timezone)}.
+            {" "}By {invitation.createdByName ?? "a since-removed operator"}, {invitation.createdAt.slice(0, 10)}
+          </p>
           {invitation.redeemers.length > 0 && (
-            <ul className={styles.roster} aria-label={`${invitation.label || "Untitled invitation"} redeemers`}>
+            <ul className={styles.redeemers} aria-label={`${invitation.label || "Untitled invitation"} redeemers`}>
               {invitation.redeemers.map((redeemer, index) => (
                 <li key={redeemer.userId ?? `deleted-${index}`}>
                   <span>{redeemer.name ?? "Deleted account"}</span>
-                  <span className={styles.badge}>{redeemer.redeemedAt.slice(0, 10)}</span>
+                  <span className={styles.date}>{redeemer.redeemedAt.slice(0, 10)}</span>
                 </li>
               ))}
             </ul>
           )}
           {invitation.state !== "revoked" && (
             <ActionForm action={() => revokeCaptainInvitation(invitation.id)}>
-              <div className={styles.actions}><button className={styles.secondary} type="submit">Revoke invitation</button></div>
+              <div className={styles.actions}><button className={styles.secondary} type="submit">Revoke</button></div>
             </ActionForm>
           )}
-          <p className={styles.muted}>Revoking stops future redemptions only. Accounts that already used this link keep Captain access until it is revoked for that account above.</p>
         </article>
       ))}
     </section>
@@ -353,49 +265,32 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
 }
 
 /**
- * The Captain leaderboard, edition-scoped, plus its drilldown — the one
- * operator-only extra a Captain's own copy of this list never carries.
- * `leaderboard` is the exact rank/name/count shape a Captain sees on their
- * own dashboard (lib/hq/captains.ts#leaderboard, shared and separately
- * gated at each call site); `assignments` is the wider admin-only read
- * (`listAssignments`, with account ids), grouped here by Captain to answer
- * "which projects does this Captain currently hold" without threading an id
- * through the privacy-shaped leaderboard rows above.
+ * The Captain leaderboard, edition-scoped: ranked rows with the bar scaled
+ * to the top count, the project names under each name. `rows` is the
+ * admin-only shape getBuilderAdminData builds server-side, keyed by account
+ * id rather than by a display name two Captains may share.
  */
-function CaptainLeaderboard({ hackathonName, leaderboard, assignments }: {
-  hackathonName: string; leaderboard: CaptainLeaderboardView[]; assignments: CurrentCaptainAssignment[];
-}) {
-  const byCaptain = new Map<string, { name: string; projects: Array<{ id: string; name: string }> }>();
-  for (const row of assignments) {
-    const entry = byCaptain.get(row.captainUserId) ?? { name: row.captainName, projects: [] };
-    entry.projects.push({ id: row.projectId, name: row.projectName });
-    byCaptain.set(row.captainUserId, entry);
-  }
+function CaptainLeaderboard({ rows }: { rows: AdminCaptainLeaderboardRow[] }) {
+  const top = Math.max(1, rows[0]?.assignedCount ?? 0);
   return (
     <section className={styles.section} aria-labelledby="captain-leaderboard-title">
-      <h2 id="captain-leaderboard-title">Captain leaderboard — {hackathonName}</h2>
-      <p>Current assigned-team counts for this hackathon&apos;s active projects. An account with an active Captain grant still appears at zero until it holds one.</p>
-      {leaderboard.length === 0 && <p>No account holds Captain access yet.</p>}
-      {leaderboard.length > 0 && (
-        <ol className={styles.roster} aria-label="Captain leaderboard">
-          {leaderboard.map((row) => (
-            <li key={row.rank}>
-              <span>{row.rank}. {row.displayName}</span>
-              <span className={styles.badge}>{row.assignedCount} project{row.assignedCount === 1 ? "" : "s"}</span>
-            </li>
-          ))}
-        </ol>
-      )}
-      <p>Which projects each Captain currently holds, including projects whose status does not count as active (so this list can name a project the count above does not include):</p>
-      {byCaptain.size === 0 && <p>No project currently has a Captain in this hackathon.</p>}
-      {[...byCaptain.entries()].map(([userId, entry]) => (
-        <article className={styles.row} key={userId}>
-          <h3>{entry.name}</h3>
-          <ul className={styles.roster} aria-label={`${entry.name} projects`}>
-            {entry.projects.map((project) => <li key={project.id}><span>{project.name}</span></li>)}
-          </ul>
-        </article>
-      ))}
+      <div className={styles.header}>
+        <h2 id="captain-leaderboard-title">Captain leaderboard</h2>
+        <span className={styles.headerNote}>Active projects held</span>
+      </div>
+      <ol className={styles.leaderboard} aria-label="Captain leaderboard">
+        {rows.map((row) => (
+          <li key={row.captainUserId}>
+            <span className={styles.rank}>{row.rank}</span>
+            <span className={styles.captain}>
+              <span className={styles.captainName}>{row.displayName}</span>
+              <span className={styles.projects}>{row.projectNames.join(", ") || "No projects yet"}</span>
+            </span>
+            <span className={styles.bar}><span className={styles.barFill} style={{ width: `${Math.round((row.assignedCount / top) * 100)}%` }} /></span>
+            <span className={styles.count}>{row.assignedCount}</span>
+          </li>
+        ))}
+      </ol>
     </section>
   );
 }
