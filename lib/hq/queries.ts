@@ -125,16 +125,26 @@ export async function getSettings(hackathonId: number): Promise<Settings> {
 
 export async function getProjects(hackathonId: number): Promise<Project[]> {
   const sql = getSql();
+  // The Colosseum snapshot rides along from hq_project_onboarding (one row
+  // per imported project, none for a project created in HQ), with the
+  // importer's name from their profile: the board's Colosseum block shows
+  // who pasted the link and on which day.
   const rows = await sql`
     SELECT
       p.id, p.name, p.lead_name, p.lead_contact,
       p.partner_id, COALESCE(pa.name, '') AS partner_name,
       ca.captain_user_id, COALESCE(cap.name, '') AS captain_name,
       p.event_src, s.slug AS status_slug, f.slug AS forecast_slug,
-      p.last_check_in::text AS last_check_in, p.blocker,
+      p.last_check_in::text AS last_check_in, p.blocker, p.high_potential,
       COALESCE(u.display_name, '') AS touched_by, p.touched_at::text AS touched_at,
+      p.created_at::date::text AS created_at,
+      o.project_id IS NOT NULL AS imported,
+      o.project_url, o.image_url, o.description, o.stage, o.category, o.submission_status,
+      COALESCE(o.lead_username, '') AS lead_username,
+      COALESCE(owner.name, '') AS imported_by, o.created_at::date::text AS imported_at,
       COALESCE(
-        (SELECT json_agg(json_build_object('id', m.id, 'name', m.name, 'contact', m.contact)
+        (SELECT json_agg(json_build_object(
+            'id', m.id, 'name', m.name, 'contact', m.contact, 'username', m.colosseum_username)
            ORDER BY m.sort, m.id)
          FROM hq_project_members m WHERE m.project_id = p.id),
         '[]'
@@ -163,6 +173,8 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     LEFT JOIN hq_users u ON u.id = p.touched_by_user_id
     LEFT JOIN hq_captain_assignments ca ON ca.project_id = p.id AND ca.unassigned_at IS NULL AND ca.captain_user_id IS NOT NULL
     LEFT JOIN hq_builder_profiles cap ON cap.id = ca.captain_user_id
+    LEFT JOIN hq_project_onboarding o ON o.project_id = p.id
+    LEFT JOIN hq_builder_profiles owner ON owner.id = o.owner_user_id
     WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
@@ -172,6 +184,21 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     leadName: r.lead_name,
     leadContact: r.lead_contact,
     members: r.members ?? [],
+    createdAt: r.created_at,
+    highPotential: Boolean(r.high_potential),
+    colosseum: r.imported
+      ? {
+          url: r.project_url,
+          imageUrl: r.image_url ?? null,
+          description: r.description ?? "",
+          stage: r.stage,
+          category: r.category ?? null,
+          submissionStatus: r.submission_status ?? "not_checked",
+          leadUsername: r.lead_username,
+          importedByName: r.imported_by,
+          importedAt: r.imported_at,
+        }
+      : null,
     partnerId: r.partner_id,
     partnerName: r.partner_name,
     captainUserId: r.captain_user_id,

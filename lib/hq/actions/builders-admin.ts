@@ -2,13 +2,11 @@
 
 import { z } from "zod";
 import { requireUser } from "../auth";
-import { builderDatabase } from "../builder-db";
 import { builderStore } from "../builder-store";
 import { BuilderError } from "../builder-types";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
 import { attachColosseumSource } from "../project-import";
-import { deleteTeamRecord } from "../record-deletion";
 import type { ActionResult } from "../types";
 import { refreshHq } from "./util";
 
@@ -84,26 +82,11 @@ export async function updateBuilderTier(builderId: string, tier: "regular" | "me
   return { ok: true };
 }
 
-export async function markBuilderProjectPotential(projectId: string, highPotential: boolean): Promise<ActionResult> {
-  const user = await requireUser();
-  const hackathon = await requireHackathon();
-  if (!uuid.safeParse(projectId).success || typeof highPotential !== "boolean") return { ok: false, error: "Invalid project." };
-  const sql = getSql();
-  const rows = await sql`
-    WITH changed AS (
-      UPDATE hq_project_onboarding SET high_potential = ${highPotential}
-      WHERE project_id = ${projectId}::uuid AND hackathon_id = ${hackathon.id}
-      RETURNING project_id
-    ), logged AS (
-      INSERT INTO hq_activity (hackathon_id, user_id, message)
-      SELECT ${hackathon.id}, ${user.id}::uuid, ${highPotential ? "Marked a team high potential" : "Removed a team's high potential flag"} FROM changed
-    ) SELECT project_id FROM changed
-  `;
-  if (!rows.length) return { ok: false, error: "Imported project not found in this hackathon." };
-  refreshHq();
-  return { ok: true };
-}
-
+/**
+ * The lead of an imported project is one of its Colosseum roster rows, so
+ * the Projects board offers a picker over those usernames rather than the
+ * free-text Lead field a project created in HQ has.
+ */
 export async function updateBuilderProjectLead(projectId: string, username: string): Promise<ActionResult> {
   const user = await requireUser();
   const hackathon = await requireHackathon();
@@ -221,32 +204,6 @@ export async function reviewBuilderHostRequest(requestId: string, status: "appro
     ) SELECT id FROM changed
   `;
   if (!rows.length) return { ok: false, error: "Request not found in this hackathon." };
-  refreshHq();
-  return { ok: true };
-}
-
-const deleteTeamSchema = z.object({ projectId: uuid, confirmed: z.literal(true) });
-
-/**
- * Deletes a team and every row that belongs to it, in one transaction
- * (`lib/hq/record-deletion.ts`). Operator only, edition scoped through the
- * usual resolution — the record must belong to the selected hackathon, so a
- * crafted id or a swapped `hq_hackathon` cookie reaches nothing — and
- * audited as `project.deleted`.
- *
- * The confirmation the operator ticked names the real counts, which the
- * screen read from `getBuilderProjectReviews()`; the transaction re-reads
- * them for the audit event, so the trail records what was actually removed.
- */
-export async function deleteBuilderTeam(input: z.infer<typeof deleteTeamSchema>): Promise<ActionResult> {
-  const user = await requireUser();
-  const hackathon = await requireHackathon();
-  const parsed = deleteTeamSchema.safeParse(input);
-  if (!parsed.success) return { ok: false, error: "Tick the confirmation to delete this team." };
-  const removed = await deleteTeamRecord(builderDatabase(), {
-    projectId: parsed.data.projectId, hackathonId: hackathon.id, operatorId: user.id,
-  });
-  if (!removed) return { ok: false, error: "Project not found in this hackathon." };
   refreshHq();
   return { ok: true };
 }

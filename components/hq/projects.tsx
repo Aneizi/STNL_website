@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import {
   Fragment,
@@ -10,17 +9,14 @@ import {
   useRef,
   useState,
   useTransition,
+  type CSSProperties,
 } from "react";
 import { IconBubbleAndPencil } from "@/components/hq/icons/IconBubbleAndPencil";
 import { showToast } from "@/components/hq/toast";
-import { Badge, FormField, accentBtn, input, pageTitle, primaryBtn } from "@/components/hq/ui";
+import { Badge, FormField, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
-import {
-  assignProjectCaptain,
-  bulkAssignProjectCaptain,
-  unassignProjectCaptain,
-  type AssignCaptainActionResult,
-} from "@/lib/hq/actions/captains";
+import { updateBuilderProjectLead } from "@/lib/hq/actions/builders-admin";
+import { assignProjectCaptain, unassignProjectCaptain } from "@/lib/hq/actions/captains";
 import {
   addProjectMember,
   addProjectNote,
@@ -31,12 +27,14 @@ import {
   removeProjectMember,
   saveProjectBlocker,
   setProjectForecast,
+  setProjectHighPotential,
   setProjectStatus,
   toggleProjectGate,
   updateProjectDetail,
   updateProjectMember,
 } from "@/lib/hq/actions/projects";
-import type { CaptainReach } from "@/lib/hq/builder-admin-queries";
+import { PROJECT_STAGES } from "@/lib/hq/builder-types";
+import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
 import type { ProjectReportingStatus } from "@/lib/hq/reporting";
 import { SUBMISSION_FILTER_LABEL, statusLabel } from "@/lib/hq/reporting-view";
@@ -47,15 +45,13 @@ import type {
   ProjectMember,
   Settings,
 } from "@/lib/hq/types";
-
-const ProjectReportingPanel = dynamic(() => import("./reporting-project-panel").then((module) => module.ProjectReportingPanel), {
-  loading: () => <p role="status">Loading weekly reporting…</p>,
-});
+import { projectHref } from "./builder-admin";
+import { BuilderProjectImage } from "./builder-project-image";
 
 type PartnerOption = { id: string; name: string };
 type EventOption = { id: string; name: string };
 type CaptainOption = { id: string; name: string };
-/** A roster row the service could not resolve either way — echoed back verbatim (by memberId) as the acknowledgement of the second "Assign anyway" call. */
+/** A roster row the service could not resolve either way, echoed back verbatim (by memberId) as the acknowledgement of the second "Assign anyway" call. */
 type UnresolvedCaptainRosterRow = { memberId: string; name: string; username: string | null };
 type CaptainReview = { projectId: string; captainUserId: string; captainName: string; unresolved: UnresolvedCaptainRosterRow[] };
 
@@ -65,6 +61,8 @@ type ProjectPatch =
   | { kind: "gate"; id: string; gateId: string; done: boolean }
   | { kind: "partner"; id: string; partnerId: string | null; partnerName: string }
   | { kind: "captain"; id: string; captainUserId: string | null; captainName: string }
+  | { kind: "highPotential"; id: string; highPotential: boolean }
+  | { kind: "lead"; id: string; leadName: string; leadUsername: string }
   | { kind: "memberAdd"; id: string; member: ProjectMember }
   | { kind: "memberRemove"; id: string; memberId: string }
   | { kind: "noteEdit"; id: string; noteId: string; body: string; editedAt: string }
@@ -90,6 +88,14 @@ function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
         return { ...p, partnerId: patch.partnerId, partnerName: patch.partnerName };
       case "captain":
         return { ...p, captainUserId: patch.captainUserId, captainName: patch.captainName };
+      case "highPotential":
+        return { ...p, highPotential: patch.highPotential };
+      case "lead":
+        return {
+          ...p,
+          leadName: patch.leadName,
+          colosseum: p.colosseum ? { ...p.colosseum, leadUsername: patch.leadUsername } : p.colosseum,
+        };
       case "memberAdd":
         return { ...p, members: [...p.members, patch.member] };
       case "memberRemove":
@@ -107,30 +113,26 @@ function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
   });
 }
 
-// Forecast UI values are the design's ("at risk"); the DB slug is "at_risk".
-const uiForecast = (slug: string) => slug.replace(/_/g, " ");
-const slugForecast = (ui: string) => ui.replace(/ /g, "_");
-
-const filterSelect: React.CSSProperties = {
-  padding: "7px 10px",
-  border: "1px solid var(--sep)",
-  borderRadius: 0,
-  background: "transparent",
-  color: "var(--label-1)",
-  fontSize: 13,
+/** The heading over each of the expanded row's four blocks. */
+const blockHeading: CSSProperties = {
+  fontSize: 16,
+  fontWeight: 600,
+  color: "var(--label-3)",
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
 };
 
-/** Micro-label in the details panel's left column (and the team modal). */
-const microLabel: React.CSSProperties = {
-  fontSize: 11,
+/** Micro-label in the details panel's left column, the Colosseum block and the team modal. */
+const microLabel: CSSProperties = {
+  fontSize: 13,
   fontWeight: 600,
   textTransform: "uppercase",
   letterSpacing: "0.06em",
   color: "var(--label-3)",
 };
 
-/** Shared field style for the details panel and team modal inputs. */
-const panelField: React.CSSProperties = {
+/** Shared field style for the details panel, the timeline and the team modal inputs. */
+const panelField: CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
   padding: "6px 8px",
@@ -138,30 +140,90 @@ const panelField: React.CSSProperties = {
   borderRadius: 0,
   background: "var(--card)",
   color: "var(--label-1)",
-  fontSize: 13,
+  fontSize: 16,
 };
+
+/** The contact fields: monospace and a step smaller, so a handle reads as a handle. */
+const contactField: CSSProperties = {
+  ...panelField,
+  fontFamily: "var(--mono)",
+  fontSize: 14,
+};
+
+/** The small accent button beside a field: Team Edit/Add, note Save. */
+const smallAccentBtn: CSSProperties = {
+  border: "none",
+  cursor: "pointer",
+  padding: "4px 9px",
+  borderRadius: 0,
+  fontSize: 14,
+  fontWeight: 600,
+  background: "var(--fill-2)",
+  color: "var(--accent)",
+};
+
+/** One status pill button, in Monday review and in the details panel. */
+const statusButton = (selected: boolean, color: string): CSSProperties => ({
+  border: "none",
+  cursor: "pointer",
+  padding: "5px 12px",
+  borderRadius: 2,
+  fontSize: 13,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  background: selected ? `var(--${color})` : "var(--fill-3)",
+  color: selected ? "#fff" : "var(--label-2)",
+});
+
+/** One button of the filter bar's segmented controls. */
+const segmentButton = (on: boolean): CSSProperties => ({
+  border: "none",
+  cursor: "pointer",
+  padding: "5px 12px",
+  borderRadius: 0,
+  fontSize: 16,
+  background: on ? "var(--label-1)" : "none",
+  color: on ? "var(--bg)" : "var(--label-2)",
+  fontWeight: on ? 600 : 400,
+});
 
 // Gates carries a bar and a count, so it gets the widest fixed track; Blocker
 // is only a tick in this view (the text lives in the details panel), so it
 // needs no more than the glyph. Weekly holds "Not updated" plus a missed
 // count, so it needs a little more than Check-in. The last track is the
-// action column, wide enough for the two-step delete's "Sure?", the same as
-// the one on Links.
-const gridColumns =
-  "minmax(0,1.8fr) minmax(0,1.3fr) minmax(0,1.4fr) 92px 105px 176px 92px 104px 64px 46px";
+// action column, wide enough for the two-step delete's "Sure?".
+const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 110px 126px 211px 110px 125px 77px 55px";
+
+/** The stage as the team's own settings name it; an unknown value shows as stored. */
+const stageLabel = (stage: string): string => PROJECT_STAGES.find((s) => s.value === stage)?.label ?? stage;
+
+/**
+ * A project's logo on a soft fill, so the box reads at its full size while
+ * the image loads and behind a transparent one. Covered, never letterboxed:
+ * the board treats the logo as a photo.
+ */
+function ProjectImage({ src, name, size }: { src: string | null; name: string; size: number }) {
+  return (
+    <span style={{ display: "flex", width: size, height: size, flex: "none", background: "var(--fill-3)" }}>
+      <BuilderProjectImage src={src} name={name} size={size} radius={0} fit="cover" />
+    </span>
+  );
+}
 
 /**
  * The detail panel's Captain control: a picker limited to accounts with an
- * active Captain grant, a "No Captain" removal option, and — only while
- * `review` names this exact project — the second, explicit confirmation
- * step an unresolved roster identity requires. A conflict is a plain toast
+ * active Captain grant, a "No Captain" removal option, and, only while
+ * `review` names this exact project, the second, explicit confirmation step
+ * an unresolved roster identity requires. A conflict is a plain toast
  * elsewhere (nothing changed, this select just snaps back to
  * `project.captainUserId` on the next render); unresolved identity is
- * instead this standing choice until the operator confirms or cancels it —
+ * instead this standing choice until the operator confirms or cancels it,
  * visible at the point of assignment, not folded into a toast that could be
  * missed.
  */
 function CaptainField({
+  id,
   project,
   captainOptions,
   review,
@@ -170,6 +232,7 @@ function CaptainField({
   onAssignAnyway,
   onCancelReview,
 }: {
+  id: string;
   project: Project;
   captainOptions: CaptainOption[];
   review: CaptainReview | null;
@@ -181,6 +244,7 @@ function CaptainField({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <select
+        id={id}
         value={project.captainUserId ?? ""}
         onChange={(e) => {
           const value = e.target.value;
@@ -199,7 +263,7 @@ function CaptainField({
       {review ? (
         <div
           style={{
-            fontSize: 12,
+            fontSize: 14,
             color: "var(--label-2)",
             display: "flex",
             flexDirection: "column",
@@ -215,13 +279,14 @@ function CaptainField({
             {review.captainName} anyway?
           </span>
           <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={() => onAssignAnyway(review.unresolved)} style={{ ...accentBtn, padding: "4px 9px", fontSize: 12 }}>
+            <button type="button" onClick={() => onAssignAnyway(review.unresolved)} style={smallAccentBtn}>
               Assign anyway
             </button>
             <button
+              type="button"
               onClick={onCancelReview}
               className="hq-hover-accent"
-              style={{ border: "none", cursor: "pointer", background: "none", color: "var(--label-3)", fontSize: 12, padding: "4px 9px" }}
+              style={{ border: "none", cursor: "pointer", background: "none", color: "var(--label-3)", fontSize: 14, padding: "4px 9px" }}
             >
               Cancel
             </button>
@@ -238,7 +303,6 @@ export function Projects({
   eventOptions,
   captainOptions,
   reporting,
-  captainReach,
   classifiers,
   settings,
   now,
@@ -247,7 +311,7 @@ export function Projects({
   projects: Project[];
   partnerOptions: PartnerOption[];
   eventOptions: EventOption[];
-  /** Accounts with an active Captain grant, resolved server side — never every account, filtered on the client. */
+  /** Accounts with an active Captain grant, resolved server side, never every account filtered on the client. */
   captainOptions: CaptainOption[];
   /**
    * Each project's weekly reporting state for this edition, from
@@ -256,12 +320,9 @@ export function Projects({
    * real state rather than a missing one.
    */
   reporting: ProjectReportingStatus[];
-  /** Contact and delivery availability for the Captains currently assigned in this edition, keyed by account id. */
-  captainReach: Record<string, CaptainReach>;
   classifiers: Classifiers;
   settings: Settings;
   now: number;
-  today: string;
   expandId: string | null;
 }) {
   const router = useRouter();
@@ -271,11 +332,9 @@ export function Projects({
   const [reviewMode, setReviewMode] = useState(false);
   const [reviewLogged, setReviewLogged] = useState<Record<string, boolean>>({});
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [captainBulkMode, setCaptainBulkMode] = useState(false);
   const [projSearch, setProjSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [forecastFilter, setForecastFilter] = useState("");
-  const [partnerFilter, setPartnerFilter] = useState("");
   // The four reporting filters the plan names. Independent booleans, not one
   // select: "Keep those indicators independent and combinable", so an admin
   // can ask for an unassigned team that also missed a week.
@@ -283,7 +342,9 @@ export function Projects({
   const [notUpdatedOnly, setNotUpdatedOnly] = useState(false);
   const [missedOnly, setMissedOnly] = useState(false);
   const [notSubmittedOnly, setNotSubmittedOnly] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // A deep link (?expand=) opens its row in the first render, server side
+  // included; the effect below only handles a later change of the param.
+  const [expandedId, setExpandedId] = useState<string | null>(expandId);
   const [teamModalFor, setTeamModalFor] = useState<string | null>(null);
   // One commit path: every panel control saves on change or blur, and this
   // flash beside the "Details" heading is the only confirmation.
@@ -302,13 +363,10 @@ export function Projects({
   // service reports unresolved roster identity: this holds that pending
   // choice (which project, which candidate, which exact roster rows were
   // shown) until the operator confirms or cancels it. Only one at a time,
-  // the same reasoning as editingNoteId — and, like editingNoteId, cleared
+  // the same reasoning as editingNoteId, and, like editingNoteId, cleared
   // whenever the expanded project changes, so a stale review never
   // reappears against a different (or the same, later) row on re-expand.
   const [captainReview, setCaptainReview] = useState<CaptainReview | null>(null);
-  const [bulkSelected, setBulkSelected] = useState<Record<string, boolean>>({});
-  const [bulkCaptainId, setBulkCaptainId] = useState("");
-  const [bulkResults, setBulkResults] = useState<Array<{ projectId: string; name: string; result: AssignCaptainActionResult }> | null>(null);
 
   useEffect(() => {
     if (expandId && expandId !== prevExpandId.current) {
@@ -317,7 +375,6 @@ export function Projects({
       setProjSearch("");
       setStatusFilter("");
       setForecastFilter("");
-      setPartnerFilter("");
       setUnassignedOnly(false);
       setNotUpdatedOnly(false);
       setMissedOnly(false);
@@ -331,7 +388,6 @@ export function Projects({
   const gatesTotal = classifiers.gates.length;
   const statusBySlug = new Map(classifiers.statuses.map((s) => [s.slug, s]));
   const forecastBySlug = new Map(classifiers.forecasts.map((f) => [f.slug, f]));
-  const srcOf = (p: Project) => [p.partnerName, p.eventSrc].filter(Boolean).join(", ");
   // The board's reporting rows, by project id. A project with no row is not
   // in weekly reporting; the column says so and the three weekly filters
   // leave it out rather than guessing a state for it.
@@ -361,10 +417,10 @@ export function Projects({
 
   // Captain assignment is not a fire-and-forget patch like partner: the
   // service can refuse (a conflict) or ask for a second, explicit
-  // confirmation (unresolved roster identity — captainReview holds that
+  // confirmation (unresolved roster identity; captainReview holds that
   // pending state above). acknowledgedUnresolvedIds is only ever the
   // memberIds from a needs_review response already shown to the operator,
-  // on that second, operator-driven call — never invented client-side.
+  // on that second, operator-driven call, never invented client-side.
   const pickCaptain = (projectId: string, captainUserId: string, acknowledgedUnresolvedIds?: string[]) => {
     const captainName = captainOptions.find((o) => o.id === captainUserId)?.name ?? "";
     startTransition(async () => {
@@ -374,7 +430,7 @@ export function Projects({
         setCaptainReview(null);
         flash();
       } else if (result.outcome === "needs_review") {
-        // Always the service's own, freshly re-derived list — if the
+        // Always the service's own, freshly re-derived list: if the
         // operator's acknowledgement above was stale (something resolved,
         // or a new row appeared), this replaces it with what is current now.
         setCaptainReview({ projectId, captainUserId, captainName, unresolved: result.unresolved });
@@ -398,36 +454,23 @@ export function Projects({
     });
   };
 
-  const toggleBulkSelected = (projectId: string) => {
-    setBulkSelected((selected) => ({ ...selected, [projectId]: !selected[projectId] }));
+  const toggleHighPotential = (projectId: string, highPotential: boolean) => {
+    startTransition(async () => {
+      patch({ kind: "highPotential", id: projectId, highPotential });
+      const res = await setProjectHighPotential(projectId, highPotential);
+      if (!res.ok) showToast(res.error ?? "Could not save the high potential flag.");
+    });
   };
 
-  const onBulkAssignCaptain = () => {
-    // Intersected with the currently filtered list at submit time: a
-    // project selected before a filter change, then hidden by it, must not
-    // be silently included in a batch the operator can no longer see.
-    const visibleIds = new Set(filtered.map((p) => p.id));
-    const projectIds = Object.keys(bulkSelected).filter((id) => bulkSelected[id] && visibleIds.has(id));
-    const captainUserId = bulkCaptainId;
-    const captainName = captainOptions.find((o) => o.id === captainUserId)?.name ?? "";
-    if (!projectIds.length || !captainUserId) return;
+  // An imported project's lead is one of its Colosseum roster rows; the
+  // service rewrites the project's lead name from that row, so the patch
+  // mirrors it with the roster name rather than trusting a typed one.
+  const pickLead = (project: Project, username: string) => {
+    const member = project.members.find((m) => m.username === username);
     startTransition(async () => {
-      const { outcomes, error } = await bulkAssignProjectCaptain({ projectIds, captainUserId });
-      if (error) {
-        setBulkResults(null);
-        showToast(error);
-        return;
-      }
-      setBulkResults(
-        outcomes.map((o) => ({
-          projectId: o.projectId,
-          name: optimistic.find((p) => p.id === o.projectId)?.name ?? o.projectId,
-          result: o.result,
-        })),
-      );
-      for (const o of outcomes) {
-        if (o.result.outcome === "assigned") patch({ kind: "captain", id: o.projectId, captainUserId, captainName });
-      }
+      patch({ kind: "lead", id: project.id, leadName: member?.name ?? project.leadName, leadUsername: username });
+      const res = await updateBuilderProjectLead(project.id, username);
+      if (!res.ok) showToast(res.error ?? "Could not save the lead.");
     });
   };
 
@@ -467,7 +510,7 @@ export function Projects({
       patch({
         kind: "memberAdd",
         id: projectId,
-        member: { id: `new-${Date.now()}`, name, contact },
+        member: { id: `new-${Date.now()}`, name, contact, username: null },
       });
       await addProjectMember(projectId, name, contact);
     });
@@ -514,7 +557,7 @@ export function Projects({
     startTransition(async () => {
       await createProject(payload);
     });
-    d.ProjName = d.ProjLead = d.ProjContact = d.ProjEvent = "";
+    d.ProjName = d.ProjLead = d.ProjContact = d.ProjPartner = d.ProjEvent = "";
     setNewProjectOpen(false);
   };
 
@@ -527,7 +570,7 @@ export function Projects({
   };
 
   const onAddNote = (p: Project) => {
-    const txt = drafts.current["note" + p.id];
+    const txt = (drafts.current["note" + p.id] ?? "").trim();
     if (!txt) return;
     startTransition(async () => {
       await addProjectNote(p.id, txt);
@@ -566,6 +609,12 @@ export function Projects({
     });
   };
 
+  const toggleExpanded = (projectId: string) => {
+    setExpandedId((current) => (current === projectId ? null : projectId));
+    setEditingNoteId(null);
+    setCaptainReview(null);
+  };
+
   const teamProject = teamModalFor
     ? (optimistic.find((x) => x.id === teamModalFor) ?? null)
     : null;
@@ -575,8 +624,7 @@ export function Projects({
     const weekly = reportingBy.get(p.id);
     return (!q || p.name.toLowerCase().includes(q) || p.leadName.toLowerCase().includes(q))
       && (!statusFilter || p.statusSlug === statusFilter)
-      && (!forecastFilter || uiForecast(p.forecastSlug) === forecastFilter)
-      && (!partnerFilter || p.partnerId === partnerFilter)
+      && (!forecastFilter || p.forecastSlug === forecastFilter)
       && (!unassignedOnly || !p.captainUserId)
       // "Not updated this period" is about the week that is open now, so a
       // project outside the campaign window, paused, or not in reporting is
@@ -594,6 +642,25 @@ export function Projects({
     ...classifiers.statuses.map((s) => ({ value: s.slug, label: s.label })),
   ];
 
+  const statusButtons = (p: Project, review: boolean) =>
+    classifiers.statuses.map((s) => {
+      const selected = p.statusSlug === s.slug;
+      return (
+        <button
+          key={s.id}
+          type="button"
+          aria-pressed={selected}
+          onClick={() => {
+            pickStatus(p.id, s.slug, review);
+            if (!review) flash();
+          }}
+          style={statusButton(selected, s.color)}
+        >
+          {s.label}
+        </button>
+      );
+    });
+
   return (
     <div>
       <div
@@ -610,19 +677,15 @@ export function Projects({
         </h1>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
+            type="button"
+            aria-pressed={reviewMode}
             onClick={() => {
               setReviewMode(!reviewMode);
               setReviewLogged({});
               setNewProjectOpen(false);
-              setCaptainBulkMode(false);
             }}
             style={{
-              border: "none",
-              cursor: "pointer",
-              padding: "7px 14px",
-              borderRadius: 0,
-              fontSize: 14,
-              fontWeight: 600,
+              ...primaryBtn,
               background: reviewMode ? "var(--label-1)" : "var(--fill-3)",
               color: reviewMode ? "var(--bg)" : "var(--accent-deep)",
             }}
@@ -630,31 +693,11 @@ export function Projects({
             {reviewMode ? "Exit review" : "Monday review"}
           </button>
           <button
-            onClick={() => {
-              setCaptainBulkMode(!captainBulkMode);
-              setBulkSelected({});
-              setBulkResults(null);
-              setReviewMode(false);
-              setNewProjectOpen(false);
-            }}
-            style={{
-              border: "none",
-              cursor: "pointer",
-              padding: "7px 14px",
-              borderRadius: 0,
-              fontSize: 14,
-              fontWeight: 600,
-              background: captainBulkMode ? "var(--label-1)" : "var(--fill-3)",
-              color: captainBulkMode ? "var(--bg)" : "var(--accent-deep)",
-            }}
-          >
-            {captainBulkMode ? "Exit Captain assign" : "Assign Captains"}
-          </button>
-          <button
+            type="button"
+            aria-expanded={newProjectOpen}
             onClick={() => {
               setNewProjectOpen(!newProjectOpen);
               setReviewMode(false);
-              setCaptainBulkMode(false);
             }}
             style={primaryBtn}
           >
@@ -663,78 +706,6 @@ export function Projects({
         </div>
       </div>
 
-      {captainBulkMode ? (
-        <div
-          className="hq-fade-in"
-          style={{
-            background: "var(--card)",
-            borderRadius: 0,
-            boxShadow: "var(--shadow-1)",
-            padding: "16px 18px",
-            marginTop: 14,
-          }}
-        >
-          <p style={{ margin: "0 0 10px", fontSize: 13, color: "var(--label-2)" }}>
-            Select projects below, choose a Captain, and assign to all of them at once. Each
-            project is checked on its own — a conflict on one does not stop the rest.
-          </p>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" }}>
-            <FormField label="Captain" minWidth={220}>
-              <select value={bulkCaptainId} onChange={(e) => setBulkCaptainId(e.target.value)} style={input}>
-                <option value="">Choose a Captain</option>
-                {captainOptions.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </select>
-            </FormField>
-            {/* Counts only what the current filters still show, matching
-                exactly what onBulkAssignCaptain will submit — a selection
-                made under a different filter never inflates this number. */}
-            {(() => {
-              const selectedVisibleCount = filtered.filter((p) => bulkSelected[p.id]).length;
-              return (
-                <button onClick={onBulkAssignCaptain} disabled={!bulkCaptainId || !selectedVisibleCount} style={primaryBtn}>
-                  Assign to {selectedVisibleCount} selected
-                </button>
-              );
-            })()}
-          </div>
-          <div style={{ marginTop: 12, maxHeight: 260, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
-            {filtered.map((p) => (
-              <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, padding: "3px 0" }}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(bulkSelected[p.id])}
-                  onChange={() => toggleBulkSelected(p.id)}
-                />
-                <span style={{ fontWeight: 600 }}>{p.name}</span>
-                <span style={{ color: "var(--label-3)" }}>{p.captainName ? `Captain: ${p.captainName}` : "No Captain"}</span>
-              </label>
-            ))}
-          </div>
-          {bulkResults ? (
-            <div style={{ marginTop: 12, borderTop: "1px solid var(--sep)", paddingTop: 10 }}>
-              <span style={microLabel}>Results</span>
-              <ul style={{ listStyle: "none", margin: "6px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-                {bulkResults.map((r) => (
-                  <li key={r.projectId} style={{ fontSize: 13 }}>
-                    <strong>{r.name}</strong>
-                    {": "}
-                    {r.result.outcome === "assigned"
-                      ? "Assigned."
-                      : r.result.outcome === "needs_review"
-                        ? `Needs review — ${r.result.unresolved.length} roster row${r.result.unresolved.length === 1 ? "" : "s"} could not be checked. Resolve it in the project's own Captain field.`
-                        : r.result.error}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
       {newProjectOpen ? (
         <div
           className="hq-fade-in"
@@ -742,8 +713,8 @@ export function Projects({
             background: "var(--card)",
             borderRadius: 0,
             boxShadow: "var(--shadow-1)",
-            padding: "16px 18px",
-            marginTop: 14,
+            padding: 24,
+            marginTop: 28,
             display: "flex",
             gap: 10,
             flexWrap: "wrap",
@@ -775,7 +746,7 @@ export function Projects({
               style={input}
             />
           </FormField>
-          <FormField label="Source partner" minWidth={150}>
+          <FormField label="Partner" minWidth={150}>
             <select
               onChange={(e) => {
                 drafts.current.ProjPartner = e.target.value;
@@ -790,7 +761,7 @@ export function Projects({
               ))}
             </select>
           </FormField>
-          <FormField label="Source event" minWidth={140}>
+          <FormField label="Event" minWidth={140}>
             <select
               onChange={(e) => {
                 drafts.current.ProjEvent = e.target.value;
@@ -805,19 +776,7 @@ export function Projects({
               ))}
             </select>
           </FormField>
-          <button
-            onClick={onCreateProject}
-            style={{
-              border: "none",
-              cursor: "pointer",
-              padding: "9px 16px",
-              borderRadius: 0,
-              fontSize: 14,
-              fontWeight: 600,
-              background: "var(--label-1)",
-              color: "var(--bg)",
-            }}
-          >
+          <button type="button" onClick={onCreateProject} style={{ ...primaryBtn, padding: "9px 16px" }}>
             Add
           </button>
         </div>
@@ -831,7 +790,7 @@ export function Projects({
               borderRadius: 0,
               padding: "10px 14px",
               marginTop: 14,
-              fontSize: 13,
+              fontSize: 16,
               color: "var(--label-1)",
             }}
           >
@@ -855,16 +814,15 @@ export function Projects({
                   gap: 10,
                   alignItems: "center",
                   padding: "10px 16px",
-                  borderBottom: "1px solid var(--sep)",
                   flexWrap: "wrap",
                 }}
               >
-                <span style={{ fontSize: 14, fontWeight: 600, width: 150, flex: "none" }}>
+                <span style={{ fontSize: 17, fontWeight: 600, width: 150, flex: "none" }}>
                   {p.name}
                 </span>
                 <span
                   style={{
-                    fontSize: 12,
+                    fontSize: 14,
                     color: "var(--label-3)",
                     width: 78,
                     flex: "none",
@@ -873,36 +831,13 @@ export function Projects({
                 >
                   {fmtDate(p.lastCheckIn)}
                 </span>
-                <div style={{ display: "flex", gap: 4, flex: "none" }}>
-                  {classifiers.statuses.map((s) => {
-                    const selected = p.statusSlug === s.slug;
-                    return (
-                      <button
-                        key={s.id}
-                        onClick={() => pickStatus(p.id, s.slug, true)}
-                        style={{
-                          border: "none",
-                          cursor: "pointer",
-                          padding: "5px 12px",
-                          borderRadius: 2,
-                          fontSize: 11,
-                          fontWeight: 600,
-                          textTransform: "uppercase",
-                          letterSpacing: "0.08em",
-                          background: selected ? `var(--${s.color})` : "var(--fill-3)",
-                          color: selected ? "#fff" : "var(--label-2)",
-                        }}
-                      >
-                        {s.label}
-                      </button>
-                    );
-                  })}
-                </div>
+                <div style={{ display: "flex", gap: 4, flex: "none" }}>{statusButtons(p, true)}</div>
                 <input
                   onChange={(e) => {
                     drafts.current["rblk" + p.id] = e.target.value;
                   }}
                   defaultValue={p.blocker}
+                  aria-label={`Blocker for ${p.name}`}
                   placeholder="One blocker, or leave clear"
                   style={{
                     flex: 1,
@@ -912,13 +847,13 @@ export function Projects({
                     borderRadius: 0,
                     background: "transparent",
                     color: "var(--label-1)",
-                    fontSize: 13,
+                    fontSize: 16,
                   }}
                 />
                 {reviewLogged[p.id] ? (
                   <span
                     style={{
-                      fontSize: 13,
+                      fontSize: 16,
                       fontWeight: 600,
                       color: "var(--green)",
                       padding: "6px 14px",
@@ -928,13 +863,14 @@ export function Projects({
                   </span>
                 ) : (
                   <button
+                    type="button"
                     onClick={() => onLog(p)}
                     style={{
                       border: "none",
                       cursor: "pointer",
                       padding: "6px 14px",
                       borderRadius: 0,
-                      fontSize: 13,
+                      fontSize: 16,
                       fontWeight: 600,
                       background: "var(--fill-3)",
                       color: "var(--accent)",
@@ -961,6 +897,7 @@ export function Projects({
             <input
               value={projSearch}
               onChange={(e) => setProjSearch(e.target.value)}
+              aria-label="Filter by name or lead"
               placeholder="Filter by name or lead"
               style={{
                 padding: "8px 12px",
@@ -968,7 +905,7 @@ export function Projects({
                 borderRadius: 0,
                 background: "transparent",
                 color: "var(--label-1)",
-                fontSize: 14,
+                fontSize: 17,
                 width: 190,
               }}
             />
@@ -978,17 +915,10 @@ export function Projects({
                 return (
                   <button
                     key={s.value}
+                    type="button"
+                    aria-pressed={selected}
                     onClick={() => setStatusFilter(s.value)}
-                    style={{
-                      border: "none",
-                      cursor: "pointer",
-                      padding: "5px 12px",
-                      borderRadius: 0,
-                      fontSize: 13,
-                      background: selected ? "var(--label-1)" : "none",
-                      color: selected ? "var(--bg)" : "var(--label-2)",
-                      fontWeight: selected ? 600 : 400,
-                    }}
+                    style={segmentButton(selected)}
                   >
                     {s.label}
                   </button>
@@ -998,24 +928,20 @@ export function Projects({
             <select
               value={forecastFilter}
               onChange={(e) => setForecastFilter(e.target.value)}
-              style={filterSelect}
+              aria-label="Forecast"
+              style={{
+                padding: "7px 10px",
+                border: "1px solid var(--sep)",
+                borderRadius: 0,
+                background: "transparent",
+                color: "var(--label-1)",
+                fontSize: 16,
+              }}
             >
               <option value="">All forecasts</option>
               {classifiers.forecasts.map((f) => (
-                <option key={f.id} value={uiForecast(f.slug)}>
+                <option key={f.id} value={f.slug}>
                   {f.label}
-                </option>
-              ))}
-            </select>
-            <select
-              value={partnerFilter}
-              onChange={(e) => setPartnerFilter(e.target.value)}
-              style={filterSelect}
-            >
-              <option value="">All sources</option>
-              {partnerOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
                 </option>
               ))}
             </select>
@@ -1030,18 +956,10 @@ export function Projects({
               ].map((toggle) => (
                 <button
                   key={toggle.label}
+                  type="button"
                   aria-pressed={toggle.on}
                   onClick={() => toggle.set(!toggle.on)}
-                  style={{
-                    border: "none",
-                    cursor: "pointer",
-                    padding: "5px 12px",
-                    borderRadius: 0,
-                    fontSize: 13,
-                    background: toggle.on ? "var(--label-1)" : "none",
-                    color: toggle.on ? "var(--bg)" : "var(--label-2)",
-                    fontWeight: toggle.on ? 600 : 400,
-                  }}
+                  style={segmentButton(toggle.on)}
                 >
                   {toggle.label}
                 </button>
@@ -1057,7 +975,7 @@ export function Projects({
               overflowX: "auto",
             }}
           >
-            <div style={{ minWidth: 1094 }}>
+            <div style={{ minWidth: 1200 }}>
               <div
                 style={{
                   display: "grid",
@@ -1067,7 +985,7 @@ export function Projects({
                   gap: 10,
                   padding: "10px 16px",
                   borderBottom: "1px solid var(--sep)",
-                  fontSize: 12,
+                  fontSize: 14,
                   fontWeight: 600,
                   color: "var(--label-3)",
                   textTransform: "uppercase",
@@ -1076,13 +994,12 @@ export function Projects({
               >
                 <span>Project</span>
                 <span>Lead</span>
-                <span>Source</span>
                 <span>Status</span>
                 <span>Forecast</span>
                 <span>Gates</span>
                 <span>Check-in</span>
                 <span>Weekly</span>
-                <span>Blocker</span>
+                <span style={{ textAlign: "center" }}>Blocker</span>
                 <span />
               </div>
               {filtered.map((p) => {
@@ -1092,14 +1009,32 @@ export function Projects({
                 const weekly = reportingBy.get(p.id) ?? null;
                 const expanded = expandedId === p.id;
                 const status = statusBySlug.get(p.statusSlug);
-                const source = srcOf(p) || "Direct";
+                const colosseumUrl = p.colosseum ? projectHref(p.colosseum.url) : undefined;
+                // The roster rows a lead can be chosen from: those with a
+                // Colosseum username. The stored lead stays offered even if
+                // its row has since lost its username, so the select never
+                // shows a value it has no option for.
+                const leadOptions = p.colosseum
+                  ? [
+                      ...(p.colosseum.leadUsername && !p.members.some((m) => m.username === p.colosseum?.leadUsername)
+                        ? [{ name: p.leadName, username: p.colosseum.leadUsername }]
+                        : []),
+                      ...p.members.flatMap((m) => (m.username ? [{ name: m.name, username: m.username }] : [])),
+                    ]
+                  : [];
                 return (
                   <Fragment key={p.id}>
                     <div
-                      onClick={() => {
-                        setExpandedId(expanded ? null : p.id);
-                        setEditingNoteId(null);
-                        setCaptainReview(null);
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={expanded}
+                      onClick={() => toggleExpanded(p.id)}
+                      onKeyDown={(e) => {
+                        if (e.target !== e.currentTarget) return;
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          toggleExpanded(p.id);
+                        }
                       }}
                       className="hq-row-hover"
                       style={{
@@ -1109,16 +1044,54 @@ export function Projects({
                         gridTemplateColumns: gridColumns,
                         gap: 10,
                         padding: "11px 16px",
-                        borderBottom: "1px solid var(--sep)",
-                        fontSize: 14,
+                        fontSize: 17,
                         cursor: "pointer",
                         alignItems: "center",
                         background: expanded ? "var(--fill-4)" : undefined,
                       }}
                     >
-                      <span style={{ fontWeight: 600 }}>{p.name}</span>
+                      {/* Logo, name, and a fixed slot for the HP badge, so
+                          names line up whether or not a row carries one. */}
+                      <span
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "30px minmax(0,1fr) 36px",
+                          alignItems: "center",
+                          gap: 10,
+                          minWidth: 0,
+                        }}
+                      >
+                        <ProjectImage src={p.colosseum?.imageUrl ?? null} name={p.name} size={30} />
+                        <span
+                          style={{
+                            fontWeight: 600,
+                            minWidth: 0,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {p.name}
+                        </span>
+                        {p.highPotential ? (
+                          <span
+                            title="High potential"
+                            style={{
+                              justifySelf: "start",
+                              fontSize: 12,
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.08em",
+                              padding: "2px 6px",
+                              background: "var(--accent-fill)",
+                              color: "var(--accent-deep)",
+                            }}
+                          >
+                            HP
+                          </span>
+                        ) : null}
+                      </span>
                       <span style={{ color: "var(--label-2)" }}>{p.leadName}</span>
-                      <span style={{ color: "var(--label-2)", fontSize: 13 }}>{source}</span>
                       <span>
                         {status ? (
                           <Badge
@@ -1128,13 +1101,14 @@ export function Projects({
                           />
                         ) : null}
                       </span>
-                      <span style={{ fontSize: 13, color: "var(--label-2)" }}>
+                      <span style={{ fontSize: 16, color: "var(--label-2)" }}>
                         {forecastBySlug.get(p.forecastSlug)?.label ?? ""}
                       </span>
-                      <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: 10, paddingRight: 24 }}>
                         <span
                           style={{
                             flex: 1,
+                            maxWidth: 120,
                             height: 4,
                             borderRadius: 0,
                             background: "var(--fill-3)",
@@ -1153,7 +1127,7 @@ export function Projects({
                         </span>
                         <span
                           style={{
-                            fontSize: 12,
+                            fontSize: 14,
                             color: "var(--label-2)",
                             fontVariantNumeric: "tabular-nums",
                           }}
@@ -1163,7 +1137,7 @@ export function Projects({
                       </span>
                       <span
                         style={{
-                          fontSize: 13,
+                          fontSize: 16,
                           color: stale ? "var(--red)" : "var(--label-2)",
                           fontVariantNumeric: "tabular-nums",
                         }}
@@ -1174,13 +1148,13 @@ export function Projects({
                           missed underneath. Colosseum's own submitted signal
                           stays out of this column: they are separate facts,
                           and the filters above keep them separate too. */}
-                      <span style={{ fontSize: 13, color: "var(--label-2)", lineHeight: 1.25 }}>
+                      <span style={{ fontSize: 16, color: "var(--label-2)", lineHeight: 1.25 }}>
                         {weekly
                           ? <>
                               <span style={{ color: weekly.paused ? "var(--label-3)" : weekly.current?.completed ? "var(--green)" : "var(--label-1)" }}>
                                 {weekly.paused ? "Paused" : weekly.current ? statusLabel(weekly.current.completed) : "No open week"}
                               </span>
-                              {weekly.missedPeriods > 0 ? <><br /><span style={{ fontSize: 12, color: "var(--red)" }}>{weekly.missedPeriods} missed</span></> : null}
+                              {weekly.missedPeriods > 0 ? <><br /><span style={{ fontSize: 14, color: "var(--red)" }}>{weekly.missedPeriods} missed</span></> : null}
                             </>
                           : <span style={{ color: "var(--label-3)" }}>Not in reporting</span>}
                       </span>
@@ -1189,13 +1163,14 @@ export function Projects({
                       <span
                         title={p.blocker || undefined}
                         aria-label={p.blocker ? `Blocked: ${p.blocker}` : "No blocker"}
-                        style={{ fontSize: 14, color: "var(--orange)", lineHeight: 1 }}
+                        style={{ fontSize: 17, color: "var(--orange)", lineHeight: 1, textAlign: "center" }}
                       >
                         {p.blocker ? "✓" : ""}
                       </span>
                       {/* The × is a glyph, not an icon: it carries a larger
                           type size than the armed "Sure?" it swaps with. */}
                       <button
+                        type="button"
                         className="hq-hover-accent"
                         onClick={del.onClick}
                         title={del.title}
@@ -1221,30 +1196,88 @@ export function Projects({
                         className="hq-fade-in"
                         style={{
                           padding: "18px 16px",
-                          borderBottom: "1px solid var(--sep)",
                           background: "var(--fill-4)",
                         }}
                       >
                         <div
                           style={{
                             display: "grid",
-                            gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
+                            gridTemplateColumns: "repeat(auto-fit,minmax(336px,1fr))",
                             gap: 20,
                           }}
                         >
                           <div>
+                            <div style={{ ...blockHeading, marginBottom: 10 }}>Colosseum</div>
+                            <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                              <ProjectImage src={p.colosseum?.imageUrl ?? null} name={p.name} size={56} />
+                              <p style={{ margin: 0, fontSize: 16, color: "var(--label-2)", lineHeight: 1.5 }}>
+                                {p.colosseum?.description ?? ""}
+                              </p>
+                            </div>
                             <div
                               style={{
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: "var(--label-3)",
-                                textTransform: "uppercase",
-                                letterSpacing: "0.04em",
-                                marginBottom: 8,
+                                display: "grid",
+                                gridTemplateColumns: "auto minmax(0,1fr)",
+                                columnGap: 12,
+                                rowGap: 6,
+                                marginTop: 12,
+                                fontSize: 16,
+                                alignItems: "baseline",
                               }}
                             >
-                              Submission gates
+                              <span style={microLabel}>Stage</span>
+                              <span>{p.colosseum ? stageLabel(p.colosseum.stage) : "Unknown"}</span>
+                              <span style={microLabel}>Category</span>
+                              <span>{p.colosseum?.category || "Uncategorised"}</span>
+                              <span style={microLabel}>Submission</span>
+                              <span>{SUBMISSION_LABELS[p.colosseum?.submissionStatus ?? "not_checked"]}</span>
                             </div>
+                            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
+                              {colosseumUrl ? (
+                                <a
+                                  href={colosseumUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  style={{
+                                    fontSize: 16,
+                                    fontWeight: 600,
+                                    color: "var(--accent)",
+                                    textDecoration: "underline",
+                                    textUnderlineOffset: 3,
+                                  }}
+                                >
+                                  View on Colosseum
+                                </a>
+                              ) : null}
+                              <button
+                                type="button"
+                                aria-pressed={p.highPotential}
+                                onClick={() => {
+                                  toggleHighPotential(p.id, !p.highPotential);
+                                  flash();
+                                }}
+                                style={{
+                                  border: "none",
+                                  cursor: "pointer",
+                                  padding: "4px 9px",
+                                  borderRadius: 0,
+                                  fontSize: 14,
+                                  fontWeight: 600,
+                                  background: p.highPotential ? "var(--accent-fill)" : "var(--fill-3)",
+                                  color: p.highPotential ? "var(--accent-deep)" : "var(--label-2)",
+                                }}
+                              >
+                                {p.highPotential ? "High potential ✓" : "Mark high potential"}
+                              </button>
+                            </div>
+                            <div style={{ fontSize: 14, color: "var(--label-3)", marginTop: 10 }}>
+                              {p.colosseum
+                                ? `Imported from Colosseum by ${p.colosseum.importedByName} on ${fmtDate(p.colosseum.importedAt)}.`
+                                : `Created in HQ on ${fmtDate(p.createdAt)}. Not linked to a Colosseum project yet.`}
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ ...blockHeading, marginBottom: 10 }}>Submission gates</div>
                             {classifiers.gates.map((g) => {
                               const gateDone = p.gates.includes(g.id);
                               return (
@@ -1254,62 +1287,38 @@ export function Projects({
                                     display: "flex",
                                     alignItems: "center",
                                     gap: 8,
-                                    padding: "5px 0",
-                                    fontSize: 14,
+                                    padding: "6px 0",
+                                    fontSize: 17,
                                     cursor: "pointer",
+                                    color: gateDone ? "var(--label-1)" : "var(--label-2)",
                                   }}
                                 >
                                   <input
                                     type="checkbox"
                                     checked={gateDone}
-                                    onChange={(e) => {
-                                      e.stopPropagation();
+                                    onChange={() => {
                                       toggleGate(p.id, g.id, !gateDone);
+                                      flash();
                                     }}
                                     style={{
                                       accentColor: "var(--accent)",
                                       width: 15,
                                       height: 15,
+                                      margin: 0,
                                     }}
                                   />
-                                  <span
-                                    style={{
-                                      color: gateDone ? "var(--label-3)" : "var(--label-1)",
-                                    }}
-                                  >
-                                    {g.label}
-                                  </span>
+                                  <span>{g.label}</span>
                                 </label>
                               );
                             })}
                           </div>
                           <div>
-                            {/* minHeight reserves the flash's line so it can't
-                                shift the panel when it appears. */}
-                            <div
-                              style={{
-                                display: "flex",
-                                justifyContent: "space-between",
-                                alignItems: "baseline",
-                                marginBottom: 4,
-                                minHeight: 18,
-                              }}
-                            >
-                              <span
-                                style={{
-                                  fontSize: 13,
-                                  fontWeight: 600,
-                                  color: "var(--label-3)",
-                                  textTransform: "uppercase",
-                                  letterSpacing: "0.04em",
-                                }}
-                              >
-                                Details
-                              </span>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10 }}>
+                              <span style={blockHeading}>Details</span>
                               {savedPhase !== "hidden" && (
                                 <span
                                   style={{
-                                    fontSize: 12,
+                                    fontSize: 14,
                                     fontWeight: 600,
                                     color: "var(--green)",
                                     opacity: savedPhase === "fading" ? 0 : 1,
@@ -1323,26 +1332,46 @@ export function Projects({
                             <div
                               style={{
                                 display: "grid",
-                                gridTemplateColumns: "62px minmax(0,1fr)",
+                                gridTemplateColumns: "74px minmax(0,1fr)",
                                 columnGap: 10,
                                 rowGap: 7,
                                 alignItems: "center",
                               }}
                             >
-                              <span style={microLabel}>Lead</span>
-                              <input
-                                defaultValue={p.leadName}
-                                onBlur={(e) => {
-                                  if (e.target.value !== p.leadName) {
-                                    saveDetail(p.id, "leadName", e.target.value);
+                              <label htmlFor={`lead-${p.id}`} style={microLabel}>Lead</label>
+                              {p.colosseum ? (
+                                <select
+                                  id={`lead-${p.id}`}
+                                  value={p.colosseum.leadUsername}
+                                  onChange={(e) => {
+                                    pickLead(p, e.target.value);
                                     flash();
-                                  }
-                                }}
-                                style={panelField}
-                              />
-                              <span style={microLabel}>Contact</span>
-                              <div style={{ display: "flex", gap: 6, minWidth: 0 }}>
+                                  }}
+                                  style={panelField}
+                                >
+                                  {leadOptions.map((m) => (
+                                    <option key={m.username} value={m.username}>
+                                      {m.name} (@{m.username})
+                                    </option>
+                                  ))}
+                                </select>
+                              ) : (
                                 <input
+                                  id={`lead-${p.id}`}
+                                  defaultValue={p.leadName}
+                                  onBlur={(e) => {
+                                    if (e.target.value !== p.leadName) {
+                                      saveDetail(p.id, "leadName", e.target.value);
+                                      flash();
+                                    }
+                                  }}
+                                  style={panelField}
+                                />
+                              )}
+                              <label htmlFor={`contact-${p.id}`} style={microLabel}>Contact</label>
+                              <div style={{ display: "flex", gap: 6, minWidth: 0, alignItems: "center" }}>
+                                <input
+                                  id={`contact-${p.id}`}
                                   defaultValue={p.leadContact}
                                   onBlur={(e) => {
                                     if (e.target.value !== p.leadContact) {
@@ -1350,15 +1379,8 @@ export function Projects({
                                       flash();
                                     }
                                   }}
-                                  aria-label="Lead contact"
                                   placeholder="tg, x, or email"
-                                  style={{
-                                    ...panelField,
-                                    flex: 1,
-                                    minWidth: 0,
-                                    fontFamily: "var(--mono)",
-                                    fontSize: 12,
-                                  }}
+                                  style={{ ...contactField, flex: 1, minWidth: 0 }}
                                 />
                                 <CopyButton value={p.leadContact} />
                               </div>
@@ -1374,18 +1396,15 @@ export function Projects({
                                 {/* The lead is always on the team: first, always
                                     present, not removable. */}
                                 <button
+                                  type="button"
                                   className="hq-chip-lead"
                                   onClick={() => copyChip(p.leadName, p.leadContact)}
-                                  title={
-                                    p.leadContact
-                                      ? `Copy ${p.leadContact}`
-                                      : "No contact on file"
-                                  }
+                                  title="Copy contact"
                                   style={{
                                     border: "none",
                                     cursor: "pointer",
-                                    fontSize: 12,
-                                    padding: "4px 8px",
+                                    padding: "3px 8px",
+                                    fontSize: 14,
                                     fontWeight: 600,
                                   }}
                                 >
@@ -1394,30 +1413,37 @@ export function Projects({
                                 {p.members.map((m) => (
                                   <button
                                     key={m.id}
+                                    type="button"
                                     className="hq-chip-member"
                                     onClick={() => copyChip(m.name, m.contact)}
-                                    title={
-                                      m.contact ? `Copy ${m.contact}` : "No contact on file"
-                                    }
+                                    title="Copy contact"
                                     style={{
                                       border: "none",
                                       cursor: "pointer",
-                                      fontSize: 12,
-                                      padding: "4px 8px",
+                                      padding: "3px 8px",
+                                      fontSize: 14,
                                     }}
                                   >
                                     {m.name}
                                   </button>
                                 ))}
-                                <button
-                                  onClick={() => setTeamModalFor(p.id)}
-                                  style={{ ...accentBtn, padding: "4px 9px", fontSize: 12 }}
-                                >
-                                  {p.members.length ? "Edit" : "Add"}
-                                </button>
+                                {/* An imported roster is Colosseum's to change,
+                                    so the modal only opens on a project HQ
+                                    keeps the roster of itself. */}
+                                {p.colosseum ? null : (
+                                  <button
+                                    type="button"
+                                    aria-haspopup="dialog"
+                                    onClick={() => setTeamModalFor(p.id)}
+                                    style={smallAccentBtn}
+                                  >
+                                    {p.members.length ? "Edit" : "Add"}
+                                  </button>
+                                )}
                               </div>
-                              <span style={microLabel}>Partner</span>
+                              <label htmlFor={`partner-${p.id}`} style={microLabel}>Partner</label>
                               <select
+                                id={`partner-${p.id}`}
                                 value={p.partnerId ?? ""}
                                 onChange={(e) => {
                                   pickPartner(p.id, e.target.value);
@@ -1425,15 +1451,16 @@ export function Projects({
                                 }}
                                 style={panelField}
                               >
-                                <option value="">No partner</option>
+                                <option value="">None</option>
                                 {partnerOptions.map((o) => (
                                   <option key={o.id} value={o.id}>
                                     {o.name}
                                   </option>
                                 ))}
                               </select>
-                              <span style={microLabel}>Captain</span>
+                              <label htmlFor={`captain-${p.id}`} style={microLabel}>Captain</label>
                               <CaptainField
+                                id={`captain-${p.id}`}
                                 project={p}
                                 captainOptions={captainOptions}
                                 review={captainReview && captainReview.projectId === p.id ? captainReview : null}
@@ -1445,8 +1472,9 @@ export function Projects({
                                 }}
                                 onCancelReview={() => setCaptainReview(null)}
                               />
-                              <span style={microLabel}>Event</span>
+                              <label htmlFor={`event-${p.id}`} style={microLabel}>Event</label>
                               <select
+                                id={`event-${p.id}`}
                                 defaultValue={p.eventSrc}
                                 onChange={(e) => {
                                   saveDetail(p.id, "eventSrc", e.target.value);
@@ -1454,7 +1482,7 @@ export function Projects({
                                 }}
                                 style={panelField}
                               >
-                                <option value="">No source event</option>
+                                <option value="">None</option>
                                 {eventOptionsFor(p.eventSrc).map((o) => (
                                   <option key={o.id} value={o.name}>
                                     {o.name}
@@ -1463,56 +1491,28 @@ export function Projects({
                               </select>
                               <span style={microLabel}>Status</span>
                               {/* Status is the panel's most-changed field; one
-                                  click beats opening a select. No review flag —
+                                  click beats opening a select. No review flag:
                                   only Monday review stamps the check-in date. */}
-                              <div style={{ display: "flex", gap: 4 }}>
-                                {classifiers.statuses.map((s) => {
-                                  const selected = p.statusSlug === s.slug;
-                                  return (
-                                    <button
-                                      key={s.id}
-                                      aria-pressed={selected}
-                                      onClick={() => {
-                                        pickStatus(p.id, s.slug, false);
-                                        flash();
-                                      }}
-                                      style={{
-                                        border: "none",
-                                        cursor: "pointer",
-                                        padding: "5px 11px",
-                                        borderRadius: 2,
-                                        fontSize: 11,
-                                        fontWeight: 600,
-                                        textTransform: "uppercase",
-                                        letterSpacing: "0.08em",
-                                        background: selected
-                                          ? `var(--${s.color})`
-                                          : "var(--fill-3)",
-                                        color: selected ? "#fff" : "var(--label-2)",
-                                      }}
-                                    >
-                                      {s.label}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                              <span style={microLabel}>Forecast</span>
+                              <div style={{ display: "flex", gap: 4 }}>{statusButtons(p, false)}</div>
+                              <label htmlFor={`forecast-${p.id}`} style={microLabel}>Forecast</label>
                               <select
-                                value={uiForecast(p.forecastSlug)}
+                                id={`forecast-${p.id}`}
+                                value={p.forecastSlug}
                                 onChange={(e) => {
-                                  pickForecast(p.id, slugForecast(e.target.value));
+                                  pickForecast(p.id, e.target.value);
                                   flash();
                                 }}
                                 style={panelField}
                               >
                                 {classifiers.forecasts.map((f) => (
-                                  <option key={f.id} value={uiForecast(f.slug)}>
+                                  <option key={f.id} value={f.slug}>
                                     {f.label}
                                   </option>
                                 ))}
                               </select>
-                              <span style={microLabel}>Blocker</span>
+                              <label htmlFor={`blocker-${p.id}`} style={microLabel}>Blocker</label>
                               <input
+                                id={`blocker-${p.id}`}
                                 defaultValue={p.blocker}
                                 placeholder="None"
                                 onBlur={(e) => {
@@ -1524,63 +1524,53 @@ export function Projects({
                                 style={panelField}
                               />
                             </div>
-                            <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 12 }}>
+                            <div style={{ fontSize: 14, color: "var(--label-3)", marginTop: 12 }}>
                               Last touched by {p.touchedBy}
-                              {p.touchedAt ? `, ${fmtDate(p.touchedAt)}` : ""}. Changes save as
-                              you make them.
+                              {p.touchedAt ? `, ${fmtDate(p.touchedAt)}` : ""}. Changes save as you go.
                             </div>
                           </div>
                           <div>
-                            <div
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 600,
-                                color: "var(--label-3)",
-                                textTransform: "uppercase",
-                                letterSpacing: "0.04em",
-                                marginBottom: 8,
-                              }}
-                            >
-                              Timeline
-                            </div>
+                            <div style={{ ...blockHeading, marginBottom: 10 }}>Timeline</div>
                             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                               <input
                                 ref={noteInputRef}
                                 onChange={(e) => {
                                   drafts.current["note" + p.id] = e.target.value;
                                 }}
-                                placeholder="Add a note"
-                                style={{
-                                  flex: 1,
-                                  minWidth: 0,
-                                  padding: "7px 10px",
-                                  border: "1px solid var(--sep)",
-                                  borderRadius: 0,
-                                  background: "var(--card)",
-                                  color: "var(--label-1)",
-                                  fontSize: 13,
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") onAddNote(p);
                                 }}
+                                aria-label="Add a note"
+                                placeholder="Add a note"
+                                style={{ ...panelField, flex: 1, minWidth: 0 }}
                               />
-                              <button onClick={() => onAddNote(p)} style={accentBtn}>
+                              <button
+                                type="button"
+                                onClick={() => onAddNote(p)}
+                                style={{
+                                  border: "none",
+                                  cursor: "pointer",
+                                  padding: "7px 12px",
+                                  borderRadius: 0,
+                                  fontSize: 16,
+                                  fontWeight: 600,
+                                  background: "var(--fill-2)",
+                                  color: "var(--accent)",
+                                }}
+                              >
                                 Add
                               </button>
                             </div>
                             {p.notes.map((n) => {
                               const editing = editingNoteId === n.id;
                               return (
-                                <div
-                                  key={n.id}
-                                  style={{
-                                    padding: "6px 0",
-                                    borderBottom: "1px solid var(--sep)",
-                                  }}
-                                >
+                                <div key={n.id} style={{ padding: "8px 0" }}>
                                   <div
                                     style={{
                                       display: "flex",
                                       alignItems: "center",
                                       gap: 8,
-                                      fontSize: 12,
+                                      fontSize: 14,
                                       color: "var(--label-3)",
                                     }}
                                   >
@@ -1591,23 +1581,25 @@ export function Projects({
                                         : ""}
                                     </span>
                                     <button
+                                      type="button"
                                       className="hq-hover-accent"
                                       onClick={() =>
                                         editing ? setEditingNoteId(null) : onEditNote(n)
                                       }
-                                      title={editing ? "Stop editing" : "Edit note"}
+                                      title="Edit note"
                                       aria-label={editing ? "Stop editing" : "Edit note"}
+                                      aria-pressed={editing}
                                       style={{
                                         flex: "none",
                                         display: "inline-flex",
                                         border: "none",
                                         cursor: "pointer",
                                         background: "none",
-                                        padding: 2,
+                                        padding: "0 2px",
                                         color: editing ? "var(--accent)" : "var(--label-3)",
                                       }}
                                     >
-                                      <IconBubbleAndPencil style={{ display: "block" }} />
+                                      <IconBubbleAndPencil width={13} height={13} style={{ display: "block" }} />
                                     </button>
                                   </div>
                                   {editing ? (
@@ -1620,34 +1612,24 @@ export function Projects({
                                           if (e.key === "Enter") onSaveNote(p.id, n);
                                           if (e.key === "Escape") setEditingNoteId(null);
                                         }}
+                                        aria-label="Edit note"
                                         style={{ ...panelField, flex: 1, minWidth: 0 }}
                                       />
                                       <button
+                                        type="button"
                                         onClick={() => onSaveNote(p.id, n)}
-                                        style={{ ...accentBtn, flex: "none" }}
+                                        style={{ ...smallAccentBtn, flex: "none" }}
                                       >
                                         Save
                                       </button>
                                     </div>
                                   ) : (
-                                    <div style={{ fontSize: 13, marginTop: 2 }}>{n.body}</div>
+                                    <div style={{ fontSize: 16, marginTop: 2 }}>{n.body}</div>
                                   )}
                                 </div>
                               );
                             })}
                           </div>
-                          {/* The rest of this project's reporting, loaded when
-                              the row is opened rather than for every row on
-                              the board: the columns above already carry the
-                              week itself. */}
-                          <ProjectReportingPanel
-                            projectId={p.id}
-                            projectName={p.name}
-                            status={weekly}
-                            captainName={p.captainName}
-                            reach={p.captainUserId ? captainReach[p.captainUserId] : undefined}
-                            timezone={settings.timezone}
-                          />
                         </div>
                       </div>
                     ) : null}
@@ -1657,27 +1639,22 @@ export function Projects({
             </div>
           </div>
           {/* Demo day is used on one day of the campaign, so it is entered
-              from here rather than holding a permanent navbar tab. Same
-              ghost treatment as the "Archived {n}" button on Events. */}
-          <div style={{ display: "flex", justifyContent: "flex-start", marginTop: 14 }}>
+              from here rather than holding a permanent navbar tab. */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
             <Link
               href="/hq/demo"
               className="hq-ghost-btn"
               style={{
-                border: "none",
-                cursor: "pointer",
-                padding: "8px 14px",
-                fontSize: 13,
-                fontWeight: 600,
-                boxShadow: "0 0 0 1px var(--sep)",
                 display: "inline-flex",
                 alignItems: "center",
-                gap: 8,
+                gap: 6,
+                padding: "7px 12px",
+                fontSize: 16,
+                fontWeight: 600,
                 textDecoration: "none",
               }}
             >
-              Demo day
-              <span style={{ color: "var(--faded)" }}>&#8250;</span>
+              Demo day →
             </Link>
           </div>
         </>
@@ -1695,18 +1672,10 @@ export function Projects({
   );
 }
 
-// Name · contact · action, shared by the lead row, member rows, and add row.
-const teamModalGrid: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "minmax(0,1fr) minmax(0,1.1fr) 58px",
-  columnGap: 10,
-  alignItems: "center",
-};
-
 /**
- * Same shell as ScoreModal in demo-day.tsx, at 380 wide — it holds three
- * columns, not a form. The lead row is read-only: the lead is edited in
- * the details panel.
+ * The team modal: one grid of name, contact and action for the header, every
+ * teammate, and the add row. The lead is not on it: the lead is edited in the
+ * details panel and is always on the team.
  */
 function TeamModal({
   project,
@@ -1748,77 +1717,47 @@ function TeamModal({
         position: "fixed",
         inset: 0,
         zIndex: 100,
-        background: "rgba(22,19,15,0.35)",
+        background: "rgba(0,0,0,0.3)",
         display: "flex",
-        alignItems: "flex-start",
+        alignItems: "center",
         justifyContent: "center",
-        padding: "12vh 16px 16px",
+        padding: 20,
       }}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="team-modal-title"
         className="hq-pop-in-modal"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: 380,
+          width: 440,
           maxWidth: "100%",
           boxSizing: "border-box",
           background: "var(--card)",
           boxShadow: "var(--shadow-pop)",
           padding: "20px 22px",
-          transformOrigin: "top center",
         }}
       >
-        <div style={{ fontFamily: "var(--serif)", fontSize: 24, fontWeight: 400 }}>
+        <div id="team-modal-title" style={{ fontFamily: "var(--serif)", fontSize: 28, fontWeight: 400 }}>
           {project.name} team
         </div>
-        <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 2 }}>
-          The lead is always on the team.
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", marginTop: 14 }}>
-          <div
-            style={{
-              ...teamModalGrid,
-              padding: "9px 0",
-              borderBottom: "1px solid var(--sep)",
-            }}
-          >
-            <span
-              style={{
-                fontSize: 14,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {project.leadName}
-            </span>
-            <span
-              style={{
-                fontSize: 12,
-                color: "var(--label-2)",
-                fontFamily: "var(--mono)",
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {project.leadContact}
-            </span>
-            <span style={{ justifySelf: "end" }}>
-              <Badge label="Lead" color="accent" bg="accent-fill" />
-            </span>
-          </div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 28px",
+            gap: 6,
+            marginTop: 14,
+            alignItems: "center",
+          }}
+        >
+          <span style={microLabel}>Name</span>
+          <span style={microLabel}>Contact</span>
+          <span />
           {project.members.map((m) => {
-            const del = armed(`mem-${m.id}`, "Remove", () => onRemove(m.id));
+            const del = armed(`mem-${m.id}`, "×", () => onRemove(m.id));
             return (
-              <div
-                key={m.id}
-                style={{
-                  ...teamModalGrid,
-                  padding: "7px 0",
-                  borderBottom: "1px solid var(--sep)",
-                }}
-              >
+              <Fragment key={m.id}>
                 <input
                   defaultValue={m.name}
                   aria-label="Teammate name"
@@ -1836,72 +1775,70 @@ function TeamModal({
                     if (e.target.value !== m.contact)
                       onUpdate(m.id, "contact", e.target.value);
                   }}
-                  style={{ ...panelField, fontFamily: "var(--mono)", fontSize: 12 }}
+                  style={contactField}
                 />
+                {/* Two-step like every delete in HQ: the × arms, "Sure?" performs. */}
                 <button
+                  type="button"
                   className="hq-hover-accent"
                   onClick={del.onClick}
-                  title={del.title}
+                  title={del.armed ? del.title : "Remove"}
+                  aria-label={del.armed ? "Confirm remove" : `Remove ${m.name}`}
                   style={{
-                    justifySelf: "end",
                     border: "none",
                     cursor: "pointer",
                     background: "none",
                     color: del.color,
-                    fontSize: 12,
+                    fontSize: del.armed ? 12 : 21,
                     fontWeight: del.fontWeight,
+                    lineHeight: 1,
                     padding: 2,
                     whiteSpace: "nowrap",
                   }}
                 >
                   {del.label}
                 </button>
-              </div>
+              </Fragment>
             );
           })}
-        </div>
-        <div style={{ ...teamModalGrid, marginTop: 14 }}>
           <input
             value={nameDraft}
             onChange={(e) => setNameDraft(e.target.value)}
-            placeholder="Name"
-            style={{
-              width: "100%",
-              boxSizing: "border-box",
-              padding: "8px 10px",
-              border: "1px solid var(--sep)",
-              borderRadius: 0,
-              background: "transparent",
-              color: "var(--label-1)",
-              fontSize: 13,
-            }}
+            aria-label="New teammate"
+            placeholder="New teammate"
+            style={panelField}
           />
           <input
             value={contactDraft}
             onChange={(e) => setContactDraft(e.target.value)}
+            aria-label="New teammate contact"
             placeholder="tg, x, or email"
-            style={{
-              width: "100%",
-              boxSizing: "border-box",
-              padding: "8px 10px",
-              border: "1px solid var(--sep)",
-              borderRadius: 0,
-              background: "transparent",
-              color: "var(--label-1)",
-              fontFamily: "var(--mono)",
-              fontSize: 12,
-            }}
+            style={contactField}
           />
-          <button onClick={add} style={{ ...accentBtn, width: "100%", padding: "8px 4px" }}>
-            Add
+          <button
+            type="button"
+            onClick={add}
+            title="Add"
+            aria-label="Add teammate"
+            style={{
+              border: "none",
+              cursor: "pointer",
+              background: "var(--fill-2)",
+              color: "var(--accent)",
+              fontSize: 17,
+              fontWeight: 600,
+              lineHeight: 1,
+              padding: "5px 0",
+            }}
+          >
+            +
           </button>
         </div>
-        <button
-          onClick={onClose}
-          style={{ ...primaryBtn, width: "100%", marginTop: 14, padding: 9 }}
-        >
-          Done
-        </button>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+          <button type="button" onClick={onClose} style={primaryBtn}>
+            Done
+          </button>
+        </div>
       </div>
     </div>
   );
