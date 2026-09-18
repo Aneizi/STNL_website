@@ -6,12 +6,10 @@ import {
   countAssignmentsForUsers, leaderboard, listAssignments, listCaptainInvitations,
   type CaptainInvitationListing, type CurrentCaptainAssignment,
 } from "./captains";
-import type { SubmissionStatus } from "./colosseum-snapshot";
 import { getSql } from "./db";
 import { requireHackathon } from "./hackathon";
 import { listReminderDeliveries, type ReminderDeliveryView } from "./jobs";
 import { operatorQuery } from "./queries";
-import { teamRemovalImpacts, type TeamRemovalImpact } from "./record-deletion";
 import { readCaptainContacts } from "./reporting-contacts";
 import {
   previewReportingPeriods,
@@ -87,38 +85,6 @@ export type BuilderImportRequest = AccountLogin & {
   /** The HQ project an admin created for this request, or null while there is none. */
   projectId: string | null;
   projectName: string | null;
-};
-
-export type BuilderProjectReview = {
-  id: string;
-  name: string;
-  projectUrl: string;
-  externalId: number;
-  description: string;
-  country: string;
-  ownerName: string;
-  /** How the owner account signs in: the same shape as an account row's `email` and `telegram`. */
-  owner: AccountLogin;
-  verification: "pending" | "verified" | "rejected";
-  stage: string;
-  leadUsername: string;
-  highPotential: boolean;
-  /** The normalized Colosseum snapshot, the same values the team's own page reads. */
-  category: string | null;
-  twitterHandle: string | null;
-  website: string | null;
-  repoLink: string | null;
-  imageUrl: string | null;
-  submissionStatus: SubmissionStatus;
-  submittedAt: string | null;
-  sourceStatus: "never" | "ok" | "error";
-  sourceCheckedAt: string | null;
-  sourceErrorCode: string | null;
-  /** Colosseum's own error text from the last failure. Operator-only diagnostics, rendered as text. */
-  sourceErrorMessage: string | null;
-  members: Array<{ name: string; username: string; joined: boolean; joinedAt: string | null }>;
-  /** What deleting this team would take with it, read before the destructive step. */
-  removal: TeamRemovalImpact;
 };
 
 /** A nullable text column as the type says: null stays null. */
@@ -224,60 +190,26 @@ export async function getBuilderAdminData() {
   };
 }
 
-export async function getBuilderProjectReviews() {
+/**
+ * The edition's project import requests, pending first: the help requests
+ * builders sent when Colosseum could not return their project, with the HQ
+ * project an admin has since created for each, when there is one.
+ */
+export async function getImportRequests(): Promise<BuilderImportRequest[]> {
   await requireUser();
   const hackathon = await requireHackathon();
   const sql = getSql();
-  const [projects, requests] = await Promise.all([
-    sql.query(`SELECT p.id, p.name, o.project_url, o.external_id, o.description, o.country,
-        b.name AS owner_name, o.verification, o.stage, ${LOGIN_COLUMNS},
-        o.lead_username, o.high_potential, o.category, o.twitter_handle, o.website, o.repo_link, o.image_url,
-        o.submission_status, o.submitted_at::text, o.source_status, o.source_checked_at::text,
-        o.source_error_code, o.source_error_message,
-        COALESCE((SELECT json_agg(json_build_object(
-          'name', m.name, 'username', COALESCE(m.colosseum_username, ''),
-          'joined', m.builder_user_id IS NOT NULL, 'joinedAt', m.joined_at::text
-        ) ORDER BY m.sort, m.id) FROM hq_project_members m WHERE m.project_id = p.id), '[]') AS members
-        FROM hq_project_onboarding o
-        JOIN hq_projects p ON p.id = o.project_id AND p.hackathon_id = o.hackathon_id
-        JOIN hq_builder_profiles b ON b.id = o.owner_user_id ${LOGIN_JOIN}
-        WHERE o.hackathon_id = $1
-        ORDER BY (o.verification = 'pending') DESC, o.high_potential DESC, o.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
-    sql.query(`SELECT r.id, b.name, r.project_url, r.note, r.status, r.project_id::text AS project_id,
-          (SELECT p.name FROM hq_projects p WHERE p.id = r.project_id) AS project_name, ${LOGIN_COLUMNS}
-        FROM hq_project_import_requests r JOIN hq_builder_profiles b ON b.id = r.user_id ${LOGIN_JOIN}
-        WHERE r.hackathon_id = $1
-        ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
-  ]);
-  // The real counts behind every Delete team confirmation, read here so the
-  // operator sees what disappears before they tick anything. One batched
-  // query for the whole page, the same shape as `capabilities` and
-  // `assignmentCounts` above rather than one query per row.
-  const removals = await teamRemovalImpacts(operatorQuery(), projects.map((row) => String(row.id)));
-  return {
-    projects: projects.map((row) => ({
-      id: String(row.id), name: String(row.name), projectUrl: String(row.project_url),
-      externalId: Number(row.external_id), description: String(row.description ?? ""),
-      country: String(row.country ?? ""), ownerName: String(row.owner_name), owner: login(row),
-      verification: row.verification as BuilderProjectReview["verification"], stage: String(row.stage), leadUsername: String(row.lead_username ?? ""),
-      highPotential: Boolean(row.high_potential),
-      category: optionalText(row.category), twitterHandle: optionalText(row.twitter_handle),
-      website: optionalText(row.website), repoLink: optionalText(row.repo_link), imageUrl: optionalText(row.image_url),
-      submissionStatus: (row.submission_status ?? "not_checked") as SubmissionStatus,
-      submittedAt: optionalText(row.submitted_at),
-      sourceStatus: (row.source_status ?? "never") as BuilderProjectReview["sourceStatus"],
-      sourceCheckedAt: optionalText(row.source_checked_at), sourceErrorCode: optionalText(row.source_error_code),
-      sourceErrorMessage: optionalText(row.source_error_message),
-      members: row.members as BuilderProjectReview["members"],
-      removal: removals.get(String(row.id))!,
-    } satisfies BuilderProjectReview)),
-    importRequests: requests.map((row) => ({
-      id: String(row.id), name: String(row.name), ...login(row),
-      projectUrl: String(row.project_url), note: String(row.note), status: row.status as BuilderImportRequest["status"],
-      projectId: row.project_id == null ? null : String(row.project_id),
-      projectName: row.project_name == null ? null : String(row.project_name),
-    } satisfies BuilderImportRequest)),
-  };
+  const requests = await sql.query(`SELECT r.id, b.name, r.project_url, r.note, r.status, r.project_id::text AS project_id,
+        (SELECT p.name FROM hq_projects p WHERE p.id = r.project_id) AS project_name, ${LOGIN_COLUMNS}
+      FROM hq_project_import_requests r JOIN hq_builder_profiles b ON b.id = r.user_id ${LOGIN_JOIN}
+      WHERE r.hackathon_id = $1
+      ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Record<string, unknown>[];
+  return requests.map((row) => ({
+    id: String(row.id), name: String(row.name), ...login(row),
+    projectUrl: String(row.project_url), note: String(row.note), status: row.status as BuilderImportRequest["status"],
+    projectId: row.project_id == null ? null : String(row.project_id),
+    projectName: row.project_name == null ? null : String(row.project_name),
+  } satisfies BuilderImportRequest));
 }
 
 /* ── Weekly reporting, phase 6 ─────────────────────────────────────── */

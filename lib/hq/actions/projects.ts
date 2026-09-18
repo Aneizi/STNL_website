@@ -92,8 +92,11 @@ export async function updateProjectDetail(
 
   const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false, error: "Project not found in this hackathon." };
+  // An imported project's lead is one of its Colosseum roster rows, chosen
+  // through updateBuilderProjectLead; free text would detach the name from
+  // the identity behind it.
   if (project.imported && parsed.data.field === "leadName") {
-    return { ok: false, error: "Choose the lead from the Colosseum roster in Imported teams." };
+    return { ok: false, error: "Choose the lead from the project's Colosseum roster." };
   }
   const { name, hackathonId } = project;
 
@@ -177,7 +180,7 @@ export async function addProjectMember(
   if (!trimmedName) return { ok: false };
   const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false, error: "Project not found in this hackathon." };
-  if (project.imported) return { ok: false, error: "Imported teammates must be listed on the Colosseum project. The roster cannot be extended in HQ." };
+  if (project.imported) return { ok: false, error: "The roster of an imported project comes from Colosseum and cannot be extended in HQ." };
 
   const sql = getSql();
   const today = await hqToday(project.hackathonId);
@@ -216,7 +219,7 @@ export async function updateProjectMember(
   if (!parsed.success) return { ok: false, error: "Invalid value." };
   const member = inHackathon(await getMemberProject(memberId), selected.id);
   if (!member) return { ok: false, error: "Teammate not found in this hackathon." };
-  if (member.imported && parsed.data.field === "name") return { ok: false, error: "This teammate's identity comes from Colosseum. Only their contact can be edited in HQ." };
+  if (member.imported && parsed.data.field === "name") return { ok: false, error: "This teammate's name comes from Colosseum. Only the contact can be edited in HQ." };
 
   const sql = getSql();
   const today = await hqToday(member.hackathonId);
@@ -245,7 +248,7 @@ export async function removeProjectMember(memberId: string): Promise<ActionResul
   if (!id.safeParse(memberId).success) return { ok: false };
   const member = inHackathon(await getMemberProject(memberId), selected.id);
   if (!member) return { ok: false, error: "Teammate not found in this hackathon." };
-  if (member.imported) return { ok: false, error: "This teammate belongs to the imported Colosseum roster and cannot be removed in HQ." };
+  if (member.imported) return { ok: false, error: "This teammate is on the Colosseum roster and cannot be removed in HQ." };
 
   const sql = getSql();
   const today = await hqToday(member.hackathonId);
@@ -370,6 +373,40 @@ export async function toggleProjectGate(
   return { ok: true };
 }
 
+/**
+ * The operator's own "high potential" flag, on the project row itself so it
+ * works for a project created in HQ as well as an imported one. The board
+ * renders it as the HP badge beside the name and the toggle in the
+ * Colosseum block.
+ */
+export async function setProjectHighPotential(
+  projectId: string,
+  highPotential: boolean,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  const selected = await requireHackathon();
+  if (!id.safeParse(projectId).success || typeof highPotential !== "boolean") return { ok: false };
+  const project = inHackathon(await getProject(projectId), selected.id);
+  if (!project) return { ok: false };
+
+  const sql = getSql();
+  const today = await hqToday(project.hackathonId);
+  await sql.transaction([
+    sql`
+      UPDATE hq_projects
+      SET high_potential = ${highPotential}, touched_by_user_id = ${user.id}, touched_at = ${today}
+      WHERE id = ${projectId}
+    `,
+    activityStmt(
+      user.id,
+      project.hackathonId,
+      highPotential ? `Marked ${project.name} high potential` : `Removed high potential from ${project.name}`,
+    ),
+  ]);
+  refreshHq();
+  return { ok: true };
+}
+
 export async function saveProjectBlocker(
   projectId: string,
   blocker: string,
@@ -427,15 +464,12 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
  * the finalist row cascade in the schema; an award won by that finalist has
  * its winner cleared rather than being deleted. Two-step confirmed in the UI,
  * so there is no soft-delete to undo it from.
- */
-/**
- * Deletes a project from the Projects board. Phase 3 moved the statement
- * itself into `lib/hq/record-deletion.ts` so this and the Imported teams
- * panel's own Delete team control (`lib/hq/actions/builders-admin.ts`) share
- * ONE deletion: one transaction, every dependent row removed or explicitly
- * detached, and a `project.deleted` audit event naming what went. Two
- * separately maintained delete paths for the same row is exactly how one of
- * them ends up stranding a Captain assignment or a reporting entry.
+ *
+ * The statement itself lives in `lib/hq/record-deletion.ts` (deleteTeamRecord):
+ * one transaction, every dependent row removed or explicitly detached, and a
+ * `project.deleted` audit event naming what went. This is the only delete
+ * path for a project, imported or not, so nothing can strand a Captain
+ * assignment or a reporting entry by taking a second route.
  */
 export async function deleteProject(projectId: string): Promise<ActionResult> {
   const user = await requireUser();

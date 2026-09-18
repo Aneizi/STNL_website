@@ -5,7 +5,7 @@ import { atomically, type BuilderDatabase, type BuilderQuery } from "./builder-d
 /**
  * Admin deletion of a team and of a person (owner requirement, 14 September
  * 2026). Operator-only; the gate and the edition scoping live in the calling
- * Server Actions (`lib/hq/actions/builders-admin.ts` and
+ * Server Actions (`lib/hq/actions/projects.ts` and
  * `lib/hq/actions/people.ts`), which resolve the record through `inHackathon`
  * before calling anything here.
  *
@@ -123,7 +123,6 @@ export type TeamRemovalImpact = {
 
 const count = (value: unknown) => Number(value ?? 0);
 
-/** One row per project. `$WHERE` is the only part that differs between the single and batched reads. */
 const TEAM_REMOVAL_SELECT =
     `SELECT p.id::text AS id, p.name, p.hackathon_id,
        EXISTS (SELECT 1 FROM hq_project_onboarding o WHERE o.project_id = p.id) AS imported,
@@ -141,7 +140,7 @@ const TEAM_REMOVAL_SELECT =
        (SELECT count(*) FROM hq_reporting_entry_revisions v
           JOIN hq_reporting_entries e ON e.id = v.entry_id WHERE e.project_id = p.id) AS reporting_revisions,
        (SELECT count(*) FROM hq_reporting_outcomes o WHERE o.project_id = p.id) AS reporting_outcomes
-     FROM hq_projects p WHERE $WHERE`;
+     FROM hq_projects p WHERE p.id = $1::uuid`;
 
 const toTeamRemoval = (row: Record<string, unknown>): TeamRemovalImpact => ({
   projectId: String(row.id), name: String(row.name), hackathonId: Number(row.hackathon_id),
@@ -154,21 +153,9 @@ const toTeamRemoval = (row: Record<string, unknown>): TeamRemovalImpact => ({
   reportingRevisions: count(row.reporting_revisions), reportingOutcomes: count(row.reporting_outcomes),
 });
 
-/**
- * The same read for a whole page of projects, in one query rather than one
- * per row: Admin's "Imported teams" panel needs every Delete team
- * confirmation's counts on every render, and a listing of a hundred teams is
- * a hundred round trips over the HTTP driver otherwise.
- */
-export async function teamRemovalImpacts(db: BuilderQuery, projectIds: string[]): Promise<Map<string, TeamRemovalImpact>> {
-  if (!projectIds.length) return new Map();
-  const { rows } = await db.query(TEAM_REMOVAL_SELECT.replace("$WHERE", "p.id = ANY($1::uuid[])"), [projectIds]);
-  return new Map(rows.map((row) => [String(row.id), toTeamRemoval(row)]));
-}
-
-/** What deleting this project takes with it. Read before the destructive step, and again inside it. */
+/** What deleting this project takes with it. Read inside the deleting transaction, for the audit event. */
 export async function teamRemovalImpact(db: BuilderQuery, projectId: string): Promise<TeamRemovalImpact | null> {
-  const { rows } = await db.query(TEAM_REMOVAL_SELECT.replace("$WHERE", "p.id = $1::uuid"), [projectId]);
+  const { rows } = await db.query(TEAM_REMOVAL_SELECT, [projectId]);
   return rows.length ? toTeamRemoval(rows[0]) : null;
 }
 

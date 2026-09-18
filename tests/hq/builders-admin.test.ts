@@ -24,26 +24,27 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  deleteBuilderTeam, markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
+  resolveBuilderImportRequest, reviewBuilderHostRequest,
   updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import {
-  assignProjectCaptain, bulkAssignProjectCaptain,
+  assignProjectCaptain,
   createCaptainInvitation as createCaptainInvitationAction, revokeCaptainInvitation as revokeCaptainInvitationAction,
   unassignProjectCaptain,
 } from "@/lib/hq/actions/captains";
 import { correctPersonMatch, createPerson, deletePerson, setPersonCaptain, updatePerson } from "@/lib/hq/actions/people";
-import { getBuilderAdminData, getBuilderProjectReviews } from "@/lib/hq/builder-admin-queries";
+import { getBuilderAdminData, getImportRequests } from "@/lib/hq/builder-admin-queries";
 import type { BuilderQuery } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { countAssignmentsForCaptain, createCaptainInvitation as createCaptainInvitationRecord } from "@/lib/hq/captains";
-import { getPeople } from "@/lib/hq/queries";
+import { getPeople, getProjects } from "@/lib/hq/queries";
 import {
   addProjectMember, addProjectNote, deleteProject, editProjectNote, logMondayReview, removeProjectMember, saveProjectBlocker,
-  setProjectForecast, setProjectStatus, toggleProjectGate, updateProjectDetail, updateProjectMember,
+  setProjectForecast, setProjectHighPotential, setProjectStatus, toggleProjectGate, updateProjectDetail, updateProjectMember,
 } from "@/lib/hq/actions/projects";
-import { BuilderAdmin, BuilderProjectReviews } from "@/components/hq/builder-admin";
+import { BuilderAdmin } from "@/components/hq/builder-admin";
+import { ImportRequests } from "@/components/hq/import-requests";
 
 const OPERATOR = "00000000-0000-4000-8000-000000000001";
 const PROJECT = "00000000-0000-4000-8000-000000000002";
@@ -146,9 +147,9 @@ describe("builder administration authorization and scoping", () => {
   it.each([
     ["configuration", () => updateBuilderOnboardingConfig(config)],
     ["membership", () => updateBuilderTier("selected", "member")],
-    ["deleting a team", () => deleteBuilderTeam({ projectId: PROJECT, confirmed: true })],
+    ["deleting a project", () => deleteProject(PROJECT)],
     ["deleting a person", () => deletePerson({ personId: PERSON_CARD, confirmed: true })],
-    ["potential", () => markBuilderProjectPotential(PROJECT, true)],
+    ["high potential", () => setProjectHighPotential(PROJECT, true)],
     ["lead selection", () => updateBuilderProjectLead(PROJECT, "notjoined")],
     ["adding a teammate", () => addProjectMember(PROJECT, "Forged", "")],
     ["removing a teammate", () => removeProjectMember(PROJECT)],
@@ -157,14 +158,13 @@ describe("builder administration authorization and scoping", () => {
     ["import requests", () => resolveBuilderImportRequest(REQUEST)],
     ["hosting", () => reviewBuilderHostRequest(HOST_REQUEST, "approved")],
     ["admin queries", () => getBuilderAdminData()],
-    ["project queries", () => getBuilderProjectReviews()],
+    ["import requests query", () => getImportRequests()],
     ["granting Captain", () => grantCaptainCapability("selected", "Leads the cohort")],
     ["revoking Captain", () => revokeCaptainCapability("selected", "Stepped down")],
     ["creating a Captain invitation", () => createCaptainInvitationAction({ maxRedemptions: 1, expiresInDays: 7 })],
     ["revoking a Captain invitation", () => revokeCaptainInvitationAction("00000000-0000-4000-8000-000000000099")],
     ["assigning a Captain", () => assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" })],
     ["unassigning a Captain", () => unassignProjectCaptain(BARE_PROJECT)],
-    ["bulk assigning Captains", () => bulkAssignProjectCaptain({ projectIds: [BARE_PROJECT], captainUserId: "selected" })],
     ["correcting a person match", () => correctPersonMatch({ personId: PROJECT, toUserId: null, reason: "Wrong person" })],
     ["making a Captain from People", () => setPersonCaptain(PERSON_CARD, true)],
   ] as const)("requires an operator session for %s", async (_, action) => {
@@ -175,18 +175,35 @@ describe("builder administration authorization and scoping", () => {
     expect(mocks.refreshHq).not.toHaveBeenCalled();
   });
 
-  it("queries only the selected hackathon and preserves roster join status", async () => {
+  it("queries only the selected hackathon", async () => {
     const admin = await getBuilderAdminData();
     expect(admin.accounts.map((account) => account.id)).toEqual(["selected"]);
     expect(admin.hostRequests.map((request) => request.id)).toEqual([HOST_REQUEST]);
     expect(admin.config.externalHackathonId).toBe(42);
-    const reviews = await getBuilderProjectReviews();
-    expect(reviews.projects.map((project) => project.id)).toEqual([PROJECT]);
-    expect(reviews.projects[0].members).toEqual(expect.arrayContaining([
-      expect.objectContaining({ username: "selected", joined: true }),
-      expect.objectContaining({ username: "notjoined", joined: false }),
-    ]));
-    expect(reviews.importRequests.map((request) => request.id)).toEqual([REQUEST]);
+    expect((await getImportRequests()).map((request) => request.id)).toEqual([REQUEST]);
+  });
+
+  it("carries the Colosseum snapshot, the roster usernames and the importer onto the board's own rows", async () => {
+    await rows("UPDATE hq_project_onboarding SET description='Cheese provenance', stage='mvp', category='Supply chain', image_url='https://images.example.test/kaas.png' WHERE project_id=$1", [PROJECT]);
+    const board = await getProjects(11);
+    expect(board.map((project) => project.id).sort()).toEqual([BARE_PROJECT, PROJECT].sort());
+    const imported = board.find((project) => project.id === PROJECT);
+    expect(imported).toMatchObject({
+      highPotential: false,
+      colosseum: {
+        url: "https://colosseum.com/arena/projects/explore/selected", imageUrl: "https://images.example.test/kaas.png",
+        description: "Cheese provenance", stage: "mvp", category: "Supply chain", submissionStatus: "not_checked",
+        leadUsername: "selected", importedByName: "Selected Builder",
+      },
+    });
+    expect(imported?.colosseum?.importedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(imported?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(imported?.members.map((member) => member.username).sort()).toEqual(["notjoined", "selected"]);
+    // A project created in HQ has no Colosseum block, and a hand-added teammate no username.
+    await rows("INSERT INTO hq_project_members(project_id,name,contact) VALUES($1,'Typed in','@typed')", [BARE_PROJECT]);
+    expect((await getProjects(11)).find((project) => project.id === BARE_PROJECT)).toMatchObject({
+      colosseum: null, highPotential: false, members: [{ name: "Typed in", contact: "@typed", username: null }],
+    });
   });
 
   it("scopes membership management but saves the tier globally", async () => {
@@ -206,9 +223,8 @@ describe("builder administration authorization and scoping", () => {
     await rows("INSERT INTO hq_captain_assignments(project_id,captain_user_id) VALUES($1,'other')", [PROJECT]);
 
     // A project from another edition answers exactly like a missing one.
-    expect(await deleteBuilderTeam({ projectId: OTHER_PROJECT, confirmed: true })).toMatchObject({ ok: false });
-    expect(await deleteBuilderTeam({ projectId: PROJECT, confirmed: false as true })).toMatchObject({ ok: false });
-    expect(await deleteBuilderTeam({ projectId: PROJECT, confirmed: true })).toEqual({ ok: true });
+    expect(await deleteProject(OTHER_PROJECT)).toMatchObject({ ok: false });
+    expect(await deleteProject(PROJECT)).toEqual({ ok: true });
 
     for (const table of ["hq_projects", "hq_project_onboarding", "hq_project_members", "hq_team_invites", "hq_project_notes", "hq_captain_assignments"]) {
       const column = table === "hq_projects" ? "id" : "project_id";
@@ -314,17 +330,26 @@ describe("builder administration authorization and scoping", () => {
     expect(await rows("SELECT hackathon_id FROM hq_activity ORDER BY created_at")).toEqual([{ hackathon_id: 12 }, { hackathon_id: 12 }, { hackathon_id: 12 }]);
   });
 
-  it("cannot flag another hackathon's team or resolve its requests", async () => {
-    expect(await markBuilderProjectPotential(OTHER_PROJECT, true)).toMatchObject({ ok: false });
+  it("cannot flag another hackathon's project or resolve its requests", async () => {
+    expect(await setProjectHighPotential(OTHER_PROJECT, true)).toMatchObject({ ok: false });
     expect(await resolveBuilderImportRequest(OTHER_REQUEST)).toMatchObject({ ok: false });
     expect(await reviewBuilderHostRequest(OTHER_HOST_REQUEST, "approved")).toMatchObject({ ok: false });
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
-    expect(await markBuilderProjectPotential(PROJECT, true)).toEqual({ ok: true });
+    expect(await setProjectHighPotential(PROJECT, true)).toEqual({ ok: true });
     expect(await resolveBuilderImportRequest(REQUEST)).toEqual({ ok: true });
     expect(await reviewBuilderHostRequest(HOST_REQUEST, "approved")).toEqual({ ok: true });
-    expect(await rows("SELECT high_potential FROM hq_project_onboarding WHERE project_id=$1", [PROJECT])).toEqual([{ high_potential: true }]);
+    expect(await rows("SELECT high_potential, touched_by_user_id::text AS touched_by FROM hq_projects WHERE id=$1", [PROJECT])).toEqual([{ high_potential: true, touched_by: OPERATOR }]);
     expect(await rows("SELECT status FROM hq_project_import_requests WHERE id=$1", [REQUEST])).toEqual([{ status: "resolved" }]);
     expect(await rows("SELECT status FROM hq_event_host_requests WHERE id=$1", [HOST_REQUEST])).toEqual([{ status: "approved" }]);
+  });
+
+  it("flags a project created in HQ high potential and clears it again, on the project row itself", async () => {
+    expect(await setProjectHighPotential(BARE_PROJECT, true)).toEqual({ ok: true });
+    expect((await getProjects(11)).find((project) => project.id === BARE_PROJECT)?.highPotential).toBe(true);
+    expect(await setProjectHighPotential(BARE_PROJECT, false)).toEqual({ ok: true });
+    expect(await rows("SELECT high_potential FROM hq_projects WHERE id=$1", [BARE_PROJECT])).toEqual([{ high_potential: false }]);
+    expect((await rows("SELECT message FROM hq_activity")).map((row) => row.message).sort())
+      .toEqual(["Marked Bare project high potential", "Removed high potential from Bare project"]);
   });
 
   it("keeps external IDs separate and prevents remapping imported teams", async () => {
@@ -375,27 +400,25 @@ describe("accounts without a login email in Admin", () => {
     expect(admin.accounts.find((account) => account.id === "tg-plain")).toMatchObject({ email: null, telegram: { username: null }, contactEmail: null });
     expect(admin.accounts.find((account) => account.id === "selected")).toMatchObject({ email: "selected@example.test", telegram: null, contactEmail: null });
     expect(admin.hostRequests.find((request) => request.title === "Telegram meetup")).toMatchObject({ email: null, telegram: { username: "tg_handle" } });
-    const reviews = await getBuilderProjectReviews();
-    expect(reviews.projects.find((project) => project.id === TG_PROJECT)).toMatchObject({ ownerName: "Telegram Builder", owner: { email: null, telegram: { username: "tg_handle" } } });
-    expect(reviews.projects.find((project) => project.id === PROJECT)).toMatchObject({ owner: { email: "selected@example.test", telegram: null } });
-    expect(reviews.importRequests.find((request) => request.name === "Handle-less Builder")).toMatchObject({ email: null, telegram: { username: null } });
-    expect(JSON.stringify([admin, reviews])).not.toContain("placeholder.invalid");
+    const requests = await getImportRequests();
+    expect(requests.find((request) => request.name === "Handle-less Builder")).toMatchObject({ email: null, telegram: { username: null } });
+    expect((await getProjects(11)).find((project) => project.id === TG_PROJECT)?.colosseum?.importedByName).toBe("Telegram Builder");
+    expect(JSON.stringify([admin, requests])).not.toContain("placeholder.invalid");
     // A profile row that somehow holds the placeholder still never reaches a page.
     await rows("UPDATE hq_builder_profiles SET email=$1, contact_email=$1 WHERE id='tg-only'", [PLACEHOLDER]);
     expect((await getBuilderAdminData()).accounts.find((account) => account.id === "tg-only")).toMatchObject({ email: null, contactEmail: null, telegram: { username: "tg_handle" } });
-    expect(JSON.stringify([await getBuilderAdminData(), await getBuilderProjectReviews()])).not.toContain("placeholder.invalid");
+    expect(JSON.stringify([await getBuilderAdminData(), await getImportRequests()])).not.toContain("placeholder.invalid");
   });
 
   it("renders a Telegram-only account as its handle, the contact email labelled apart, and an email account as before", async () => {
     const admin = await getBuilderAdminData();
-    const reviews = await getBuilderProjectReviews();
+    const requests = await getImportRequests();
     const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, hostRequests: admin.hostRequests, timezone: "Europe/Amsterdam" }))
-      + renderToStaticMarkup(createElement(BuilderProjectReviews, reviews));
+      + renderToStaticMarkup(createElement(ImportRequests, { requests }));
     expect(html).toContain("Telegram: @tg_handle");
     expect(html).toContain("Contact email: reach-me@example.test");
     expect(html).toContain("Telegram account");
     expect(html).toContain("selected@example.test");
-    expect(html).toContain("Imported by Telegram Builder (Telegram: @tg_handle).");
     expect(html).toContain("Telegram Builder (Telegram: @tg_handle)");
     expect(html).not.toContain("placeholder.invalid");
     expect(html).not.toContain("()");
@@ -697,27 +720,6 @@ describe("Captain assignment in Admin (task T4.4)", () => {
     expect(await assignProjectCaptain({ projectId: OTHER_PROJECT, captainUserId: "captain-edition" }))
       .toEqual({ outcome: "error", error: "This project is not available in the selected hackathon." });
     expect(await unassignProjectCaptain(OTHER_PROJECT)).toEqual({ ok: false, error: "This project is not available in the selected hackathon." });
-  });
-
-  it("reports per-project outcomes in bulk — a conflicted or needs-review project is named, not silently skipped, and does not stop the rest", async () => {
-    await seedCandidate("captain-bulk");
-    const { outcomes, error } = await bulkAssignProjectCaptain({ projectIds: [BARE_PROJECT, PROJECT], captainUserId: "captain-bulk" });
-    expect(error).toBeNull();
-    expect(outcomes).toEqual(expect.arrayContaining([
-      { projectId: BARE_PROJECT, result: { outcome: "assigned" } },
-      { projectId: PROJECT, result: { outcome: "needs_review", unresolved: [{ memberId: expect.any(String), name: "Not Joined", username: "notjoined" }] } },
-    ]));
-    expect(await currentCaptain(BARE_PROJECT)).toEqual([{ captain_user_id: "captain-bulk" }]);
-    expect(await currentCaptain(PROJECT)).toEqual([]);
-    expect(mocks.refreshHq).toHaveBeenCalled();
-  });
-
-  it("reports a whole-batch error, rather than a silently empty result, when the request itself is invalid", async () => {
-    await seedCandidate("captain-invalid-bulk");
-    const { outcomes, error } = await bulkAssignProjectCaptain({ projectIds: [], captainUserId: "captain-invalid-bulk" });
-    expect(outcomes).toEqual([]);
-    expect(error).toEqual(expect.any(String));
-    expect(error).not.toBe("");
   });
 
   it("shows the affected project count before a revocation and clears the assignment in the same action", async () => {

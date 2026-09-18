@@ -1,6 +1,6 @@
 // The phase 6 Server Actions against the real schema on PGlite: the member
 // writes behind the team and Captain composers, the two contacts, and the
-// admin moderation, eligibility and schedule controls.
+// admin schedule and settings controls.
 //
 // Nothing about authorization is mocked. Only the two session reads are
 // stubbed (they are the boundary the actions are gated on), so every refusal
@@ -44,18 +44,10 @@ import {
   saveTeamContact,
 } from "@/lib/hq/actions/reporting";
 import {
-  addAdminReportingUpdate,
-  editAdminReportingUpdate,
   applyReportingSchedule,
-  correctReportingOutcome,
-  enableProjectReporting,
-  loadEntryRevisions,
-  loadProjectReporting,
   previewReportingSchedule,
   readColosseumDeadline,
   saveReportingConfiguration,
-  setProjectReportingPaused,
-  voidReportingUpdate,
 } from "@/lib/hq/actions/reporting-admin";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
@@ -75,9 +67,6 @@ const OPERATOR_ID = "00000000-0000-4000-8000-0000000000b1";
 const EDITION = 71;
 const OTHER_EDITION = 72;
 const PROJECT = "00000000-0000-4000-9100-000000000001";
-const OTHER_PROJECT = "00000000-0000-4000-9100-000000000002";
-/** A project an admin created in the CRM: no imported team behind it. */
-const CRM_PROJECT = "00000000-0000-4000-9100-000000000003";
 
 let pg: PGlite;
 let db: BuilderDatabase;
@@ -363,31 +352,10 @@ describe("the two contacts", () => {
   });
 });
 
-describe("the admin controls", () => {
+describe("a late update after a week has closed", () => {
   beforeEach(async () => {
     await seedImportedProject(PROJECT, "lead");
-    await seedProject(CRM_PROJECT, EDITION, "CRM Only");
-    await seedProject(OTHER_PROJECT, OTHER_EDITION, "Another Edition");
     await enableReporting(db, { projectId: PROJECT, hackathonId: EDITION });
-  });
-
-  it("creates operator updates and edits member updates with history and version conflicts", async () => {
-    const admin = await addAdminReportingUpdate({ projectId: PROJECT, body: "Call notes", visibility: "sensitive" });
-    expect(admin).toMatchObject({ ok: true, entry: { authorIsYou: true, visibility: "sensitive" } });
-    asMember(member("lead"));
-    const team = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "Typo" });
-    if (!team.ok) throw new Error("Expected member update");
-    expect(await editAdminReportingUpdate({ entryId: team.entry.id, body: "Corrected", expectedVersion: 1 }))
-      .toMatchObject({ ok: true, entry: { authorName: "lead", authorIsYou: false, version: 2 } });
-    expect(await editAdminReportingUpdate({ entryId: team.entry.id, body: "Stale edit", expectedVersion: 1 }))
-      .toMatchObject({ ok: false, reason: "conflict", current: { body: "Corrected" } });
-    expect(await rows(`SELECT version FROM hq_reporting_entry_revisions WHERE entry_id=$1 ORDER BY version`, [team.entry.id]))
-      .toEqual([{ version: 1 }, { version: 2 }]);
-  });
-
-  it("refuses an operator update for a project from another edition", async () => {
-    expect(await addAdminReportingUpdate({ projectId: OTHER_PROJECT, body: "Wrong edition" }))
-      .toMatchObject({ ok: false, reason: "not_authorized" });
   });
 
   it("allows a deliberate late update without changing the closed outcome", async () => {
@@ -398,85 +366,6 @@ describe("the admin controls", () => {
     expect(saved).toMatchObject({ ok: true, completesPeriod: false, entry: { late: true } });
     expect(await rows(`SELECT completed, corrected_completed FROM hq_reporting_outcomes WHERE period_id=$1 AND project_id=$2`, [period.id, PROJECT]))
       .toEqual([{ completed: false, corrected_completed: null }]);
-  });
-
-  it("adds a CRM-only project to weekly reporting, with the same week as an imported team", async () => {
-    expect(await enableProjectReporting(CRM_PROJECT)).toEqual({ ok: true });
-    const statuses = await reportingStatus(db, { hackathonId: EDITION });
-    const crm = statuses.find((status) => status.projectId === CRM_PROJECT);
-    expect(crm).toMatchObject({ projectName: "CRM Only", imported: false });
-    expect(crm?.current?.periodId).toBe((await openPeriod()).id);
-  });
-
-  it("answers a project from another edition the way it answers one that does not exist", async () => {
-    expect(await enableProjectReporting(OTHER_PROJECT)).toMatchObject({ ok: false });
-    expect(await setProjectReportingPaused({ projectId: OTHER_PROJECT, paused: true })).toMatchObject({ ok: false });
-    expect(await loadProjectReporting(OTHER_PROJECT)).toMatchObject({ ok: false });
-  });
-
-  it("pauses and resumes a project's future weeks", async () => {
-    expect(await setProjectReportingPaused({ projectId: PROJECT, paused: true, reason: "on hold" })).toEqual({ ok: true });
-    expect((await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT] }))[0].paused).toBe(true);
-    expect(await setProjectReportingPaused({ projectId: PROJECT, paused: false })).toEqual({ ok: true });
-    expect((await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT] }))[0].paused).toBe(false);
-  });
-
-  it("removes an update with a reason, keeps its versions, and stops it counting", async () => {
-    asMember(member("lead"));
-    const created = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "Not for here." });
-    if (!created.ok) throw new Error("expected the save to succeed");
-    expect((await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT] }))[0].current?.completed).toBe(true);
-
-    expect(await voidReportingUpdate({ entryId: created.entry.id, reason: "posted to the wrong team" })).toEqual({ ok: true });
-    expect((await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT] }))[0].current?.completed).toBe(false);
-    // Nothing was deleted: the saved version is still readable by an operator.
-    const revisions = await loadEntryRevisions(created.entry.id);
-    expect(revisions).toMatchObject({ ok: true });
-    expect(revisions.ok && revisions.revisions.map((revision) => revision.body)).toEqual(["Not for here."]);
-    // And a second removal says so rather than pretending.
-    expect(await voidReportingUpdate({ entryId: created.entry.id, reason: "again" })).toMatchObject({ ok: false });
-  });
-
-  it("refuses to remove an update without a reason", async () => {
-    asMember(member("lead"));
-    const created = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "Fine." });
-    if (!created.ok) throw new Error("expected the save to succeed");
-    expect(await voidReportingUpdate({ entryId: created.entry.id, reason: " " })).toMatchObject({ ok: false });
-  });
-
-  it("corrects a recorded week beside the original rather than over it", async () => {
-    const period = await openPeriod();
-    // Close the first week with nothing in it, so there is a recorded miss.
-    vi.setSystemTime(new Date(Date.parse(period.endsAt) + 1000));
-    try {
-      expect(await closePeriod(db, { periodId: period.id, actor: { kind: "operator", id: OPERATOR_ID, displayName: "Operator" } })).toMatchObject({ ok: true });
-    } finally {
-      vi.useRealTimers();
-    }
-    expect(await correctReportingOutcome({ periodId: period.id, projectId: PROJECT, completed: true, reason: "they reported in the group chat" })).toEqual({ ok: true });
-    const stored = (await rows("SELECT completed, corrected_completed, correction_reason FROM hq_reporting_outcomes WHERE period_id=$1::uuid AND project_id=$2::uuid", [period.id, PROJECT]))[0];
-    expect(stored).toMatchObject({ completed: false, corrected_completed: true, correction_reason: "they reported in the group chat" });
-    // Asking for the state it already reads as changes nothing, and says so.
-    expect(await correctReportingOutcome({ periodId: period.id, projectId: PROJECT, completed: true, reason: "again" })).toMatchObject({ ok: false });
-  });
-
-  it("refuses a correction for a week that is not this hackathon's", async () => {
-    expect(await correctReportingOutcome({
-      periodId: "00000000-0000-4000-9100-0000000000fe", projectId: PROJECT, completed: true, reason: "no such week",
-    })).toMatchObject({ ok: false });
-  });
-
-  it("loads a project's whole reporting record for the detail panel, sensitive notes included", async () => {
-    await seedAssignedCaptain("cap", PROJECT);
-    asMember(member("cap", ["captain"]));
-    await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "A quiet word.", visibility: "sensitive" });
-    const result = await loadProjectReporting(PROJECT);
-    expect(result).toMatchObject({ ok: true });
-    if (!result.ok) throw new Error("expected the read to succeed");
-    expect(result.detail.enrolled).toBe(true);
-    expect(result.detail.entries.map((entry) => entry.body)).toEqual(["A quiet word."]);
-    expect(result.detail.entries[0].visibility).toBe("sensitive");
-    expect(result.detail.history.length).toBeGreaterThan(0);
   });
 });
 

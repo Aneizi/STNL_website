@@ -1,5 +1,6 @@
 // Shared shapes between server queries, server actions, and client screens.
 // Dates are ISO strings: DATE columns as "YYYY-MM-DD", timestamps as full ISO.
+import type { SubmissionStatus } from "./colosseum-snapshot";
 import type { PersonRemovalImpact } from "./record-deletion";
 
 export type Channel = { id: string; label: string };
@@ -77,8 +78,32 @@ export type NoteItem = {
   editedAt?: string | null;
 };
 
-/** Individually editable teammate; the lead lives on the project itself. */
-export type ProjectMember = { id: string; name: string; contact: string };
+/**
+ * Individually editable teammate; the lead lives on the project itself.
+ * `username` is the Colosseum handle of an imported roster row (the Lead
+ * picker on an imported project chooses among these) and null for a
+ * teammate added by hand in HQ.
+ */
+export type ProjectMember = { id: string; name: string; contact: string; username: string | null };
+
+/**
+ * The Colosseum snapshot behind an imported project, as the Projects board
+ * shows it. Null on a project created in HQ that has no Colosseum link yet.
+ */
+export type ProjectColosseum = {
+  url: string;
+  imageUrl: string | null;
+  description: string;
+  /** A PROJECT_STAGES value; the board renders its label. */
+  stage: string;
+  category: string | null;
+  submissionStatus: SubmissionStatus;
+  /** The roster username the team chose as its lead, or "" before one is chosen. */
+  leadUsername: string;
+  /** The builder who pasted the link, and the day they did. */
+  importedByName: string;
+  importedAt: string; // "YYYY-MM-DD"
+};
 
 export type Project = {
   id: string;
@@ -86,6 +111,11 @@ export type Project = {
   leadName: string;
   leadContact: string;
   members: ProjectMember[];
+  /** The day the HQ row was created, shown for a project that has no Colosseum link. */
+  createdAt: string; // "YYYY-MM-DD"
+  /** An operator's flag on the project row itself (hq_projects.high_potential). */
+  highPotential: boolean;
+  colosseum: ProjectColosseum | null;
   partnerId: string | null;
   partnerName: string;
   /** The account holding the project's current Captain assignment, or null for "No Captain". Never a role or a tag — the one source is hq_captain_assignments. */

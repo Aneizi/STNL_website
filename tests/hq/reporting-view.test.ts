@@ -340,7 +340,6 @@ describe("the copy rule", () => {
       "components/hq/team-workspace.tsx",
       "components/hq/late-update-modal.tsx",
       "components/hq/reporting-admin.tsx",
-      "components/hq/reporting-project-panel.tsx",
       // Phase 10's final period. Its copy lives in its own pure module
       // rather than in ./reporting-view, so the scan is extended to it
       // instead: the contract's rule is that reporting copy stays inside

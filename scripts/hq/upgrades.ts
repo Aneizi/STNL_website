@@ -165,6 +165,29 @@ export async function applyUpgrades(sql: SqlRunner) {
     ALTER TABLE hq_project_notes ADD COLUMN IF NOT EXISTS edited_at timestamptz
   `);
 
+  // High potential moved from the Colosseum onboarding row to the project
+  // itself, so the Projects board can flag a project created in HQ as well as
+  // an imported one. The backfill runs only on the run that adds the column:
+  // afterwards hq_projects is the one source, and re-copying the old flag on
+  // every migrate would undo an operator who has since cleared it. The
+  // onboarding table is created by builder-schema.sql, which runs after this,
+  // so on a fresh database there is nothing to copy and the guard skips it.
+  const highPotential = await columnInfo(sql, "hq_projects", "high_potential");
+  if (!highPotential.exists) {
+    await sql.query(`
+      ALTER TABLE hq_projects ADD COLUMN IF NOT EXISTS high_potential boolean NOT NULL DEFAULT false
+    `);
+    const [onboardingTable] = await sql.query(`SELECT to_regclass('hq_project_onboarding') AS tbl`);
+    if (onboardingTable?.tbl) {
+      await sql.query(`
+        UPDATE hq_projects p SET high_potential = true
+        FROM hq_project_onboarding o
+        WHERE o.project_id = p.id AND o.high_potential
+      `);
+      console.log("Upgraded hq_projects: high_potential copied from hq_project_onboarding.");
+    }
+  }
+
   // Award winners must reference current finalists (clears on removal).
   const awardsFk = await sql.query(`
     SELECT 1 FROM pg_constraint
