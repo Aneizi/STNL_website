@@ -3,15 +3,15 @@ import { fmtDateRange, isLive, slugify } from "@/lib/hq/hackathon-format";
 
 describe("fmtDateRange", () => {
   it("names the year once when both dates share it", () => {
-    expect(fmtDateRange("2026-09-14", "2026-10-12")).toBe("September 14 – October 12, 2026");
+    expect(fmtDateRange("2026-09-14", "2026-10-12")).toBe("September 14 to October 12, 2026");
   });
 
   it("collapses a span inside one month", () => {
-    expect(fmtDateRange("2026-03-03", "2026-03-09")).toBe("March 3 – 9, 2026");
+    expect(fmtDateRange("2026-03-03", "2026-03-09")).toBe("March 3 to 9, 2026");
   });
 
   it("spells both years when the span crosses one", () => {
-    expect(fmtDateRange("2026-12-01", "2027-01-15")).toBe("December 1, 2026 – January 15, 2027");
+    expect(fmtDateRange("2026-12-01", "2027-01-15")).toBe("December 1, 2026 to January 15, 2027");
   });
 
   it("reads as one date for a single day", () => {

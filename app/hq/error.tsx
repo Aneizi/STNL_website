@@ -18,16 +18,16 @@ export default function HqError({
         background: "var(--card)",
         borderRadius: 0,
         boxShadow: "var(--shadow-1)",
-        padding: "24px 22px",
+        padding: 24,
         maxWidth: 420,
         margin: "48px auto",
         textAlign: "center",
       }}
     >
-      <div style={{ fontFamily: "var(--serif)", fontSize: 24, fontWeight: 400 }}>
+      <div style={{ fontFamily: "var(--serif)", fontSize: 28, fontWeight: 400 }}>
         Something went wrong
       </div>
-      <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 8 }}>
+      <div style={{ fontSize: 16, color: "var(--label-2)", marginTop: 8 }}>
         The last change may not have saved. Reload and check before retrying it.
       </div>
       <button
@@ -36,9 +36,10 @@ export default function HqError({
           marginTop: 16,
           border: "none",
           cursor: "pointer",
-          padding: "9px 18px",
+          height: 44,
+          padding: "0 20px",
           borderRadius: 0,
-          fontSize: 14,
+          fontSize: 17,
           fontWeight: 600,
           background: "var(--label-1)",
           color: "var(--bg)",

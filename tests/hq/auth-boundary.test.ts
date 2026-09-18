@@ -63,7 +63,6 @@ describe("every server action authenticates", () => {
     // Phase 8's authenticated manual retry of the scheduled reminder and
     // closure pass, beside the OIDC-authenticated /api/cron/hq-jobs run.
     "jobs.ts": "operator",
-    "links.ts": "operator",
     "overlay.ts": "operator",
     "partners.ts": "operator",
     "people.ts": "operator",

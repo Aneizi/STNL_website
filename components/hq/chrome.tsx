@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { logout } from "@/lib/hq/actions/auth";
 import type { Hackathon } from "@/lib/hq/types";
 import { ActivityDrawer } from "./activity-drawer";
@@ -19,8 +19,34 @@ const TABS: Array<{ href: string; label: string }> = [
   { href: "/hq/partners", label: "Partners" },
   { href: "/hq/people", label: "People" },
   { href: "/hq/events", label: "Events" },
-  { href: "/hq/links", label: "Links" },
 ];
+
+/**
+ * The tab a route lights up, by href, or null for a route that is no tab
+ * (Admin). Dashboard is the exact root. Demo day is entered from the
+ * Projects table, so it keeps that tab lit.
+ */
+export function activeTab(pathname: string): string | null {
+  if (pathname === "/hq") return "/hq";
+  if (pathname.startsWith("/hq/demo")) return "/hq/projects";
+  return TABS.find((tab) => tab.href !== "/hq" && pathname.startsWith(tab.href))?.href ?? null;
+}
+
+// The chrome's own buttons are 28px by design, the one place operator HQ
+// goes under the 44px control height.
+const chromeButton: CSSProperties = {
+  border: "none",
+  cursor: "pointer",
+  height: 28,
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "0 10px",
+  boxSizing: "border-box",
+  background: "none",
+  boxShadow: "0 0 0 1px var(--sep)",
+  color: "var(--label-2)",
+  fontSize: 14,
+};
 
 export function HqChrome({
   displayName,
@@ -33,9 +59,12 @@ export function HqChrome({
 }) {
   const pathname = usePathname();
   const router = useRouter();
+  // Both popovers live here so opening one closes the other, and Escape or
+  // a click elsewhere closes whichever is open.
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -47,9 +76,13 @@ export function HqChrome({
         setSearchOpen(false);
         setActivityOpen(false);
         setMenuOpen(false);
+        setSwitcherOpen(false);
       }
     };
-    const onClick = () => setMenuOpen(false);
+    const onClick = () => {
+      setMenuOpen(false);
+      setSwitcherOpen(false);
+    };
     // Other operators' edits land when the tab becomes visible again.
     // Throttled so returning focus can't race an in-flight navigation.
     let lastRefresh = 0;
@@ -70,8 +103,7 @@ export function HqChrome({
     };
   }, [router]);
 
-  const isActive = (href: string) =>
-    href === "/hq" ? pathname === "/hq" : pathname.startsWith(href);
+  const active = activeTab(pathname);
 
   return (
     <>
@@ -106,32 +138,43 @@ export function HqChrome({
             />
             {/* The hackathon being shown stands where the product name used
                 to: it is the one fact every page under this chrome depends on. */}
-            <HackathonSwitcher hackathons={hackathons} selectedId={selectedId} />
+            <HackathonSwitcher
+              hackathons={hackathons}
+              selectedId={selectedId}
+              open={switcherOpen}
+              onOpenChange={(open) => {
+                setSwitcherOpen(open);
+                if (open) setMenuOpen(false);
+              }}
+            />
           </div>
           <nav className="hq-chrome-nav">
             {/* Separator and link render as one flex item so a wrapped nav
-                line never starts with a dangling slash. */}
+                line never starts with a dangling slash. Rest, active and
+                hover colours come from hq.css: an inline colour would beat
+                the hover rule. */}
             {TABS.map((tab, i) => (
               <span
                 key={tab.href}
                 style={{ display: "flex", alignItems: "center", gap: 8 }}
               >
                 {i > 0 ? (
-                  <span style={{ color: "var(--faded)", fontSize: 12, flex: "none" }}>/</span>
+                  <span style={{ color: "var(--faded)", fontSize: 14, flex: "none" }}>/</span>
                 ) : null}
                 <Link
                   href={tab.href}
+                  className={
+                    tab.href === active ? "hq-chrome-tab hq-chrome-tab-active" : "hq-chrome-tab"
+                  }
+                  aria-current={tab.href === active ? "page" : undefined}
                   style={{
                     padding: "8px 5px",
-                    fontSize: 12,
+                    fontSize: 14,
                     textTransform: "uppercase",
                     letterSpacing: "0.14em",
                     whiteSpace: "nowrap",
-                    color: isActive(tab.href) ? "var(--accent)" : "var(--label-1)",
                     fontWeight: 600,
-                    boxShadow: isActive(tab.href) ? "inset 0 -2px 0 var(--accent)" : "none",
                     transition: "color 0.2s",
-                    textDecoration: "none",
                   }}
                 >
                   {tab.label}
@@ -141,49 +184,31 @@ export function HqChrome({
           </nav>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <button
+              type="button"
               onClick={() => setSearchOpen(true)}
               title="Search (Cmd-K)"
-              style={{
-                border: "none",
-                cursor: "pointer",
-                height: 28,
-                display: "inline-flex",
-                alignItems: "center",
-                padding: "0 10px",
-                boxSizing: "border-box",
-                background: "none",
-                boxShadow: "0 0 0 1px var(--sep)",
-                color: "var(--label-2)",
-                fontSize: 12,
-              }}
+              style={chromeButton}
             >
               &#8984;K
             </button>
             <button
+              type="button"
               onClick={() => setActivityOpen((open) => !open)}
-              style={{
-                border: "none",
-                cursor: "pointer",
-                height: 28,
-                display: "inline-flex",
-                alignItems: "center",
-                padding: "0 10px",
-                boxSizing: "border-box",
-                background: "none",
-                boxShadow: "0 0 0 1px var(--sep)",
-                color: "var(--label-2)",
-                fontSize: 12,
-              }}
+              style={chromeButton}
             >
               Activity
             </button>
             <div style={{ position: "relative" }}>
               <button
+                type="button"
                 onClick={(e) => {
                   e.stopPropagation();
                   setMenuOpen((open) => !open);
+                  setSwitcherOpen(false);
                 }}
                 title={displayName}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
                 style={{
                   width: 28,
                   height: 28,
@@ -196,7 +221,7 @@ export function HqChrome({
                   alignItems: "center",
                   justifyContent: "center",
                   fontWeight: 600,
-                  fontSize: 13,
+                  fontSize: 16,
                 }}
               >
                 {displayName.charAt(0) || "?"}
@@ -204,6 +229,7 @@ export function HqChrome({
               {menuOpen ? (
                 <div
                   className="hq-pop-in"
+                  onClick={(e) => e.stopPropagation()}
                   style={{
                     position: "absolute",
                     top: 36,
@@ -217,8 +243,8 @@ export function HqChrome({
                   }}
                 >
                   <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--sep)" }}>
-                    <div style={{ fontSize: 13, fontWeight: 600 }}>{displayName}</div>
-                    <div style={{ fontSize: 11, color: "var(--label-3)", marginTop: 1 }}>
+                    <div style={{ fontSize: 16, fontWeight: 600 }}>{displayName}</div>
+                    <div style={{ fontSize: 13, color: "var(--label-3)", marginTop: 1 }}>
                       Operator
                     </div>
                   </div>
@@ -232,7 +258,7 @@ export function HqChrome({
                       cursor: "pointer",
                       background: "none",
                       color: "var(--label-1)",
-                      fontSize: 13,
+                      fontSize: 16,
                       fontWeight: 600,
                       textAlign: "left",
                       padding: "9px 10px",
@@ -241,7 +267,10 @@ export function HqChrome({
                   >
                     Admin
                   </Link>
+                  {/* A server action, not a link to the login page: signing
+                      out has to destroy the session. */}
                   <button
+                    type="button"
                     className="hq-hover-fill"
                     onClick={() => logout()}
                     style={{
@@ -252,7 +281,7 @@ export function HqChrome({
                       cursor: "pointer",
                       background: "none",
                       color: "var(--red)",
-                      fontSize: 13,
+                      fontSize: 16,
                       fontWeight: 600,
                       textAlign: "left",
                       padding: "9px 10px",

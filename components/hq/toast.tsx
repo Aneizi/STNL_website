@@ -58,7 +58,7 @@ export function HqToast() {
         background: "var(--label-1)",
         color: "var(--bg)",
         padding: "14px 24px",
-        fontSize: 15,
+        fontSize: 18,
         fontWeight: 600,
         letterSpacing: "0.01em",
         boxShadow: "var(--shadow-pop)",

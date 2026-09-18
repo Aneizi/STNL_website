@@ -158,16 +158,16 @@
 }
 .hq .hq-loading-title {
   width: min(220px, 52vw);
-  height: 38px;
+  height: 44px;
   background: var(--fill-3);
 }
 .hq .hq-loading-action {
   flex: none;
-  width: 96px;
-  height: 36px;
+  width: 115px;
+  height: 44px;
 }
 .hq .hq-loading-panel {
-  padding: 16px 18px;
+  padding: 24px;
   background: var(--card);
   box-shadow: var(--shadow-1);
 }
@@ -178,11 +178,11 @@
   border-bottom: 1px solid var(--sep);
 }
 .hq .hq-loading-filter {
-  width: 112px;
-  height: 30px;
+  width: 134px;
+  height: 44px;
 }
 .hq .hq-loading-filter-short {
-  width: 76px;
+  width: 91px;
 }
 .hq .hq-loading-list {
   display: flex;
@@ -191,7 +191,7 @@
 .hq .hq-loading-row {
   min-height: 52px;
   display: grid;
-  grid-template-columns: minmax(140px, 1.5fr) minmax(100px, 1fr) 88px;
+  grid-template-columns: minmax(168px, 1.5fr) minmax(120px, 1fr) 106px;
   align-items: center;
   gap: 20px;
   border-bottom: 1px solid var(--sep);
@@ -203,7 +203,7 @@
   background: var(--fill-3);
 }
 .hq .hq-loading-meta {
-  width: 72px;
+  width: 86px;
   justify-self: end;
   background: var(--fill-3);
 }
@@ -216,25 +216,22 @@
     align-items: flex-start;
   }
   .hq .hq-loading-title {
-    height: 34px;
-  }
-  .hq .hq-loading-panel {
-    padding: 16px;
+    height: 40px;
   }
   .hq .hq-loading-row {
-    grid-template-columns: minmax(120px, 1fr) 72px;
+    grid-template-columns: minmax(144px, 1fr) 86px;
     gap: 16px;
   }
   .hq .hq-loading-secondary {
     display: none;
   }
   .hq .hq-loading-meta {
-    width: 56px;
+    width: 67px;
   }
 }
 
 /* Chrome header: one 52px row on wide screens. Below the width where the
- * six tabs stop fitting, the nav drops onto its own wrapping row instead
+ * five tabs stop fitting, the nav drops onto its own wrapping row instead
  * of scrolling horizontally. */
 .hq .hq-chrome-inner {
   max-width: 1280px;
@@ -264,6 +261,21 @@
     flex: 1 1 100%;
     flex-wrap: wrap;
   }
+}
+/* Section tabs carry their rest and active colours here, not inline, so
+ * the hover state can take over on both. The active underline is an inset
+ * shadow, which hover leaves alone. */
+.hq .hq-chrome-tab {
+  color: var(--label-1);
+  text-decoration: none;
+}
+.hq .hq-chrome-tab-active {
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+.hq .hq-chrome-tab:hover {
+  color: var(--accent-deep);
+  text-decoration: underline;
 }
 
 /* style-hover ports from the design */
@@ -387,23 +399,14 @@
 .hq .hq-banner-bg {
   object-fit: cover;
   object-position: center;
-  transition: transform 600ms cubic-bezier(0.32, 0.72, 0, 1);
 }
-.hq .hq-banner:hover .hq-banner-bg {
-  transform: scale(1.025);
-}
-/* Lifts the wordmark off the painting's pale sky without dulling the scene;
- * hovering thins it so the banner brightens under the pointer. */
+/* Lifts the wordmark off the painting's pale sky without dulling the scene. */
 .hq .hq-banner-shade {
   position: absolute;
   inset: 0;
   background:
     radial-gradient(ellipse 70% 80% at 50% 48%, rgba(22, 19, 15, 0.42), rgba(22, 19, 15, 0.12) 100%),
     linear-gradient(to bottom, rgba(22, 19, 15, 0.08), rgba(22, 19, 15, 0.3));
-  transition: opacity 200ms ease;
-}
-.hq .hq-banner:hover .hq-banner-shade {
-  opacity: 0.72;
 }
 .hq .hq-banner-plain {
   position: absolute;
@@ -437,7 +440,7 @@
   color: #fbf7f0;
 }
 .hq .hq-banner-dates {
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -448,7 +451,7 @@
   position: absolute;
   top: 12px;
   right: 12px;
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -469,9 +472,5 @@
   }
   .hq .hq-banner-content {
     gap: 10px;
-  }
-  .hq .hq-banner-dates {
-    font-size: 11px;
-    letter-spacing: 0.12em;
   }
 }
