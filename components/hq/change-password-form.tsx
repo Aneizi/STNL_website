@@ -1,16 +1,39 @@
 "use client";
 
 import Image from "next/image";
-import { useActionState } from "react";
+import { useActionState, useState, type FormEvent } from "react";
 import { changePassword } from "@/lib/hq/actions/auth";
 import type { ActionResult } from "@/lib/hq/types";
 import { authCard, authField, authLabel, authSubmit } from "./ui";
+
+// The same two refusals lib/hq/actions/auth.ts gives a JS-off submit, so a
+// person reads one message whichever side caught it.
+const TOO_SHORT = "Use at least 12 characters.";
+const MISMATCH = "The passwords do not match.";
+
+/** The design's pre-check: length first, then the confirmation. */
+export function changePasswordPrecheck(data: FormData): string | null {
+  const password = data.get("password");
+  if (typeof password !== "string" || password.length < 12) return TOO_SHORT;
+  if (password !== data.get("confirm")) return MISMATCH;
+  return null;
+}
 
 export function ChangePasswordForm({ displayName }: { displayName: string }) {
   const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
     changePassword,
     null,
   );
+  const [localError, setLocalError] = useState<string | null>(null);
+  // The pre-check's message wins, and the action's clears while a new
+  // attempt is in flight, the way the design empties it on submit.
+  const error = localError ?? (pending ? null : state?.error);
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    const problem = changePasswordPrecheck(new FormData(event.currentTarget));
+    if (problem) event.preventDefault();
+    setLocalError(problem);
+  };
 
   return (
     <div
@@ -23,7 +46,7 @@ export function ChangePasswordForm({ displayName }: { displayName: string }) {
         boxSizing: "border-box",
       }}
     >
-      <form action={formAction} className="hq-fade-in-page" style={authCard}>
+      <form action={formAction} onSubmit={submit} className="hq-fade-in-page" style={authCard}>
         <div style={{ display: "flex", justifyContent: "center" }}>
           <Image
             src="/landing/st-orange.png"
@@ -47,7 +70,7 @@ export function ChangePasswordForm({ displayName }: { displayName: string }) {
         </div>
         <div
           style={{
-            fontSize: 13,
+            fontSize: 16,
             color: "var(--label-2)",
             marginTop: 10,
             textAlign: "center",
@@ -55,23 +78,25 @@ export function ChangePasswordForm({ displayName }: { displayName: string }) {
         >
           Your temporary password needs replacing. Choose a new one to continue.
         </div>
-        <div style={{ ...authLabel, margin: "18px 0 8px" }}>New password</div>
+        <label htmlFor="new-password" style={{ ...authLabel, display: "block", margin: "18px 0 8px" }}>New password</label>
         <input
+          id="new-password"
           name="password"
           type="password"
           placeholder="At least 12 characters"
           autoComplete="new-password"
           style={authField}
         />
-        <div style={{ ...authLabel, margin: "16px 0 8px" }}>Confirm password</div>
+        <label htmlFor="confirm-password" style={{ ...authLabel, display: "block", margin: "16px 0 8px" }}>Confirm password</label>
         <input
+          id="confirm-password"
           name="confirm"
           type="password"
           autoComplete="new-password"
           style={authField}
         />
-        {state?.error ? (
-          <div style={{ fontSize: 12, color: "var(--red)", marginTop: 10 }}>{state.error}</div>
+        {error ? (
+          <div role="alert" style={{ fontSize: 14, color: "var(--red)", marginTop: 10 }}>{error}</div>
         ) : null}
         <button type="submit" disabled={pending} style={authSubmit}>
           {pending ? "Saving…" : "Set new password"}
