@@ -1,0 +1,85 @@
+/* The Captains' Den: an ink aside listing the Captain's teams beside a cream
+ * main column for the selected one, edge to edge below the 81px member
+ * header. Values are the design file's (MemberCaptain.dc.html); radius 0
+ * throughout, separation by spacing and fill, never rule lines. Rules are
+ * prefixed with .shell where app/hq/hq.css's `.hq a`, `.hq a:hover`,
+ * `.hq :focus-visible` and `.hq textarea::placeholder` would otherwise win. */
+.shell { display:grid; grid-template-columns:360px minmax(0,1fr); min-height:calc(100svh - 81px); }
+.aside { background:#16130f; color:#fbf7f0; padding:40px 36px 48px; display:flex; flex-direction:column; gap:36px; font-size:16px; line-height:1.55; }
+.main { padding:48px clamp(24px,5vw,64px) 96px; min-width:0; }
+
+/* Aside */
+.shell .home { display:inline-flex; align-items:center; gap:8px; min-height:44px; font-size:15px; color:#b4ac9d; text-decoration:none; }
+.shell .home:hover { color:#fbf7f0; text-decoration:none; }
+.title { font-family:var(--font-instrument-serif),Georgia,serif; font-size:44px; line-height:1; font-weight:400; letter-spacing:-.02em; margin:0 0 0 -2px; }
+.week { margin:10px 0 0; color:#b4ac9d; }
+.asideKicker { margin:0 0 12px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#b4ac9d; }
+.teams { display:flex; flex-direction:column; gap:6px; }
+.team { display:flex; justify-content:space-between; align-items:center; gap:12px; min-height:52px; padding:0 16px; border:0; border-radius:0; background:transparent; color:#fbf7f0; font:inherit; font-weight:600; text-align:left; cursor:pointer; }
+.team:hover { background:#2a2520; }
+.team[aria-pressed="true"],.team[aria-pressed="true"]:hover { background:#fbf7f0; color:#16130f; }
+.teamName { min-width:0; overflow-wrap:anywhere; }
+.updated { font-size:13px; font-weight:400; color:#b4ac9d; flex:none; }
+.team[aria-pressed="true"] .updated { color:#57534a; }
+.dot { width:10px; height:10px; border-radius:50%; background:#ee5b23; flex:none; }
+.contact { margin-top:auto; }
+.contactKicker { margin:0 0 8px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#b4ac9d; }
+.handle { margin:0; font-weight:600; overflow-wrap:anywhere; }
+.handleMissing { margin:0; color:#b4ac9d; }
+
+/* Main */
+.status { margin:0; font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#57534a; }
+.statusDue { color:#ee5b23; }
+.statusDone { color:#2a604a; }
+.empty { margin:0; color:#57534a; }
+.teamTitle { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(40px,5vw,56px); line-height:1; font-weight:400; letter-spacing:-.02em; margin:12px 0 32px; overflow-wrap:anywhere; }
+.facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(240px,100%),1fr)); gap:40px; margin-bottom:48px; font-size:16px; }
+.kicker { margin:0 0 12px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#57534a; }
+.roster { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+.member { display:flex; justify-content:space-between; gap:12px; }
+.memberName { font-weight:600; }
+.tag { color:#8a8579; font-weight:400; flex:none; }
+.tagLead { color:#ee5b23; font-weight:600; }
+.shell .contactLink { font-weight:600; color:#16130f; text-decoration:underline; text-underline-offset:4px; }
+.shell .contactLink:hover { color:#16130f; text-decoration:underline; }
+.contactText { margin:0; font-weight:600; overflow-wrap:anywhere; }
+.muted { margin:0; color:#57534a; }
+.lastUpdate { margin:12px 0 0; color:#57534a; }
+.shell .colosseum { display:inline-flex; align-items:center; min-height:40px; color:#16130f; text-decoration:underline; text-underline-offset:4px; }
+.shell .colosseum:hover { color:#16130f; text-decoration:underline; }
+
+/* Your note */
+.form { display:flex; flex-direction:column; gap:16px; }
+.textarea { width:100%; box-sizing:border-box; min-height:150px; padding:16px 18px; border:1px solid #16130f; border-radius:0; background:#fdfbf7; color:#16130f; font:inherit; font-size:17px; line-height:1.5; resize:vertical; }
+.shell .textarea::placeholder { color:#57534a; opacity:1; }
+.row { display:flex; gap:20px; align-items:center; flex-wrap:wrap; }
+.add { display:inline-flex; align-items:center; min-height:52px; padding:0 24px; background:#ee5b23; color:#fbf7f0; border:0; border-radius:0; font:inherit; font-size:17px; font-weight:600; cursor:pointer; }
+.add:hover { background:#d14e16; }
+.add:disabled { opacity:.5; cursor:pointer; }
+.privWrap { position:relative; display:inline-flex; }
+.privLabel { display:inline-flex; align-items:center; gap:10px; min-height:44px; font-size:16px; color:#57534a; cursor:pointer; }
+.privBox { width:20px; height:20px; margin:0; accent-color:#ee5b23; cursor:pointer; }
+/* Always in the markup so the checkbox's aria-describedby resolves; shown on hover and focus. */
+.tooltip { position:absolute; left:0; bottom:calc(100% + 6px); white-space:nowrap; padding:8px 12px; background:#16130f; color:#fbf7f0; font-size:14px; line-height:1.3; pointer-events:none; box-shadow:0 8px 24px rgba(22,19,15,.25); }
+.tooltip[hidden] { display:none; }
+.saved { color:#2a604a; font-weight:600; }
+.alert { margin:0; color:#a52b16; font-weight:600; }
+
+/* Earlier */
+.earlier { margin-top:64px; }
+.earlierTitle { font-family:var(--font-instrument-serif),Georgia,serif; font-size:32px; font-weight:400; margin:0 0 24px; letter-spacing:-.02em; }
+.entries { display:flex; flex-direction:column; gap:20px; }
+.privateTag { display:inline-flex; align-items:center; gap:6px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.1em; color:#57534a; cursor:help; }
+.lock { display:block; }
+.older { margin:20px 0 0; padding:10px 0; border:0; background:none; font:inherit; font-size:16px; color:#57534a; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.older:hover { color:#16130f; }
+.older:disabled { opacity:.5; cursor:pointer; }
+.olderAlert { margin:20px 0 0; font-size:15px; color:#a52b16; }
+
+.shell a:focus-visible,.shell button:focus-visible,.shell textarea:focus-visible,.shell input:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+
+@media (max-width:960px) {
+  .shell { grid-template-columns:minmax(0,1fr); }
+  .main { order:-1; padding-top:40px; }
+  .aside { padding:36px clamp(20px,4vw,48px) 44px; gap:28px; }
+}
