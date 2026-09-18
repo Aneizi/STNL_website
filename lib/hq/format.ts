@@ -80,9 +80,11 @@ export function isStale(lastCheckIn: string, staleDays: number, nowMs: number): 
 
 /**
  * An absolute moment with its zone spelled out, e.g. "14 Sep 2026, 18:05
- * Europe/Amsterdam" — for a value the reader must not have to guess the zone
+ * Europe/Amsterdam", for a value the reader must not have to guess the zone
  * of (a Captain invitation's expiry). The IANA name itself, not a locale
- * abbreviation like "CEST": unambiguous and stable across environments.
+ * abbreviation like "CEST": unambiguous and stable across environments. The
+ * month comes from MONTHS rather than the locale, whose en-GB abbreviation
+ * of September is "Sept".
  */
 export function fmtWithZone(iso: string, tz: string): string {
   if (!iso) return "";
@@ -91,14 +93,15 @@ export function fmtWithZone(iso: string, tz: string): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: tz,
     day: "numeric",
-    month: "short",
+    month: "numeric",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   }).formatToParts(date);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${get("day")} ${get("month")} ${get("year")}, ${get("hour")}:${get("minute")} ${tz}`;
+  // A numeric month pads the day to two digits in en-GB; the design prints "5 Jan".
+  return `${Number(get("day"))} ${MONTHS[Number(get("month")) - 1]} ${get("year")}, ${get("hour")}:${get("minute")} ${tz}`;
 }
 
 /**
