@@ -10,5 +10,5 @@ export default async function MemberLoginPage({ searchParams }: { searchParams: 
   const params = await searchParams;
   const next = safeMemberNext(params.next);
   if (await currentMember()) redirect(next);
-  return <AccountForm mode="signin" next={next} availability={getMemberAuthAvailability()} error={params.error} />;
+  return <AccountForm next={next} availability={getMemberAuthAvailability()} error={params.error} />;
 }

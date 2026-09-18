@@ -8,30 +8,30 @@ import { memberAuthClient } from "@/lib/hq/member-auth-client";
 import { safeMemberNext, type MemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import styles from "./account.module.css";
 import { CODE_SENT_COPY, OtpCodeField, ResendCodeButton } from "./otp-code-field";
-import { telegramErrorMessage, telegramFailure } from "./telegram-copy";
+import { INVALID_EMAIL_COPY, telegramErrorMessage, telegramFailure } from "./telegram-copy";
 import { useResendCooldown } from "./use-resend-cooldown";
 
 type Props = {
-  mode: "signup" | "signin";
   next: string;
   availability: MemberAuthAvailability;
   /** The `error` value(s) the Telegram callback or a sign-in redirect put in the URL; shown once, as copy. */
   error?: string | string[];
 };
 
+/** The shape an address must have before a code is requested for it; the endpoint checks it again. */
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
- * Honest unavailable copy per method and per mode. When neither method is
- * configured there is one line, not two; when one is, its line says which
- * and points at the other.
+ * Honest unavailable copy per method. When neither method is configured
+ * there is one line, not two; when one is, its line says which and points
+ * at the other.
  */
-function unavailableCopy(mode: Props["mode"], availability: MemberAuthAvailability): { all: string | null; telegram: string | null; email: string | null } {
-  const action = mode === "signup" ? "Sign-up" : "Sign-in";
-  const verb = mode === "signup" ? "sign-up" : "sign-in";
-  if (!availability.telegram && !availability.email) return { all: `${action} is not available yet. Please check back shortly.`, telegram: null, email: null };
+function unavailableCopy(availability: MemberAuthAvailability): { all: string | null; telegram: string | null; email: string | null } {
+  if (!availability.telegram && !availability.email) return { all: "Sign-in is not available yet. Please check back shortly.", telegram: null, email: null };
   return {
     all: null,
-    telegram: availability.telegram ? null : `Telegram ${verb} is not available yet. Use email below.`,
-    email: availability.email ? null : `Email ${verb} is not available yet. Use Telegram above.`,
+    telegram: availability.telegram ? null : "Telegram sign-in is not available yet. Use email below.",
+    email: availability.email ? null : "Email sign-in is not available yet. Use Telegram above.",
   };
 }
 
@@ -43,9 +43,8 @@ function messageFor(error: { code?: string; status?: number }, verifying = false
   return verifying ? "We could not verify that code. Please try again." : "We could not send your code. Please try again shortly.";
 }
 
-export function AccountForm({ mode, next, availability, error: initialError }: Props) {
+export function AccountForm({ next, availability, error: initialError }: Props) {
   const [step, setStep] = useState<"details" | "verify">("details");
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [otp, setOtp] = useState("");
   const [busy, setBusy] = useState(false);
@@ -54,7 +53,7 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
   const { secondsLeft, startCooldown } = useResendCooldown();
   const codeInput = useRef<HTMLInputElement>(null);
   const destination = safeMemberNext(next);
-  const unavailable = unavailableCopy(mode, availability);
+  const unavailable = unavailableCopy(availability);
 
   useEffect(() => {
     if (step === "verify") codeInput.current?.focus();
@@ -89,16 +88,21 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
   async function sendCode(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     if (busy || !availability.email) return;
+    const address = email.trim();
+    if (!EMAIL_SHAPE.test(address)) {
+      setError(INVALID_EMAIL_COPY);
+      return;
+    }
     setBusy(true);
     setError("");
     setStatus("");
     try {
-      const result = await memberAuthClient.emailOtp.sendVerificationOtp({ email: email.trim(), type: "sign-in" });
+      const result = await memberAuthClient.emailOtp.sendVerificationOtp({ email: address, type: "sign-in" });
       if (result.error) {
         setError(messageFor(result.error));
         return;
       }
-      setEmail(email.trim());
+      setEmail(address);
       setOtp("");
       setStep("verify");
       startCooldown();
@@ -117,7 +121,7 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
     setBusy(true);
     setError("");
     try {
-      const result = await memberAuthClient.signIn.emailOtp({ email, otp, ...(name.trim() ? { name: name.trim() } : {}) });
+      const result = await memberAuthClient.signIn.emailOtp({ email, otp });
       if (result.error) {
         setError(messageFor(result.error, true));
         return;
@@ -131,13 +135,20 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
     }
   }
 
+  function changeEmail() {
+    setStep("details");
+    setOtp("");
+    setError("");
+    setStatus("");
+  }
+
   return (
     <div className={styles.page}>
       <header className={styles.header}>
-        <Link href="/" className={styles.brand} aria-label="Superteam NL home">
+        <span className={styles.brand}>
           <Image src="/landing/st-orange.png" alt="" width={2154} height={2116} sizes="28px" />
-          <span>superteam NL</span>
-        </Link>
+          <span>Superteam NL</span>
+        </span>
         <Link href="/colosseum/start" className={styles.back}>
           <IconArrowLeft width={16} height={16} fill="currentColor" aria-hidden="true" />
           Back
@@ -159,10 +170,6 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
               </div>
               <div className={styles.divider} aria-hidden="true"><span>or use email</span></div>
               <form onSubmit={sendCode} className={styles.form}>
-                {mode === "signup" && <label className={styles.field}>
-                  Name
-                  <input name="name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} maxLength={120} required disabled={busy} />
-                </label>}
                 <div className={styles.field}>
                   <input aria-label="Email" placeholder="example@gmail.com" name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} maxLength={254} required disabled={busy} />
                 </div>
@@ -174,7 +181,6 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
                 <p className={styles.hint}>We&apos;ll email you a verification code. No password needed.</p>
               </form>
               {unavailable.all && <p className={styles.hint}>{unavailable.all}</p>}
-              {mode === "signup" && <p className={styles.switchMode}>Already have an account? <Link href={`/hq/login?next=${encodeURIComponent(destination)}`}>Sign in</Link></p>}
             </>
           ) : (
             <form className={styles.form} onSubmit={verifyCode}>
@@ -185,7 +191,8 @@ export function AccountForm({ mode, next, availability, error: initialError }: P
               </button>
               <div className={styles.codeActions}>
                 <ResendCodeButton secondsLeft={secondsLeft} disabled={busy} onClick={() => sendCode()} />
-                <button type="button" disabled={busy} onClick={() => { setStep("details"); setOtp(""); setError(""); setStatus(""); }}>Change email</button>
+                {/* Never disabled: the way back to the address is open even while a code is being checked. */}
+                <button type="button" onClick={changeEmail}>Change email</button>
               </div>
             </form>
           )}

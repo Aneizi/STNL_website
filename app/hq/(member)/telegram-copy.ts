@@ -15,6 +15,9 @@ export const LAST_LOGIN_METHOD_COPY = "Telegram is the only way to sign in to th
 
 const ALREADY_CONNECTED_ELSEWHERE = "This Telegram account is already connected to another HQ account. Sign in to that account instead.";
 
+/** The line for an address a code cannot go to; the sign-in form checks the shape before asking, the endpoint checks it again. */
+export const INVALID_EMAIL_COPY = "Enter a valid email address.";
+
 const MESSAGES: Record<string, string> = {
   account_already_linked_to_different_user: ALREADY_CONNECTED_ELSEWHERE,
   telegram_identity_conflict: ALREADY_CONNECTED_ELSEWHERE,
@@ -28,7 +31,7 @@ const MESSAGES: Record<string, string> = {
   CONFIRMATION_REQUIRED: "Please confirm this change again.",
   TELEGRAM_UNAVAILABLE: "Telegram sign-in is not available yet.",
   EMAIL_UNAVAILABLE: "Email is not available yet.",
-  INVALID_EMAIL: "Enter a valid email address.",
+  INVALID_EMAIL: INVALID_EMAIL_COPY,
   EMAIL_UNCHANGED: "That is already the email on this account.",
 };
 
