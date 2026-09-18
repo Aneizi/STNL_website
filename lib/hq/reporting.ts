@@ -652,7 +652,8 @@ export type OwnReportingEntryPage = { entries: OwnReportingEntry[]; nextCursor: 
  * authored are selected, every one of them is returned `canEdit: false`
  * whatever the project now says, and no other team record is read. A current
  * `captain` capability is still required, because these notes exist only
- * because the account held it; losing the capability closes the page.
+ * because the account held it; losing the capability leaves nothing to read.
+ * Since the Captains' Den redesign the bot's My notes list is its one reader.
  *
  * Keyset paged on `(submitted_at, id)`, like the project list, and no
  * revision is joined.
