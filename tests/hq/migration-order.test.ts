@@ -77,6 +77,8 @@ async function expectIdentitySchema(pg: PGlite) {
   await run(pg, `DELETE FROM hq_auth_user WHERE id = 'tg-user'`);
   expect(await column(pg, "hq_builder_profiles", "email")).toEqual({ data_type: "text", is_nullable: "YES" });
   expect(await column(pg, "hq_project_onboarding", "source_attempted_at")).toEqual({ data_type: "timestamp with time zone", is_nullable: "YES" });
+  // High potential lives on the project row, so a project created in HQ can carry it.
+  expect(await column(pg, "hq_projects", "high_potential")).toEqual({ data_type: "boolean", is_nullable: "NO" });
   expect(await column(pg, "hq_builder_profiles", "contact_email")).toEqual({ data_type: "text", is_nullable: "YES" });
   expect(await column(pg, "hq_people", "person_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
   expect(await column(pg, "hq_project_members", "person_id")).toEqual({ data_type: "uuid", is_nullable: "YES" });
@@ -703,6 +705,39 @@ describe("phase 3: the Colosseum source snapshot and the removed challenge", () 
         website: null, repo_link: null, presentation_link: null, technical_demo_link: null,
         pitch_video_link: null, demo_video_link: null, image_url: null, tracks: [],
       }]);
+    } finally {
+      await pg.close();
+    }
+  });
+});
+
+describe("high potential on the project row", () => {
+  it("copies the flag from the Colosseum onboarding row once, when the column is added, and never again", async () => {
+    const pg = new PGlite();
+    try {
+      await applyMigrations(pg);
+      await run(pg, `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date) VALUES (93,'edition','Edition','2026-09-14','2026-10-12')`);
+      await run(pg, `INSERT INTO hq_project_statuses (slug,label,color,counts_as_active,sort) VALUES ('s','S','green',true,1)`);
+      await run(pg, `INSERT INTO hq_project_forecasts (slug,label,color,sort) VALUES ('f','F','green',1)`);
+      await run(pg, `INSERT INTO hq_builder_profiles (id,email,name) VALUES ('acct','a@example.test','Acct')`);
+      const [{ id: flagged }] = await run(pg, `INSERT INTO hq_projects (hackathon_id,name,status_id,forecast_id,last_check_in)
+        SELECT 93,'Flagged',s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f RETURNING id::text AS id`);
+      const [{ id: plain }] = await run(pg, `INSERT INTO hq_projects (hackathon_id,name,status_id,forecast_id,last_check_in)
+        SELECT 93,'Plain',s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f RETURNING id::text AS id`);
+      for (const [id, external, high] of [[flagged, 1, true], [plain, 2, false]] as const) {
+        await run(pg, `INSERT INTO hq_project_onboarding (project_id,hackathon_id,external_id,project_url,slug,raw,owner_user_id,lead_username,high_potential)
+          VALUES ($1,93,$2,'https://colosseum.com/arena/projects/explore/x','x','{}','acct','acct',$3)`, [id, external, high]);
+      }
+      // A database from before the column: the next migrate adds it and copies the old flag over.
+      await run(pg, `ALTER TABLE hq_projects DROP COLUMN high_potential`);
+      await applyMigrations(pg);
+      expect(await run(pg, `SELECT name, high_potential FROM hq_projects ORDER BY name`))
+        .toEqual([{ name: "Flagged", high_potential: true }, { name: "Plain", high_potential: false }]);
+      // From then on the project row is the one source: an operator clearing
+      // the flag is not undone by the next migrate re-reading the old column.
+      await run(pg, `UPDATE hq_projects SET high_potential = false WHERE id = $1`, [flagged]);
+      await applyMigrations(pg);
+      expect(await run(pg, `SELECT high_potential FROM hq_projects WHERE id = $1`, [flagged])).toEqual([{ high_potential: false }]);
     } finally {
       await pg.close();
     }

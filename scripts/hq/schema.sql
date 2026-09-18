@@ -185,6 +185,10 @@ CREATE TABLE IF NOT EXISTS hq_projects (
   forecast_id uuid NOT NULL REFERENCES hq_project_forecasts (id),
   last_check_in date NOT NULL,
   blocker text NOT NULL DEFAULT '',
+  -- An operator's own judgement, toggled from the Projects board on any
+  -- project, imported or created in HQ. It lives here rather than on the
+  -- Colosseum onboarding row so a project with no Colosseum link can carry it.
+  high_potential boolean NOT NULL DEFAULT false,
   touched_by_user_id uuid REFERENCES hq_users (id) ON DELETE SET NULL,
   touched_at date,
   created_at timestamptz NOT NULL DEFAULT now()
