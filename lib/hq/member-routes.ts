@@ -51,10 +51,9 @@ export const MEMBER_PUBLIC_PATHS = [
   // link reaches. See joinLink() and parseJoinCode() below.
   JOIN_PATH_PREFIX,
   "/hq/team/",
+  // Connect Telegram, Disconnect Telegram and Add or Change email are modals
+  // on the account page, not pages of their own.
   "/hq/account",
-  "/hq/account/connect-telegram",
-  "/hq/account/disconnect-telegram",
-  "/hq/account/add-email",
   CAPTAIN_PATH,
   INVITE_PATH_PREFIX,
 ] as const;

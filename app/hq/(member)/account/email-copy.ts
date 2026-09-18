@@ -1,7 +1,7 @@
-// Copy for the recovery-email flow: the confirmation action's codes and the
-// outcomes of the two change-email endpoints. A sibling of telegram-copy.ts
-// in the same style; the codes both flows share (SESSION_NOT_FRESH,
-// CONFIRMATION_REQUIRED) resolve through it.
+// Copy for the email modal on the account page: the confirmation action's
+// codes and the outcomes of the two change-email endpoints. A sibling of
+// telegram-copy.ts in the same style; the codes both flows share
+// (SESSION_NOT_FRESH, CONFIRMATION_REQUIRED) resolve through it.
 import { telegramErrorMessage } from "../telegram-copy";
 
 /** What the auth client hands back on a failed call. */
@@ -15,8 +15,6 @@ const CODE_MESSAGES: Record<string, string> = {
   TOO_MANY_ATTEMPTS: "That code has had too many attempts. Request a new one.",
   TOO_MANY_REQUESTS: "Too many attempts. Please wait a minute and try again.",
   INVALID_EMAIL: "Enter a valid email address.",
-  // Only a direct call reaches this: the page redirects such an account away.
-  EMAIL_ALREADY_SET: "This account already signs in with an email address, so there is nothing to add here.",
 };
 
 // The library answers these two without a code; the second is safe to show
@@ -26,7 +24,7 @@ const MESSAGE_MESSAGES: Record<string, string> = {
   "Email already in use": "That address already belongs to another HQ account. Sign in to that account instead, or use a different address.",
 };
 
-/** The line for a failed step of the recovery-email flow, or `fallback` when the failure has no better explanation. */
+/** The line for a failed step of the email modal, or `fallback` when the failure has no better explanation. */
 export function emailChangeErrorMessage(error: EndpointError | string | undefined, fallback: string): string {
   const failure: EndpointError = typeof error === "string" ? { code: error } : (error ?? {});
   if (failure.status === 429) return CODE_MESSAGES.TOO_MANY_REQUESTS;

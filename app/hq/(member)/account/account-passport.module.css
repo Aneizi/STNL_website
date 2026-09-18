@@ -1,0 +1,64 @@
+/* The account "passport" (design/MemberAccount.dc.html): the design's inline
+ * values as classes. Member tokens, radius 0 throughout. The shell's bare
+ * main carries the focus ring for links and buttons; inputs get theirs here.
+ * Selectors are prefixed where app/hq/hq.css's `.hq a`, `.hq a:hover` and
+ * `.hq input::placeholder` would otherwise win. */
+.main { padding:56px clamp(20px,4vw,64px) 96px; overflow-wrap:anywhere; }
+.main .home { display:inline-flex; align-items:center; gap:8px; min-height:44px; font-size:15px; color:#57534a; margin-bottom:20px; text-decoration:none; }
+.main .home:hover { color:#16130f; text-decoration:none; }
+.layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,440px); gap:clamp(32px,5vw,64px); align-items:start; }
+.column { min-width:0; }
+.title { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(44px,6vw,64px); line-height:1; font-weight:400; letter-spacing:-.02em; margin:0 0 40px; }
+.notice { margin:0 0 24px; color:#2a604a; font-weight:600; }
+/* A Telegram OAuth failure lands here with no modal open; the design's error colour in the notice slot. */
+.pageError { margin:0 0 24px; color:#a52b16; }
+.rows { display:flex; flex-direction:column; gap:12px; max-width:440px; }
+.row { display:flex; justify-content:space-between; align-items:center; gap:16px; min-height:56px; padding:0 20px; border:1px solid #16130f; background:none; color:#16130f; font:inherit; font-weight:600; font-size:16px; cursor:pointer; text-align:left; }
+.row:hover { background:#16130f; color:#fbf7f0; }
+.rowFilled { background:#16130f; color:#fbf7f0; }
+.rowFilled:hover { background:#342d24; color:#fbf7f0; }
+.rowBlocked { display:flex; justify-content:space-between; align-items:center; gap:16px; min-height:56px; padding:0 20px; border:1px solid #b4ac9d; color:#8a8579; font-weight:600; font-size:16px; cursor:not-allowed; }
+.rowHint { font-size:14px; font-weight:400; }
+.card { background:#16130f; color:#fbf7f0; padding:32px; display:flex; flex-direction:column; gap:36px; box-shadow:0 24px 56px rgba(22,19,15,.25); min-width:0; }
+.kicker { margin:0; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#b4ac9d; }
+.name { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(36px,4vw,44px); line-height:1; margin:8px 0 0; letter-spacing:-.02em; }
+.facts { margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:14px 20px; font-size:16px; }
+.facts dt { color:#b4ac9d; }
+.facts dd { margin:0; }
+.factEmail { overflow-wrap:anywhere; }
+/* The switch: the checkbox is real but hidden, the track and knob draw its state. `position:relative` keeps the hidden input inside the row; the ring lands on the track when the input has keyboard focus. */
+.switchRow { position:relative; display:flex; justify-content:space-between; align-items:center; gap:16px; padding-top:24px; border-top:1px dashed #57534a; font-size:16px; cursor:pointer; }
+.switchInput { position:absolute; opacity:0; width:1px; height:1px; }
+.switchTrack { position:relative; width:48px; height:28px; border-radius:14px; background:#57534a; flex:none; transition:background .2s ease; }
+.switchTrackOn { background:#ee5b23; }
+.switchKnob { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#fbf7f0; transition:left .2s ease; }
+.switchTrackOn .switchKnob { left:23px; }
+.switchInput:focus-visible + .switchTrack { outline:2px solid #ee5b23; outline-offset:4px; }
+.switchError { margin:8px 0 0; font-size:14px; color:#a52b16; }
+.overlay { position:fixed; inset:0; z-index:50; background:rgba(22,19,15,.55); display:flex; align-items:flex-start; justify-content:center; padding:24px; overflow:auto; box-sizing:border-box; }
+.dialog { width:min(100%,480px); margin:auto 0; background:#fbf7f0; color:#16130f; padding:28px; box-sizing:border-box; box-shadow:0 24px 64px rgba(22,19,15,.35); animation:acPop .18s ease; }
+@keyframes acPop { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+.dialogTitle { font-family:var(--font-instrument-serif),Georgia,serif; font-size:36px; line-height:1; font-weight:400; letter-spacing:-.02em; margin:0 0 20px; }
+.dialogText { margin:0 0 20px; color:#57534a; }
+.form { display:flex; flex-direction:column; gap:16px; }
+.input { width:100%; box-sizing:border-box; min-height:52px; padding:0 16px; border:1px solid #16130f; background:#fdfbf7; color:#16130f; font:inherit; }
+.dialog .input::placeholder { color:#57534a; opacity:1; }
+.dialog .input:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+.otp { font-size:20px; letter-spacing:.2em; }
+.sentTo { margin:0; color:#57534a; }
+.sentTo strong { color:#16130f; font-weight:600; }
+.buttons { display:flex; gap:12px; flex-wrap:wrap; }
+.buttonsCentered { align-items:center; }
+.primary { display:inline-flex; align-items:center; min-height:48px; padding:0 20px; background:#16130f; color:#fbf7f0; border:0; font:inherit; font-weight:600; cursor:pointer; }
+.primary:hover { background:#342d24; }
+/* Only Verify dims while it cannot be pressed; Send code and Open Telegram change their label instead. */
+.verify:disabled { opacity:.5; cursor:pointer; }
+.danger { display:inline-flex; align-items:center; min-height:48px; padding:0 20px; background:#a52b16; color:#fbf7f0; border:0; font:inherit; font-weight:600; cursor:pointer; }
+.danger:hover { background:#8a2211; }
+.cancel { display:inline-flex; align-items:center; min-height:48px; padding:0 20px; background:none; color:#16130f; border:1px solid #16130f; font:inherit; font-weight:600; cursor:pointer; }
+.cancel:hover { background:#f1e9dc; }
+.resend { background:none; border:0; padding:0; min-height:44px; color:#57534a; font:inherit; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.resend:disabled { opacity:.5; cursor:pointer; }
+.alert { margin:16px 0 0; color:#a52b16; }
+@media (max-width:900px) { .layout { grid-template-columns:minmax(0,1fr); } }
+@media (prefers-reduced-motion:reduce) { .switchTrack,.switchKnob { transition:none; } .dialog { animation:none; } }

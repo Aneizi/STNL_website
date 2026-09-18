@@ -1,7 +1,7 @@
 // Copy for the Telegram sign-in and connection outcomes, keyed by the codes
 // the auth endpoints and the OAuth callback produce. Shared by the sign-in
-// form (a client component) and the account pages (server components), so
-// it lives in a plain module rather than in either of them.
+// form (a client component) and the account page (a server component and
+// its modals), so it lives in a plain module rather than in either of them.
 
 /** Better Auth appends its own value after ours, so a page that wants one value reads the last. */
 export function lastParam(value: string | string[] | undefined): string | undefined {
@@ -10,7 +10,7 @@ export function lastParam(value: string | string[] | undefined): string | undefi
 
 export type TelegramAction = "signin" | "connect";
 
-/** Shown wherever Telegram is the only way in: the account page, the disconnect step and the action's refusal. */
+/** The refusal, from the action and the endpoint alike, when Telegram is the only way in; the account page itself says "Add an email first" beside the row. */
 export const LAST_LOGIN_METHOD_COPY = "Telegram is the only way to sign in to this account, so it cannot be disconnected. Add a verified email first.";
 
 const ALREADY_CONNECTED_ELSEWHERE = "This Telegram account is already connected to another HQ account. Sign in to that account instead.";
