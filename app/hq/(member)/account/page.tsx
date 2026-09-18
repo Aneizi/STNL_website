@@ -1,13 +1,12 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { BuilderShell } from "@/components/hq/builder-shell";
-import styles from "@/components/hq/builder-shell.module.css";
 import { requireMemberActor } from "@/lib/hq/actor";
+import { builderStore } from "@/lib/hq/builder-store";
 import { getLoginMethods } from "@/lib/hq/identity";
 import { getMemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import { getBotConsent } from "@/lib/hq/telegram-consent";
-import { LAST_LOGIN_METHOD_COPY, lastParam, telegramErrorMessage } from "../telegram-copy";
-import { BotMessagingToggle } from "./bot-messaging-toggle";
+import { lastParam, telegramErrorMessage } from "../telegram-copy";
+import { AccountPassport, type AccountRole } from "./account-passport";
 
 export const metadata: Metadata = { title: "Your account" };
 export const dynamic = "force-dynamic";
@@ -15,101 +14,50 @@ export const dynamic = "force-dynamic";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 // Everything shown here comes from the server: the actor, getLoginMethods(),
-// which never yields the internal placeholder address, and the stored
-// bot-messaging decision. Nothing on this page reads the auth client's
-// session object.
+// which never yields the internal placeholder address, the stored
+// bot-messaging decision, the operator-set tier and the member's teams. The
+// client component gets what it renders and nothing wider: no Telegram id,
+// no consent row, no team beyond its name. Only the Telegram OAuth round
+// trip still reports through the URL (`connected`, `error`); every other
+// outcome is the modal's to announce.
 export default async function AccountPage({ searchParams }: { searchParams: SearchParams }) {
   const params = await searchParams;
   const actor = await requireMemberActor("/hq/account");
-  const methods = await getLoginMethods(actor.id);
+  const store = builderStore();
+  const [methods, consent, teams, ownedProjects, tier, currentHackathonId] = await Promise.all([
+    getLoginMethods(actor.id),
+    // Consent is read only when there is a Telegram to message; it is never inferred from the connection.
+    actor.telegram ? getBotConsent(actor.id) : null,
+    store.teams(actor.id),
+    store.ownedProjects(actor.id),
+    store.tier(actor.id),
+    store.currentHackathonId(),
+  ]);
   const availability = getMemberAuthAvailability();
-  // Consent is read only when there is a Telegram to message; it is never inferred from the connection.
-  const consent = methods.telegram ? await getBotConsent(actor.id) : null;
-  const botMessages = consent?.messagingEnabled ?? false;
-  const error = telegramErrorMessage(params.error, "connect");
-  // The added-email notice is shown only when it is true of this account: a real address next to a Telegram connection.
-  const notice = lastParam(params.connected) === "telegram"
-    ? "Telegram connected."
-    : lastParam(params.disconnected) === "telegram"
-      ? "Telegram disconnected."
-      : lastParam(params.email) === "added" && methods.email && methods.telegram
-        ? "Email added. You can now sign in with it as well as with Telegram."
-        : null;
-  // actor.email is the verified login email (null for Telegram-only accounts),
-  // the same value the plugin's last-login-method rule is defined over.
-  const lastLoginMethod = actor.email === null;
+  // The Team line is the verified team, preferring the current edition, then the newest.
+  const verified = teams.filter((team) => team.verification === "verified");
+  const team = verified.find((candidate) => candidate.hackathonId === currentHackathonId) ?? verified[0] ?? null;
+  // Captain and Member are operator grants; Builder is having a verified team or an HQ project of one's own.
+  const role: AccountRole = actor.capabilities.has("captain") ? "Captain" : tier === "member" ? "Member" : verified.length || ownedProjects.length ? "Builder" : "User";
 
   return (
-    <BuilderShell>
-      <h1>Your <em>account.</em></h1>
-      <p>The ways you can sign in to Superteam NL HQ. Adding or removing one never changes your account, your teams or your roles.</p>
-      {notice && <p role="status" className={styles.success}>{notice}</p>}
-      {error && <p role="alert" className={styles.error}>{error}</p>}
-
-      <section className={styles.card} aria-labelledby="account-email">
-        <h2 id="account-email">Email</h2>
-        {methods.email ? (
-          <p>{methods.email.address}{methods.email.verified ? "" : " (not verified)"}</p>
-        ) : (
-          <>
-            <p>None. This account signs in with Telegram only.</p>
-            {availability.email ? (
-              <>
-                <p>A verified email lets you sign in without Telegram and is the way back in if you ever lose access to it.</p>
-                <Link className={styles.button} href="/hq/account/add-email">Add a recovery email</Link>
-              </>
-            ) : (
-              <p>Email is not available yet.</p>
-            )}
-          </>
-        )}
-      </section>
-
-      <section className={styles.card} aria-labelledby="account-telegram">
-        <h2 id="account-telegram">Telegram</h2>
-        {methods.telegram ? (
-          <>
-            <span className={styles.status}>Connected{methods.telegram.username ? ` as @${methods.telegram.username}` : ""}</span>
-            {lastLoginMethod ? (
-              <>
-                <p id="disconnect-blocked">{LAST_LOGIN_METHOD_COPY}</p>
-                <button type="button" className={styles.secondary} disabled aria-describedby="disconnect-blocked">Disconnect Telegram</button>
-              </>
-            ) : (
-              <>
-                <p>You can sign in with Telegram or with your email.</p>
-                <Link className={styles.secondary} href="/hq/account/disconnect-telegram">Disconnect Telegram</Link>
-              </>
-            )}
-          </>
-        ) : (
-          <>
-            <span className={styles.status}>Not connected</span>
-            {availability.telegram ? (
-              <>
-                <p>Connect Telegram to sign in with it as well as with your email.</p>
-                <Link className={styles.button} href="/hq/account/connect-telegram">Connect Telegram</Link>
-              </>
-            ) : (
-              <p>Telegram sign-in is not available yet.</p>
-            )}
-          </>
-        )}
-      </section>
-
-      {methods.telegram && (
-        <section className={styles.card} aria-labelledby="account-bot">
-          <h2 id="account-bot">Bot messages</h2>
-          <span className={styles.status}>{botMessages ? "Enabled" : "Disabled"}</span>
-          <p>
-            {botMessages
-              ? "HQ can send you Wednesday reminders on Telegram. Disable this at any time."
-              : "HQ can send you Wednesday reminders on Telegram only when this is enabled. Being connected does not turn it on."}
-            {" "}Your website access is the same either way.
-          </p>
-          <BotMessagingToggle enabled={botMessages} />
-        </section>
-      )}
+    <BuilderShell bare>
+      <AccountPassport
+        name={actor.name}
+        role={role}
+        email={methods.email?.address ?? null}
+        // actor.email is the verified login email (null for Telegram-only
+        // accounts), the same value the plugin's last-login-method rule is
+        // defined over.
+        hasEmail={actor.email !== null}
+        telegram={methods.telegram ? { username: methods.telegram.username } : null}
+        teamName={team?.name ?? null}
+        bot={consent?.messagingEnabled ?? false}
+        emailAvailable={availability.email}
+        telegramAvailable={availability.telegram}
+        initialNotice={lastParam(params.connected) === "telegram" ? "Telegram connected." : null}
+        initialError={telegramErrorMessage(params.error, "connect")}
+      />
     </BuilderShell>
   );
 }

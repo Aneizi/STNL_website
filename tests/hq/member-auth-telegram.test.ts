@@ -832,12 +832,13 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     }
     const { confirmEmailChange, confirmLinkTelegram, confirmUnlinkTelegram } = await import("@/lib/hq/actions/telegram");
     expect(await confirmLinkTelegram()).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
-    // Both confirmations answer the account's own state before the session's:
-    // this account has no Telegram to disconnect and already signs in with an
-    // email. The staleness they also enforce is asserted on a Telegram-only
-    // account in "lets a stale session neither add an email nor..." below.
+    // The unlink confirmation answers the account's own state before the
+    // session's: this account has no Telegram to disconnect. A change of
+    // email is open to an account that already signs in with one, so there
+    // the stale session is what stops it, and no intent is recorded for it.
     expect(await confirmUnlinkTelegram()).toEqual({ ok: false, code: "TELEGRAM_NOT_CONNECTED" });
-    expect(await confirmEmailChange("recover@example.com")).toEqual({ ok: false, code: "EMAIL_ALREADY_SET" });
+    expect(await confirmEmailChange("recover@example.com")).toEqual({ ok: false, code: "SESSION_NOT_FRESH" });
+    expect(await intents(userId)).toEqual([{ value: "link" }]);
     expect(state.sent).toHaveLength(sent);
     expect(await changeEmailRows()).toEqual([]);
     expect((await state.pg!.query('SELECT email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ email: "stale@example.com", emailVerified: true }]);
@@ -880,12 +881,12 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     const { currentMember } = await import("@/lib/hq/member-auth");
     expect((await currentMember())?.id).toBe(userId);
 
-    // The page agrees: the button is there, disabled, with the reason.
+    // The page agrees: the row is there, not a button, with the reason beside it.
     const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
     const html = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
-    expect(html).toContain("cannot be disconnected");
-    expect(html).toMatch(/<button[^>]*disabled[^>]*>Disconnect Telegram<\/button>/);
-    expect(html).not.toContain('href="/hq/account/disconnect-telegram"');
+    expect(html).toMatch(/<span aria-disabled="true"[^>]*>Disconnect Telegram<span[^>]*>Add an email first<\/span><\/span>/);
+    expect(html).not.toMatch(/<button[^>]*>Disconnect Telegram/);
+    expect(html).not.toContain("Disconnect Telegram?");
   });
 
   it("disconnects Telegram after confirmation when a verified email remains, and records it", async () => {
@@ -948,25 +949,34 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     const render = async (params: Record<string, string | string[]> = {}) => renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve(params) }));
 
     let html = await render();
-    expect(html).toContain(`Connected as @${USERNAME}`);
-    expect(html).toContain("None. This account signs in with Telegram only.");
+    expect(html).toMatch(new RegExp(`<dt[^>]*>Telegram</dt><dd[^>]*>@${USERNAME}</dd>`));
+    expect(html).toMatch(/<dt[^>]*>Email<\/dt><dd[^>]*>None<\/dd>/);
+    expect(html).toMatch(/<dt[^>]*>Team<\/dt><dd[^>]*>None<\/dd>/);
+    expect(html).toMatch(/<p[^>]*>User<\/p>/);
+    expect(html).toContain(`>${NAME}</p>`);
     expect(html).not.toContain("placeholder.invalid");
     expect(html).not.toContain(SUB);
     expect(html).not.toContain(String(TELEGRAM_ID));
     expect(html).not.toMatch(/[—·]/);
     // Better Auth appends its code after ours; the page shows the specific one, and a cancel at Telegram is still explained.
     html = await render({ error: ["telegram", "account_already_linked_to_different_user"] });
-    expect(html).toContain("already connected to another HQ account");
+    expect(html).toMatch(/<p role="alert"[^>]*>This Telegram account is already connected to another HQ account\. Sign in to that account instead\.<\/p>/);
     expect(await render({ error: ["telegram", "access_denied"] })).toContain("We could not connect Telegram. Please try again.");
     expect(await render({ error: "access_denied" })).not.toContain("role=\"alert\"");
-    expect(await render({ connected: "telegram" })).toContain("Telegram connected.");
+    expect(await render({ connected: "telegram" })).toMatch(/<p role="status"[^>]*>Telegram connected\.<\/p>/);
+    // The outcomes the modals announce themselves no longer come through the URL.
+    expect(await render({ disconnected: "telegram" })).not.toContain("Telegram disconnected.");
+    expect(await render({ email: "added" })).not.toContain("Email added.");
 
     const emailUser = await signInWithEmail("page@example.com", "Page Builder");
     state.cookie = emailUser.cookie;
     html = await render();
-    expect(html).toContain("page@example.com");
-    expect(html).toContain("Not connected");
-    expect(html).toContain('href="/hq/account/connect-telegram"');
+    expect(html).toMatch(/<dt[^>]*>Email<\/dt><dd[^>]*>page@example\.com<\/dd>/);
+    expect(html).toMatch(/<dt[^>]*>Telegram<\/dt><dd[^>]*>Not connected<\/dd>/);
+    expect(html).toMatch(/<button[^>]*>Connect Telegram/);
+    expect(html).not.toContain("Disconnect Telegram");
+    expect(html).not.toContain("Bot reminders");
+    expect(html).not.toContain('href="/hq/account/connect-telegram"');
     expect(html).not.toContain("placeholder.invalid");
 
     // The identity row never landed: the page ends the session and says why; the next Telegram sign-in repairs the row.
@@ -982,7 +992,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     state.cookie = repaired.session!.split(";")[0];
     await state.pg!.exec("DELETE FROM hq_auth_telegram_identity");
     const { confirmLinkTelegram } = await import("@/lib/hq/actions/telegram");
-    await expect(confirmLinkTelegram()).rejects.toThrow("REDIRECT:/hq/login?error=identity_missing&next=%2Fhq%2Faccount%2Fconnect-telegram");
+    await expect(confirmLinkTelegram()).rejects.toThrow("REDIRECT:/hq/login?error=identity_missing&next=%2Fhq%2Faccount");
     expect(await (await request("/get-session", undefined, state.cookie)).json()).toBeNull();
   });
 
@@ -1126,15 +1136,14 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
 
     const { currentMember } = await import("@/lib/hq/member-auth");
     expect(await currentMember()).toEqual({ id: userId, email: "recover@example.com", name: NAME });
-    // The account now signs in with an email, so the same action will not move it.
-    expect(await confirmEmailChange("second@example.com")).toEqual({ ok: false, code: "EMAIL_ALREADY_SET" });
-    expect(await intents(userId)).toEqual([]);
+    // The account now signs in with an email: the page offers to change it, and Telegram may now go.
     const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
-    const html = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({ email: "added" }) }));
-    expect(html).toContain("recover@example.com");
-    expect(html).toContain("Email added.");
-    expect(html).toContain('href="/hq/account/disconnect-telegram"');
-    expect(html).not.toContain('href="/hq/account/add-email"');
+    const html = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
+    expect(html).toMatch(/<dt[^>]*>Email<\/dt><dd[^>]*>recover@example\.com<\/dd>/);
+    expect(html).toMatch(/<button[^>]*>Change email/);
+    expect(html).not.toContain("Add a recovery email");
+    expect(html).toMatch(/<button[^>]*>Disconnect Telegram/);
+    expect(html).not.toContain("Add an email first");
     expect(html).not.toContain("placeholder.invalid");
 
     // The new address signs in to the very same account.
@@ -1152,24 +1161,40 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(await currentMember()).toEqual({ id: userId, email: "recover@example.com", name: NAME });
   });
 
-  it("refuses to move the login email of an account that already signs in with one", async () => {
+  it("moves the login email of an account that already signs in with one, only through the confirmation and only to another address", async () => {
     const emailUser = await signInWithEmail("holder@example.com", "Settled Builder");
+    const userId = emailUser.user.id;
     state.cookie = emailUser.cookie;
     state.sent.length = 0;
     const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
 
-    // A session minutes old passes every other check the action makes: only
-    // the account already having a login email stops it. The page redirects
-    // such an account away, but an action is directly callable.
-    expect(await confirmEmailChange("attacker@example.com")).toEqual({ ok: false, code: "EMAIL_ALREADY_SET" });
-    expect(await intents(emailUser.user.id)).toEqual([]);
-    expect(state.sent).toEqual([]);
-    // And with no intent recorded the endpoint refuses too, so nothing moved.
-    const requested = await request("/email-otp/request-email-change", { newEmail: "attacker@example.com" }, emailUser.cookie);
-    expect(requested.status).toBe(403);
-    expect((await requested.json()).code).toBe("CONFIRMATION_REQUIRED");
+    // The current address is not a change, however it is spelled.
+    expect(await confirmEmailChange(" Holder@Example.com ")).toEqual({ ok: false, code: "EMAIL_UNCHANGED" });
+    expect(await intents(userId)).toEqual([]);
+    // Without the confirmation the endpoint refuses, so a fresh session alone moves nothing.
+    const unconfirmed = await request("/email-otp/request-email-change", { newEmail: "moved@example.com" }, emailUser.cookie);
+    expect(unconfirmed.status).toBe(403);
+    expect((await unconfirmed.json()).code).toBe("CONFIRMATION_REQUIRED");
     expect(await changeEmailRows()).toEqual([]);
-    expect((await state.pg!.query("SELECT email FROM hq_auth_user")).rows).toEqual([{ email: "holder@example.com" }]);
+    expect(state.sent).toEqual([]);
+
+    // The modal's path: confirm, code to the new address only, verify. Same account id throughout.
+    expect(await confirmEmailChange("moved@example.com")).toEqual({ ok: true, newEmail: "moved@example.com" });
+    expect(await intents(userId)).toEqual([{ value: "change-email:moved@example.com" }]);
+    const changed = await changeEmailWithCode(emailUser.cookie, "moved@example.com");
+    expect(changed.status).toBe(200);
+    expect(await intents(userId)).toEqual([]);
+    expect(state.sent[0].to).toBe("moved@example.com");
+    expect((await state.pg!.query('SELECT id, email, "emailVerified" FROM hq_auth_user')).rows).toEqual([{ id: userId, email: "moved@example.com", emailVerified: true }]);
+    const { currentMember } = await import("@/lib/hq/member-auth");
+    expect(await currentMember()).toEqual({ id: userId, email: "moved@example.com", name: "Settled Builder" });
+
+    // The page shows the new address and still offers to change it.
+    const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
+    const html = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
+    expect(html).toMatch(/<dt[^>]*>Email<\/dt><dd[^>]*>moved@example\.com<\/dd>/);
+    expect(html).not.toContain("holder@example.com");
+    expect(html).toMatch(/<button[^>]*>Change email/);
   });
 
   it("tells the previous verified address, once, when the login email changes", async () => {
@@ -1177,9 +1202,9 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     const userId = emailUser.user.id;
     state.cookie = emailUser.cookie;
     state.sent.length = 0;
-    // No page or action moves a login email that already exists, so the
-    // intent the endpoint requires is written directly to reach the hook.
-    await recordTelegramIntent(await intentStore(), userId, "change-email", "after@example.com");
+    // The modal's own path: the confirmation records the intent the endpoint requires.
+    const { confirmEmailChange } = await import("@/lib/hq/actions/telegram");
+    expect(await confirmEmailChange("after@example.com")).toEqual({ ok: true, newEmail: "after@example.com" });
     const changed = await changeEmailWithCode(emailUser.cookie, "after@example.com");
     expect(changed.status).toBe(200);
     // Exactly two messages: the code to the new address, then the notice to the old one, which carries no code.
@@ -1336,19 +1361,16 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     // Connected is not consent: no row, and the page says so next to the connection.
     expect(await getBotConsent(userId)).toBeNull();
     let html = await render();
-    expect(html).toContain("Bot messages");
-    expect(html).toMatch(/>Disabled<\/span>/);
-    expect(html).toContain("Enable bot messages");
-    expect(html).toContain("only when this is enabled");
-    expect(html).toContain("website access is the same either way");
+    expect(html).toContain("Bot reminders on Telegram");
+    expect(html).toMatch(/<input type="checkbox"[^>]*>/);
+    expect(html).not.toMatch(/<input type="checkbox"[^>]*checked/);
     expect(html).not.toMatch(/[—·]/);
 
     expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
     expect(await consentRows()).toEqual([{ user_id: userId, telegram_user_id: String(TELEGRAM_ID), messaging_enabled: true, consented: true, revoked: false }]);
     expect(await getBotConsent(userId)).toMatchObject({ userId, telegramUserId: String(TELEGRAM_ID), messagingEnabled: true, revokedAt: null });
     html = await render();
-    expect(html).toMatch(/>Enabled<\/span>/);
-    expect(html).toContain("Disable bot messages");
+    expect(html).toMatch(/<input type="checkbox"[^>]*checked=""/);
     // Saying it again records nothing; declining records once and keeps the website.
     expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
     expect(await setBotMessaging(false)).toEqual({ ok: true, enabled: false });
@@ -1363,7 +1385,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await requireMember("/hq/account")).id).toBe(userId);
     expect(await count("hq_auth_telegram_identity")).toBe(1);
     expect(await count("hq_auth_session")).toBe(1);
-    expect(await render()).toMatch(/>Disabled<\/span>/);
+    expect(await render()).not.toMatch(/<input type="checkbox"[^>]*checked/);
 
     // No Telegram, nobody to message: the action refuses, nothing is written, and the page has no such section.
     const emailUser = await signInWithEmail("no-telegram@example.com", "Email Only");
@@ -1371,7 +1393,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(await setBotMessaging(true)).toEqual({ ok: false, code: "TELEGRAM_NOT_CONNECTED" });
     expect(await getBotConsent(emailUser.user.id)).toBeNull();
     expect(await count("hq_telegram_bot_consent")).toBe(1);
-    expect(await render()).not.toContain("Bot messages");
+    expect(await render()).not.toContain("Bot reminders");
   });
 
   it("revokes bot messages when Telegram is disconnected, in the same operation", async () => {
@@ -1402,25 +1424,28 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await auditEvents()).slice(4)).toEqual([identityEvent("identity.linked", userId)]);
   });
 
-  it("renders the recovery-email step for a Telegram-only account and sends an account with an email back", async () => {
+  it("offers a recovery email to a Telegram-only account, a change to an account that has one, and the operator-set role", async () => {
     const { session } = await signInWithTelegram();
     state.cookie = session!.split(";")[0];
-    const { default: AddEmailPage } = await import("@/app/hq/(member)/account/add-email/page");
+    const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
     const { default: AccountPage } = await import("@/app/hq/(member)/account/page");
-    const html = renderToStaticMarkup(await AddEmailPage());
-    expect(html).toContain("Add a recovery");
-    expect(html).toContain('name="email"');
-    expect(html).toContain("Send code");
-    expect(html).toContain("within 15 minutes");
+    const render = async () => renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
+    let html = await render();
+    expect(html).toMatch(/<button[^>]*>Add a recovery email/);
+    expect(html).not.toContain("Change email");
+    expect(html).not.toContain('href="/hq/account/add-email"');
+    expect(html).toMatch(/<p[^>]*>User<\/p>/);
     expect(html).not.toContain("placeholder.invalid");
     expect(html).not.toMatch(/[—·]/);
-    const account = renderToStaticMarkup(await AccountPage({ searchParams: Promise.resolve({}) }));
-    expect(account).toContain('href="/hq/account/add-email"');
-    expect(account).toContain("Add a recovery email");
+    // The Member tier is an operator grant, read from the profile.
+    await state.pg!.query("UPDATE hq_builder_profiles SET tier = 'member' WHERE id = $1", [userId]);
+    expect(await render()).toMatch(/<p[^>]*>Member<\/p>/);
 
     const emailUser = await signInWithEmail("has-email@example.com", "Has Email");
     state.cookie = emailUser.cookie;
-    await expect(AddEmailPage()).rejects.toThrow("REDIRECT:/hq/account");
+    html = await render();
+    expect(html).toMatch(/<button[^>]*>Change email/);
+    expect(html).not.toContain("Add a recovery email");
   });
 
   it("lets the database refuse a second Telegram account row even when the identity backstop cannot see it", async () => {
