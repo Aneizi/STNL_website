@@ -274,6 +274,15 @@ export type CreateUpdateResult =
  * has passed is marked `late` and completes nothing — the plan's "a late
  * entry must not silently erase a missed week".
  *
+ * A week is the TEAM's to complete. Only an entry written through team
+ * membership (`via: "member"`) counts toward it; a note from the assigned
+ * Captain or from an operator, shared or sensitive, is stored with
+ * `counts_toward_completion = false`, is left out of every completion tally
+ * and answers `completesPeriod: false`. That is the Captains' Den rule,
+ * "Captain notes never change a team's update status", decided here from the
+ * authorization decision rather than in a screen, so the website and the bot
+ * cannot disagree about it.
+ *
  * The body, the period and the author all come from the server: the trimmed
  * text, the period resolved from the instant (or explicitly chosen), and
  * `submitted_at` from the same server clock that selects the period.
@@ -332,16 +341,19 @@ export async function createUpdate(
       return { ok: false, reason: "period_changed", currentPeriod: periodForInstant(await listReportingPeriods(tx, input.hackathonId), savedAtMs) };
     }
     if (Date.parse(eligibility.eligibleFrom) >= Date.parse(current.endsAt)) return { ok: false, reason: "not_eligible" };
+    // Read straight off the decision: `via: "member"` is the team writing
+    // for itself, anything else is a note about the team.
+    const countsTowardCompletion = decision.via === "member";
     const { rows } = await tx.query(
-      `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility, source, late, submitted_at)
-       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::timestamptz) RETURNING id::text AS id`,
-      [input.projectId, period.id, writer.kind, writer.id, checked.body, visibility, input.source === "telegram" ? "telegram" : "hq", late, new Date(savedAtMs).toISOString()],
+      `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility, source, late, submitted_at, counts_toward_completion)
+       VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10) RETURNING id::text AS id`,
+      [input.projectId, period.id, writer.kind, writer.id, checked.body, visibility, input.source === "telegram" ? "telegram" : "hq", late, new Date(savedAtMs).toISOString(), countsTowardCompletion],
     );
     const entryId = String(rows[0].id);
     await appendRevision(tx, { entryId, version: 1, body: checked.body, visibility, editor: writer });
     const entry = await readEntryView(tx, entryId, actor, loaders, true);
     if (!entry) return { ok: false, reason: "not_authorized" };
-    return { ok: true, entry, period: current, completesPeriod: !late && current.closedAt == null };
+    return { ok: true, entry, period: current, completesPeriod: countsTowardCompletion && !late && current.closedAt == null };
   });
 }
 
@@ -746,7 +758,7 @@ export type PeriodStatus = {
   nudgeAt: string | null;
   completed: boolean;
   basis: "entry" | "submission" | "none";
-  /** Qualifying entries: neither voided nor late. Never the bodies. */
+  /** Qualifying entries: written by the team, neither voided nor late. A Captain's or an operator's note is not one. Never the bodies. */
   entries: number;
   latestEntryAt: string | null;
   closed: boolean;
@@ -877,6 +889,7 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
               max(e.submitted_at) AS latest
        FROM hq_reporting_entries e JOIN hq_reporting_periods p ON p.id = e.period_id
        WHERE p.hackathon_id = $1 AND e.project_id = ANY($2::uuid[]) AND e.voided_at IS NULL AND e.late = false
+         AND e.counts_toward_completion
          AND e.submitted_at >= p.starts_at AND e.submitted_at < p.ends_at
        GROUP BY e.project_id, e.period_id`,
       [input.hackathonId, projectIds],
@@ -1047,7 +1060,7 @@ export async function closePeriod(
     const eligibility = new Map((await listReportingEligibility(tx, period.hackathonId)).map((row) => [row.projectId, row]));
     const { rows: firstEntries } = await tx.query(
       `SELECT DISTINCT ON (project_id) project_id::text AS project_id, id::text AS id FROM hq_reporting_entries
-       WHERE period_id = $1::uuid AND voided_at IS NULL AND late = false
+       WHERE period_id = $1::uuid AND voided_at IS NULL AND late = false AND counts_toward_completion
          AND submitted_at >= $2::timestamptz AND submitted_at < $3::timestamptz ORDER BY project_id, submitted_at, id`,
       [period.id, period.startsAt, period.endsAt],
     );

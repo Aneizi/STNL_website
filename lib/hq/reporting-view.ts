@@ -81,6 +81,122 @@ export function deadlineLabel(endDate: string): string {
   return `${weekdayName(endDate)} ${d} ${MONTHS[m - 1] ?? ""}`;
 }
 
+/** "Week 1 of 4": where the campaign is, as the Home tile, the team page and the Captains' Den all say it. */
+export const weekOfLabel = (sequence: number, total: number): string => `Week ${sequence} of ${total}`;
+
+/** The named parts of one instant in the campaign timezone, keyed by part type. */
+function zonedParts(atMs: number, timezone: string, options: Intl.DateTimeFormatOptions): Record<string, string> {
+  const parts: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-GB", { timeZone: timezone, ...options }).formatToParts(new Date(atMs))) {
+    if (part.type !== "literal") parts[part.type] = part.value;
+  }
+  return parts;
+}
+
+/**
+ * "Sunday 20 September, 23:59 CEST": the last minute of a week, in the
+ * campaign timezone.
+ *
+ * `endsAt` is the exclusive instant the service compares against, which is
+ * local midnight on the day AFTER the week's last day. Stepping back one
+ * minute lands on the last minute that still counts, so the label names the
+ * day people mean and the zone the clock is actually in (CEST in September,
+ * CET in the winter weeks) rather than a hard-coded pair.
+ */
+export function dueLabel(endsAt: string, timezone: string): string {
+  const at = Date.parse(endsAt);
+  if (!Number.isFinite(at)) return "";
+  const parts = zonedParts(at - 60_000, timezone, {
+    weekday: "long", day: "numeric", month: "long", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZoneName: "short",
+  });
+  return `${parts.weekday} ${parts.day} ${parts.month}, ${parts.hour}:${parts.minute} ${parts.timeZoneName}`;
+}
+
+/** The kicker's underlined half while the week is still open: "Due Sunday 20 September, 23:59 CEST". */
+export const dueLine = (endsAt: string, timezone: string): string => `Due ${dueLabel(endsAt, timezone)}`;
+
+/**
+ * The late-update modal's week buttons: "14 to 20 Sep", "28 Sep to 4 Oct".
+ * Three-letter months, and the month once when both days share it, so a
+ * button 110px wide still fits its range on one line.
+ */
+export function periodRangeShortLabel(startDate: string, endDate: string): string {
+  if (!startDate || !endDate) return "";
+  const [, sm, sd] = startDate.split("-").map(Number);
+  const [, em, ed] = endDate.split("-").map(Number);
+  const month = (n: number) => (MONTHS[n - 1] ?? "").slice(0, 3);
+  if (sm === em && sd === ed) return `${sd} ${month(sm)}`;
+  if (sm === em) return `${sd} to ${ed} ${month(em)}`;
+  return `${sd} ${month(sm)} to ${ed} ${month(em)}`;
+}
+
+/** "16 September": the day an update was written, in the campaign timezone rather than the browser's. */
+export function dayMonthLabel(isoInstant: string, timezone: string): string {
+  const at = Date.parse(isoInstant);
+  if (!Number.isFinite(at)) return "";
+  const parts = zonedParts(at, timezone, { day: "numeric", month: "long" });
+  return `${parts.day} ${parts.month}`;
+}
+
+/** What an entry card's meta line is built from. Structural, so this module needs nothing from the server-only service. */
+export type EntryMetaInput = {
+  periodSequence: number;
+  authorName: string;
+  authorIsYou: boolean;
+  late: boolean;
+  edited: boolean;
+  submittedAt: string;
+};
+
+/**
+ * The team page's meta line: "Week 1. Nienke Visser, 16 September", with
+ * "added late" in place of the date for a late entry and ", edited" once
+ * when the text changed since. Never "(you)" and never an ISO date.
+ */
+export function entryMetaLabel(entry: EntryMetaInput, timezone: string): string {
+  const when = entry.late ? "added late" : dayMonthLabel(entry.submittedAt, timezone);
+  return `Week ${entry.periodSequence}. ${entry.authorName}, ${when}${entry.edited ? ", edited" : ""}`;
+}
+
+/** The Captains' Den meta line: "You, 15 September" for the Captain's own note, "Nienke Visser, 16 September" for the team's. */
+export function captainMetaLabel(entry: EntryMetaInput, timezone: string): string {
+  return `${entry.authorIsYou ? "You" : entry.authorName}, ${dayMonthLabel(entry.submittedAt, timezone)}`;
+}
+
+/**
+ * A Telegram handle, with or without its "@", as the only shape a contact
+ * line is ever turned into a link. Contacts are free text somebody typed;
+ * anything that is not a handle is rendered as text, never as an href.
+ */
+const TELEGRAM_HANDLE = /^@?[A-Za-z0-9_]{5,32}$/;
+
+export function telegramContactHref(contact: string | null | undefined): string | null {
+  const text = String(contact ?? "").trim();
+  return TELEGRAM_HANDLE.test(text) ? `https://t.me/${text.replace(/^@/, "")}` : null;
+}
+
+/** A week's two boundary questions, over the same `startsAt`/`endsAt` instants the service compares. */
+export const isWeekStarted = (period: { startsAt: string }, nowMs: number): boolean => Date.parse(period.startsAt) <= nowMs;
+
+export const isWeekCurrent = (period: { startsAt: string; endsAt: string }, nowMs: number): boolean =>
+  isWeekStarted(period, nowMs) && nowMs < Date.parse(period.endsAt);
+
+/** The kicker's underlined half once the week is done. */
+export const UPDATED_LABEL = "Updated";
+/** The composer heading while the week still needs an update, and once it has one. */
+export const HEADING_OPEN = "What moved this week?";
+export const HEADING_DONE = "Anything to add?";
+/** The inline status lines the member forms show. Never a toast. */
+export const UPDATE_SAVED = "Update saved.";
+export const SAVED_LABEL = "Saved.";
+export const NOTE_ADDED = "Note added.";
+/** Under the Earlier heading on the team page. */
+export const EARLIER_NOTE = "Updates, such as the weekly video or posts, made on Colosseum are automatically shown here.";
+/** In the late-update modal, under the textarea. */
+export const LATE_NOTE = "Stays with the selected week. A missed week stays marked as missed.";
+/** The Keep private tooltip on the Captains' Den, and the title of a private note's tag. */
+export const PRIVATE_TOOLTIP = "Only visible to you and HQ admins";
+
 /** ISO weekday (1 Monday to 7 Sunday) of an instant in the campaign timezone. */
 export function weekdayInZone(atMs: number, timezone: string): number {
   const label = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short" }).format(new Date(atMs));
@@ -139,7 +255,7 @@ export const ADD_UPDATE_MESSAGES = {
   not_eligible: "This team is not in weekly reporting yet. Ask Superteam NL to add it.",
   no_open_period: "There is no open reporting week right now, so there is nothing to update.",
   period_not_found: "That reporting week is not part of this hackathon.",
-  period_changed: "A new reporting week started while you were writing. Your text is still here. Check the week named below, then save again.",
+  period_changed: "The week changed while you were writing. Your text is kept; add it to the week that is open now.",
   visibility_not_allowed: "Only the team's Captain can save a note as sensitive.",
 } as const;
 
@@ -155,10 +271,14 @@ export const EDIT_UPDATE_MESSAGES = {
   audience_not_confirmed: "Confirm who will be able to read this note before sharing it with the team.",
 } as const;
 
-/** What each audience means, said before the save rather than after it. */
+/**
+ * What each audience means, said before the save rather than after it. Both
+ * are a Captain's choices, and neither kind of note counts as the team's
+ * update: the team's week stays Not updated until a team member writes one.
+ */
 export const AUDIENCE_NOTES = {
   shared: "Shared with the team, their Captain and Superteam NL admins.",
-  sensitive: "Kept between you and Superteam NL admins. The team does not see it, and it still completes the week.",
+  sensitive: "Kept between you and Superteam NL admins. The team does not see it, and it never counts as an update from the team.",
 } as const;
 
 /** The empty state of a project's update list, per audience. */

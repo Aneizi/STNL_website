@@ -333,7 +333,7 @@ describe("adding an update", () => {
     const opened = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(notes, "Read")));
     expect(opened.outcome).toBe("note");
   });
-  it("saves through the same reporting service the website uses, and completes the week", async () => {
+  it("saves through the same reporting service the website uses, so a Captain's note leaves the team's week Not updated", async () => {
     const { preview } = await composeTo("Vault Team", "Met the team, shipping the swap flow this week.");
     expect(preview.outcome).toBe("preview");
     expect(allText(preview)).toContain("Met the team");
@@ -343,13 +343,15 @@ describe("adding an update", () => {
     expect(saved.outcome).toBe("saved");
     expect(saved.queued).toBe(true);
 
-    const entries = await rows("SELECT body, source, visibility, author_kind, author_id FROM hq_reporting_entries");
+    const entries = await rows("SELECT body, source, visibility, author_kind, author_id, counts_toward_completion FROM hq_reporting_entries");
     expect(entries).toHaveLength(1);
-    expect(entries[0]).toMatchObject({ source: "telegram", visibility: "shared", author_kind: "member", author_id: CAPTAIN });
+    expect(entries[0]).toMatchObject({ source: "telegram", visibility: "shared", author_kind: "member", author_id: CAPTAIN, counts_toward_completion: false });
     expect(entries[0].body).toBe("Met the team, shipping the swap flow this week.");
 
+    // The Captains' Den rule, decided in the service the bot shares with the
+    // website: a note about the team is not the team's update.
     const [status] = await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT] });
-    expect(status.current?.completed).toBe(true);
+    expect(status.current?.completed).toBe(false);
   });
 
   it("records one revision per save, exactly as an HQ save does", async () => {
@@ -413,8 +415,9 @@ describe("sensitive notes", () => {
     const entries = await rows("SELECT visibility FROM hq_reporting_entries");
     expect(entries).toEqual([{ visibility: "sensitive" }]);
 
-    // The team sees the week as Updated and nothing of the note itself, in
-    // SQL rather than in the interface: the service returns them nothing.
+    // The team sees nothing of the note itself, in SQL rather than in the
+    // interface: the service returns them nothing. And their week is still
+    // theirs to complete: a Captain's note never marks it Updated.
     const teamView = await readAuthorizedUpdates(
       { kind: "member", id: LEAD, name: "Team Lead", email: null, capabilities: new Set(), telegram: null },
       { projectId: PROJECT, hackathonId: EDITION },
@@ -422,7 +425,7 @@ describe("sensitive notes", () => {
     );
     expect(teamView.entries).toHaveLength(0);
     const [status] = await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT] });
-    expect(status.current?.completed).toBe(true);
+    expect(status.current?.completed).toBe(false);
   });
 
   it("does not offer the sensitive audience on the Captain's own team", async () => {
@@ -637,7 +640,9 @@ describe("duplicate deliveries and stale actions", () => {
     const queued = await rows("SELECT body FROM hq_telegram_outgoing");
     expect(queued).toHaveLength(1);
     expect(String(queued[0].body)).not.toContain("must not be stored twice");
-    expect(String(queued[0].body)).toContain("Updated");
+    // The confirmation carries the team's status, which a Captain's note leaves as it was.
+    expect(String(queued[0].body)).toContain("Team status");
+    expect(String(queued[0].body)).toContain("Not updated");
   });
 
   it("lets a navigation button be pressed again, because the keyboard stays in the chat", async () => {

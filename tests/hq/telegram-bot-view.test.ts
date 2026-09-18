@@ -93,7 +93,11 @@ describe("what a week reads like", () => {
   });
 
   it("says which week the save landed in and what it says now", () => {
-    expect(savedMessage("Vault Team", WEEK, true)).toBe("Saved to Vault Team.\nWeek of 14 to 20 September is now Updated.");
+    expect(savedMessage("Vault Team", WEEK, true)).toBe("Saved to Vault Team.\nTeam status, week of 14 to 20 September: Updated.");
+    // Stated as the team's status, not as what the save did: a Captain's note
+    // never completes the team's week, so "is now" would claim too much.
+    expect(savedMessage("Vault Team", WEEK, false)).toBe("Saved to Vault Team.\nTeam status, week of 14 to 20 September: Not updated.");
+    expect(savedMessage("Vault Team", null, false)).toBe("Saved to Vault Team.\nTeam status, this week: Not updated.");
   });
 
   it("names the week that is open now when a draft crossed midnight, and keeps the text", () => {

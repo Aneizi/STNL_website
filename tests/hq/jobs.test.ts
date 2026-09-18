@@ -604,9 +604,12 @@ async function queuedReminder() {
   expect(result).toMatchObject({ ok: true, state: "queued" });
 }
 
+/** A team member's update, which is the only kind that completes a week: a Captain's note would leave the team outstanding. */
 const updateTeam = async (projectId: string, atMs = NUDGE_1 + 1000) => {
-  const saved = await createUpdate(member(CAPTAIN, ["captain"]), { projectId, hackathonId: EDITION, body: "Updated after queueing.", atMs }, db);
-  expect(saved.ok).toBe(true);
+  const author = `member-${projectId.slice(-4)}`;
+  await seedTeamMember(projectId, author);
+  const saved = await createUpdate(member(author), { projectId, hackathonId: EDITION, body: "Updated after queueing.", atMs }, db);
+  expect(saved).toMatchObject({ ok: true, completesPeriod: true });
 };
 
 /** Half an hour later, which is the scheduled interval, not a narrow window. */

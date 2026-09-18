@@ -451,7 +451,7 @@ describe("createUpdate", () => {
     await seedAssignedCaptain("cap", PROJECT_A);
     expect(await createUpdate(member("cap", ["captain"]), {
       projectId: PROJECT_A, hackathonId: EDITION, body: "Struggling with the lead", visibility: "sensitive", atMs: WEEK_ONE,
-    })).toMatchObject({ ok: true, completesPeriod: true });
+    })).toMatchObject({ ok: true, completesPeriod: false });
     expect(await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Hidden from my team", visibility: "sensitive", atMs: WEEK_ONE }))
       .toEqual({ ok: false, reason: "visibility_not_allowed" });
   });
@@ -982,27 +982,66 @@ describe("what completes a week, per author and per visibility", () => {
     (await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT_A], atMs: WEEK_ONE }))[0].current?.completed;
 
   it.each([
-    ["the team lead", () => member("lead-a"), "shared" as const],
-    ["a joined teammate", () => member("member-a"), "shared" as const],
+    ["the team lead", () => member("lead-a")],
+    ["a joined teammate", () => member("member-a")],
+  ])("an update from %s completes the week", async (_who, actorOf) => {
+    expect(await completed()).toBe(false);
+    const saved = await createUpdate(actorOf(), { projectId: PROJECT_A, hackathonId: EDITION, body: "Progress", atMs: WEEK_ONE });
+    expect(saved).toMatchObject({ ok: true, completesPeriod: true });
+    expect(await completed()).toBe(true);
+    expect(await rows(`SELECT counts_toward_completion FROM hq_reporting_entries`)).toEqual([{ counts_toward_completion: true }]);
+  });
+
+  // The Captains' Den rule: "Captain notes never change a team's update
+  // status." A week is the team's to complete, so a note ABOUT the team,
+  // whoever wrote it and whoever may read it, is recorded beside the week
+  // and never stands in for the team's own update.
+  it.each([
     ["the assigned Captain", () => member("cap", ["captain"] as const), "shared" as const],
     ["the assigned Captain, privately", () => member("cap", ["captain"] as const), "sensitive" as const],
     ["an admin", () => OPERATOR, "shared" as const],
     ["an admin, privately", () => OPERATOR, "sensitive" as const],
-  ])("an update from %s completes the week", async (_who, actorOf, visibility) => {
+  ])("a note from %s never completes the week", async (_who, actorOf, visibility) => {
     expect(await completed()).toBe(false);
-    const saved = await createUpdate(actorOf() as Actor, { projectId: PROJECT_A, hackathonId: EDITION, body: "Progress", visibility, atMs: WEEK_ONE });
-    expect(saved).toMatchObject({ ok: true, completesPeriod: true });
+    const saved = await createUpdate(actorOf() as Actor, { projectId: PROJECT_A, hackathonId: EDITION, body: "A note about the team", visibility, atMs: WEEK_ONE });
+    expect(saved).toMatchObject({ ok: true, completesPeriod: false });
+    expect(await completed()).toBe(false);
+    expect(await rows(`SELECT counts_toward_completion FROM hq_reporting_entries`)).toEqual([{ counts_toward_completion: false }]);
+  });
+
+  it("leaves a Captain's note beside the week and lets a team member's update complete it", async () => {
+    await createUpdate(member("cap", ["captain"]), { projectId: PROJECT_A, hackathonId: EDITION, body: "SENSITIVE-BODY", visibility: "sensitive", atMs: WEEK_ONE });
+    const before = await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT_A], atMs: WEEK_ONE });
+    expect(before[0].current).toMatchObject({ completed: false, basis: "none", entries: 0 });
+    // The team sees Not updated, and nothing else: no body, no preview, no
+    // author, no count that invites a click.
+    expect(JSON.stringify(before)).not.toContain("SENSITIVE");
+    expect(JSON.stringify(await readAuthorizedUpdates(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION }))).not.toContain("SENSITIVE");
+
+    expect(await createUpdate(member("member-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Progress", atMs: WEEK_ONE }))
+      .toMatchObject({ ok: true, completesPeriod: true });
+    const after = await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT_A], atMs: WEEK_ONE });
+    // One qualifying entry: the team's. The note is not counted even now.
+    expect(after[0].current).toMatchObject({ completed: true, basis: "entry", entries: 1 });
+  });
+
+  it("counts a team member's own update even when that member is a Captain elsewhere", async () => {
+    await seedImportedProject(PROJECT_B, "lead-b");
+    await grantCapability(db, { actor: { kind: "operator", id: OPERATOR_ID }, byOperatorId: OPERATOR_ID, userId: "lead-a", capability: "captain", reason: "test" });
+    await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT_B, hackathonId: EDITION, captainUserId: "lead-a" });
+    // On their own team the decision is `via: "member"`, so the update is the team's.
+    expect(await createUpdate(member("lead-a", ["captain"]), { projectId: PROJECT_A, hackathonId: EDITION, body: "Our progress", atMs: WEEK_ONE }))
+      .toMatchObject({ ok: true, completesPeriod: true });
     expect(await completed()).toBe(true);
   });
 
-  it("completes the week from a sensitive note without the team learning anything about it", async () => {
-    await createUpdate(member("cap", ["captain"]), { projectId: PROJECT_A, hackathonId: EDITION, body: "SENSITIVE-BODY", visibility: "sensitive", atMs: WEEK_ONE });
-    const status = await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT_A], atMs: WEEK_ONE });
-    expect(status[0].current).toMatchObject({ completed: true, basis: "entry", entries: 1 });
-    // The team sees Updated, and nothing else: no body, no preview, no
-    // author, no count that invites a click.
-    expect(JSON.stringify(status)).not.toContain("SENSITIVE");
-    expect(JSON.stringify(await readAuthorizedUpdates(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION }))).not.toContain("SENSITIVE");
+  it("holds the rule at closure: a week with only a Captain's note closes as missed", async () => {
+    await createUpdate(member("cap", ["captain"]), { projectId: PROJECT_A, hackathonId: EDITION, body: "Watching this team", atMs: WEEK_ONE });
+    const [first] = await listReportingPeriods(db, EDITION);
+    const closed = await closePeriod(db, { periodId: first.id, actor: OPERATOR, atMs: Date.parse(first.endsAt) + 60_000 });
+    expect(closed).toMatchObject({ ok: true, completed: 0, missed: 1 });
+    if (!closed.ok) throw new Error("expected the close to succeed");
+    expect(closed.outcomes.find((outcome) => outcome.projectId === PROJECT_A)).toMatchObject({ completed: false, basis: "none", entryId: null });
   });
 
   it("does not complete the week from a save that failed", async () => {
