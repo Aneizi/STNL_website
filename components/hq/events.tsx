@@ -5,8 +5,8 @@ import {
   startTransition,
   useEffect,
   useOptimistic,
-  useRef,
   useState,
+  type ChangeEvent,
   type CSSProperties,
 } from "react";
 import { FormField, LumaMark, input, pageTitle } from "@/components/hq/ui";
@@ -26,11 +26,11 @@ import type { Classifiers, HqEvent, Settings } from "@/lib/hq/types";
 
 type EventField = Parameters<typeof updateEvent>[1];
 
-// Date · Event · Type · Venue · Cohost · Attend · Leads · Spend · Output · actions.
+// Date, Event, Type, Venue, Cohost, Attend, Leads, Spend, Output, actions.
 // The numeric columns are sized for their widest realistic value plus room to
 // breathe, so a long figure never crowds the column beside it.
 const GRID =
-  "118px minmax(0,1.5fr) 120px minmax(0,1.5fr) minmax(0,1.3fr) 76px 68px 96px 150px 122px";
+  "142px minmax(0,1.5fr) 144px minmax(0,1.5fr) minmax(0,1.3fr) 91px 82px 115px 180px 146px";
 
 // Wide enough that a cell's content ends well before the next column starts,
 // so a long name or a trailing Luma mark never reads as touching the column
@@ -57,7 +57,8 @@ const rowGrid: CSSProperties = {
   columnGap: COLUMN_GAP,
 };
 
-// Design's inline-edit inputs: 6px 8px on the tinted row (ui.editInput differs).
+// Design's inline-edit inputs: 6px 8px on the tinted row with no set height
+// (ui.editInput is the 44px variant other screens use).
 const editField: CSSProperties = {
   boxSizing: "border-box",
   padding: "6px 8px",
@@ -65,7 +66,7 @@ const editField: CSSProperties = {
   borderRadius: 0,
   background: "var(--card)",
   color: "var(--label-1)",
-  fontSize: 13,
+  fontSize: 16,
 };
 
 const dateInput: CSSProperties = { ...input, padding: "7px 10px" };
@@ -87,7 +88,7 @@ const rowAction: CSSProperties = {
   cursor: "pointer",
   background: "none",
   color: "var(--label-3)",
-  fontSize: 12,
+  fontSize: 14,
   padding: 2,
 };
 
@@ -118,10 +119,22 @@ function monthsBetween(calStart: string, calEnd: string): Array<{ y: number; m: 
 
 const clampInt = (v: string) => Math.max(0, Math.round(Number(v) || 0));
 
+/** The New event card's fields, as typed; every value stays text until Add. */
+type Draft = {
+  name: string;
+  date: string;
+  end: string;
+  typeId: string;
+  venue: string;
+  cohost: string;
+  spend: string;
+};
+
 export function Events(props: {
   events: HqEvent[];
   classifiers: Classifiers;
-  settings: Settings;
+  /** The calendar's month range; the rest of Settings never reaches the client. */
+  settings: Pick<Settings, "calStart" | "calEnd">;
   now: number;
   today: string;
   /** Last successful Luma mirror refresh; null if it has never run. */
@@ -140,7 +153,18 @@ export function Events(props: {
   const [syncError, setSyncError] = useState<string | null>(null);
   // Deleted rows vanish immediately; useOptimistic cannot express a removal.
   const [deletedIds, setDeletedIds] = useState<ReadonlySet<string>>(new Set());
-  const drafts = useRef({ name: "", date: "", end: "", typeId: "", venue: "", cohost: "", spend: "" });
+  // Controlled, so the card shows what the draft still holds when it reopens.
+  const [draft, setDraft] = useState<Draft>(() => ({
+    name: "",
+    date: "",
+    end: "",
+    typeId: classifiers.eventTypes[0]?.id ?? "",
+    venue: "",
+    cohost: "",
+    spend: "",
+  }));
+  const setD = (key: keyof Draft) => (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    setDraft((d) => ({ ...d, [key]: e.target.value }));
 
   // ⌘K navigation contract: a ?view=list arrival forces the list view.
   // State adjusts during render (React's prop-change pattern); only the
@@ -207,21 +231,22 @@ export function Events(props: {
     !syncedAt || now - Date.parse(syncedAt) > FRESHNESS_STATUS_AFTER_MS;
 
   const addEvent = () => {
-    const d = drafts.current;
-    if (!d.name || !d.date) return;
+    if (!draft.name || !draft.date) return;
     const payload = {
-      name: d.name,
-      date: d.date,
-      endDate: d.end || null,
-      typeId: d.typeId || classifiers.eventTypes[0]?.id || "",
-      venue: d.venue,
-      cohost: d.cohost,
-      spend: clampInt(d.spend),
+      name: draft.name,
+      date: draft.date,
+      endDate: draft.end || null,
+      typeId: draft.typeId || classifiers.eventTypes[0]?.id || "",
+      venue: draft.venue,
+      cohost: draft.cohost,
+      spend: clampInt(draft.spend),
     };
     startTransition(async () => {
       await createEvent(payload);
     });
-    drafts.current.name = drafts.current.date = drafts.current.end = "";
+    // Type, venue, cohost and budget carry over to the next event; the rest
+    // is one event's own.
+    setDraft((d) => ({ ...d, name: "", date: "", end: "" }));
     setNewEventOpen(false);
   };
 
@@ -230,7 +255,7 @@ export function Events(props: {
   const typeById = (id: string) => classifiers.eventTypes.find((t) => t.id === id);
 
   // The comparator must return 0 for equal dates. Anything else is an
-  // inconsistent comparator, whose result is implementation-defined — and the
+  // inconsistent comparator, whose result is implementation-defined, and the
   // server sorts under Node's V8 while the browser sorts under Chrome's, so
   // same-day events could land in different orders and break hydration.
   // Returning 0 also keeps the query's own `created_at` order for ties, since
@@ -250,7 +275,7 @@ export function Events(props: {
     cursor: "pointer",
     padding: "5px 14px",
     borderRadius: 0,
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: 600,
     background: on ? "var(--label-1)" : "none",
     color: on ? "var(--bg)" : "var(--label-2)",
@@ -305,15 +330,27 @@ export function Events(props: {
         </h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <div style={{ display: "flex", boxShadow: "0 0 0 1px var(--sep)", padding: 2 }}>
-            <button onClick={() => setEventsView("list")} style={seg(eventsView === "list")}>
+            <button
+              type="button"
+              aria-pressed={eventsView === "list"}
+              onClick={() => setEventsView("list")}
+              style={seg(eventsView === "list")}
+            >
               List
             </button>
-            <button onClick={() => setEventsView("cal")} style={seg(eventsView === "cal")}>
+            <button
+              type="button"
+              aria-pressed={eventsView === "cal"}
+              onClick={() => setEventsView("cal")}
+              style={seg(eventsView === "cal")}
+            >
               Calendar
             </button>
           </div>
           {archived.length > 0 ? (
             <button
+              type="button"
+              aria-pressed={showArchived}
               onClick={() => {
                 setShowArchived((on) => !on);
                 setEditingId(null);
@@ -323,7 +360,7 @@ export function Events(props: {
                 cursor: "pointer",
                 padding: "7px 12px",
                 borderRadius: 0,
-                fontSize: 13,
+                fontSize: 16,
                 fontWeight: 600,
                 background: showArchived ? "var(--fill-2)" : "none",
                 color: "var(--label-2)",
@@ -338,7 +375,7 @@ export function Events(props: {
               style={{
                 alignSelf: "center",
                 padding: "6px 10px",
-                fontSize: 12,
+                fontSize: 14,
                 fontWeight: 600,
                 whiteSpace: "nowrap",
                 background: "var(--accent-fill)",
@@ -350,6 +387,7 @@ export function Events(props: {
             </span>
           ) : null}
           <button
+            type="button"
             onClick={() => void runSync()}
             disabled={syncing}
             aria-busy={syncing}
@@ -391,13 +429,15 @@ export function Events(props: {
             </svg>
           </button>
           <button
+            type="button"
+            aria-expanded={newEventOpen}
             onClick={() => setNewEventOpen((open) => !open)}
             style={{
               border: "none",
               cursor: "pointer",
               padding: "7px 14px",
               borderRadius: 0,
-              fontSize: 14,
+              fontSize: 17,
               fontWeight: 600,
               background: "var(--label-1)",
               color: "var(--bg)",
@@ -415,14 +455,14 @@ export function Events(props: {
             padding: "9px 14px",
             background: "var(--accent-fill)",
             color: "var(--accent-deep)",
-            fontSize: 13,
+            fontSize: 16,
           }}
         >
           {syncError}
         </div>
       ) : null}
       {showArchived ? (
-        <div style={{ marginTop: 12, fontSize: 13, color: "var(--label-3)" }}>
+        <div style={{ marginTop: 12, fontSize: 16, color: "var(--label-3)" }}>
           Archived events are hidden from the list and the calendar. Luma still holds
           them; archiving only affects HQ.
         </div>
@@ -434,8 +474,8 @@ export function Events(props: {
             background: "var(--card)",
             borderRadius: 0,
             boxShadow: "var(--shadow-1)",
-            padding: "16px 18px",
-            marginTop: 14,
+            padding: 24,
+            marginTop: 28,
             display: "flex",
             gap: 10,
             flexWrap: "wrap",
@@ -443,24 +483,16 @@ export function Events(props: {
           }}
         >
           <FormField label="Event name" flex={1} minWidth={150}>
-            <input onChange={(e) => (drafts.current.name = e.target.value)} style={input} />
+            <input value={draft.name} onChange={setD("name")} style={input} />
           </FormField>
           <FormField label="Date" minWidth={130}>
-            <input
-              type="date"
-              onChange={(e) => (drafts.current.date = e.target.value)}
-              style={dateInput}
-            />
+            <input type="date" value={draft.date} onChange={setD("date")} style={dateInput} />
           </FormField>
           <FormField label="End date" minWidth={130}>
-            <input
-              type="date"
-              onChange={(e) => (drafts.current.end = e.target.value)}
-              style={dateInput}
-            />
+            <input type="date" value={draft.end} onChange={setD("end")} style={dateInput} />
           </FormField>
           <FormField label="Type" minWidth={180}>
-            <select onChange={(e) => (drafts.current.typeId = e.target.value)} style={input}>
+            <select value={draft.typeId} onChange={setD("typeId")} style={input}>
               {classifiers.eventTypes.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.label}
@@ -469,26 +501,28 @@ export function Events(props: {
             </select>
           </FormField>
           <FormField label="Venue" flex={1} minWidth={130}>
-            <input onChange={(e) => (drafts.current.venue = e.target.value)} style={input} />
+            <input value={draft.venue} onChange={setD("venue")} style={input} />
           </FormField>
           <FormField label="Cohost" minWidth={130}>
-            <input onChange={(e) => (drafts.current.cohost = e.target.value)} style={input} />
+            <input value={draft.cohost} onChange={setD("cohost")} style={input} />
           </FormField>
           <FormField label="Budget $" width={100}>
             <input
               type="number"
-              onChange={(e) => (drafts.current.spend = e.target.value)}
-              style={input}
+              value={draft.spend}
+              onChange={setD("spend")}
+              style={{ ...input, width: "100%" }}
             />
           </FormField>
           <button
+            type="button"
             onClick={addEvent}
             style={{
               border: "none",
               cursor: "pointer",
               padding: "9px 16px",
               borderRadius: 0,
-              fontSize: 14,
+              fontSize: 17,
               fontWeight: 600,
               background: "var(--label-1)",
               color: "var(--bg)",
@@ -514,7 +548,7 @@ export function Events(props: {
                 ...rowGrid,
                 padding: "10px 16px",
                 borderBottom: "1px solid var(--sep)",
-                fontSize: 12,
+                fontSize: 14,
                 fontWeight: 600,
                 color: "var(--label-3)",
                 textTransform: "uppercase",
@@ -553,8 +587,7 @@ export function Events(props: {
                     style={{
                       ...rowGrid,
                       padding: "11px 16px",
-                      borderBottom: "1px solid var(--sep)",
-                      fontSize: 14,
+                      fontSize: 17,
                       alignItems: "center",
                     }}
                   >
@@ -562,12 +595,12 @@ export function Events(props: {
                       style={{
                         fontVariantNumeric: "tabular-nums",
                         color: past ? "var(--label-3)" : "var(--label-1)",
-                        fontSize: 13,
+                        fontSize: 16,
                         fontWeight: past ? 400 : 600,
                       }}
                     >
                       {e.endDate && e.endDate > e.date
-                        ? `${fmtDate(e.date)} – ${fmtDate(e.endDate)}`
+                        ? `${fmtDate(e.date)} to ${fmtDate(e.endDate)}`
                         : fmtDate(e.date)}
                     </span>
                     <span
@@ -582,11 +615,11 @@ export function Events(props: {
                       <span style={{ overflowWrap: "anywhere" }}>{e.name}</span>
                       {e.lumaId ? <LumaMark href={e.lumaUrl} /> : null}
                     </span>
-                    <span style={{ color: "var(--label-2)", fontSize: 13 }}>
+                    <span style={{ color: "var(--label-2)", fontSize: 16 }}>
                       {typeById(e.typeId)?.label ?? ""}
                     </span>
-                    <span style={{ color: "var(--label-2)", fontSize: 13 }}>{e.venue}</span>
-                    <span style={{ color: "var(--label-2)", fontSize: 13 }}>{e.cohost}</span>
+                    <span style={{ color: "var(--label-2)", fontSize: 16 }}>{e.venue}</span>
+                    <span style={{ color: "var(--label-2)", fontSize: 16 }}>{e.cohost}</span>
                     <span style={{ fontVariantNumeric: "tabular-nums", color: "var(--label-2)" }}>
                       {past ? e.attendance : ""}
                     </span>
@@ -600,17 +633,23 @@ export function Events(props: {
                       style={{
                         fontVariantNumeric: "tabular-nums",
                         color: "var(--label-2)",
-                        fontSize: 13,
+                        fontSize: 16,
                       }}
                     >
                       {past ? `${e.outputs.q} / ${e.outputs.a} / ${e.outputs.s}` : "upcoming"}
                     </span>
                     <span style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      <button className="hq-hover-accent" onClick={() => toggleEdit(e.id)} style={rowAction}>
+                      <button
+                        type="button"
+                        className="hq-hover-accent"
+                        onClick={() => toggleEdit(e.id)}
+                        style={rowAction}
+                      >
                         Edit
                       </button>
                       {e.archived ? (
                         <button
+                          type="button"
                           className="hq-hover-accent"
                           onClick={() => setArchived(e.id, false)}
                           style={rowAction}
@@ -622,6 +661,7 @@ export function Events(props: {
                         // next sync, minus everything HQ recorded against it.
                         // Archiving is reversible, so it stays one-click.
                         <button
+                          type="button"
                           className="hq-hover-accent"
                           onClick={() => setArchived(e.id, true)}
                           style={rowAction}
@@ -630,6 +670,7 @@ export function Events(props: {
                         </button>
                       ) : del ? (
                         <button
+                          type="button"
                           className="hq-hover-accent"
                           onClick={del.onClick}
                           title={del.title}
@@ -651,7 +692,6 @@ export function Events(props: {
                     flexWrap: "wrap",
                     alignItems: "center",
                     padding: "12px 16px",
-                    borderBottom: "1px solid var(--sep)",
                     background: "var(--fill-4)",
                   }}
                 >
@@ -665,7 +705,7 @@ export function Events(props: {
                   />
                   {typeById(e.typeId)?.supportsEndDate ? (
                     <>
-                      <span style={{ fontSize: 12, color: "var(--label-3)", flex: "none" }}>to</span>
+                      <span style={{ fontSize: 14, color: "var(--label-3)", flex: "none" }}>to</span>
                       <input
                         type="date"
                         defaultValue={e.endDate ?? ""}
@@ -696,7 +736,7 @@ export function Events(props: {
                       borderRadius: 0,
                       background: "var(--card)",
                       color: "var(--label-1)",
-                      fontSize: 13,
+                      fontSize: 16,
                     }}
                   >
                     {classifiers.eventTypes.map((t) => (
@@ -754,7 +794,7 @@ export function Events(props: {
                         alignItems: "center",
                         gap: 6,
                         flexWrap: "wrap",
-                        fontSize: 11,
+                        fontSize: 13,
                         color: "var(--label-3)",
                       }}
                     >
@@ -762,6 +802,7 @@ export function Events(props: {
                       {PIN_FIELDS.filter((f) => e.pinned.includes(PINNABLE[f])).map((f) => (
                         <button
                           key={f}
+                          type="button"
                           onClick={() => releasePin(e.id, f)}
                           title={`Stop overriding ${PIN_LABELS[f]} - the next sync restores Luma's value`}
                           style={{
@@ -770,7 +811,7 @@ export function Events(props: {
                             background: "var(--card)",
                             color: "var(--label-2)",
                             borderRadius: 999,
-                            fontSize: 11,
+                            fontSize: 13,
                             padding: "1px 8px",
                           }}
                         >
@@ -780,13 +821,14 @@ export function Events(props: {
                     </span>
                   ) : null}
                   <button
+                    type="button"
                     onClick={() => toggleEdit(e.id)}
                     style={{
                       border: "none",
                       cursor: "pointer",
                       background: "none",
                       color: "var(--accent)",
-                      fontSize: 12,
+                      fontSize: 14,
                       fontWeight: 600,
                       padding: 2,
                     }}
@@ -804,7 +846,7 @@ export function Events(props: {
             display: "grid",
             // min() so a month card never forces the page wider than the
             // viewport on narrow phones.
-            gridTemplateColumns: "repeat(auto-fit,minmax(min(290px,100%),1fr))",
+            gridTemplateColumns: "repeat(auto-fit,minmax(min(348px,100%),1fr))",
             gap: 12,
             marginTop: 14,
           }}
@@ -816,16 +858,16 @@ export function Events(props: {
                 background: "var(--card)",
                 borderRadius: 0,
                 boxShadow: "var(--shadow-1)",
-                padding: "16px 18px",
+                padding: 24,
               }}
             >
-              <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 10 }}>{m.label}</div>
+              <div style={{ fontSize: 18, fontWeight: 600, marginBottom: 10 }}>{m.label}</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 2 }}>
                 {DOWS.map((d, i) => (
                   <div
                     key={i}
                     style={{
-                      fontSize: 11,
+                      fontSize: 13,
                       color: "var(--label-3)",
                       textAlign: "center",
                       paddingBottom: 4,
@@ -841,7 +883,7 @@ export function Events(props: {
                     // Centered like the weekday header above it: both are 1fr
                     // columns with symmetric padding, so their centers line up.
                     style={{
-                      minHeight: 36,
+                      minHeight: 48,
                       borderRadius: 0,
                       padding: "2px 3px",
                       background: c.bg,
@@ -850,7 +892,7 @@ export function Events(props: {
                   >
                     <div
                       style={{
-                        fontSize: 11,
+                        fontSize: 13,
                         fontVariantNumeric: "tabular-nums",
                         color: c.color,
                         fontWeight: c.weight,
@@ -860,7 +902,7 @@ export function Events(props: {
                     </div>
                     <div
                       style={{
-                        fontSize: 9,
+                        fontSize: 11,
                         lineHeight: "11px",
                         color: "var(--accent-deep)",
                         fontWeight: 600,
