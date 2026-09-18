@@ -284,26 +284,3 @@ export function LumaMark({ href }: { href: string }) {
     </a>
   );
 }
-
-/** Thin progress bar (funnel cards, gates column, partner target). */
-export function ProgressBar({ pct }: { pct: number }) {
-  return (
-    <div
-      style={{
-        height: 4,
-        borderRadius: 0,
-        background: "var(--fill-3)",
-        overflow: "hidden",
-      }}
-    >
-      <div
-        style={{
-          height: "100%",
-          borderRadius: 0,
-          background: "var(--accent)",
-          width: `${Math.min(100, pct)}%`,
-        }}
-      />
-    </div>
-  );
-}

@@ -1,6 +1,13 @@
-import { ProgressBar, card, cardTitle, pageTitle } from "@/components/hq/ui";
+import type { CSSProperties } from "react";
+import { card, cardTitle, pageTitle } from "@/components/hq/ui";
 import { daysUntilLabel, fmtDate, isStale } from "@/lib/hq/format";
 import type { Classifiers, Milestone, Project, Settings } from "@/lib/hq/types";
+
+// Cards inside the two grids sit on the grid gap alone; only the full-width
+// Needs attention card below them carries the shared 28px top margin.
+const gridCard: CSSProperties = { ...card, marginTop: 0 };
+
+const sectionTitle: CSSProperties = { ...cardTitle, margin: 0 };
 
 export function Dashboard({
   settings,
@@ -31,50 +38,32 @@ export function Dashboard({
     (p) => p.gates.length === classifiers.gates.length
   ).length;
 
+  // Current counts only: the manual funnel numbers are seed-only values now,
+  // shown as they are, with no target beside them.
   const funnel = [
     {
       label: "Prospects reached",
       cur: settings.prospectsReached,
-      target: settings.prospectsTarget,
       sub: settings.prospectsSub,
     },
     {
       label: "Committed projects",
       cur: settings.committedManual,
-      target: settings.committedTarget,
       sub: `${committed} of ${projects.length} tracked here are committed`,
     },
     {
       label: "Active at kickoff",
       cur: settings.activeAtKickoff,
-      target: settings.activeTarget,
       sub: settings.activeSub,
     },
     {
       label: "Verified submissions",
       cur: verified,
-      target: settings.verifiedTarget,
       sub: "Every submission gate checked",
     },
-  ].map((f) => ({
-    ...f,
-    pct: Math.min(100, Math.round((f.cur / (f.target || 1)) * 100)),
-  }));
+  ];
 
-  const warnings: Array<{ tag: string; text: string }> = [];
-  if (settings.committedManual < settings.committedGlide) {
-    warnings.push({
-      tag: "Monday review",
-      text: `Committed projects at ${settings.committedManual} of ${settings.committedTarget} target. Pace needs ${Math.max(0, settings.committedGlide - settings.committedManual)} more by kickoff to stay on the glide path.`,
-    });
-  }
   const stale = projects.filter((p) => isStale(p.lastCheckIn, settings.staleDays, now));
-  if (stale.length) {
-    warnings.push({
-      tag: "Check-ins",
-      text: `${stale.length} project${stale.length > 1 ? "s have" : " has"} no check-in for over a week: ${stale.map((p) => p.name).join(", ")}.`,
-    });
-  }
 
   const weekItems = [
     ...projects
@@ -107,15 +96,13 @@ export function Dashboard({
         }}
       >
         <h1 style={pageTitle}>Dashboard</h1>
-        <span style={{ fontSize: 13, color: "var(--label-3)" }}>{todayText}</span>
+        <span style={{ fontSize: 16, color: "var(--label-3)" }}>{todayText}</span>
       </div>
-      {warnings.map((w) => (
+      {stale.length > 0 && (
         <div
-          key={w.tag}
           style={{
             marginTop: 14,
             background: "var(--orange-fill)",
-            borderRadius: 0,
             padding: "10px 14px",
             display: "flex",
             gap: 10,
@@ -124,60 +111,43 @@ export function Dashboard({
         >
           <span
             style={{
-              fontSize: 13,
+              fontSize: 16,
               fontWeight: 600,
               color: "var(--orange)",
               whiteSpace: "nowrap",
             }}
           >
-            {w.tag}
+            Check-ins
           </span>
-          <span style={{ fontSize: 13, color: "var(--label-1)" }}>{w.text}</span>
+          <span style={{ fontSize: 16, color: "var(--label-1)" }}>
+            {`${stale.length} project${stale.length > 1 ? "s have" : " has"} no check-in for over a week: ${stale.map((p) => p.name).join(", ")}.`}
+          </span>
         </div>
-      ))}
+      )}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit,minmax(264px,1fr))",
           gap: 12,
           marginTop: 16,
         }}
       >
         {funnel.map((f) => (
-          <div key={f.label} style={card}>
-            <div style={{ fontSize: 13, color: "var(--label-2)" }}>{f.label}</div>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                gap: 6,
-                marginTop: 6,
-              }}
-            >
+          <div key={f.label} style={gridCard}>
+            <div style={{ fontSize: 16, color: "var(--label-2)" }}>{f.label}</div>
+            <div style={{ marginTop: 6 }}>
               <span
                 style={{
                   fontFamily: "var(--serif)",
-                  fontSize: 34,
+                  fontSize: 40,
                   fontWeight: 400,
                   fontVariantNumeric: "tabular-nums",
                 }}
               >
                 {f.cur}
               </span>
-              <span
-                style={{
-                  fontSize: 14,
-                  color: "var(--label-3)",
-                  fontVariantNumeric: "tabular-nums",
-                }}
-              >
-                / {f.target}
-              </span>
             </div>
-            <div style={{ marginTop: 10 }}>
-              <ProgressBar pct={f.pct} />
-            </div>
-            <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 8 }}>
+            <div style={{ fontSize: 14, color: "var(--label-3)", marginTop: 8 }}>
               {f.sub}
             </div>
           </div>
@@ -186,21 +156,17 @@ export function Dashboard({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit,minmax(min(360px,100%),1fr))",
           gap: 12,
           marginTop: 12,
         }}
       >
-        <div style={card}>
-          <div style={cardTitle}>Forecast</div>
-          <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 2 }}>
-            Across the {projects.length} tracked projects
-          </div>
+        <div style={gridCard}>
+          <h2 style={sectionTitle}>Forecast</h2>
           <div
             style={{
               display: "flex",
               height: 10,
-              borderRadius: 0,
               overflow: "hidden",
               background: "var(--fill-3)",
               marginTop: 14,
@@ -219,18 +185,11 @@ export function Dashboard({
                 key={l.slug}
                 style={{ display: "flex", alignItems: "center", gap: 6 }}
               >
+                <span style={{ width: 8, height: 8, background: l.color }} />
+                <span style={{ fontSize: 16, color: "var(--label-2)" }}>{l.label}</span>
                 <span
                   style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 0,
-                    background: l.color,
-                  }}
-                />
-                <span style={{ fontSize: 13, color: "var(--label-2)" }}>{l.label}</span>
-                <span
-                  style={{
-                    fontSize: 13,
+                    fontSize: 16,
                     fontWeight: 600,
                     fontVariantNumeric: "tabular-nums",
                   }}
@@ -241,8 +200,8 @@ export function Dashboard({
             ))}
           </div>
         </div>
-        <div style={card}>
-          <div style={cardTitle}>Milestones</div>
+        <div style={gridCard}>
+          <h2 style={sectionTitle}>Milestones</h2>
           <div style={{ display: "flex", flexDirection: "column", marginTop: 8 }}>
             {milestones.map((m) => (
               <div
@@ -252,12 +211,11 @@ export function Dashboard({
                   alignItems: "baseline",
                   gap: 10,
                   padding: "8px 0",
-                  borderBottom: "1px solid var(--sep)",
                 }}
               >
                 <span
                   style={{
-                    fontSize: 13,
+                    fontSize: 16,
                     color: "var(--label-3)",
                     fontVariantNumeric: "tabular-nums",
                     width: 56,
@@ -266,10 +224,10 @@ export function Dashboard({
                 >
                   {fmtDate(m.date)}
                 </span>
-                <span style={{ fontSize: 14, flex: 1 }}>{m.label}</span>
+                <span style={{ fontSize: 17, flex: 1 }}>{m.label}</span>
                 <span
                   style={{
-                    fontSize: 13,
+                    fontSize: 16,
                     fontWeight: 600,
                     color: "var(--accent-deep)",
                     fontVariantNumeric: "tabular-nums",
@@ -283,8 +241,8 @@ export function Dashboard({
           </div>
         </div>
       </div>
-      <div style={{ ...card, marginTop: 12 }}>
-        <div style={cardTitle}>Needs attention</div>
+      <div style={card}>
+        <h2 style={sectionTitle}>Needs attention</h2>
         <div style={{ display: "flex", flexDirection: "column" }}>
           {weekItems.map((w) => (
             <div
@@ -294,7 +252,6 @@ export function Dashboard({
                 gap: 10,
                 alignItems: "baseline",
                 padding: "9px 0",
-                borderBottom: "1px solid var(--sep)",
               }}
             >
               <span
@@ -308,10 +265,10 @@ export function Dashboard({
                   top: -1,
                 }}
               />
-              <span style={{ fontSize: 14, flex: 1 }}>{w.text}</span>
+              <span style={{ fontSize: 17, flex: 1 }}>{w.text}</span>
               <span
                 style={{
-                  fontSize: 12,
+                  fontSize: 14,
                   color: "var(--label-3)",
                   whiteSpace: "nowrap",
                 }}
