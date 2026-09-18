@@ -67,8 +67,8 @@ describe("getMemberNav", () => {
     ];
     for (const item of navs.flat()) {
       expect(isMemberPath(item.href), item.href).toBe(true);
-      expect(item.label).not.toMatch(/admin|operator|people|partners|projects|links|demo/i);
-      expect(item.href).not.toMatch(/^\/hq\/?$|\/hq\/(admin|people|partners|projects|events|links|demo|select|login)/);
+      expect(item.label).not.toMatch(/admin|operator|people|partners|projects|demo/i);
+      expect(item.href).not.toMatch(/^\/hq\/?$|\/hq\/(admin|people|partners|projects|events|demo|select|login)/);
       expect(item.label).not.toMatch(/[—·]/);
     }
     // Keys are render identities: unique within one menu (the team item keeps its key across its two labels).

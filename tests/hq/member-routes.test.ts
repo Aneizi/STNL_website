@@ -17,7 +17,7 @@ const bounce = (pathname: string) => proxy(new NextRequest(`${ORIGIN}${pathname}
 const MEMBER_LOGIN_PAGES = ["/hq/login", "/hq/signin"];
 const MEMBER_PAGES = ["/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain", "/hq/captain/notes"];
 const DYNAMIC_MEMBER_PAGES = ["/hq/hackathon/41", "/hq/team/00000000-0000-4000-8000-00000000000a", "/hq/team/1234-abcd", "/hq/invite/abc", "/hq/invite/tok_en-42", "/hq/join/917F94-8CE496-4D2C7A-4C70F1"];
-const OPERATOR_PAGES = ["/hq", "/hq/admin", "/hq/people", "/hq/projects", "/hq/partners", "/hq/partners/abc", "/hq/events", "/hq/links", "/hq/demo", "/hq/select", "/hq/change-password", "/hq/api/search"];
+const OPERATOR_PAGES = ["/hq", "/hq/admin", "/hq/people", "/hq/projects", "/hq/partners", "/hq/partners/abc", "/hq/events", "/hq/demo", "/hq/select", "/hq/change-password", "/hq/api/search"];
 
 describe("the member route list", () => {
   it("names every member page once, the team and invitation subtrees included, and nothing operator-side", () => {

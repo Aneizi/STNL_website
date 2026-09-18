@@ -127,21 +127,6 @@ export type PartnerDetail = Partner & {
   teams: Array<{ id: string; name: string; statusSlug: string }>;
 };
 
-export type HqLink = {
-  id: string;
-  title: string;
-  url: string;
-  highlighted: boolean;
-  notes: NoteItem[]; // reuses the existing NoteItem shape
-};
-
-/**
- * Most links that can be highlighted (pinned to the top of the Links list).
- * A constant, not an hq_settings row — promote it only if it ever needs to
- * be operator-editable.
- */
-export const HIGHLIGHT_CAP = 5;
-
 /**
  * A label on a People card. A role tag is the card's editable role. A
  * capability tag mirrors an admin-granted account capability (Captain): it is

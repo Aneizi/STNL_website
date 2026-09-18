@@ -14,7 +14,6 @@ import type {
   FinalistProject,
   Hackathon,
   HqEvent,
-  HqLink,
   Judge,
   Milestone,
   Partner,
@@ -536,36 +535,6 @@ export async function getEventOptions(hackathonId: number): Promise<EventOption[
     options.push({ id: r.id, name: r.name });
   }
   return options;
-}
-
-/** Shared links with their note logs, newest link first. */
-export async function getLinks(hackathonId: number): Promise<HqLink[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT l.id, l.title, l.url, l.highlighted,
-      COALESCE(
-        (SELECT json_agg(json_build_object(
-            'id', n.id,
-            'author', COALESCE(au.display_name, ''),
-            'body', n.body,
-            'createdAt', to_char(n.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-          ) ORDER BY n.created_at DESC)
-          FROM hq_link_notes n
-          LEFT JOIN hq_users au ON au.id = n.author_user_id
-          WHERE n.link_id = l.id),
-        '[]'
-      ) AS notes
-    FROM hq_links l
-    WHERE l.hackathon_id = ${hackathonId}
-    ORDER BY l.created_at DESC
-  `;
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    url: r.url,
-    highlighted: r.highlighted,
-    notes: r.notes ?? [],
-  }));
 }
 
 /** Id/name pairs for partner dropdowns — no captain contact or metadata. */
