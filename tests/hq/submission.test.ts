@@ -53,7 +53,6 @@ import {
   reconcileSubmissions,
   refreshDueSubmissions,
 } from "@/lib/hq/submission";
-import { writeCaptainContact } from "@/lib/hq/reporting-contacts";
 import { captainReportingBoard, memberWeekSummaries, teamReportingPanel } from "@/lib/hq/reporting-surface";
 import { projectNeedsAttention } from "@/lib/hq/dashboard-attention";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
@@ -443,7 +442,7 @@ describe("what an authorized member is shown in the final period", () => {
     // The handle: nothing, then the contact typed on the old form, then the
     // Telegram username the moment one is linked.
     expect(board.captainContact).toBeNull();
-    await writeCaptainContact(db, "cap", "@typed_handle");
+    await rows("UPDATE hq_builder_profiles SET captain_contact='@typed_handle' WHERE id='cap'");
     expect((await captainReportingBoard(captain, EDITION, db, IN_FINAL)).captainContact).toBe("@typed_handle");
     await rows(
       `INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES('telegram-cap','https://oauth.telegram.org','tg-cap','telegram','cap')`,

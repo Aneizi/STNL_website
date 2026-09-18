@@ -3,13 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireMemberActor } from "../actor";
-import { getActorCapabilities } from "../authz";
 import { builderDatabase } from "../builder-db";
 import { authorizedTeam, TEAM_NOT_AVAILABLE } from "../member-teams";
 import {
   MAX_CONTACT_LENGTH,
   normalizeContact,
-  writeCaptainContact,
   writeTeamContact,
 } from "../reporting-contacts";
 import {
@@ -192,21 +190,3 @@ export async function saveTeamContact(input: { projectId: string; hackathonId: n
   return { ok: true, contact };
 }
 
-/**
- * The contact a Captain approves for the teams they are assigned to. Gated on
- * the capability read for this request, never on the menu that led here: an
- * account without it is answered the same way an unrelated team is.
- */
-export async function saveCaptainContact(input: { contact: string }): Promise<ContactResult> {
-  const actor = await requireMemberActor();
-  // The grant as it stands now, not the set the actor was built with: that
-  // one is for the menu, and ./authz reads the grants again at decision time.
-  if (!(await getActorCapabilities(actor)).has("captain")) return { ok: false, error: TEAM_NOT_AVAILABLE };
-  const parsed = z.object({ contact: contactSchema }).safeParse(input);
-  if (!parsed.success) return { ok: false, error: "Check the contact and try again." };
-  const contact = normalizeContact(parsed.data.contact);
-  const written = await writeCaptainContact(builderDatabase(), actor.id, contact);
-  if (!written) return { ok: false, error: "We could not save this. Please try again." };
-  refresh();
-  return { ok: true, contact };
-}

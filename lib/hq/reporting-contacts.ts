@@ -96,15 +96,6 @@ export async function readCaptainContacts(db: BuilderQuery, userIds: readonly st
   return map;
 }
 
-/** The fallback source behind `readCaptainHandle`: what a Captain typed on the old contact form, read only when they have no Telegram username. */
-export async function writeCaptainContact(db: BuilderQuery, userId: string, contact: string | null): Promise<boolean> {
-  const { rows } = await db.query(
-    "UPDATE hq_builder_profiles SET captain_contact = $2 WHERE id = $1 RETURNING id",
-    [userId, normalizeContact(contact)],
-  );
-  return rows.length > 0;
-}
-
 /**
  * The handle a Captain is reached on, as their teams and their own Captains'
  * Den show it: the username of their linked Telegram identity, rendered

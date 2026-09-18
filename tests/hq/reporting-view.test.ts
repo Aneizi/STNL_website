@@ -30,7 +30,6 @@ import {
   MAX_CONTACT_LENGTH,
   missedLabel,
   mergeUpdatePages,
-  NO_UPDATES_YET,
   normalizeContact,
   NOTE_ADDED,
   periodRangeLabel,
@@ -38,16 +37,13 @@ import {
   shortPeriodRange,
   fmtRetryAt,
   PRIVATE_TOOLTIP,
-  promptDismissKey,
   REPORTING_STATUS_LABELS,
   SAVED_LABEL,
-  shouldPromptUpdate,
   statusLabel,
   SUBMISSION_FILTER_LABEL,
   telegramContactHref,
   UPDATE_SAVED,
   UPDATED_LABEL,
-  weekdayInZone,
   weekdayName,
   weekOfLabel,
 } from "@/lib/hq/reporting-view";
@@ -214,48 +210,6 @@ describe("the Admin page's words for reporting", () => {
   });
 });
 
-describe("the Monday and Tuesday prompt", () => {
-  // 14 September 2026 is a Monday in Amsterdam; 12:00 local is 10:00 UTC.
-  const monday = Date.parse("2026-09-14T10:00:00.000Z");
-  const tuesday = Date.parse("2026-09-15T10:00:00.000Z");
-  const wednesday = Date.parse("2026-09-16T10:00:00.000Z");
-  const sunday = Date.parse("2026-09-20T10:00:00.000Z");
-
-  it("reads the weekday in the campaign timezone, not the server's", () => {
-    // 23:30 UTC on Sunday is already Monday in Amsterdam.
-    expect(weekdayInZone(Date.parse("2026-09-13T23:30:00.000Z"), AMSTERDAM)).toBe(1);
-    expect(weekdayInZone(Date.parse("2026-09-13T23:30:00.000Z"), "UTC")).toBe(7);
-  });
-
-  it("prompts on Monday and Tuesday while the week is outstanding", () => {
-    for (const atMs of [monday, tuesday]) {
-      expect(shouldPromptUpdate({ current: WEEK_ONE, atMs, timezone: AMSTERDAM, paused: false })).toBe(true);
-    }
-  });
-
-  it("says nothing on the other days", () => {
-    for (const atMs of [wednesday, sunday]) {
-      expect(shouldPromptUpdate({ current: WEEK_ONE, atMs, timezone: AMSTERDAM, paused: false })).toBe(false);
-    }
-  });
-
-  it("stops for good once the week is complete, whatever the day", () => {
-    expect(shouldPromptUpdate({ current: { ...WEEK_ONE, completed: true }, atMs: monday, timezone: AMSTERDAM, paused: false })).toBe(false);
-  });
-
-  it("says nothing for a paused project, outside the campaign, or for an instant the week does not contain", () => {
-    expect(shouldPromptUpdate({ current: WEEK_ONE, atMs: monday, timezone: AMSTERDAM, paused: true })).toBe(false);
-    expect(shouldPromptUpdate({ current: null, atMs: monday, timezone: AMSTERDAM, paused: false })).toBe(false);
-    // A Monday three weeks later: still a Monday, but not inside this week.
-    expect(shouldPromptUpdate({ current: WEEK_ONE, atMs: Date.parse("2026-10-05T10:00:00.000Z"), timezone: AMSTERDAM, paused: false })).toBe(false);
-  });
-
-  it("keys a dismissal to one project and one week, so neither leaks into another", () => {
-    expect(promptDismissKey("project-a", "week-1")).not.toBe(promptDismissKey("project-a", "week-2"));
-    expect(promptDismissKey("project-a", "week-1")).not.toBe(promptDismissKey("project-b", "week-1"));
-  });
-});
-
 describe("the refusal messages", () => {
   it("gives every create refusal its own wording, never a shared generic one", () => {
     const messages = Object.values(ADD_UPDATE_MESSAGES);
@@ -328,7 +282,6 @@ describe("the copy rule", () => {
     ...Object.values(EDIT_UPDATE_MESSAGES),
     ...Object.values(AUDIENCE_NOTES),
     ...Object.values(REPORTING_STATUS_LABELS),
-    NO_UPDATES_YET,
     SUBMISSION_FILTER_LABEL,
     UPDATED_LABEL,
     HEADING_OPEN,
@@ -357,7 +310,6 @@ describe("the copy rule", () => {
 
   it("leaves the reporting components free of them as well", () => {
     for (const file of [
-      "components/hq/reporting-member.tsx",
       "components/hq/reporting-entry-card.tsx",
       "components/hq/builder-captain-den.tsx",
       // The team dossier and its late-update modal.
@@ -369,7 +321,6 @@ describe("the copy rule", () => {
       // instead: the contract's rule is that reporting copy stays inside
       // this scan, and what matters is that it is covered.
       "lib/hq/submission-readiness.ts",
-      "components/hq/submission-focus.tsx",
     ]) {
       // Comments are prose for the next reader, not interface copy, so only
       // the quoted and JSX text is scanned.

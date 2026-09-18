@@ -35,7 +35,6 @@ import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { assignCaptain, unassignCaptain } from "@/lib/hq/captains";
 import { createUpdate, enableReporting } from "@/lib/hq/reporting";
-import { writeCaptainContact } from "@/lib/hq/reporting-contacts";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const OPERATOR = "00000000-0000-4000-8000-000000000001";
@@ -142,7 +141,8 @@ afterAll(async () => {
 
 describe("/hq/captain against the real database", () => {
   it("renders the Den for a Captain: their teams in the aside, the outstanding one selected with its week, builders, contact and Colosseum link", async () => {
-    await writeCaptainContact(db, "me", "@my_handle");
+    // The typed contact of the old form: still read as the fallback while no Telegram username is linked.
+    await rows("UPDATE hq_builder_profiles SET captain_contact='@my_handle' WHERE id='me'");
     const html = await render(me());
     // The aside: the title, the week, both teams, the outstanding one pressed and marked, and the Captain's own handle.
     expect(html).toContain("Captains&#x27;");

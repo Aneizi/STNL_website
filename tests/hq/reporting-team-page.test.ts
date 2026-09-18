@@ -53,7 +53,6 @@ import type { MemberActor } from "@/lib/hq/actor";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { assignCaptain } from "@/lib/hq/captains";
-import { writeCaptainContact } from "@/lib/hq/reporting-contacts";
 import { createUpdate, enableReporting, listReportingPeriods } from "@/lib/hq/reporting";
 import { EARLIER_NOTE } from "@/lib/hq/reporting-view";
 import { setBotConsent } from "@/lib/hq/telegram-consent";
@@ -137,7 +136,7 @@ async function assignCaptainWithContact(contact: string | null) {
   await grantCapability(db, { actor: { kind: "operator", id: OPERATOR_ID }, byOperatorId: OPERATOR_ID, userId: "cap", capability: "captain", reason: "test" });
   const assigned = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT, hackathonId: EDITION, captainUserId: "cap" });
   if (assigned.outcome !== "assigned") throw new Error(`could not assign: ${JSON.stringify(assigned)}`);
-  if (contact) await writeCaptainContact(db, "cap", contact);
+  if (contact) await rows("UPDATE hq_builder_profiles SET captain_contact=$1 WHERE id='cap'", [contact]);
 }
 
 /** Links a Telegram identity with a username to the account, the way a Telegram sign-in leaves it. */
@@ -276,7 +275,7 @@ describe("the team page's aside", () => {
     expect(withoutContact).toContain(">cap</p>");
     expect(withoutContact).not.toMatch(/@thecaptain|@cap_handle/);
     // The old form's contact stands in while there is no Telegram username.
-    await writeCaptainContact(db, "cap", "@thecaptain");
+    await rows("UPDATE hq_builder_profiles SET captain_contact='@thecaptain' WHERE id='cap'");
     expect(await render(member("lead"))).toContain('href="https://t.me/thecaptain"');
     // Once Telegram is linked, its username is the handle, and the typed one is not shown beside it.
     await linkTelegram("cap", "cap_handle");

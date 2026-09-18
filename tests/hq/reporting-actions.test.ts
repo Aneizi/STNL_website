@@ -40,7 +40,6 @@ import type { MemberActor } from "@/lib/hq/actor";
 import {
   addReportingUpdate,
   editReportingUpdate,
-  saveCaptainContact,
   saveTeamContact,
 } from "@/lib/hq/actions/reporting";
 import {
@@ -52,7 +51,7 @@ import {
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { assignCaptain } from "@/lib/hq/captains";
-import { readCaptainContact, readTeamContact } from "@/lib/hq/reporting-contacts";
+import { readTeamContact } from "@/lib/hq/reporting-contacts";
 import {
   closePeriod,
   editUpdate,
@@ -335,20 +334,6 @@ describe("the two contacts", () => {
     await saveTeamContact({ projectId: PROJECT, hackathonId: EDITION, contact: "@ourteam" });
     expect(await saveTeamContact({ projectId: PROJECT, hackathonId: EDITION, contact: "   " })).toEqual({ ok: true, contact: null });
     expect(await readTeamContact(db, PROJECT)).toBeNull();
-  });
-
-  it("lets a Captain approve their own contact, and refuses an account without the grant", async () => {
-    await seedAssignedCaptain("cap", PROJECT);
-    asMember(member("cap", ["captain"]));
-    expect(await saveCaptainContact({ contact: "@thecaptain" })).toEqual({ ok: true, contact: "@thecaptain" });
-    expect(await readCaptainContact(db, "cap")).toBe("@thecaptain");
-
-    // The capability is read again at decision time, so a claim on the actor
-    // is not what opens this.
-    await seedAccount("pretender");
-    asMember(member("pretender", ["captain"]));
-    expect(await saveCaptainContact({ contact: "@pretender" })).toMatchObject({ ok: false });
-    expect(await readCaptainContact(db, "pretender")).toBeNull();
   });
 });
 

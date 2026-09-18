@@ -73,9 +73,6 @@ describe("the member shell imports nothing operator-side", () => {
   const scanned = [
     "app/hq/(member)/layout.tsx",
     "lib/hq/member-routes.ts",
-    // Phase 6's member reporting interface: a client component of the member
-    // shell like the builder-* ones below, and held to the same rule.
-    "components/hq/reporting-member.tsx",
     // The entry card the team page and the Captains' Den share.
     "components/hq/reporting-entry-card.tsx",
     // The team dossier and its late-update modal.
@@ -100,7 +97,6 @@ describe("the member shell imports nothing operator-side", () => {
 
   it("scans the layout, the pure route module and every builder component", () => {
     expect(scanned.length).toBeGreaterThanOrEqual(8);
-    expect(scanned).toContain("components/hq/reporting-member.tsx");
     expect(scanned).toContain("components/hq/builder-account-menu.tsx");
     expect(scanned).toContain("components/hq/builder-shell.tsx");
   });

@@ -197,50 +197,6 @@ export const LATE_NOTE = "Stays with the selected week. A missed week stays mark
 /** The Keep private tooltip on the Captains' Den, and the title of a private note's tag. */
 export const PRIVATE_TOOLTIP = "Only visible to you and HQ admins";
 
-/** ISO weekday (1 Monday to 7 Sunday) of an instant in the campaign timezone. */
-export function weekdayInZone(atMs: number, timezone: string): number {
-  const label = new Intl.DateTimeFormat("en-US", { timeZone: timezone, weekday: "short" }).format(new Date(atMs));
-  const index = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].indexOf(label);
-  return index < 0 ? 0 : index + 1;
-}
-
-/** The days HQ nudges on while the week's update is missing: Monday and Tuesday, per the plan. */
-const PROMPT_WEEKDAYS: ReadonlySet<number> = new Set([1, 2]);
-
-export type PromptInput = {
-  /** The open period's state, from `ProjectReportingStatus.current`; null outside the campaign. */
-  current: { completed: boolean; startsAt: string; endsAt: string } | null;
-  atMs: number;
-  timezone: string;
-  paused: boolean;
-};
-
-/**
- * Whether to show the update prompt for one project right now.
- *
- * Monday or Tuesday in the campaign timezone, a period actually open at this
- * instant, the week not already complete and the project not paused. The
- * prompt is a statement about the week, so completion is what stops it: a
- * dismissal only hides this browser's copy of it, and the inline Add update
- * action stays either way ("retain an inline action and stop prompting after
- * completion").
- */
-export function shouldPromptUpdate({ current, atMs, timezone, paused }: PromptInput): boolean {
-  if (paused || !current || current.completed) return false;
-  if (!(Date.parse(current.startsAt) <= atMs && atMs < Date.parse(current.endsAt))) return false;
-  return PROMPT_WEEKDAYS.has(weekdayInZone(atMs, timezone));
-}
-
-/**
- * Where a dismissal is remembered: this browser, keyed by project and
- * period, so dismissing one week never silences the next and dismissing one
- * team never silences another. Deliberately not a table: a dismissal is a
- * presentation preference with no audience and no history, the outstanding
- * action stays on the dashboard regardless, and the service stores none.
- */
-export const promptDismissKey = (projectId: string, periodId: string): string =>
-  `hq.reporting.prompt.${projectId}.${periodId}`;
-
 /**
  * What each refusal from `createUpdate` means, in words the person can act
  * on. One message per reason, never collapsed into a generic error: the rule
@@ -281,8 +237,6 @@ export const AUDIENCE_NOTES = {
   sensitive: "Kept between you and Superteam NL admins. The team does not see it, and it never counts as an update from the team.",
 } as const;
 
-/** The empty state of a project's update list, per audience. */
-export const NO_UPDATES_YET = "No updates yet for this week.";
 
 /** How a project's missed weeks read on a card, or an empty string when none. */
 export function missedLabel(missedPeriods: number): string {
