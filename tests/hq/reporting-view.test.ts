@@ -335,6 +335,7 @@ describe("the copy rule", () => {
     for (const file of [
       "components/hq/reporting-member.tsx",
       "components/hq/reporting-entry-card.tsx",
+      "components/hq/builder-captain-den.tsx",
       "components/hq/reporting-admin.tsx",
       "components/hq/reporting-project-panel.tsx",
       // Phase 10's final period. Its copy lives in its own pure module

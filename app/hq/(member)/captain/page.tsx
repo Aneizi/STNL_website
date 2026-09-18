@@ -1,56 +1,48 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { BuilderProjectImage } from "@/components/hq/builder-project-image";
+import { BuilderCaptainDen, type CaptainDenTeam } from "@/components/hq/builder-captain-den";
 import { BuilderShell } from "@/components/hq/builder-shell";
-import styles from "@/components/hq/builder-shell.module.css";
-import { CaptainContact, CaptainProjectCard } from "@/components/hq/reporting-member";
 import { requireMemberActor } from "@/lib/hq/actor";
 import { builderDatabase } from "@/lib/hq/builder-db";
 import { builderStore } from "@/lib/hq/builder-store";
-import { PROJECT_STAGES } from "@/lib/hq/builder-types";
-import { leaderboard } from "@/lib/hq/captains";
-import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { nowMs } from "@/lib/hq/format";
-import { captainReportingBoard } from "@/lib/hq/reporting-surface";
+import { captainReportingBoard, type CaptainReportingCard } from "@/lib/hq/reporting-surface";
 import { byOutstandingFirst } from "@/lib/hq/reporting-view";
-import { toCaptainAssignmentView, type CaptainAssignmentView } from "@/lib/hq/view-models";
+import type { BuilderTeam } from "@/lib/hq/builder-types";
 
-export const metadata: Metadata = { title: "Captain" };
+export const metadata: Metadata = { title: "Captains' Den" };
 export const dynamic = "force-dynamic";
 
-const STAGE_LABELS: Record<string, string> = Object.fromEntries(PROJECT_STAGES.map((stage) => [stage.value, stage.label]));
-
 /**
- * The imported team behind an assignment, when there is one.
+ * One card as the Den's client component receives it: the reporting facts
+ * the screen prints and the imported team's roster, lead and Colosseum link
+ * where the project has them. The service row (`card.status`) is read here
+ * for ordering and identity and never serialized: it carries the Captain's
+ * account id and the eligibility date. The team's `description` stays on the
+ * server for the same reason.
  *
  * An hq_projects row an admin added directly (CRM outreach, never imported
- * from Colosseum) has no hq_project_onboarding row, so there is no roster,
- * lead or Colosseum link to show and `builderStore().teamById` returns null.
- * That is no longer a reduced card: reporting is keyed on hq_projects, so
- * the week, the status and the composer above are identical either way, and
- * this block is the extra a Colosseum import happens to carry.
+ * from Colosseum) has no hq_project_onboarding row, so `teamById` answers
+ * null: the Den then lists no builders and offers no Colosseum link, and the
+ * week, the status and the note form are the same as for an imported team.
  */
-function ImportedTeamDetail({ view }: { view: CaptainAssignmentView }) {
-  return (
-    <>
-      <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-        <BuilderProjectImage src={view.source.imageUrl} name={view.name} size={56} />
-        <p style={{ margin: 0 }}>{STAGE_LABELS[view.stage] ?? view.stage}<br />Colosseum: {SUBMISSION_LABELS[view.source.submissionStatus]}</p>
-      </div>
-      <p><a className={styles.inlineLink} href={view.projectUrl} target="_blank" rel="noopener noreferrer">View project on Colosseum</a></p>
-      <p>Lead: @{view.lead.username}</p>
-      {view.roster.map((member) => (
-        <div className={styles.row} key={member.username || member.name}>
-          <div>{member.name}{member.username === view.lead.username ? " (lead)" : ""}</div>
-          <span>{member.joined ? "Joined" : "Not joined"}</span>
-        </div>
-      ))}
-    </>
-  );
+function toDenTeam(card: CaptainReportingCard, team: BuilderTeam | null): CaptainDenTeam {
+  return {
+    projectId: card.status.projectId,
+    hackathonId: card.status.hackathonId,
+    name: card.status.projectName,
+    paused: card.status.paused,
+    current: card.current ? { periodId: card.current.periodId, endsAt: card.current.endsAt, completed: card.current.completed } : null,
+    roster: team ? team.members.map((member) => ({ name: member.name, username: member.username, joined: member.joined })) : [],
+    leadUsername: team?.leadUsername ?? null,
+    projectUrl: team?.projectUrl ?? null,
+    teamContact: card.teamContact,
+    entries: card.entries,
+    nextCursor: card.nextCursor,
+  };
 }
 
-// The captain module. The gate is the member session, then the capability
+// The Captains' Den. The gate is the member session, then the capability
 // read from the grants for this request, never the menu that led here: an
 // account without the grant gets the same not-found page as a URL that does
 // not exist.
@@ -65,78 +57,25 @@ export default async function CaptainPage() {
   const hackathonId = await store.currentHackathonId();
   const db = builderDatabase();
   // One request instant, read before the board and passed into it, so the
-  // week the board decided, the final period it decided was open and the
-  // prompt this page renders all answer to the same moment.
+  // week the board decided and the due line this page prints answer to the
+  // same moment.
   const at = nowMs();
-  const [board, ranking] = hackathonId === null
-    ? [null, []]
-    : await Promise.all([
-        captainReportingBoard(actor, hackathonId, db, at),
-        leaderboard(db, hackathonId, actor.id),
-      ]);
-  // The imported detail, where there is any. One lookup per assigned project,
-  // and null is a perfectly good answer for a project the CRM created.
+  const board = hackathonId === null ? null : await captainReportingBoard(actor, hackathonId, db, at);
+  // The teams still needing this week's update first, as the aside lists
+  // them and as the first one is selected. The imported detail, where there
+  // is any: one lookup per assigned project, safe here only because every id
+  // comes from this Captain's own assignments on the board.
   const cards = [...(board?.cards ?? [])].sort((a, b) => byOutstandingFirst(a.status, b.status));
   const teams = await Promise.all(cards.map((card) => store.teamById(card.status.projectId)));
 
   return (
-    <BuilderShell>
-      <h1>Your <em>assignments.</em></h1>
-      {cards.length === 0 && <p>No assignments yet. Assignments appear here once an admin assigns you a team.</p>}
-      {cards.length > 0 && <p>Teams still needing this week&apos;s update come first.</p>}
-      {cards.map((card, index) => {
-        const team = teams[index];
-        return (
-          <CaptainProjectCard
-            key={card.status.projectId}
-            projectId={card.status.projectId}
-            projectName={card.status.projectName}
-            hackathonId={card.status.hackathonId}
-            current={card.current}
-            weeks={card.weeks}
-            missedPeriods={card.status.missedPeriods}
-            paused={card.status.paused}
-            teamContact={card.teamContact}
-            entries={card.entries}
-            nextCursor={card.nextCursor}
-            submissionFocus={card.submissionFocus}
-            timezone={board?.timezone ?? "Europe/Amsterdam"}
-            nowMs={at}
-          >
-            {team ? <ImportedTeamDetail view={toCaptainAssignmentView(team)} /> : <p>No Colosseum team is linked to this project.</p>}
-          </CaptainProjectCard>
-        );
-      })}
-
-      {cards.length > 0 && (
-        <section aria-labelledby="captain-contact-title">
-          <h2 id="captain-contact-title">Your contact</h2>
-          <CaptainContact initial={board?.captainContact ?? null} />
-        </section>
-      )}
-
-      <section aria-labelledby="captain-leaderboard-title">
-        <h2 id="captain-leaderboard-title">Captain leaderboard</h2>
-        {ranking.length === 0 && <p>No eligible Captains yet.</p>}
-        {ranking.length > 0 && (
-          <ol aria-label="Captain leaderboard">
-            {ranking.map((row) => (
-              <li className={styles.row} key={row.rank}>
-                <span>{row.rank}. {row.displayName}{row.isYou ? " (you)" : ""}</span>
-                <span>{row.assignedCount} project{row.assignedCount === 1 ? "" : "s"}</span>
-              </li>
-            ))}
-          </ol>
-        )}
-      </section>
-
-      {!actor.telegram && (
-        <section className={styles.notice} aria-labelledby="captain-telegram">
-          <h2 id="captain-telegram">Connect Telegram</h2>
-          <p>Captains can use the HQ bot on Telegram for reminders and updates once it is ready. Connecting is optional and never changes your account, your teams or your roles.</p>
-          <Link className={styles.button} href="/hq/account">Connect Telegram</Link>
-        </section>
-      )}
+    <BuilderShell bare>
+      <BuilderCaptainDen
+        teams={cards.map((card, index) => toDenTeam(card, teams[index]))}
+        week={board?.week ?? null}
+        timezone={board?.timezone ?? "Europe/Amsterdam"}
+        contact={board?.captainContact ?? null}
+      />
     </BuilderShell>
   );
 }
