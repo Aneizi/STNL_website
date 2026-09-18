@@ -689,14 +689,6 @@ export class BuilderStore {
         WHERE id=$1`, [projectId,leadUsername]);
     });
   }
-
-  async requestEvent(userId: string, hackathonId: number, title: string, details: string) {
-    const { rows } = await this.db.query(`INSERT INTO hq_event_host_requests(user_id,hackathon_id,title,details)
-      SELECT p.id,o.hackathon_id,$3,$4 FROM hq_builder_profiles p JOIN hq_builder_enrollments e ON e.user_id=p.id
-      JOIN hq_hackathon_onboarding o ON o.hackathon_id=e.hackathon_id JOIN hq_hackathons h ON h.id=o.hackathon_id
-      WHERE p.id=$1 AND p.tier='member' AND o.hackathon_id=$2 AND o.hosting_enabled AND h.archived_at IS NULL RETURNING id`, [userId,hackathonId,title,details]);
-    if (!rows.length) throw new BuilderError('Event applications are not open for this account and hackathon.');
-  }
 }
 
 export function builderStore() { return new BuilderStore(builderDatabase()); }

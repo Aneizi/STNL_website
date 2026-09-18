@@ -30,17 +30,6 @@ const fail = (error: unknown): {ok:false;error:string} => ({ ok:false, error: er
   ? error.message : error instanceof z.ZodError ? 'Check the details and try again.' : 'We could not save this. Please try again.' });
 function refresh() { revalidatePath('/hq', 'layout'); }
 
-export async function chooseBuilderPath(input: { hackathonId: number; path: 'initialize'|'join'|'supporter' }): Promise<BuilderResult<{url:string}>> {
-  const user = await requireMember();
-  try {
-    const parsed = z.object({hackathonId:hackathonIdSchema,path:z.enum(['initialize','join','supporter'])}).parse(input);
-    await builderStore().hackathon(parsed.hackathonId);
-    if (parsed.path==='supporter') await builderStore().enroll(user,parsed.hackathonId,'supporter');
-    refresh();
-    return {ok:true,data:{url:parsed.path==='supporter'?'/hq/dashboard':`/hq/${parsed.path}?hackathon=${parsed.hackathonId}`}};
-  } catch (error) { return fail(error); }
-}
-
 /** Validate the project before asking the member to choose their Colosseum profile. */
 export async function previewBuilderImport(input:{hackathonId:number;url:string}): Promise<
   BuilderResult<{name:string;projectUrl:string;members:{username:string;name:string;avatarUrl:string|null}[]}> |
@@ -175,17 +164,6 @@ export async function saveBuilderTeam(input:{projectId:string;hackathonId:number
     // Choosing the lead is a membership change: the verified team lead's alone.
     if (!(await authorizedTeam(actor,{projectId:value.projectId,hackathonId:value.hackathonId,action:'membership.change'}))) throw new BuilderError(TEAM_NOT_AVAILABLE);
     await builderStore().updateTeam(actor.id,value.projectId,value.stage,value.leadUsername);
-    refresh();
-    return {ok:true,data:{saved:true}};
-  } catch (error) { return fail(error); }
-}
-
-export async function requestBuilderEvent(input:{hackathonId:number;title:string;details:string}):Promise<BuilderResult<{saved:true}>> {
-  const user = await requireMember();
-  try {
-    const value = z.object({hackathonId:hackathonIdSchema,title:z.string().trim().min(3).max(120),details:z.string().trim().min(10).max(3000)}).parse(input);
-    await builderStore().rateLimit(user.id,'event',5);
-    await builderStore().requestEvent(user.id,value.hackathonId,value.title,value.details);
     refresh();
     return {ok:true,data:{saved:true}};
   } catch (error) { return fail(error); }
