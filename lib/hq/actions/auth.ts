@@ -140,10 +140,10 @@ export async function changePassword(
   const password = formData.get("password");
   const confirm = formData.get("confirm");
   if (typeof password !== "string" || password.length < 12 || password.length > 256) {
-    return { ok: false, error: "Password must be at least 12 characters." };
+    return { ok: false, error: "Use at least 12 characters." };
   }
   if (password !== confirm) {
-    return { ok: false, error: "Passwords do not match." };
+    return { ok: false, error: "The passwords do not match." };
   }
 
   const sql = getSql();
