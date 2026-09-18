@@ -24,8 +24,7 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  resolveBuilderImportRequest, reviewBuilderHostRequest,
-  updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
+  resolveBuilderImportRequest, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import {
@@ -51,14 +50,12 @@ const PROJECT = "00000000-0000-4000-8000-000000000002";
 const OTHER_PROJECT = "00000000-0000-4000-8000-000000000003";
 const REQUEST = "00000000-0000-4000-8000-000000000004";
 const OTHER_REQUEST = "00000000-0000-4000-8000-000000000005";
-const HOST_REQUEST = "00000000-0000-4000-8000-000000000006";
-const OTHER_HOST_REQUEST = "00000000-0000-4000-8000-000000000007";
 /** A project created directly in Admin, never imported: no onboarding row, no roster — nothing for the Captain conflict check's source 2 to see. */
 const BARE_PROJECT = "00000000-0000-4000-8000-000000000008";
 /** The selected edition's People card for the `selected` account. */
 const PERSON_CARD = "00000000-0000-4000-8000-000000000009";
 const config = { externalHackathonId: 42, externalHackathonSlug: "competition-42", projectsOpen: false,
-  projectsAvailableAt: "", signupUrl: "https://colosseum.com/signup", hostingEnabled: false };
+  projectsAvailableAt: "", signupUrl: "https://colosseum.com/signup" };
 let pg: PGlite;
 let queryCalls = 0;
 async function rows(text: string, values: unknown[] = []) { return (await pg.query(text, values)).rows as Record<string, unknown>[]; }
@@ -113,9 +110,6 @@ beforeAll(async () => {
   for (const [id, user, hackathon] of [[REQUEST, "selected", 11], [OTHER_REQUEST, "other", 12]] as const) {
     await rows(`INSERT INTO hq_project_import_requests(id,user_id,hackathon_id,project_url,note) VALUES($1,$2,$3,$4,'Please help import')`, [id, user, hackathon, `https://colosseum.com/arena/projects/explore/${user}`]);
   }
-  for (const [id, user, hackathon] of [[HOST_REQUEST, "selected", 11], [OTHER_HOST_REQUEST, "other", 12]] as const) {
-    await rows(`INSERT INTO hq_event_host_requests(id,user_id,hackathon_id,title,details) VALUES($1,$2,$3,'Builders meetup','A local builder workshop')`, [id, user, hackathon]);
-  }
 });
 
 beforeEach(async () => {
@@ -156,7 +150,6 @@ describe("builder administration authorization and scoping", () => {
     ["renaming a teammate", () => updateProjectMember(PROJECT, { field: "name", value: "Forged" })],
     ["editing a lead", () => updateProjectDetail(PROJECT, { field: "leadName", value: "Forged" })],
     ["import requests", () => resolveBuilderImportRequest(REQUEST)],
-    ["hosting", () => reviewBuilderHostRequest(HOST_REQUEST, "approved")],
     ["admin queries", () => getBuilderAdminData()],
     ["import requests query", () => getImportRequests()],
     ["granting Captain", () => grantCaptainCapability("selected", "Leads the cohort")],
@@ -177,8 +170,6 @@ describe("builder administration authorization and scoping", () => {
 
   it("queries only the selected hackathon", async () => {
     const admin = await getBuilderAdminData();
-    expect(admin.accounts.map((account) => account.id)).toEqual(["selected"]);
-    expect(admin.hostRequests.map((request) => request.id)).toEqual([HOST_REQUEST]);
     expect(admin.config.externalHackathonId).toBe(42);
     expect((await getImportRequests()).map((request) => request.id)).toEqual([REQUEST]);
   });
@@ -333,14 +324,11 @@ describe("builder administration authorization and scoping", () => {
   it("cannot flag another hackathon's project or resolve its requests", async () => {
     expect(await setProjectHighPotential(OTHER_PROJECT, true)).toMatchObject({ ok: false });
     expect(await resolveBuilderImportRequest(OTHER_REQUEST)).toMatchObject({ ok: false });
-    expect(await reviewBuilderHostRequest(OTHER_HOST_REQUEST, "approved")).toMatchObject({ ok: false });
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
     expect(await setProjectHighPotential(PROJECT, true)).toEqual({ ok: true });
     expect(await resolveBuilderImportRequest(REQUEST)).toEqual({ ok: true });
-    expect(await reviewBuilderHostRequest(HOST_REQUEST, "approved")).toEqual({ ok: true });
     expect(await rows("SELECT high_potential, touched_by_user_id::text AS touched_by FROM hq_projects WHERE id=$1", [PROJECT])).toEqual([{ high_potential: true, touched_by: OPERATOR }]);
     expect(await rows("SELECT status FROM hq_project_import_requests WHERE id=$1", [REQUEST])).toEqual([{ status: "resolved" }]);
-    expect(await rows("SELECT status FROM hq_event_host_requests WHERE id=$1", [HOST_REQUEST])).toEqual([{ status: "approved" }]);
   });
 
   it("flags a project created in HQ high potential and clears it again, on the project row itself", async () => {
@@ -352,12 +340,13 @@ describe("builder administration authorization and scoping", () => {
       .toEqual(["Marked Bare project high potential", "Removed high potential from Bare project"]);
   });
 
-  it("keeps external IDs separate and prevents remapping imported teams", async () => {
+  it("keeps external IDs separate, prevents remapping imported teams, and no longer writes the hosting flag", async () => {
     expect(await updateBuilderOnboardingConfig({ ...config, externalHackathonId: 81 })).toMatchObject({ ok: false });
     expect(await updateBuilderOnboardingConfig({ ...config, externalHackathonSlug: "other" })).toMatchObject({ ok: false });
+    // The flag is still accepted from an older client, and the column keeps what it held.
     expect(await updateBuilderOnboardingConfig({ ...config, projectsOpen: true, hostingEnabled: true })).toEqual({ ok: true });
     expect(await rows("SELECT hackathon_id,external_hackathon_id,projects_open,hosting_enabled FROM hq_hackathon_onboarding ORDER BY hackathon_id")).toEqual([
-      { hackathon_id: 11, external_hackathon_id: 42, projects_open: true, hosting_enabled: true },
+      { hackathon_id: 11, external_hackathon_id: 42, projects_open: true, hosting_enabled: false },
       { hackathon_id: 12, external_hackathon_id: 81, projects_open: false, hosting_enabled: false },
     ]);
   });
@@ -386,46 +375,39 @@ describe("accounts without a login email in Admin", () => {
       ('tg-only',NULL,'reach-me@example.test','Telegram Builder'),('tg-plain',NULL,NULL,'Handle-less Builder')`);
     await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT 11,'tg-only','Telegram Builder',id FROM hq_people_roles");
     await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT 11,'tg-plain','Handle-less Builder',id FROM hq_people_roles");
-    await rows("INSERT INTO hq_event_host_requests(user_id,hackathon_id,title,details) VALUES('tg-only',11,'Telegram meetup','A workshop')");
-    await rows("INSERT INTO hq_project_import_requests(user_id,hackathon_id,project_url,note) VALUES('tg-plain',11,'https://colosseum.com/arena/projects/explore/tg-plain','Please help')");
+    await rows(`INSERT INTO hq_project_import_requests(user_id,hackathon_id,project_url,note) VALUES
+      ('tg-only',11,'https://colosseum.com/arena/projects/explore/tg-only','Please help'),('tg-plain',11,'https://colosseum.com/arena/projects/explore/tg-plain','Please help')`);
     await rows(`INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
       SELECT $1,11,'Telegram project',s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f`, [TG_PROJECT]);
     await rows(`INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,project_url,slug,raw,owner_user_id,lead_username)
       VALUES($1,11,300,'https://colosseum.com/arena/projects/explore/tg-only','tg-only','{}','tg-only','tg-only')`, [TG_PROJECT]);
   });
 
-  it("carries the Telegram identity and the contact email apart from the login email, never the placeholder", async () => {
+  it("carries the Telegram identity apart from the login email, never the placeholder", async () => {
     const admin = await getBuilderAdminData();
-    expect(admin.accounts.find((account) => account.id === "tg-only")).toMatchObject({ email: null, telegram: { username: "tg_handle" }, contactEmail: "reach-me@example.test" });
-    expect(admin.accounts.find((account) => account.id === "tg-plain")).toMatchObject({ email: null, telegram: { username: null }, contactEmail: null });
-    expect(admin.accounts.find((account) => account.id === "selected")).toMatchObject({ email: "selected@example.test", telegram: null, contactEmail: null });
-    expect(admin.hostRequests.find((request) => request.title === "Telegram meetup")).toMatchObject({ email: null, telegram: { username: "tg_handle" } });
     const requests = await getImportRequests();
+    expect(requests.find((request) => request.name === "Telegram Builder")).toMatchObject({ email: null, telegram: { username: "tg_handle" } });
     expect(requests.find((request) => request.name === "Handle-less Builder")).toMatchObject({ email: null, telegram: { username: null } });
+    expect(requests.find((request) => request.name === "Selected Builder")).toMatchObject({ email: "selected@example.test", telegram: null });
     expect((await getProjects(11)).find((project) => project.id === TG_PROJECT)?.colosseum?.importedByName).toBe("Telegram Builder");
     expect(JSON.stringify([admin, requests])).not.toContain("placeholder.invalid");
     // A profile row that somehow holds the placeholder still never reaches a page.
     await rows("UPDATE hq_builder_profiles SET email=$1, contact_email=$1 WHERE id='tg-only'", [PLACEHOLDER]);
-    expect((await getBuilderAdminData()).accounts.find((account) => account.id === "tg-only")).toMatchObject({ email: null, contactEmail: null, telegram: { username: "tg_handle" } });
+    expect((await getImportRequests()).find((request) => request.name === "Telegram Builder")).toMatchObject({ email: null, telegram: { username: "tg_handle" } });
     expect(JSON.stringify([await getBuilderAdminData(), await getImportRequests()])).not.toContain("placeholder.invalid");
   });
 
-  it("renders a Telegram-only account as its handle, the contact email labelled apart, and an email account as before", async () => {
+  it("renders a Telegram-only account as its handle and an email account as before", async () => {
     const admin = await getBuilderAdminData();
     const requests = await getImportRequests();
-    const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, hostRequests: admin.hostRequests, timezone: "Europe/Amsterdam" }))
+    const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, timezone: "Europe/Amsterdam" }))
       + renderToStaticMarkup(createElement(ImportRequests, { requests }));
     expect(html).toContain("Telegram: @tg_handle");
-    expect(html).toContain("Contact email: reach-me@example.test");
     expect(html).toContain("Telegram account");
     expect(html).toContain("selected@example.test");
-    expect(html).toContain("Telegram Builder (Telegram: @tg_handle)");
     expect(html).not.toContain("placeholder.invalid");
     expect(html).not.toContain("()");
     expect(html).not.toContain("(null)");
-    expect(html).not.toContain("Contact email: reach-me@example.test</p><p>Contact email");
-    // The contact email line appears only for the account that declared one.
-    expect(html.match(/Contact email:/g)).toHaveLength(1);
   });
 });
 
@@ -457,10 +439,10 @@ describe("People tags, Captain grants and person-match correction", () => {
       ["Selected Builder", "selected", [{ kind: "role", label: "Builder", protected: false }, { kind: "capability", label: "Captain", protected: true }]],
     ]);
     expect(people.find((p) => p.name === "Selected Builder")).toMatchObject({ personId: null, roleId: expect.any(String) });
-    // The Admin account list reads the same grant, and the other edition's account holds nothing.
-    const admin = await getBuilderAdminData();
-    expect(admin.accounts.map((a) => [a.id, a.captain])).toEqual(expect.arrayContaining([["selected", true], ["second", false]]));
-    expect(admin.captains).toEqual([expect.objectContaining({ userId: "selected", name: "Selected Builder", reason: "Leads the cohort" })]);
+    // The Admin leaderboard reads the same grant: one row, at zero, and nothing for the ungranted accounts.
+    expect((await getBuilderAdminData()).captainLeaderboard).toEqual([
+      { rank: 1, captainUserId: "selected", displayName: "Selected Builder", assignedCount: 0, projectNames: [] },
+    ]);
     expect((await getPeople(12)).map((p) => p.tags)).toEqual([[{ kind: "role", label: "Builder", protected: false }]]);
   });
 
@@ -473,7 +455,7 @@ describe("People tags, Captain grants and person-match correction", () => {
     expect(await revokeCaptainCapability("selected", "Stepped down")).toEqual({ ok: true });
     expect(await grants()).toEqual([expect.objectContaining({ active: false, revoked_by: OPERATOR })]);
     expect((await getPeople(11))[0].tags).toEqual([{ kind: "role", label: "Builder", protected: false }]);
-    expect((await getBuilderAdminData()).accounts[0].captain).toBe(false);
+    expect((await getBuilderAdminData()).captainLeaderboard).toEqual([]);
     expect(await events()).toEqual([
       expect.objectContaining({ kind: "capability.granted", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "selected" }),
       expect.objectContaining({ kind: "capability.revoked", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "selected", metadata: expect.objectContaining({ reason: "Stepped down" }) }),
@@ -504,7 +486,7 @@ describe("People tags, Captain grants and person-match correction", () => {
       ["Selected Builder", false, [{ kind: "role", label: "Partner contact", protected: false }]],
     ]);
     expect(people.every((p) => p.tags.every((tag) => !tag.protected))).toBe(true);
-    expect((await getBuilderAdminData()).accounts[0]).toMatchObject({ tier: "member", captain: false });
+    expect((await getBuilderAdminData()).captainLeaderboard).toEqual([]);
   });
 
   it("keeps the renamed Partner contact role an ordinary, editable role beside the Captain capability", async () => {
@@ -649,17 +631,20 @@ describe("Captain invitations in Admin", () => {
     expect(await revokeCaptainInvitationAction("00000000-0000-4000-8000-000000000099")).toEqual({ ok: false, error: "This invitation was already revoked or does not exist." });
   });
 
-  it("renders the invitations section with its one-use default copy, an active invitation and its redeemer", async () => {
+  it("renders the invitation links section with its one-use default, an active invitation and its redeemer", async () => {
     const created = await createCaptainInvitationRecord(builderDb, { actorOperatorId: OPERATOR, label: "Utrecht cohort", maxRedemptions: 1, expiresInDays: 7 });
     await rows("INSERT INTO hq_captain_invitation_redemptions(invitation_id,user_id) VALUES($1::uuid,'selected')", [created.invitation.id]);
     const admin = await getBuilderAdminData();
     const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, timezone: "Europe/Amsterdam" }));
-    expect(html).toContain("Captain invitations");
-    expect(html).toContain("grants Captain access only");
+    expect(html).toContain("Captain invitation links");
+    expect(html).toContain("Create link");
     expect(html).toContain("Utrecht cohort");
-    expect(html).toContain("1 of 1 accounts used");
+    expect(html).toContain("1 of 1 used. Expires ");
+    expect(html).toContain("By Operator, ");
+    expect(html).toContain(">Full<");
     expect(html).toContain("Selected Builder"); // the redeemer's name
     expect(html).not.toContain(created.token);
+    expect(html).not.toMatch(/[—·]/);
     // The create form's own default is the one-use, effortless choice.
     expect(html).toMatch(/name="maxRedemptions"[^>]*value="1"/);
     expect(html).toMatch(/name="validForDays"[^>]*value="7"/);
@@ -722,38 +707,27 @@ describe("Captain assignment in Admin (task T4.4)", () => {
     expect(await unassignProjectCaptain(OTHER_PROJECT)).toEqual({ ok: false, error: "This project is not available in the selected hackathon." });
   });
 
-  it("shows the affected project count before a revocation and clears the assignment in the same action", async () => {
+  it("shows the held project on the leaderboard before a revocation and clears the assignment in the same action", async () => {
     await grantCaptainCapability("selected", "Leads the cohort");
     await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" });
 
     const before = await getBuilderAdminData();
-    expect(before.accounts.find(a => a.id === "selected")).toMatchObject({ captain: true, captainAssignmentCount: 1 });
+    expect(before.captainLeaderboard).toEqual([
+      { rank: 1, captainUserId: "selected", displayName: "Selected Builder", assignedCount: 1, projectNames: ["Bare project"] },
+    ]);
     expect(await countAssignmentsForCaptain(builderDb, "selected")).toEqual([{ projectId: BARE_PROJECT, projectName: "Bare project", hackathonId: 11 }]);
 
     expect(await revokeCaptainCapability("selected", "Stepped down")).toEqual({ ok: true });
     const after = await getBuilderAdminData();
-    expect(after.accounts.find(a => a.id === "selected")).toMatchObject({ captain: false, captainAssignmentCount: 0 });
+    expect(after.captainLeaderboard).toEqual([]);
     expect(await currentCaptain(BARE_PROJECT)).toEqual([]);
     expect((await rows("SELECT kind,subject_user_id FROM hq_audit_events WHERE kind='captain.unassigned'")))
       .toEqual([{ kind: "captain.unassigned", subject_user_id: "selected" }]);
   });
-
-  it("renders the real assignment count in the revoke confirmation copy, and the grant-side copy when there is none to lose", async () => {
-    await grantCaptainCapability("selected", "Leads the cohort");
-    await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" });
-    const withOne = await getBuilderAdminData();
-    expect(renderToStaticMarkup(createElement(BuilderAdmin, { ...withOne, timezone: "Europe/Amsterdam" })))
-      .toContain("It currently captains 1 project; revoking clears it in the same action.");
-
-    await unassignProjectCaptain(BARE_PROJECT);
-    const withNone = await getBuilderAdminData();
-    expect(renderToStaticMarkup(createElement(BuilderAdmin, { ...withNone, timezone: "Europe/Amsterdam" })))
-      .toContain("It captains no project right now.");
-  });
 });
 
 describe("Captain leaderboard in Admin (task T4.5)", () => {
-  it("adds the edition-scoped leaderboard and the admin-only project drilldown, and never leaks another edition's Captain or project into them", async () => {
+  it("adds the edition-scoped leaderboard with the admin-only project names, and never leaks another edition's project into it", async () => {
     await grantCaptainCapability("selected", "Leads the cohort");
     expect(await assignProjectCaptain({ projectId: BARE_PROJECT, captainUserId: "selected" })).toEqual({ outcome: "assigned" });
     // A live assignment in the OTHER edition, seeded directly: this edition's leaderboard and drilldown must never show it.
@@ -766,24 +740,26 @@ describe("Captain leaderboard in Admin (task T4.5)", () => {
     // than being left off — a Captain grant, not a project, is what makes
     // an account eligible for this edition's leaderboard at all.
     expect(admin.captainLeaderboard).toEqual([
-      { rank: 1, displayName: "Selected Builder", assignedCount: 1, isYou: false },
-      { rank: 2, displayName: "Other Builder", assignedCount: 0, isYou: false },
-    ]);
-    expect(admin.captainAssignments).toEqual([
-      { projectId: BARE_PROJECT, projectName: "Bare project", hackathonId: 11, captainUserId: "selected", captainName: "Selected Builder", assignedAt: expect.any(String) },
+      { rank: 1, captainUserId: "selected", displayName: "Selected Builder", assignedCount: 1, projectNames: ["Bare project"] },
+      { rank: 2, captainUserId: "other", displayName: "Other Builder", assignedCount: 0, projectNames: [] },
     ]);
 
     const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, timezone: "Europe/Amsterdam" }));
-    expect(html).toContain("Captain leaderboard — Selected competition");
+    expect(html).toContain("Captain leaderboard");
+    expect(html).toContain("Active projects held");
     expect(html).toContain("Bare project");
+    expect(html).toContain("No projects yet");
+    // The bar scales to the top row: a full bar for rank 1, none for rank 2.
+    expect(html).toContain("width:100%");
+    expect(html).toContain("width:0%");
     // "Other Builder" legitimately appears on the leaderboard itself (an
     // active grant, zero assignments in this edition); what must never
-    // appear is the other edition's own project, in the drilldown or
-    // anywhere else.
+    // appear is the other edition's own project.
     expect(html).not.toContain("other project");
+    expect(html).not.toMatch(/[—·]/);
   });
 
-  it("excludes a not-active-status project from the count (but not from the drilldown), includes an eligible zero-assignment Captain in stable name order, and drops a revoked Captain entirely", async () => {
+  it("excludes a not-active-status project from the count (but not from the names), includes an eligible zero-assignment Captain in stable name order, and drops a revoked Captain entirely", async () => {
     await grantCaptainCapability("selected", "Leads the cohort");
     await grantCaptainCapability("other", "Leads the cohort");
 
@@ -797,11 +773,9 @@ describe("Captain leaderboard in Admin (task T4.5)", () => {
     let admin = await getBuilderAdminData();
     // Both Captains show zero: "selected"'s only assignment is on a not-active-status project, and "other" holds none in this edition at all. Stable name order for the tie.
     expect(admin.captainLeaderboard).toEqual([
-      { rank: 1, displayName: "Other Builder", assignedCount: 0, isYou: false },
-      { rank: 2, displayName: "Selected Builder", assignedCount: 0, isYou: false },
+      { rank: 1, captainUserId: "other", displayName: "Other Builder", assignedCount: 0, projectNames: [] },
+      { rank: 2, captainUserId: "selected", displayName: "Selected Builder", assignedCount: 0, projectNames: ["Red project"] },
     ]);
-    // Admin's own drilldown still shows the red project: it is the full truth, unlike the leaderboard's active-only count.
-    expect(admin.captainAssignments.map((a) => a.projectName)).toContain("Red project");
 
     expect(await revokeCaptainCapability("selected", "Stepped down")).toEqual({ ok: true });
     admin = await getBuilderAdminData();

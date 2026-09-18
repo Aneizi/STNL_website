@@ -1,12 +1,13 @@
 import "server-only";
 import { requireUser } from "./auth";
 import { realEmail } from "./builder-store";
-import { listActiveCapabilitiesForUsers, listCapabilityGrants } from "./capabilities";
+import { listCapabilityGrants, type CapabilityGrant } from "./capabilities";
 import {
-  countAssignmentsForUsers, leaderboard, listAssignments, listCaptainInvitations,
-  type CaptainInvitationListing, type CurrentCaptainAssignment,
+  countAssignmentsByCaptain, listAssignments, listCaptainInvitations,
+  type CaptainAssignmentCount, type CaptainInvitationListing, type CurrentCaptainAssignment,
 } from "./captains";
 import { getSql } from "./db";
+import { todayInTz } from "./format";
 import { requireHackathon } from "./hackathon";
 import { listReminderDeliveries, type ReminderDeliveryView } from "./jobs";
 import { operatorQuery } from "./queries";
@@ -21,9 +22,7 @@ import {
   type ReportingPeriodPlan,
   type ReportingSchedule,
 } from "./reporting";
-import { listSubmissionReconciliations, type SubmissionReconciliation } from "./submission";
 import { isTelegramBotConfigured } from "./telegram-bot-api";
-import type { CaptainLeaderboardView } from "./view-models";
 
 export type OnboardingConfig = {
   externalHackathonId: number | null;
@@ -31,7 +30,6 @@ export type OnboardingConfig = {
   projectsOpen: boolean;
   projectsAvailableAt: string;
   signupUrl: string;
-  hostingEnabled: boolean;
 };
 
 /** A linked Telegram identity as Admin shows it. `username` is null when Telegram reports none. */
@@ -44,36 +42,23 @@ export type TelegramLogin = { username: string | null };
  */
 export type AccountLogin = { email: string | null; telegram: TelegramLogin | null };
 
-export type BuilderAccount = AccountLogin & {
-  id: string;
-  name: string;
-  /** The optional, self-declared contact email on the profile. Never derived from the login, never a placeholder. */
-  contactEmail: string | null;
-  tier: "regular" | "member";
-  /** Holds an active Captain grant. Read from hq_account_capabilities, never from a role or the tier. */
-  captain: boolean;
-  /** Current assignments this account would lose if its Captain grant were revoked now, across every edition. 0 when `captain` is false. */
-  captainAssignmentCount: number;
-  /** The contact this account approved for the teams it captains, or null. Only ever what they typed in themselves. */
-  captainContact: string | null;
-  /** Whether the HQ bot could message them: a linked Telegram identity is not the same as permission to message it. */
-  botMessaging: boolean;
-};
-
-/** An active Captain grant, for the Admin overview. Grants are account-global, not per hackathon. */
-export type ActiveCaptain = {
-  userId: string;
-  name: string;
-  grantedAt: string;
-  reason: string | null;
-};
-
-export type BuilderHostRequest = AccountLogin & {
-  id: string;
-  name: string;
-  title: string;
-  details: string;
-  status: "pending" | "approved" | "declined";
+/**
+ * One Captain leaderboard row as Admin shows it: the rank, name and
+ * active-project count a Captain sees on their own copy (the same ordering
+ * as lib/hq/captains.ts#leaderboard), plus the two things only an operator
+ * may see: the account id, and the names of every project the Captain
+ * currently holds in the edition, active or not. Built from the raw reads
+ * rather than by joining leaderboard() to listAssignments() on the display
+ * name, which two Captains may share.
+ */
+export type AdminCaptainLeaderboardRow = {
+  rank: number;
+  captainUserId: string;
+  displayName: string;
+  /** Projects whose status counts as active, the number the leaderboard ranks on. */
+  assignedCount: number;
+  /** Every current assignment in the edition, so this can name a project the count does not include. */
+  projectNames: string[];
 };
 
 export type BuilderImportRequest = AccountLogin & {
@@ -97,96 +82,57 @@ const optionalText = (value: unknown) => (value == null ? null : String(value));
  */
 const LOGIN_COLUMNS = `b.email, t.user_id IS NOT NULL AS has_telegram, t.username AS telegram_username`;
 const LOGIN_JOIN = `LEFT JOIN hq_auth_telegram_identity t ON t.user_id = b.id`;
-/**
- * Whether the bot may message this account, which the plan asks Admin to
- * show beside the Telegram connection. They are two different facts:
- * connecting Telegram proves who someone is, and this row records that they
- * agreed to be messaged. Read here rather than through getBotConsent(), so
- * the account list stays one query instead of one per row.
- */
-const CONSENT_COLUMNS = `COALESCE(bc.messaging_enabled, false) AS bot_messaging`;
-const CONSENT_JOIN = `LEFT JOIN hq_telegram_bot_consent bc ON bc.user_id = b.id`;
 const login = (row: Record<string, unknown>): AccountLogin => ({
   email: realEmail(row.email),
   telegram: row.has_telegram ? { username: optionalText(row.telegram_username) } : null,
 });
 
+/** The admin leaderboard rows: count descending, then name, exactly as leaderboard() orders a Captain's own copy. */
+function adminLeaderboard(grants: CapabilityGrant[], counts: CaptainAssignmentCount[], assignments: CurrentCaptainAssignment[]): AdminCaptainLeaderboardRow[] {
+  const countByUser = new Map(counts.map((row) => [row.captainUserId, row.assignedCount]));
+  const namesByUser = new Map<string, string[]>();
+  for (const row of assignments) namesByUser.set(row.captainUserId, [...(namesByUser.get(row.captainUserId) ?? []), row.projectName]);
+  return grants
+    .map((grant) => ({
+      captainUserId: grant.userId, displayName: grant.userName,
+      assignedCount: countByUser.get(grant.userId) ?? 0, projectNames: namesByUser.get(grant.userId) ?? [],
+    }))
+    .sort((a, b) => b.assignedCount - a.assignedCount || a.displayName.localeCompare(b.displayName))
+    .map((row, index) => ({ rank: index + 1, ...row }));
+}
+
 export async function getBuilderAdminData() {
   await requireUser();
   const hackathon = await requireHackathon();
   const sql = getSql();
-  const [configs, accounts, requests, captains, invitations, captainLeaderboard, captainAssignments] = await Promise.all([
+  const db = operatorQuery();
+  const [configs, grants, counts, assignments, invitations] = await Promise.all([
     sql`SELECT external_hackathon_id, external_hackathon_slug, projects_open,
-        projects_available_at::text, signup_url, hosting_enabled
+        projects_available_at::text, signup_url
         FROM hq_hackathon_onboarding WHERE hackathon_id = ${hackathon.id}`,
-    sql.query(`SELECT b.id, b.name, b.contact_email, b.tier, b.captain_contact, ${LOGIN_COLUMNS}, ${CONSENT_COLUMNS}
-        FROM hq_builder_profiles b ${LOGIN_JOIN} ${CONSENT_JOIN}
-        WHERE EXISTS (SELECT 1 FROM hq_people p
-          WHERE p.builder_user_id = b.id AND p.hackathon_id = $1)
-        ORDER BY b.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
-    sql.query(`SELECT r.id, b.name, r.title, r.details, r.status, ${LOGIN_COLUMNS}
-        FROM hq_event_host_requests r JOIN hq_builder_profiles b ON b.id = r.user_id ${LOGIN_JOIN}
-        WHERE r.hackathon_id = $1
-        ORDER BY (r.status = 'pending') DESC, r.created_at DESC`, [hackathon.id]) as Promise<Record<string, unknown>[]>,
-    // This is the same active-Captain-grant read leaderboard() below makes
-    // again on its own: fetched here for the account list's `captain` flag
-    // (BuilderAccount, below) and again inside leaderboard() for the merge
-    // that keeps a zero-assignment Captain visible. Left as two calls
-    // deliberately rather than threading this list into leaderboard() as a
-    // parameter: leaderboard()'s own narrowing of the grant row (dropping
-    // `reason`, `grantedByUserId`, `revokedByUserId` before anything else
-    // sees it) is what makes it safe to hand the same function straight to
-    // a Captain's own page too, and a caller-supplied grant list would
-    // reopen exactly that seam for a future caller that forgot to narrow
-    // its own copy first.
-    listCapabilityGrants({ capability: "captain", activeOnly: true }, operatorQuery()),
+    // Grants are account-global: a Captain with no assignment in this
+    // edition still has a row, at zero, which is what makes an account
+    // eligible for the leaderboard at all.
+    listCapabilityGrants({ capability: "captain", activeOnly: true }, db),
+    countAssignmentsByCaptain(db, hackathon.id),
+    // The admin-only read, with the captain id listAssignments() carries and
+    // the member-facing leaderboard never does.
+    listAssignments(db, { hackathonId: hackathon.id }),
     // Invitations are account-global like the grants above, never scoped to
     // this hackathon's People list.
-    listCaptainInvitations(operatorQuery()),
-    // The same leaderboard the Captain's own dashboard reads, gated here by
-    // this function's own requireUser() above rather than a second flag or
-    // function — see lib/hq/captains.ts#leaderboard. No viewer to mark "you".
-    leaderboard(operatorQuery(), hackathon.id, null),
-    // The admin-only drilldown: every current assignment in the edition,
-    // with the captain id and name listAssignments() carries and the
-    // member-facing leaderboard never does. A separate call from the
-    // Captain's own (which passes captainUserId), not a flag on this one.
-    listAssignments(operatorQuery(), { hackathonId: hackathon.id }),
+    listCaptainInvitations(db),
   ]);
-  const capabilities = await listActiveCapabilitiesForUsers(accounts.map((row) => String(row.id)), operatorQuery());
-  // Confirm the affected project count to the admin before they revoke: this
-  // batches it in the same one-query-per-render shape as `capabilities`
-  // above, rather than one query per account.
-  const assignmentCounts = await countAssignmentsForUsers(operatorQuery(), accounts.map((row) => String(row.id)));
   const config = configs[0];
   return {
-    hackathonName: hackathon.name,
     config: {
       externalHackathonId: config?.external_hackathon_id == null ? null : Number(config.external_hackathon_id),
       externalHackathonSlug: String(config?.external_hackathon_slug ?? ""),
       projectsOpen: Boolean(config?.projects_open),
       projectsAvailableAt: String(config?.projects_available_at ?? ""),
       signupUrl: String(config?.signup_url ?? "https://colosseum.com/signup"),
-      hostingEnabled: Boolean(config?.hosting_enabled),
     } satisfies OnboardingConfig,
-    accounts: accounts.map((row) => ({
-      id: String(row.id), name: String(row.name), ...login(row), contactEmail: realEmail(row.contact_email),
-      tier: row.tier === "member" ? "member" : "regular",
-      captain: (capabilities.get(String(row.id)) ?? []).includes("captain"),
-      captainAssignmentCount: assignmentCounts.get(String(row.id)) ?? 0,
-      captainContact: optionalText(row.captain_contact),
-      botMessaging: Boolean(row.bot_messaging),
-    } satisfies BuilderAccount)),
-    captains: captains.map((grant) => ({
-      userId: grant.userId, name: grant.userName, grantedAt: grant.grantedAt, reason: grant.reason,
-    } satisfies ActiveCaptain)),
-    hostRequests: requests.map((row) => ({
-      id: String(row.id), name: String(row.name), ...login(row),
-      title: String(row.title), details: String(row.details), status: row.status as BuilderHostRequest["status"],
-    } satisfies BuilderHostRequest)),
     captainInvitations: invitations satisfies CaptainInvitationListing[],
-    captainLeaderboard: captainLeaderboard satisfies CaptainLeaderboardView[],
-    captainAssignments: captainAssignments satisfies CurrentCaptainAssignment[],
+    captainLeaderboard: adminLeaderboard(grants, counts, assignments),
   };
 }
 
@@ -247,12 +193,11 @@ export type ReportingAdminData = {
    */
   botConfigured: boolean;
   /**
-   * The closing reconciliation of the final period (phase 10): what HQ has
-   * been able to establish about each team's Colosseum submission after that
-   * period closed, including the ones it has not been able to establish at
-   * all. Empty until a submission period has closed.
+   * Today's local date in the campaign timezone, read once here so the
+   * Open, Closed and Upcoming pills are decided on the server and the client
+   * renders exactly what it was sent.
    */
-  reconciliations: SubmissionReconciliation[];
+  today: string;
 };
 
 /** How many reminders the admin panel shows before the rest stay in the table. */
@@ -262,13 +207,12 @@ export async function getReportingAdminData(): Promise<ReportingAdminData> {
   await requireUser();
   const hackathon = await requireHackathon();
   const db = operatorQuery();
-  const [schedule, config, plan, statuses, reminders, reconciliations] = await Promise.all([
+  const [schedule, config, plan, statuses, reminders] = await Promise.all([
     readReportingSchedule(db, hackathon.id),
     readReportingConfig(db, hackathon.id),
     previewReportingPeriods(db, hackathon.id),
     reportingStatus(db, { hackathonId: hackathon.id }),
     listReminderDeliveries(db, { hackathonId: hackathon.id, limit: REMINDER_PAGE }),
-    listSubmissionReconciliations(db, { hackathonId: hackathon.id }),
   ]);
   return {
     hackathonId: hackathon.id,
@@ -280,7 +224,7 @@ export async function getReportingAdminData(): Promise<ReportingAdminData> {
     paused: statuses.filter((status) => status.paused).length,
     reminders,
     botConfigured: isTelegramBotConfigured(),
-    reconciliations,
+    today: todayInTz(schedule?.timezone ?? "Europe/Amsterdam"),
   };
 }
 

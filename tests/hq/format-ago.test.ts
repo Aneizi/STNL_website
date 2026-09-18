@@ -27,7 +27,7 @@ describe("fmtAgo", () => {
 describe("fmtWithZone", () => {
   it("spells out the IANA zone name beside the local time, for a fixed instant in two different zones", () => {
     // 2026-09-14T16:32:00Z is 18:32 in Amsterdam (CEST, UTC+2 under DST).
-    expect(fmtWithZone("2026-09-14T16:32:00Z", "Europe/Amsterdam")).toBe("14 Sept 2026, 18:32 Europe/Amsterdam");
+    expect(fmtWithZone("2026-09-14T16:32:00Z", "Europe/Amsterdam")).toBe("14 Sep 2026, 18:32 Europe/Amsterdam");
     // 2026-01-05T05:15:00Z is 00:15 in New York (EST, UTC-5, no DST in January).
     expect(fmtWithZone("2026-01-05T05:15:00Z", "America/New_York")).toBe("5 Jan 2026, 00:15 America/New_York");
   });

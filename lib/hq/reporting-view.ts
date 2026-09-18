@@ -305,3 +305,30 @@ export function byOutstandingFirst(
   const open = (row: typeof a) => (row.current && !row.current.completed ? 0 : 1);
   return open(a) - open(b) || b.missedPeriods - a.missedPeriods || a.projectName.localeCompare(b.projectName);
 }
+
+/**
+ * The Admin page's Reporting weeks column: "14 Sep to 20 Sep", "28 Sep to
+ * 4 Oct". Both ends always carry their month, unlike periodRangeShortLabel
+ * above, so a column of weeks scans as two aligned dates.
+ */
+export function shortPeriodRange(startDate: string, endDate: string): string {
+  if (!startDate || !endDate) return "";
+  const dayMonth = (iso: string) => {
+    const [, m, d] = iso.split("-").map(Number);
+    return `${d} ${(MONTHS[m - 1] ?? "").slice(0, 3)}`;
+  };
+  return `${dayMonth(startDate)} to ${dayMonth(endDate)}`;
+}
+
+/**
+ * "16 Sep 20:00": when the queue will try a reminder again, in the campaign
+ * timezone. The month comes from MONTHS rather than the locale, whose
+ * en-GB abbreviation of September is "Sept".
+ */
+export function fmtRetryAt(isoInstant: string, timezone: string): string {
+  const at = Date.parse(isoInstant);
+  if (!Number.isFinite(at)) return "";
+  const parts = zonedParts(at, timezone, { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  // A numeric month pads the day to two digits in en-GB; the design prints "4 Oct".
+  return `${Number(parts.day)} ${(MONTHS[Number(parts.month) - 1] ?? "").slice(0, 3)} ${parts.hour}:${parts.minute}`;
+}

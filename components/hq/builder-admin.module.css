@@ -1,28 +1,95 @@
-.section { margin-top: 20px; background: var(--card); padding: 20px; box-shadow: var(--shadow-1); color: var(--label-1); font-size: 14px; }
-.section h2 { margin: 0; font-family: var(--serif); font-size: 26px; font-weight: 400; line-height: 1.2; }
-.section h3 { margin: 0; font-size: 17px; font-weight: 600; }
-.section p { margin: 8px 0 0; color: var(--label-2); line-height: 1.5; }
+.section { margin-top: 28px; background: var(--card); padding: 24px; box-shadow: var(--shadow-1); color: var(--label-1); font-size: 17px; }
+/* The three reporting sections read one step larger, on a 1.5 line. */
+.sectionLg { font-size: 18px; line-height: 1.5; }
+.section h2 { margin: 0; font-family: var(--serif); font-size: 30px; font-weight: 400; line-height: 1.2; }
+.section h3 { margin: 0; font-size: 20px; font-weight: 600; }
+.section p { margin: 6px 0 0; color: var(--label-2); line-height: 1.5; }
 .section a { text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 16px; margin-top: 20px; }
+.header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.headerTop { align-items: flex-start; }
+.headerNote { font-size: 14px; color: var(--label-3); }
+.kicker { font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--label-3); }
+.hint { font-size: 16px; color: var(--label-3); }
+.section .hintLine { margin: 8px 0 0; font-size: 16px; color: var(--label-3); }
+.strong { font-weight: 600; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(288px, 100%), 1fr)); gap: 16px; margin-top: 20px; }
+.gridSettings { grid-template-columns: repeat(auto-fit, minmax(min(264px, 100%), 1fr)); gap: 20px; }
 .field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.field input, .field textarea, .field select, .tier select { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--sep); background: transparent; color: var(--label-1); font: inherit; box-sizing: border-box; }
+.field input, .field textarea, .field select, .tier select { width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid var(--sep); background: transparent; color: var(--label-1); font: inherit; box-sizing: border-box; }
 .field textarea { resize: vertical; }
+.sectionLg .field input, .sectionLg .field select { font-size: 18px; }
 .fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
-.checkbox { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; margin-top: 12px; line-height: 1.5; }
+.checkbox { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; margin-top: 12px; line-height: 1.5; }
 .checkbox input { width: 20px; height: 20px; accent-color: var(--accent); flex-shrink: 0; }
 .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 16px; }
-.button, .secondary { display: inline-flex; justify-content: center; align-items: center; min-height: 44px; padding: 10px 16px; border: 1px solid var(--label-1); background: var(--label-1); color: var(--card); font: inherit; font-weight: 600; cursor: pointer; }
+.actionsWide { gap: 16px; }
+.button, .secondary { display: inline-flex; justify-content: center; align-items: center; min-height: 48px; padding: 10px 16px; border: 1px solid var(--label-1); background: var(--label-1); color: var(--card); font: inherit; font-weight: 600; cursor: pointer; }
 .secondary { background: transparent; color: var(--label-1); }
-.button:disabled, .secondary:disabled { cursor: wait; opacity: .55; }
+.buttonLg { padding: 10px 18px; font-size: 18px; }
+.button:disabled, .secondary:disabled { cursor: pointer; }
 .feedback { margin-top: 12px; min-height: 20px; color: var(--label-2); }
 .error { color: var(--red); }
+.status { font-size: 17px; font-weight: 600; color: var(--green); }
+
+/* Soft-fill blocks: the one-time invitation link and each invitation. */
+.block { background: var(--fill-4); padding: 20px; margin-top: 16px; min-width: 0; }
+.blockHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.section .lead { margin: 0; font-weight: 600; color: var(--label-1); }
+.linkRow { display: flex; align-items: center; gap: 8px; min-width: 0; margin-top: 8px; }
+.link { font-family: var(--mono); font-size: 14px; overflow-wrap: anywhere; }
+.redeemers { padding: 0; list-style: none; margin: 16px 0; }
+.redeemers li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; }
+.date { font-size: 16px; color: var(--label-3); font-variant-numeric: tabular-nums; }
+
+.pill { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 2px; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; background: var(--fill-3); color: var(--label-2); }
+.pillGreen { background: var(--green-fill); color: var(--green); }
+.pillRed { background: var(--red-fill); color: var(--red); }
+.pillOrange { background: var(--orange-fill); color: var(--orange); }
+.pillFaint { background: var(--fill-4); color: var(--label-3); }
+
+/* Captain leaderboard: ranked rows on soft fill, the top row on accent fill. */
+.leaderboard { padding: 0; list-style: none; margin: 16px 0 0; display: flex; flex-direction: column; gap: 6px; }
+.leaderboard li { display: grid; grid-template-columns: 40px minmax(0, 1.2fr) minmax(0, 1.6fr) 67px; gap: 16px; align-items: center; padding: 14px 16px; background: var(--fill-4); }
+.leaderboard li:first-child { background: var(--accent-fill); }
+.rank { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: none; border-radius: 50%; font-family: var(--serif); font-size: 22px; line-height: 1; font-variant-numeric: tabular-nums; background: var(--fill-3); color: var(--label-2); }
+.leaderboard li:first-child .rank { background: var(--accent); color: #fbf7f0; }
+.captain { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.captainName { font-weight: 600; font-size: 18px; }
+.projects { font-size: 14px; color: var(--label-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar { height: 6px; background: var(--fill-3); overflow: hidden; border-radius: 3px; }
+.barFill { display: block; height: 100%; background: var(--accent); }
+.count { text-align: right; font-family: var(--serif); font-size: 30px; line-height: 1; font-variant-numeric: tabular-nums; }
+
+/* Reporting weeks. */
+.weeks { padding: 0; list-style: none; margin: 20px 0 0; }
+.weeks li { display: grid; grid-template-columns: 86px minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 12px 0; }
+.weekRange { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.planSummary { font-size: 17px; color: var(--label-3); }
+
+/* Reporting settings. */
+.settingsBlock { margin-top: 32px; }
+.deadline { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.deadline input { min-height: 48px; padding: 10px 12px; border: 1px solid var(--sep); background: transparent; color: var(--label-1); font: inherit; font-size: 18px; box-sizing: border-box; flex: 1; min-width: 220px; }
+.note { margin-top: 8px; font-size: 17px; color: var(--green); font-weight: 600; }
+.materials { display: flex; flex-direction: column; margin-top: 8px; }
+.materialRow { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 10px 0; }
+.segmented { display: flex; box-shadow: 0 0 0 1px var(--sep); padding: 2px; }
+.segmented button { border: none; cursor: pointer; padding: 6px 14px; font-size: 16px; background: none; color: var(--label-2); font-weight: 400; }
+.segmented .segmentedOn { background: var(--label-1); color: var(--bg); font-weight: 600; }
+
+/* Captain reminders. */
+.summary { margin-top: 16px; padding: 10px 14px; background: var(--green-fill); color: var(--label-1); font-size: 17px; }
+.reminders { padding: 0; list-style: none; margin: 20px 0 0; }
+.reminders li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: start; padding: 12px 0; }
+.reminderText { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.reminderDetail { font-size: 17px; color: var(--label-2); }
+
 .row { border-top: 1px solid var(--sep); padding-top: 20px; margin-top: 20px; min-width: 0; }
 .rowHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .badge { display: inline-flex; padding: 4px 8px; background: var(--fill-3); color: var(--label-2); font-weight: 600; white-space: nowrap; }
 .potential { background: var(--accent-fill); color: var(--accent-deep); }
 .roster { padding: 0; list-style: none; margin: 16px 0; }
 .roster li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--sep); }
-.muted { color: var(--label-2); }
 .tier { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; margin-top: 12px; }
 .tier label { display: flex; flex-direction: column; gap: 8px; }
 .tier select { min-width: 150px; }

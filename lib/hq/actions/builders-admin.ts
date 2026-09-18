@@ -21,7 +21,9 @@ const configSchema = z.object({
   projectsOpen: z.boolean(),
   projectsAvailableAt: z.union([z.iso.datetime({ offset: true }), z.literal("")]),
   signupUrl,
-  hostingEnabled: z.boolean(),
+  // Accepted but no longer written: Admin dropped the event-hosting switch
+  // with the design, and the column keeps whatever it held.
+  hostingEnabled: z.boolean().optional(),
 }).refine((value) => !value.projectsOpen || (value.externalHackathonId !== null && value.externalHackathonSlug !== ""), {
   message: "Set the Colosseum hackathon ID and slug before enabling imports.",
 });
@@ -36,14 +38,14 @@ export async function updateBuilderOnboardingConfig(input: z.infer<typeof config
   const rows = await sql`
     WITH changed AS (
       INSERT INTO hq_hackathon_onboarding (hackathon_id, external_hackathon_id,
-        external_hackathon_slug, projects_open, projects_available_at, signup_url, hosting_enabled)
+        external_hackathon_slug, projects_open, projects_available_at, signup_url)
       VALUES (${hackathon.id}, ${data.externalHackathonId}, ${data.externalHackathonSlug || null},
-        ${data.projectsOpen}, ${data.projectsAvailableAt || null}::timestamptz, ${data.signupUrl}, ${data.hostingEnabled})
+        ${data.projectsOpen}, ${data.projectsAvailableAt || null}::timestamptz, ${data.signupUrl})
       ON CONFLICT (hackathon_id) DO UPDATE SET
         external_hackathon_id = EXCLUDED.external_hackathon_id,
         external_hackathon_slug = EXCLUDED.external_hackathon_slug,
         projects_open = EXCLUDED.projects_open, projects_available_at = EXCLUDED.projects_available_at,
-        signup_url = EXCLUDED.signup_url, hosting_enabled = EXCLUDED.hosting_enabled
+        signup_url = EXCLUDED.signup_url
       WHERE (hq_hackathon_onboarding.external_hackathon_id IS NOT DISTINCT FROM EXCLUDED.external_hackathon_id
         AND hq_hackathon_onboarding.external_hackathon_slug IS NOT DISTINCT FROM EXCLUDED.external_hackathon_slug)
         OR NOT EXISTS (SELECT 1 FROM hq_project_onboarding WHERE hackathon_id = ${hackathon.id})
@@ -183,27 +185,6 @@ export async function attachColosseumProject(input: { projectId: string; url: st
     projectId: parsed.data.projectId, hackathonId: hackathon.id, url: parsed.data.url, operatorId: user.id,
   });
   if (!outcome.ok) return { ok: false, error: outcome.message };
-  refreshHq();
-  return { ok: true };
-}
-
-export async function reviewBuilderHostRequest(requestId: string, status: "approved" | "declined"): Promise<ActionResult> {
-  const user = await requireUser();
-  const hackathon = await requireHackathon();
-  if (!uuid.safeParse(requestId).success || !z.enum(["approved", "declined"]).safeParse(status).success) {
-    return { ok: false, error: "Invalid hosting request." };
-  }
-  const sql = getSql();
-  const rows = await sql`
-    WITH changed AS (
-      UPDATE hq_event_host_requests SET status = ${status}
-      WHERE id = ${requestId}::uuid AND hackathon_id = ${hackathon.id} RETURNING id
-    ), logged AS (
-      INSERT INTO hq_activity (hackathon_id, user_id, message)
-      SELECT ${hackathon.id}, ${user.id}::uuid, ${`Hosting request ${status}`} FROM changed
-    ) SELECT id FROM changed
-  `;
-  if (!rows.length) return { ok: false, error: "Request not found in this hackathon." };
   refreshHq();
   return { ok: true };
 }

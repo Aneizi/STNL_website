@@ -35,6 +35,8 @@ import {
   NOTE_ADDED,
   periodRangeLabel,
   periodRangeShortLabel,
+  shortPeriodRange,
+  fmtRetryAt,
   PRIVATE_TOOLTIP,
   promptDismissKey,
   REPORTING_STATUS_LABELS,
@@ -192,6 +194,26 @@ describe("the redesigned member screens' words for a week", () => {
   });
 });
 
+describe("the Admin page's words for reporting", () => {
+  it("names both ends of a week with their month for the Reporting weeks column", () => {
+    expect(shortPeriodRange("2026-09-14", "2026-09-20")).toBe("14 Sep to 20 Sep");
+    expect(shortPeriodRange("2026-09-28", "2026-10-04")).toBe("28 Sep to 4 Oct");
+    expect(shortPeriodRange("2026-10-05", "2026-10-12")).toBe("5 Oct to 12 Oct");
+    expect(shortPeriodRange("", "2026-10-05")).toBe("");
+    expect(shortPeriodRange("2026-10-05", "")).toBe("");
+  });
+
+  it("stamps a retry as day, three-letter month and clock in the campaign timezone", () => {
+    expect(fmtRetryAt("2026-09-16T18:00:00.000Z", AMSTERDAM)).toBe("16 Sep 20:00");
+    // 23:30 UTC on the 16th is already the 17th in Amsterdam, and midnight reads 00, never 24.
+    expect(fmtRetryAt("2026-09-16T22:00:00.000Z", AMSTERDAM)).toBe("17 Sep 00:00");
+    expect(fmtRetryAt("2026-09-16T18:00:00.000Z", "UTC")).toBe("16 Sep 18:00");
+    expect(fmtRetryAt("2026-10-04T18:00:00.000Z", AMSTERDAM)).toBe("4 Oct 20:00");
+    expect(fmtRetryAt("", AMSTERDAM)).toBe("");
+    expect(fmtRetryAt("not a date", AMSTERDAM)).toBe("");
+  });
+});
+
 describe("the Monday and Tuesday prompt", () => {
   // 14 September 2026 is a Monday in Amsterdam; 12:00 local is 10:00 UTC.
   const monday = Date.parse("2026-09-14T10:00:00.000Z");
@@ -320,6 +342,8 @@ describe("the copy rule", () => {
     missedLabel(2),
     periodRangeLabel("2026-09-14", "2026-10-04"),
     periodRangeShortLabel("2026-09-28", "2026-10-04"),
+    shortPeriodRange("2026-09-28", "2026-10-04"),
+    fmtRetryAt(WEEK_ONE.endsAt, AMSTERDAM),
     deadlineLabel("2026-09-20"),
     dueLine(WEEK_ONE.endsAt, AMSTERDAM),
     weekOfLabel(1, 4),
