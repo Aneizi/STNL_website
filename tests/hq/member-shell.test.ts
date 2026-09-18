@@ -21,8 +21,6 @@ const mocks = vi.hoisted(() => ({
   listAssignments: vi.fn(),
   captainReportingBoard: vi.fn(),
   memberWeekSummaries: vi.fn(),
-  dashboard: vi.fn(),
-  hackathons: vi.fn(),
   builderDatabase: vi.fn(),
   pathname: "/hq/dashboard",
 }));
@@ -42,8 +40,6 @@ vi.mock("@/lib/hq/builder-store", () => ({
     ownedProjects: mocks.ownedProjects,
     currentHackathonId: mocks.currentHackathonId,
     teamById: mocks.teamById,
-    dashboard: mocks.dashboard,
-    hackathons: mocks.hackathons,
   }),
 }));
 // The captain page's two other reads: a real pool would need DATABASE_URL,
@@ -236,105 +232,143 @@ describe("the captain page", () => {
 });
 
 describe("the dashboard menu", () => {
-  const edition = { id: 900001, name: "Worlds Fair", startDate: "2026-09-14", endDate: "2026-10-11", hostingEnabled: false };
-  const team = { id: "team-1", name: "Tulip", hackathonId: edition.id, hackathonName: edition.name, verification: "verified" };
+  const team = { id: "team-1", name: "Tulip", hackathonId: 41, hackathonName: "Edition A", verification: "verified" };
+  const week = (completed: boolean) => ({
+    projectId: team.id, projectName: team.name, hackathonId: team.hackathonId, timezone: "Europe/Amsterdam",
+    enrolled: true, paused: false, missedPeriods: 0, totalPeriods: 4,
+    current: { periodId: "week-1", periodSequence: 1, startDate: "2026-09-14", endDate: "2026-09-20", startsAt: "2026-09-13T22:00:00Z", endsAt: "2026-09-20T22:00:00Z", completed },
+  });
+  const AT = Date.parse("2026-09-16T12:00:00Z");
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-16T12:00:00Z"));
+    vi.setSystemTime(new Date(AT));
     mocks.requireMemberActor.mockResolvedValue(member());
     mocks.teams.mockResolvedValue([]);
     mocks.ownedProjects.mockResolvedValue([]);
+    mocks.currentHackathonId.mockResolvedValue(41);
     mocks.memberWeekSummaries.mockResolvedValue([]);
-    mocks.dashboard.mockResolvedValue({ tier: "regular", requests: [], enrollments: [], events: [] });
-    mocks.hackathons.mockResolvedValue([edition]);
+    mocks.listAssignments.mockResolvedValue([]);
+    mocks.builderDatabase.mockReturnValue({});
   });
   afterEach(() => vi.useRealTimers());
   const render = async () => renderToStaticMarkup(await DashboardPage());
+  /** The three tiles' markup, in order: hackathon, Member Portal, Captains' Den. */
+  const tiles = (html: string) => html.split("<li").slice(1);
 
-  it("renders a menu with the current hackathon and account instead of update details or forms", async () => {
+  it("greets the member by first name over exactly three tiles, and nothing of the old menu", async () => {
     const html = await render();
-    expect(html).toContain("<h1>Home</h1>");
+    expect(mocks.requireMemberActor).toHaveBeenCalledWith("/hq/dashboard");
+    expect(html).toContain("Where to, Fictional?");
     expect(html).toContain('aria-label="Home menu"');
-    expect(html).toContain('href="/hq/hackathon/900001"');
-    expect(html).toContain("Worlds Fair");
-    expect(html).toContain('href="/hq/account"');
-    for (const copy of ["Welcome,", "Connect Telegram", "This week", "Take part in another hackathon", "<form"]) expect(html).not.toContain(copy);
+    expect(tiles(html)).toHaveLength(3);
+    expect(html).toContain('aria-label="Superteam NL home"');
+    for (const copy of ['href="/hq/account"', "Get help", "/hq/hackathon/", "<form", ">Home<", ">Back<", "Needs attention", "Connect Telegram"]) expect(html).not.toContain(copy);
+    expect(html).not.toMatch(/[—·]/);
+    expect(html.toLowerCase()).not.toMatch(/operator|hq-chrome/);
   });
 
-  it("opens a sole team directly without repeating its information on Home", async () => {
-    mocks.teams.mockResolvedValue([team]);
+  it("asks who is signed in before reading anything, and greets an account without a name plainly", async () => {
+    const order: string[] = [];
+    mocks.requireMemberActor.mockImplementation(async () => { order.push("gate"); return member({ name: "  " }); });
+    mocks.teams.mockImplementation(async () => { order.push("teams"); return []; });
+    mocks.ownedProjects.mockImplementation(async () => { order.push("owned"); return []; });
+    mocks.currentHackathonId.mockImplementation(async () => { order.push("edition"); return 41; });
     const html = await render();
+    expect(order).toEqual(["gate", "teams", "owned", "edition"]);
+    expect(html).toContain("Where to?");
+    expect(html).not.toContain("Where to,");
+  });
+
+  it("invites an account without a team to initialize one, with no week and no due mark", async () => {
+    const html = await render();
+    const [hackathon] = tiles(html);
+    expect(hackathon).toContain('href="/hq/initialize"');
+    for (const copy of ["Crypto World&#x27;s Fair", "Initialize<br/>your team", "Link your Colosseum project to start"]) expect(hackathon).toContain(copy);
+    for (const copy of ["Update due", "Colosseum Hackathon 2026", "Week "]) expect(hackathon).not.toContain(copy);
+    expect(mocks.memberWeekSummaries).not.toHaveBeenCalled();
+  });
+
+  it("opens the team straight from the hackathon tile, with the week and the due mark, and never the team's name", async () => {
+    mocks.teams.mockResolvedValue([team]);
+    mocks.memberWeekSummaries.mockResolvedValue([week(false)]);
+    const html = await render();
+    const [hackathon] = tiles(html);
+    expect(hackathon).toContain('href="/hq/team/team-1"');
+    for (const copy of ["Week 1 of 4", "Update due", "Crypto<br/>World&#x27;s Fair", "Colosseum Hackathon 2026"]) expect(hackathon).toContain(copy);
+    for (const copy of ["Tulip", "/hq/initialize", "Link your Colosseum project"]) expect(html).not.toContain(copy);
+    expect(mocks.memberWeekSummaries).toHaveBeenCalledWith([team], undefined, AT);
+  });
+
+  it("drops the due mark once the week is updated, and the week label when no week is open", async () => {
+    mocks.teams.mockResolvedValue([team]);
+    mocks.memberWeekSummaries.mockResolvedValue([week(true)]);
+    let [hackathon] = tiles(await render());
+    expect(hackathon).toContain("Week 1 of 4");
+    expect(hackathon).not.toContain("Update due");
+    mocks.memberWeekSummaries.mockResolvedValue([{ ...week(false), current: null }]);
+    [hackathon] = tiles(await render());
+    expect(hackathon).toContain('href="/hq/team/team-1"');
+    expect(hackathon).toContain("Colosseum Hackathon 2026");
+    for (const copy of ["Week ", "Update due", "Crypto World&#x27;s Fair"]) expect(hackathon).not.toContain(copy);
+  });
+
+  it("picks the current edition's verified team, then the newest, over everything else the account holds", async () => {
+    const older = { ...team, id: "team-old", hackathonId: 7 };
+    mocks.teams.mockResolvedValue([older, team, { ...team, id: "team-pending", verification: "pending" }]);
+    mocks.ownedProjects.mockResolvedValue([{ id: "project-9", name: "Manual project", hackathonId: 41, hackathonName: "Edition A" }]);
+    let html = await render();
     expect(html).toContain('href="/hq/team/team-1"');
-    expect(html).toContain("Worlds Fair");
-    expect(html).not.toContain("Tulip");
-    expect(html).not.toContain("Take part in another hackathon");
+    for (const id of ["team-old", "team-pending", "project-9"]) expect(html).not.toContain(id);
+    expect(mocks.memberWeekSummaries).toHaveBeenCalledWith([team], undefined, AT);
+    mocks.currentHackathonId.mockResolvedValue(null);
+    html = await render();
+    expect(html).toContain('href="/hq/team/team-old"');
+    mocks.teams.mockResolvedValue([{ ...team, verification: "pending" }]);
+    html = await render();
+    expect(html).toContain('href="/hq/team/project-9"');
+    expect(html).not.toContain("Manual project");
   });
 
-  it("only offers additional hackathons that are currently active", async () => {
-    mocks.hackathons.mockResolvedValue([edition,
-      { ...edition, id: 2, name: "Another active edition" },
-      { ...edition, id: 3, name: "Finished edition", endDate: "2026-09-15" },
-      { ...edition, id: 4, name: "Future edition", startDate: "2026-10-01" },
-    ]);
-    const html = await render();
-    expect(html).toContain("Another active edition");
-    expect(html).not.toContain("Finished edition");
-    expect(html).not.toContain("Future edition");
+  it("keeps the Member Portal under construction, and not a link", async () => {
+    const [, portal] = tiles(await render());
+    expect(portal).toContain('aria-disabled="true"');
+    expect(portal).toContain("Under construction");
+    expect(portal).toContain("Member<br/>Portal");
+    expect(portal).not.toContain("href=");
   });
 
-  it("keeps an existing team reachable after its edition is archived", async () => {
-    mocks.hackathons.mockResolvedValue([]);
-    mocks.teams.mockResolvedValue([team]);
-    expect(await render()).toContain('href="/hq/team/team-1"');
+  it("locks the Captains' Den without the capability, and reads no assignments", async () => {
+    const [, , den] = tiles(await render());
+    expect(den).toContain('aria-disabled="true"');
+    expect(den).toContain("Captains only");
+    expect(den).toContain("Captains&#x27;<br/>Den");
+    // The closed padlock, drawn from components/hq/icons at full colour.
+    expect(den).toMatch(/<svg[^>]*width="14"[^>]*height="20"[^>]*viewBox="0 0 13\.6914 19\.6777"[^>]*fill="currentColor"[^>]*aria-hidden="true"/);
+    for (const copy of ["href=", "assigned to you", "fill-opacity"]) expect(den).not.toContain(copy);
+    expect(mocks.listAssignments).not.toHaveBeenCalled();
   });
 
-  it.each(["member", "regular"])("keeps an archived hosting request reachable for the %s tier", async (tier) => {
-    mocks.hackathons.mockResolvedValue([]);
-    mocks.dashboard.mockResolvedValue({ tier, requests: [], enrollments: [], events: [{ id: "event", hackathon_id: edition.id, name: edition.name, title: "Local meetup", status: "pending" }] });
-    const html = await render();
-    expect(html).toContain('href="/hq/hackathon/900001"');
-    expect(html).toContain("Worlds Fair");
-    expect(html).not.toContain("Local meetup");
-    expect(html).not.toContain("pending");
-  });
-
-  it("groups multiple teams into one hackathon menu item", async () => {
-    mocks.teams.mockResolvedValue([team, { ...team, id: "team-2", name: "Other team" }]);
-    const html = await render();
-    expect(html.match(/Worlds Fair/g)).toHaveLength(1);
-    expect(html).toContain('href="/hq/hackathon/900001"');
-  });
-
-  it("marks unfinished work with one accessible dot and no update summary", async () => {
-    mocks.teams.mockResolvedValue([team]);
-    mocks.memberWeekSummaries.mockResolvedValue([{ projectId: team.id, projectName: team.name, hackathonId: edition.id, enrolled: true, paused: false, timezone: "Europe/Amsterdam", missedPeriods: 2,
-      current: { periodId: "week", startsAt: "2026-09-13T22:00:00Z", endsAt: "2026-09-20T22:00:00Z", completed: false } }]);
-    const html = await render();
-    expect(html.match(/aria-label="Needs attention"/g)).toHaveLength(1);
-    for (const copy of ["Due", "Missed", "Updated", "Add this week", "Tulip"]) expect(html).not.toContain(copy);
-  });
-
-  it("does not mark completed work or optional Telegram linking", async () => {
-    mocks.teams.mockResolvedValue([team]);
-    mocks.memberWeekSummaries.mockResolvedValue([{ projectId: team.id, hackathonId: edition.id, enrolled: true, paused: false, missedPeriods: 2,
-      current: { startsAt: "2026-09-13T22:00:00Z", endsAt: "2026-09-20T22:00:00Z", completed: true } }]);
-    expect(await render()).not.toContain('aria-label="Needs attention"');
-  });
-
-  it("keeps help requests and hosting behind the hackathon tile", async () => {
-    mocks.teams.mockResolvedValue([team]);
-    mocks.dashboard.mockResolvedValue({ tier: "member", requests: [{ id: "request", hackathon_id: edition.id, name: edition.name, status: "pending", project_url: "https://colosseum.com/project" }], enrollments: [], events: [] });
-    const html = await render();
-    expect(html).toContain('href="/hq/hackathon/900001"');
-    expect(html).not.toContain("Help requested");
-    expect(html).not.toContain("pending");
-  });
-
-  it("only adds a Captain tile for a Captain", async () => {
-    expect(await render()).not.toContain('href="/hq/captain"');
+  it("opens the Captains' Den for a Captain with this edition's own assignment count", async () => {
     mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]) }));
-    expect(await render()).toContain('href="/hq/captain"');
+    const db = { marker: "builder-pool" };
+    mocks.builderDatabase.mockReturnValue(db);
+    mocks.listAssignments.mockResolvedValue([{ projectId: "p1", projectName: "Alpha" }, { projectId: "p2", projectName: "Beta" }]);
+    let [, , den] = tiles(await render());
+    expect(den).toContain('href="/hq/captain"');
+    expect(den).toContain("2 teams assigned to you");
+    expect(den).toMatch(/<svg[^>]*width="21"[^>]*height="20"[^>]*viewBox="0 0 20\.459 19\.6387"/);
+    for (const copy of ["aria-disabled", "Alpha", "Beta", "p1"]) expect(den).not.toContain(copy);
+    expect(mocks.listAssignments).toHaveBeenCalledWith(db, { hackathonId: 41, captainUserId: "acct-1" });
+    mocks.listAssignments.mockResolvedValue([{ projectId: "p1", projectName: "Alpha" }]);
+    [, , den] = tiles(await render());
+    expect(den).toContain("1 team assigned to you");
+    // No current edition means no assignment list to read, and a count of none.
+    mocks.currentHackathonId.mockResolvedValue(null);
+    mocks.listAssignments.mockClear();
+    [, , den] = tiles(await render());
+    expect(den).toContain("0 teams assigned to you");
+    expect(mocks.listAssignments).not.toHaveBeenCalled();
   });
 });
 
