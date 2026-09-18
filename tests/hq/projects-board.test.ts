@@ -49,8 +49,8 @@ const classifiers: Classifiers = {
 };
 
 const settings: Settings = {
-  prospectsReached: 0, prospectsTarget: 0, committedManual: 0, committedTarget: 0, committedGlide: 0, activeAtKickoff: 0,
-  activeTarget: 0, verifiedTarget: 0, staleDays: 7, finalistCap: 30, verifiedOnlyFinalists: false,
+  prospectsReached: 0, committedManual: 0, activeAtKickoff: 0,
+  staleDays: 7, finalistCap: 30, verifiedOnlyFinalists: false,
   timezone: "Europe/Amsterdam", calStart: "", calEnd: "", prospectsSub: "", activeSub: "",
 };
 

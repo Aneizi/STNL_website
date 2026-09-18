@@ -66,6 +66,9 @@ function project(overrides: Partial<Project> & { id: string; name: string }): Pr
     touchedBy: "",
     touchedAt: null,
     notes: [],
+    createdAt: "2026-09-10",
+    highPotential: false,
+    colosseum: null,
     ...overrides,
   };
 }
