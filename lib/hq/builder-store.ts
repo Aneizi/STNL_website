@@ -23,8 +23,8 @@ const TEAM_SELECT = `SELECT o.*,p.name,h.name AS hackathon_name,
       (SELECT json_agg(json_build_object('id',m.id,'name',m.name,'username',m.colosseum_username,'avatarUrl',m.avatar_url,'joined',m.builder_user_id IS NOT NULL) ORDER BY m.sort)
        FROM hq_project_members m WHERE m.project_id=p.id) AS members
       FROM hq_project_onboarding o JOIN hq_projects p ON p.id=o.project_id JOIN hq_hackathons h ON h.id=o.hackathon_id`;
-// The one relationship that makes a team the account's own, shared by
-// teams() and hasTeams() so the menu and the dashboard cannot disagree.
+// The one relationship that makes a team the account's own: a claim it owns
+// or a roster row it has joined.
 const OWN_TEAM = `(o.owner_user_id=$1 OR EXISTS(SELECT 1 FROM hq_project_members m WHERE m.project_id=o.project_id AND m.builder_user_id=$1))`;
 const text = (value: unknown): string | null => (value == null || value === '' ? null : String(value));
 /** The normalized Colosseum snapshot as every team surface reads it; see lib/hq/colosseum-snapshot.ts. */
@@ -544,25 +544,6 @@ export class BuilderStore {
   async teams(userId: string): Promise<BuilderTeam[]> {
     const { rows } = await this.db.query(`${TEAM_SELECT} WHERE ${OWN_TEAM} ORDER BY o.created_at DESC`, [userId]);
     return rows.map(toTeam);
-  }
-
-  /**
-   * Whether teams() or ownedProjects() would return anything, without loading
-   * a team or its roster: the menu asks only this, on every member request.
-   *
-   * `hq_project_ownership` is checked as well as the imported claims, because
-   * a project an admin created by hand from a help request is the account's
-   * team too. Its `source` is not consulted: an imported project has a row
-   * here as well, and the question is only whether this account has anything
-   * at all.
-   */
-  async hasTeams(userId: string): Promise<boolean> {
-    const { rows } = await this.db.query(
-      `SELECT (EXISTS(SELECT 1 FROM hq_project_onboarding o WHERE ${OWN_TEAM})
-        OR EXISTS(SELECT 1 FROM hq_project_ownership w WHERE w.owner_user_id=$1)) AS found`,
-      [userId],
-    );
-    return Boolean(rows[0].found);
   }
 
   /**
