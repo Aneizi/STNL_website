@@ -1,46 +1,46 @@
 import type { Metadata } from 'next';
+import { CaptainTile, HackathonTile, MenuGrid, PortalTile } from '@/components/hq/builder-menu';
 import { BuilderShell } from '@/components/hq/builder-shell';
-import { MenuGrid, MenuTile } from '@/components/hq/builder-menu';
 import { requireMemberActor } from '@/lib/hq/actor';
+import { builderDatabase } from '@/lib/hq/builder-db';
 import { builderStore } from '@/lib/hq/builder-store';
+import { listAssignments } from '@/lib/hq/captains';
 import { projectNeedsAttention } from '@/lib/hq/dashboard-attention';
-import { nowMs, todayInTz } from '@/lib/hq/format';
-import { isLive } from '@/lib/hq/hackathon-format';
+import { nowMs } from '@/lib/hq/format';
 import { memberWeekSummaries } from '@/lib/hq/reporting-surface';
-import { LINKS } from '@/lib/links';
+import { weekOfLabel } from '@/lib/hq/reporting-view';
+import styles from './dashboard.module.css';
 export const metadata:Metadata={title:'Home'};
 export const dynamic='force-dynamic';
 export default async function DashboardPage(){
   const actor=await requireMemberActor('/hq/dashboard');
+  // One request instant: the week label and the due mark answer to the same moment.
   const at=nowMs();
   const store=builderStore();
-  const [teams,ownProjects,dashboard,hackathons]=await Promise.all([store.teams(actor.id),store.ownedProjects(actor.id),store.dashboard(actor.id),store.hackathons()]);
+  const captain=actor.capabilities.has('captain');
+  const [teams,ownProjects,hackathonId]=await Promise.all([store.teams(actor.id),store.ownedProjects(actor.id),store.currentHackathonId()]);
   const projects=[...teams.filter(team=>team.verification==='verified'),...ownProjects];
-  const weeks=await memberWeekSummaries(projects,undefined,at);
-  const today=todayInTz('Europe/Amsterdam');
-  const enrolled=new Set(dashboard.enrollments.map(row=>Number(row.hackathon_id)));
-  const editions=new Map<number,string>();
-  // New choices are limited to running editions. Existing participation stays
-  // reachable after an edition ends, including archived projects.
-  for(const hackathon of hackathons) {
-    if(isLive(hackathon,today)||enrolled.has(hackathon.id)) editions.set(hackathon.id,hackathon.name);
-  }
-  for(const project of projects) editions.set(project.hackathonId,project.hackathonName);
-  for(const request of dashboard.requests) editions.set(Number(request.hackathon_id),String(request.name));
-  for(const event of dashboard.events) editions.set(Number(event.hackathon_id),String(event.name));
+  // A builder has one team. Should an account hold more, the current
+  // edition's comes first, then the newest.
+  const team=projects.find(project=>project.hackathonId===hackathonId)??projects[0]??null;
+  // The Captain count is this edition's, the same list the Den shows. Only a
+  // Captain's Home reads it.
+  const [weeks,assignments]=await Promise.all([
+    team?memberWeekSummaries([team],undefined,at):[],
+    captain&&hackathonId!==null?listAssignments(builderDatabase(),{hackathonId,captainUserId:actor.id}):[],
+  ]);
+  const week=weeks[0];
+  const weekLabel=week?.current?weekOfLabel(week.current.periodSequence,week.totalPeriods):null;
+  const firstName=actor.name.trim().split(/\s+/)[0];
 
-  return <BuilderShell fullWidth><h1>Home</h1>
-    <MenuGrid>
-      {[...editions].map(([id,name])=>{
-        const editionProjects=projects.filter(project=>project.hackathonId===id);
-        const hasRequests=dashboard.requests.some(request=>Number(request.hackathon_id)===id);
-        const hasHosting=dashboard.events.some(event=>Number(event.hackathon_id)===id)||(dashboard.tier==='member'&&hackathons.some(h=>h.id===id&&h.hostingEnabled&&enrolled.has(id)));
-        const href=editionProjects.length===1&&!hasRequests&&!hasHosting?`/hq/team/${editionProjects[0].id}`:`/hq/hackathon/${id}`;
-        return <MenuTile key={id} href={href} label={name} needsAttention={weeks.some(week=>week.hackathonId===id&&projectNeedsAttention(week,at))}/>;
-      })}
-      {actor.capabilities.has('captain')&&<MenuTile href='/hq/captain' label='Captain'/>}
-      <MenuTile href='/hq/account' label='Account'/>
-      <MenuTile href={LINKS.telegram} label='Get help' external/>
-    </MenuGrid>
+  return <BuilderShell bare>
+    <div className={styles.home}>
+      <h1 className={styles.title}>{firstName?`Where to, ${firstName}?`:'Where to?'}</h1>
+      <MenuGrid>
+        <HackathonTile team={team?{href:`/hq/team/${team.id}`,weekLabel,updateDue:projectNeedsAttention(week,at)}:null}/>
+        <PortalTile/>
+        <CaptainTile captain={captain} teamCount={assignments.length}/>
+      </MenuGrid>
+    </div>
   </BuilderShell>;
 }

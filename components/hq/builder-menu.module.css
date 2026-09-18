@@ -1,44 +1,27 @@
-.grid {
-  --attention-red:#c83232;
-  display:grid;
-  grid-template-columns:repeat(3,minmax(0,1fr));
-  gap:28px;
-  margin:32px 0 0;
-  padding:0;
-  list-style:none;
-}
+/* The tiles fill the row and drop to two, then one, on their own; the perspective is what makes a tilted tile read as depth. */
+.grid { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fit,minmax(min(300px,100%),1fr)); gap:20px; perspective:1400px; }
 .item { min-width:0; }
-.tile {
-  position:relative;
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:24px;
-  box-sizing:border-box;
-  min-height:168px;
-  height:100%;
-  padding:28px;
-  border:1px solid var(--faded);
-  border-radius:8px;
-  background:color-mix(in srgb,var(--cream) 55%,white);
-  color:var(--ink);
-  text-decoration:none;
-}
-.tile:hover { border-color:var(--ink); background:var(--cream); }
-.tile:focus-visible { outline:2px solid var(--orange); outline-offset:5px; }
-.label { font-size:20px; line-height:1.4; font-weight:600; }
-.arrow { flex-shrink:0; }
-/* The centre sits on the corner, leaving half the circle outside the tile. */
-.attention {
-  position:absolute;
-  right:0;
-  bottom:0;
-  width:18px;
-  height:18px;
-  border-radius:50%;
-  transform:translate(50%,50%);
-  background:var(--attention-red);
-  box-shadow:0 0 0 3px var(--cream);
-}
-@media(max-width:960px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
-@media(max-width:600px) { .grid { grid-template-columns:minmax(0,1fr); gap:24px; }.tile { min-height:132px; padding:24px; } }
+.item3d { min-width:0; transform-style:preserve-3d; }
+/* `.grid` prefixes beat app/hq/hq.css's `.hq a` and `.hq a:hover`, which would turn a tile orange and underline it. */
+.grid .tile { display:flex; flex-direction:column; justify-content:space-between; gap:48px; min-height:420px; padding:28px; box-sizing:border-box; text-decoration:none; }
+.grid a.tile:hover { color:#fbf7f0; text-decoration:none; }
+.grid .tile:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+/* A live tile eases back from a tilt; the tilt itself sets its transition inline. */
+.live { transform-style:preserve-3d; will-change:transform; transition:transform .6s cubic-bezier(.22,1,.36,1),box-shadow .6s cubic-bezier(.22,1,.36,1); box-shadow:0 0 0 rgba(22,19,15,0); }
+.grid .orange { background:#ee5b23; color:#fbf7f0; }
+.grid .ink { background:#16130f; color:#fbf7f0; }
+.grid .hatched { color:#8a8579; border:1px dashed #b4ac9d; background:repeating-linear-gradient(135deg,transparent 0 14px,rgba(22,19,15,.05) 14px 15px); }
+.disabled { cursor:not-allowed; }
+.kicker { font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; }
+.kickerRow { display:flex; justify-content:space-between; align-items:center; }
+/* The hackathon tile's row wraps, so a long week label and "Update due" never overlap. */
+.kickerWrap { gap:12px; flex-wrap:wrap; }
+.due { display:inline-flex; align-items:center; gap:8px; }
+.dot { width:10px; height:10px; border-radius:50%; background:#fbf7f0; }
+.icon { display:block; }
+.body { display:flex; flex-direction:column; gap:14px; }
+.title { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(40px,4.2vw,52px); line-height:1.05; letter-spacing:-.02em; }
+.sub { font-size:16px; }
+.subFaded { opacity:.85; }
+.subReserve { display:block; font-size:16px; min-height:1.55em; }
+@media(prefers-reduced-motion:reduce) { .live { transition:none; } }
