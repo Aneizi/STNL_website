@@ -50,13 +50,8 @@
   ],
   "settings": {
     "prospects_reached": 0,
-    "prospects_target": 100,
     "committed_manual": 0,
-    "committed_target": 50,
-    "committed_glide": 40,
     "active_at_kickoff": 0,
-    "active_target": 50,
-    "verified_target": 25,
     "stale_days": 7,
     "finalist_cap": 30,
     "verified_only_finalists": false,

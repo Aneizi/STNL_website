@@ -54,13 +54,8 @@ export type Classifiers = {
 
 export type Settings = {
   prospectsReached: number;
-  prospectsTarget: number;
   committedManual: number;
-  committedTarget: number;
-  committedGlide: number;
   activeAtKickoff: number;
-  activeTarget: number;
-  verifiedTarget: number;
   staleDays: number;
   finalistCap: number;
   verifiedOnlyFinalists: boolean;

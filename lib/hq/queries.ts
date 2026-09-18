@@ -76,13 +76,8 @@ export async function getClassifiers(hackathonId: number): Promise<Classifiers> 
 
 const SETTING_KEYS: Record<string, keyof Settings> = {
   prospects_reached: "prospectsReached",
-  prospects_target: "prospectsTarget",
   committed_manual: "committedManual",
-  committed_target: "committedTarget",
-  committed_glide: "committedGlide",
   active_at_kickoff: "activeAtKickoff",
-  active_target: "activeTarget",
-  verified_target: "verifiedTarget",
   stale_days: "staleDays",
   finalist_cap: "finalistCap",
   verified_only_finalists: "verifiedOnlyFinalists",
@@ -95,13 +90,8 @@ const SETTING_KEYS: Record<string, keyof Settings> = {
 
 const SETTINGS_FALLBACK: Settings = {
   prospectsReached: 0,
-  prospectsTarget: 0,
   committedManual: 0,
-  committedTarget: 0,
-  committedGlide: 0,
   activeAtKickoff: 0,
-  activeTarget: 0,
-  verifiedTarget: 0,
   staleDays: 7,
   finalistCap: 30,
   verifiedOnlyFinalists: false,
