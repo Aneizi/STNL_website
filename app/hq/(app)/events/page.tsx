@@ -34,7 +34,7 @@ export default async function EventsPage(props: {
     <Events
       events={events}
       classifiers={classifiers}
-      settings={settings}
+      settings={{ calStart: settings.calStart, calEnd: settings.calEnd }}
       now={nowMs()}
       today={todayInTz(settings.timezone)}
       syncedAt={syncedAt}
