@@ -13,12 +13,13 @@ import type { BuilderTeam, BuilderTeamSource, ProjectStage } from "./builder-typ
 import type { Person } from "./types";
 
 /**
- * The assigned Captain as a team may see them: a display name, and the
- * contact the Captain has approved for the teams they hold. Phase 6 gave
- * `contact` its writer: a Captain sets it on /hq/captain, and setting it is
- * itself the approval, which is why nothing else can fill this field and why
- * a login email or a profile address never does. Null while they have not
- * set one, and the team page then simply does not offer a way to reach them.
+ * The assigned Captain as a team may see them: a display name, and the handle
+ * they are reached on. `contact` is the username of the Captain's linked
+ * Telegram identity ("@username"), which is what their own Captains' Den
+ * shows them, with the contact they typed on the earlier form as the fallback
+ * (`readCaptainHandle` in lib/hq/reporting-contacts.ts). A login email or a
+ * profile address never fills it. Null when there is neither, and the team
+ * page then simply does not offer a way to reach them.
  */
 export type TeamCaptainView = { displayName: string; contact: string | null };
 

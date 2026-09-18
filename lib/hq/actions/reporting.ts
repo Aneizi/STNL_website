@@ -5,7 +5,6 @@ import { z } from "zod";
 import { requireMemberActor } from "../actor";
 import { getActorCapabilities } from "../authz";
 import { builderDatabase } from "../builder-db";
-import { builderStore } from "../builder-store";
 import { authorizedTeam, TEAM_NOT_AVAILABLE } from "../member-teams";
 import {
   MAX_CONTACT_LENGTH,
@@ -18,8 +17,6 @@ import {
   editUpdate,
   MAX_BODY_LENGTH,
   readAuthorizedUpdates,
-  readOwnUpdates,
-  type OwnReportingEntry,
   type ReportingEntryView,
   type ReportingPeriod,
 } from "../reporting";
@@ -172,20 +169,6 @@ export async function loadTeamUpdates(input: {
     .safeParse(input);
   if (!parsed.success) return { entries: [], nextCursor: null };
   return readAuthorizedUpdates(actor, { ...parsed.data, limit: RECENT_UPDATES });
-}
-
-/**
- * The account's own updates for the current edition, newest first and
- * read-only: `readOwnUpdates` requires a live `captain` capability and
- * selects nothing but rows this account authored, so a reassigned Captain
- * keeps their own sensitive notes without regaining anything of the team's.
- */
-export async function loadOwnUpdates(input: { cursor?: string } = {}): Promise<{ entries: OwnReportingEntry[]; nextCursor: string | null }> {
-  const actor = await requireMemberActor();
-  const parsed = z.object({ cursor: z.string().max(200).optional() }).safeParse(input);
-  const hackathonId = await builderStore().currentHackathonId();
-  if (!parsed.success || hackathonId === null) return { entries: [], nextCursor: null };
-  return readOwnUpdates(actor, { hackathonId, cursor: parsed.data.cursor, limit: RECENT_UPDATES });
 }
 
 export type ContactResult = { ok: true; contact: string | null } | { ok: false; error: string };

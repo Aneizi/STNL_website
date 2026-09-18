@@ -335,13 +335,18 @@ export function previewMessages(project: ProjectSummary, body: string, visibilit
   ]);
 }
 
-/** The confirmation, which is the one message that must survive a failed send: what was saved and what the week says now. */
+/**
+ * The confirmation, which is the one message that must survive a failed send:
+ * what was saved and where the team's week stands. Stated as the team's
+ * status rather than as a consequence of the save, because a Captain's note
+ * never completes the team's week and "is now" would claim that it had.
+ */
 export function savedMessage(projectName: string, period: { startDate: string; endDate: string } | null, completed: boolean): string {
-  const week = period ? `Week of ${periodRangeLabel(period.startDate, period.endDate)}` : "This week";
+  const week = period ? `week of ${periodRangeLabel(period.startDate, period.endDate)}` : "this week";
   // Capped, because this is the one message that goes through the durable
   // queue, where an over-length row would be a permanent skip rather than a
   // second message.
-  return `Saved to ${escapeHtml(snippet(projectName, 160))}.\n${escapeHtml(`${week} is now ${statusLabel(completed)}.`)}`;
+  return `Saved to ${escapeHtml(snippet(projectName, 160))}.\n${escapeHtml(`Team status, ${week}: ${statusLabel(completed)}.`)}`;
 }
 
 /**

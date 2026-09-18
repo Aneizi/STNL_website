@@ -301,9 +301,9 @@ describe("finding 2: a sensitive note leaves no trace in what the team's browser
         ["completed", "endDate", "endsAt", "periodId", "periodSequence", "startDate", "startsAt"],
       );
     }
-    // The Updated flag the plan requires is still there: a sensitive note
-    // completes the week, and the team is told the week is done.
-    expect(panel.current?.completed).toBe(true);
+    // And the week's own answer gives nothing away either: a Captain's note
+    // never completes the team's week, so the flag says what the team did.
+    expect(panel.current?.completed).toBe(false);
   });
 
   it("still gives the team its own updates in full", async () => {

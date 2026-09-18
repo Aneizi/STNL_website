@@ -2,9 +2,10 @@
 // PGlite. The acceptance bullets this file is measured against:
 //
 // - Saved updates complete the week; its due message then disappears.
-// - "Sensitive notes can make the status Complete even when there is no new
-//   shared entry to display. Do not show a hidden-note preview or count."
-// - "Show the assigned Captain and their approved contact when available."
+// - A Captain's note, sensitive or shared, never changes the team's update
+//   status, and the team is shown no hidden-note preview or count.
+// - "Show the assigned Captain and their approved contact when available":
+//   the handle is their Telegram username, else the contact they typed.
 // - "Interface copy contains no em dashes or middots."
 //
 // Only the session read is stubbed. The authorization decisions, the audience
@@ -91,6 +92,7 @@ beforeEach(async () => {
     DELETE FROM hq_captain_assignments; DELETE FROM hq_account_capabilities; DELETE FROM hq_audit_events;
     DELETE FROM hq_project_members; DELETE FROM hq_project_onboarding; DELETE FROM hq_projects;
     DELETE FROM hq_builder_enrollments; DELETE FROM hq_people; DELETE FROM hq_crm_persons;
+    DELETE FROM hq_auth_telegram_identity; DELETE FROM hq_auth_account;
     DELETE FROM hq_builder_profiles; DELETE FROM hq_auth_user;
     DELETE FROM hq_settings; DELETE FROM hq_hackathons;
   `);
@@ -120,6 +122,18 @@ async function assignCaptainWithContact(contact: string | null) {
   const assigned = await assignCaptain(db, { actorOperatorId: OPERATOR_ID, projectId: PROJECT, hackathonId: EDITION, captainUserId: "cap" });
   if (assigned.outcome !== "assigned") throw new Error(`could not assign: ${JSON.stringify(assigned)}`);
   if (contact) await writeCaptainContact(db, "cap", contact);
+}
+
+/** Links a Telegram identity with a username to the account, the way a Telegram sign-in leaves it. */
+async function linkTelegram(userId: string, username: string) {
+  await rows(
+    `INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org',$2,'telegram',$3)`,
+    [`telegram-${userId}`, `tg-${userId}`, userId],
+  );
+  await rows(
+    `INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES($1,$2,$3::bigint,$4)`,
+    [userId, `tg-${userId}`, "7000000000123", username],
+  );
 }
 
 /** The instant a Monday inside the first reporting week falls at. */
@@ -175,34 +189,48 @@ describe("the team page's weekly reporting", () => {
     }
   });
 
-  it("marks the week Complete on a Captain's sensitive note without showing the team the note, a preview or a count", async () => {
-    await assignCaptainWithContact(null);
-    const note = await createUpdate(
-      member("cap", ["captain"]),
-      { projectId: PROJECT, hackathonId: EDITION, body: "A private worry about the lead.", visibility: "sensitive" },
-      db,
-    );
-    expect(note).toMatchObject({ ok: true, completesPeriod: true });
+  it("leaves the week due on a Captain's sensitive note, showing the team neither the note, a preview nor a count", async () => {
+    vi.setSystemTime(new Date(MONDAY_IN_WEEK_ONE));
+    try {
+      await assignCaptainWithContact(null);
+      const note = await createUpdate(
+        member("cap", ["captain"]),
+        { projectId: PROJECT, hackathonId: EDITION, body: "A private worry about the lead.", visibility: "sensitive" },
+        db,
+      );
+      // A note about the team is not the team's update.
+      expect(note).toMatchObject({ ok: true, completesPeriod: false });
 
-    const html = await render(member("lead"));
-    expect(html).toContain("Complete");
-    // Not the body, not its existence, and no count that invites a look.
-    expect(html).not.toContain("A private worry");
-    expect(html).not.toMatch(/sensitive/i);
-    // No count either, and nothing that says an update exists: the team sees
-    // Complete, and the list below it is empty.
-    expect(html).toContain("No updates yet for this week.");
-    expect(html).not.toMatch(/1 update|note from|private/i);
+      const html = await render(member("lead"));
+      expect(html).toContain("Due Sunday 20 September");
+      expect(html).not.toContain("Complete");
+      // Not the body, not its existence, and no count that invites a look.
+      expect(html).not.toContain("A private worry");
+      expect(html).not.toMatch(/sensitive/i);
+      // Nothing that says an update exists: the week is still due, and the
+      // list below it is empty.
+      expect(html).toContain("No updates yet for this week.");
+      expect(html).not.toMatch(/1 update|note from|private/i);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("shows the assigned Captain and only the contact they approved", async () => {
+  it("shows the assigned Captain with their Telegram handle, falling back to the contact they typed", async () => {
     await assignCaptainWithContact(null);
     const withoutContact = await render(member("lead"));
     expect(withoutContact).toContain("Captain");
     expect(withoutContact).not.toContain("They have not shared a way to reach them yet.");
+    expect(withoutContact).not.toMatch(/@thecaptain|@cap_handle/);
+    // The old form's contact stands in while there is no Telegram username.
     await writeCaptainContact(db, "cap", "@thecaptain");
+    expect(await render(member("lead"))).toContain("@thecaptain");
+    // Once Telegram is linked, its username is the handle, and the typed one is not shown beside it.
+    await linkTelegram("cap", "cap_handle");
     const html = await render(member("lead"));
-    expect(html).toContain("@thecaptain");
+    expect(html).toContain("@cap_handle");
+    expect(html).toContain('href="https://t.me/cap_handle"');
+    expect(html).not.toContain("@thecaptain");
   });
 
   it("keeps the team able to update while no Captain is assigned", async () => {

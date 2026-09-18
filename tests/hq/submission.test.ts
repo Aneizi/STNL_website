@@ -53,6 +53,7 @@ import {
   reconcileSubmissions,
   refreshDueSubmissions,
 } from "@/lib/hq/submission";
+import { writeCaptainContact } from "@/lib/hq/reporting-contacts";
 import { captainReportingBoard, memberWeekSummaries, teamReportingPanel } from "@/lib/hq/reporting-surface";
 import { projectNeedsAttention } from "@/lib/hq/dashboard-attention";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
@@ -411,14 +412,46 @@ describe("what an authorized member is shown in the final period", () => {
       projectId: PROJECT_A, hackathonId: EDITION, body: "A private word about Alpha", visibility: "sensitive", atMs: IN_FINAL,
     });
     const panel = await teamReportingPanel(alice(), { projectId: PROJECT_A, hackathonId: EDITION, atMs: IN_FINAL });
-    // The team is told the period is done, and nothing else about it.
-    expect(panel.current).toMatchObject({ completed: true });
+    // The team is told nothing about it, not even a completion: a Captain's
+    // note never completes the team's week.
+    expect(panel.current).toMatchObject({ completed: false });
     expect(panel.entries).toEqual([]);
     const serialized = JSON.stringify(panel.submissionFocus);
     expect(serialized).not.toContain("basis");
     expect(serialized).not.toContain("A private word");
     expect(Object.keys(panel.submissionFocus!.period).sort())
       .toEqual(["completed", "endDate", "endsAt", "periodId", "periodSequence", "startDate", "startsAt"]);
+  });
+
+  it("counts the edition's periods for the Week n of N line, and names the Captain's handle from their Telegram identity", async () => {
+    await seedAssignedCaptain("cap", PROJECT_A);
+    const captain = member("cap", ["captain"]) as Extract<Actor, { kind: "member" }>;
+    const project = { id: PROJECT_A, name: "Alpha", hackathonId: EDITION };
+    const [summary] = await memberWeekSummaries([project], db, IN_FINAL);
+    const panel = await teamReportingPanel(alice(), { projectId: PROJECT_A, hackathonId: EDITION, atMs: IN_FINAL });
+    const board = await captainReportingBoard(captain, EDITION, db, IN_FINAL);
+    // Three weekly periods and the final one: four, the last of which is open now.
+    expect(summary.totalPeriods).toBe(4);
+    expect(panel.totalPeriods).toBe(4);
+    expect(board.week).toEqual({ sequence: 4, total: 4 });
+    // A count only: nothing about the weeks themselves rides along on Home.
+    expect(JSON.stringify(summary)).not.toMatch(/"basis"|"entries"|"history"/);
+    // Outside the campaign there is no week to name, and the count still stands.
+    expect((await captainReportingBoard(captain, EDITION, db, AFTER_FINAL)).week).toBeNull();
+    expect((await memberWeekSummaries([project], db, AFTER_FINAL))[0].totalPeriods).toBe(4);
+
+    // The handle: nothing, then the contact typed on the old form, then the
+    // Telegram username the moment one is linked.
+    expect(board.captainContact).toBeNull();
+    await writeCaptainContact(db, "cap", "@typed_handle");
+    expect((await captainReportingBoard(captain, EDITION, db, IN_FINAL)).captainContact).toBe("@typed_handle");
+    await rows(
+      `INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES('telegram-cap','https://oauth.telegram.org','tg-cap','telegram','cap')`,
+    );
+    await rows(
+      `INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES('cap','tg-cap',7000000000123,'cap_handle')`,
+    );
+    expect((await captainReportingBoard(captain, EDITION, db, IN_FINAL)).captainContact).toBe("@cap_handle");
   });
 });
 

@@ -108,11 +108,6 @@ export default async function CaptainPage() {
         );
       })}
 
-      <p>
-        <Link className={styles.inlineLink} href="/hq/captain/notes">Everything you have written</Link>
-        {" "}stays yours, including on teams you are no longer assigned to.
-      </p>
-
       {cards.length > 0 && (
         <section aria-labelledby="captain-contact-title">
           <h2 id="captain-contact-title">Your contact</h2>

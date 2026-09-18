@@ -3,8 +3,9 @@ import type { MemberActor } from "./actor";
 import { builderDatabase, type BuilderQuery } from "./builder-db";
 import { listAssignments } from "./captains";
 import { submittedOnTime } from "./colosseum-snapshot";
-import { readCaptainContact, readTeamContacts } from "./reporting-contacts";
+import { readCaptainHandle, readTeamContacts } from "./reporting-contacts";
 import {
+  listReportingPeriods,
   readAuthorizedUpdates,
   readCaptainUpdatePages,
   readReportingConfig,
@@ -14,6 +15,7 @@ import {
   type ProjectReportingStatus,
   type ReportingEntryView,
 } from "./reporting";
+import { periodForInstant } from "./reporting-periods";
 import {
   isOpenSubmissionPeriod,
   readSubmissionReconciliations,
@@ -63,9 +65,9 @@ const RECENT_UPDATES = 10;
  * team could read off how many hidden notes its Captain wrote and when.
  *
  * What is left is what the screen actually says: which week it is, when it
- * runs, and whether it is done. `completed` stays, because a sensitive note
- * completing the week is the documented rule the team is told about
- * ("it still completes the week"); how it was completed is not.
+ * runs, and whether it is done. `completed` stays, because it is the team's
+ * own answer: only a team member's update completes a week, so the flag never
+ * reveals anything about a Captain's notes.
  */
 export type TeamPeriodView = {
   periodId: string;
@@ -100,6 +102,8 @@ export type TeamReportingPanel = {
   current: TeamPeriodView | null;
   missedPeriods: number;
   history: TeamPeriodView[];
+  /** The edition's period count, the N in "Week n of N". A count of weeks and nothing about any of them. */
+  totalPeriods: number;
   /** The updates this viewer may read, newest first. Never a sensitive note that is not their own, and never a voided one. */
   entries: ReportingEntryView[];
   /** The next page's cursor, or null at the end. The screen's Load more carries it back through `loadTeamUpdates`. */
@@ -148,6 +152,7 @@ export async function teamReportingPanel(
     current: status?.current ? toTeamPeriod(status.current) : null,
     missedPeriods: status?.missedPeriods ?? 0,
     history: (status?.history ?? []).map(toTeamPeriod),
+    totalPeriods: status?.history.length ?? 0,
     entries: page.entries,
     nextCursor: page.nextCursor,
     teamContact: contacts.get(input.projectId) ?? null,
@@ -169,6 +174,8 @@ export type MemberWeekSummary = {
   paused: boolean;
   current: TeamPeriodView | null;
   missedPeriods: number;
+  /** The edition's period count, the N in "Week n of N". Deliberately a count and not the weeks themselves. */
+  totalPeriods: number;
   /** Only the facts needed to identify a remaining submission action. */
   submission?: {
     periodId: string;
@@ -214,6 +221,7 @@ export async function memberWeekSummaries(
       paused: Boolean(status?.paused),
       current: status?.current ? toTeamPeriod(status.current) : null,
       missedPeriods: status?.missedPeriods ?? 0,
+      totalPeriods: status?.history.length ?? 0,
       submission: submission ? {
         periodId: submission.period.periodId,
         open: submission.open,
@@ -392,7 +400,14 @@ export type CaptainReportingBoard = {
   hackathonId: number;
   timezone: string;
   cards: CaptainReportingCard[];
-  /** The contact this Captain has approved for their assigned teams. */
+  /**
+   * Where the edition is: the open period's sequence and the edition's
+   * period count, or null outside the campaign. Decided once for the board
+   * rather than read off a card, so the "Week n of N" line is there for a
+   * Captain whose projects are not in reporting yet.
+   */
+  week: { sequence: number; total: number } | null;
+  /** The handle this Captain is reached on, as `readCaptainHandle` resolves it: their Telegram username first. */
   captainContact: string | null;
 };
 
@@ -411,13 +426,16 @@ export async function captainReportingBoard(
   db: BuilderQuery = builderDatabase(),
   atMs: number = Date.now(),
 ): Promise<CaptainReportingBoard> {
-  const [assignments, schedule, captainContact] = await Promise.all([
+  const [assignments, schedule, captainContact, periods] = await Promise.all([
     listAssignments(db, { hackathonId, captainUserId: actor.id }),
     readReportingSchedule(db, hackathonId),
-    readCaptainContact(db, actor.id),
+    readCaptainHandle(db, actor.id),
+    listReportingPeriods(db, hackathonId),
   ]);
   const timezone = schedule?.timezone ?? "Europe/Amsterdam";
-  if (!assignments.length) return { hackathonId, timezone, cards: [], captainContact };
+  const open = periodForInstant(periods, atMs);
+  const week = open ? { sequence: open.sequence, total: periods.length } : null;
+  if (!assignments.length) return { hackathonId, timezone, cards: [], week, captainContact };
 
   const projectIds = assignments.map((assignment) => assignment.projectId);
   const [statuses, contacts, pages] = await Promise.all([
@@ -456,5 +474,5 @@ export async function captainReportingBoard(
       submissionFocus: focus.get(assignment.projectId) ?? null,
     });
   });
-  return { hackathonId, timezone, cards, captainContact };
+  return { hackathonId, timezone, cards, week, captainContact };
 }

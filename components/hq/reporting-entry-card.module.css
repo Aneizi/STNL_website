@@ -1,0 +1,30 @@
+/* One saved update or note, as the team page's Earlier list and the Captains'
+ * Den both render it. Every rule is scoped under .card so the member shell's
+ * own `.main p` and `.main button` rules cannot reach in. Radius 0 throughout:
+ * this is a redesigned member page. */
+.card { background:#fdfbf7; border:1px solid rgba(22,19,15,.15); border-radius:0; padding:24px 28px; min-width:0; }
+.card .body { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:17px; line-height:1.55; color:#16130f; }
+.card .meta { margin:12px 0 0; display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:15px; color:#57534a; }
+.card .edit { border:0; background:none; padding:0; min-height:32px; color:#57534a; font:inherit; font-size:15px; text-decoration:underline; text-underline-offset:4px; cursor:pointer; }
+.card .edit:hover { color:#16130f; }
+
+.card .form { display:flex; flex-direction:column; gap:12px; }
+.card .textarea { width:100%; box-sizing:border-box; min-height:140px; padding:14px 16px; border:1px solid #16130f; border-radius:0; background:#fbf7f0; color:#16130f; font:inherit; font-size:17px; line-height:1.5; resize:vertical; }
+.card .textarea::placeholder { color:#57534a; opacity:1; }
+.card .actions { display:flex; gap:12px; flex-wrap:wrap; }
+.card .save,.card .cancel { display:inline-flex; align-items:center; min-height:44px; padding:0 18px; border-radius:0; font:inherit; font-weight:600; cursor:pointer; }
+.card .save { background:#16130f; color:#fbf7f0; border:0; }
+.card .save:hover { background:#342d24; }
+.card .cancel { background:none; color:#16130f; border:1px solid #16130f; }
+.card .cancel:hover { background:#f1e9dc; }
+.card .save:disabled,.card .cancel:disabled { opacity:.5; cursor:pointer; }
+.card .alert { margin:0; font-size:15px; color:#a52b16; }
+
+/* The version that is saved now, shown beside the draft after an edit lost
+ * a race: a soft fill block, never a rule line. */
+.card .conflict { padding:14px 16px; background:#f3ede2; }
+.card .conflictLabel { margin:0 0 6px; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#57534a; }
+.card .conflictBody { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; font-size:16px; line-height:1.5; color:#16130f; }
+.card .conflictMeta { margin:8px 0 0; font-size:15px; color:#57534a; }
+
+.card button:focus-visible,.card textarea:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }

@@ -200,7 +200,7 @@ describe("adding an update from a member surface", () => {
       expect(result.reason).toBe("period_changed");
       // The answer the screen needs: which week is open now.
       expect(result.reason === "period_changed" && result.currentPeriod?.id).toBe(second.id);
-      expect(result.error).toMatch(/still here/i);
+      expect(result.error).toMatch(/text is kept/i);
       // Nothing was written: the person decides which week the text belongs to.
       expect((await rows("SELECT count(*)::int AS n FROM hq_reporting_entries"))[0].n).toBe(0);
     } finally {
@@ -231,15 +231,15 @@ describe("adding an update from a member surface", () => {
     expect(result.ok === false && result.error).toMatch(/Captain/);
   });
 
-  it("lets the assigned Captain save a sensitive note, and it still completes the week", async () => {
+  it("lets the assigned Captain save a sensitive note, which never completes the team's week", async () => {
     await seedAssignedCaptain("cap", PROJECT);
     asMember(member("cap", ["captain"]));
     const result = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "Quiet word.", visibility: "sensitive" });
-    expect(result).toMatchObject({ ok: true, completesPeriod: true });
-    // And the team never sees it: the audience is applied in SQL, so the
-    // teammate's own read of the project has nothing in it.
+    expect(result).toMatchObject({ ok: true, completesPeriod: false });
+    // The Captains' Den rule: a note is about the team, not from it, so the
+    // week stays Not updated until a team member writes an update.
     const status = (await reportingStatus(db, { hackathonId: EDITION, projectIds: [PROJECT] }))[0];
-    expect(status.current?.completed).toBe(true);
+    expect(status.current?.completed).toBe(false);
   });
 
   it("answers an unrelated account exactly as it answers a team that does not exist", async () => {

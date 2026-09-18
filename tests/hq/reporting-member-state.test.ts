@@ -250,7 +250,7 @@ describe("drafts keep their original target", () => {
 describe("dashboard reporting disclosures", () => {
   const panel: TeamReportingPanel = {
     projectId: "project", hackathonId: 1, timezone: "Europe/Amsterdam", enrolled: true,
-    paused: false, current: week("week-1"), missedPeriods: 0, history: [week("week-1")],
+    paused: false, current: week("week-1"), missedPeriods: 0, history: [week("week-1")], totalPeriods: 1,
     entries: [], nextCursor: null, teamContact: null, submissionFocus: null,
   };
   function dashboardView(overrides: Partial<TeamReportingPanel> = {}) {

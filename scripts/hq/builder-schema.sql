@@ -494,6 +494,18 @@ CREATE INDEX IF NOT EXISTS hq_reporting_entries_period_idx ON hq_reporting_entri
 CREATE INDEX IF NOT EXISTS hq_reporting_entries_project_idx ON hq_reporting_entries (project_id, submitted_at DESC);
 CREATE INDEX IF NOT EXISTS hq_reporting_entries_author_idx ON hq_reporting_entries (author_kind, author_id);
 
+-- Whether this entry can complete the team's week, added 18 September 2026
+-- with the Captains' Den redesign: "Captain notes never change a team's
+-- update status." A week is the TEAM's to complete, so only an entry written
+-- through team membership counts; a note from the assigned Captain or from an
+-- operator, shared or sensitive, is recorded beside the week and never stands
+-- in for the team's own update. Written once by createUpdate from the
+-- authorization decision (`via`), never edited afterwards, and read by the
+-- two completion queries (reportingStatus's tallies and closePeriod's first
+-- entry). Rows from before the column are team members' and Captains' alike,
+-- and the default keeps what those weeks already recorded.
+ALTER TABLE hq_reporting_entries ADD COLUMN IF NOT EXISTS counts_toward_completion boolean NOT NULL DEFAULT true;
+
 -- One immutable row per version of an entry, version 1 being the content as
 -- first submitted. Written in the same transaction as the insert or update it
 -- records, so an entry's current version always has a revision and history can
