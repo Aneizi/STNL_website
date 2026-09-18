@@ -13,6 +13,8 @@
 .brand { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
 .brand img { width: 28px; height: auto; }
 .page .back { color: #57534a; }
+/* The global anchor hover underlines; Back changes colour only. */
+.page .back:hover { text-decoration: none; }
 .main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 42px 24px 72px; }
 .content { width: min(100%, 460px); }
 .content h1 { margin: 0 0 28px; font-family: inherit; font-size: 32px; font-weight: 600; letter-spacing: -.025em; line-height: 1.2; text-wrap: balance; }
@@ -32,14 +34,11 @@
 .hint { margin: 10px 0 0; font-size: 17px; color: #57534a; }
 .hint:empty, .error:empty { display: none; }
 .form .hint { margin: -6px 0 0; }
-.switchMode { margin: 26px 0 0; text-align: center; font-size: 17px; color: #57534a; }
-.switchMode a { color: #16130f; }
 .codeActions { display: flex; justify-content: space-between; gap: 16px; }
 .codeActions button { min-height: 44px; border: 0; padding: 4px 0; background: none; color: #57534a; font-size: 17px; cursor: pointer; }
 .error { margin: 20px 0 0; font-size: 17px; color: #a52b16; }
-.page button:disabled { opacity: .5; cursor: not-allowed; }
-.page input:disabled { opacity: .7; }
-.page :focus-visible { outline: 2px solid #d14e16; outline-offset: 4px; }
+.page button:disabled { opacity: .5; cursor: pointer; }
+.page :focus-visible { outline: 2px solid #ee5b23; outline-offset: 4px; }
 
 @media (hover: hover) {
   .submit:hover:not(:disabled) { background: #342d24; border-color: #342d24; }
@@ -54,6 +53,4 @@
 @media (max-width: 480px) {
   .header { padding: 12px 20px; }
   .main { align-items: flex-start; padding: 30px 24px 56px; }
-  .brand { font-size: 16px; }
-  .brand img { width: 25px; }
 }
