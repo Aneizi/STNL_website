@@ -1,5 +1,6 @@
 import "server-only";
 import type { BuilderQuery } from "./builder-db";
+import { realEmail } from "./builder-store";
 import { listActiveCapabilitiesForUsers, personTags } from "./capabilities";
 import { CLASSIFIERS_SELECT, toClassifiers } from "./classifiers-sql";
 import { getSql } from "./db";
@@ -284,9 +285,12 @@ export function operatorQuery(): BuilderQuery {
 
 export async function getPeople(hackathonId: number): Promise<Person[]> {
   const sql = getSql();
+  // The linked account's login rides along through the same profile and
+  // Telegram identity join Admin uses (lib/hq/builder-admin-queries.ts), so
+  // the Account block needs no read of its own.
   const rows = await sql`
-    SELECT p.id, p.name, p.role_id, r.label AS role_label, p.org, p.contact, p.partner_id,
-      COALESCE(pa.name, '') AS partner_name, p.notes, p.builder_user_id, p.person_id,
+    SELECT p.id, p.name, p.role_id, r.label AS role_label, p.contact, p.notes, p.builder_user_id, p.person_id,
+      b.email AS login_email, t.username AS telegram_username,
       (SELECT count(*) FROM hq_scores s WHERE s.judge_id = p.id) AS judge_scores,
       (SELECT count(*) FROM hq_project_members m WHERE p.person_id IS NOT NULL AND m.person_id = p.person_id) AS roster_rows,
       (SELECT count(*) FROM hq_people q WHERE p.person_id IS NOT NULL AND q.person_id = p.person_id AND q.id <> p.id) AS other_cards,
@@ -294,35 +298,44 @@ export async function getPeople(hackathonId: number): Promise<Person[]> {
         AND e.user_id = p.builder_user_id AND e.hackathon_id = p.hackathon_id) AS enrollments
     FROM hq_people p
     JOIN hq_people_roles r ON r.id = p.role_id
-    LEFT JOIN hq_partners pa ON pa.id = p.partner_id
+    LEFT JOIN hq_builder_profiles b ON b.id = p.builder_user_id
+    LEFT JOIN hq_auth_telegram_identity t ON t.user_id = b.id
     WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
   // One batched lookup for every linked account on the page; the Captain tag
-  // is read from active grants and never from a role or a tier.
+  // and flag are read from active grants and never from a role or a tier.
   const userIds = rows.map((r) => r.builder_user_id).filter((id): id is string => typeof id === "string");
   const capabilities = await listActiveCapabilitiesForUsers(userIds, operatorQuery());
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    roleId: r.role_id,
-    org: r.org,
-    contact: r.contact,
-    partnerId: r.partner_id,
-    partnerName: r.partner_name,
-    notes: r.notes,
-    builderUserId: r.builder_user_id ?? null,
-    personId: r.person_id ?? null,
-    tags: personTags(String(r.role_label), r.builder_user_id ? (capabilities.get(String(r.builder_user_id)) ?? []) : []),
-    // The counts behind the Delete person confirmation, read with the card
-    // rather than one query per row when the operator opens the control.
-    removal: {
-      cardId: String(r.id), name: String(r.name), hackathonId,
-      personId: r.person_id ?? null, hasAccount: r.builder_user_id != null,
-      rosterRows: Number(r.roster_rows ?? 0), otherEditionCards: Number(r.other_cards ?? 0),
-      judgeScores: Number(r.judge_scores ?? 0), enrollments: Number(r.enrollments ?? 0),
-    },
-  }));
+  return rows.map((r) => {
+    const userId = typeof r.builder_user_id === "string" ? r.builder_user_id : null;
+    const held = userId ? (capabilities.get(userId) ?? []) : [];
+    const account = userId
+      ? { email: realEmail(r.login_email), telegramUsername: typeof r.telegram_username === "string" && r.telegram_username ? r.telegram_username : null }
+      : null;
+    const stored = typeof r.contact === "string" ? r.contact : "";
+    return {
+      id: r.id,
+      name: r.name,
+      roleId: r.role_id,
+      // Telegram first, then what the card stores, then the login email.
+      contact: account?.telegramUsername ? `@${account.telegramUsername}` : stored || account?.email || "",
+      notes: r.notes,
+      builderUserId: userId,
+      personId: r.person_id ?? null,
+      account,
+      captain: held.includes("captain"),
+      tags: personTags(String(r.role_label), held),
+      // The counts behind the Delete person confirmation, read with the card
+      // rather than one query per row when the operator opens the control.
+      removal: {
+        cardId: String(r.id), name: String(r.name), hackathonId,
+        personId: r.person_id ?? null, hasAccount: userId !== null,
+        rosterRows: Number(r.roster_rows ?? 0), otherEditionCards: Number(r.other_cards ?? 0),
+        judgeScores: Number(r.judge_scores ?? 0), enrollments: Number(r.enrollments ?? 0),
+      },
+    };
+  });
 }
 
 /**
@@ -596,9 +609,9 @@ export async function searchAll(query: string, hackathonId: number): Promise<Sea
       ORDER BY pa.created_at DESC LIMIT 12
     `,
     sql`
-      SELECT p.id, p.name, r.label AS role, p.org FROM hq_people p
+      SELECT p.id, p.name, r.label AS role FROM hq_people p
       JOIN hq_people_roles r ON r.id = p.role_id
-      WHERE p.hackathon_id = ${hackathonId} AND (p.name ILIKE ${like} OR p.org ILIKE ${like})
+      WHERE p.hackathon_id = ${hackathonId} AND p.name ILIKE ${like}
       ORDER BY p.created_at DESC LIMIT 12
     `,
     sql`
@@ -624,7 +637,7 @@ export async function searchAll(query: string, hackathonId: number): Promise<Sea
       kind: "Person" as const,
       id: r.id as string,
       label: r.name as string,
-      meta: [r.role, r.org].filter(Boolean).join(", "),
+      meta: r.role as string,
     })),
     ...events.map((r) => ({
       kind: "Event" as const,

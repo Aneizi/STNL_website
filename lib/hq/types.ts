@@ -130,23 +130,34 @@ export type PartnerDetail = Partner & {
 /**
  * A label on a People card. A role tag is the card's editable role. A
  * capability tag mirrors an admin-granted account capability (Captain): it is
- * read-only in People, marked protected, and never a way to grant anything.
+ * not editable as a tag, marked protected, and never a way to grant anything.
+ * Captain changes go through the card's Captain control (setPersonCaptain in
+ * lib/hq/actions/people.ts), an explicit action on the linked account.
  */
 export type PersonTag = { kind: "role" | "capability"; label: string; protected: boolean };
+
+/** How a card's linked account signs in, for the Account block. The placeholder address is never in `email`. */
+export type PersonAccount = { email: string | null; telegramUsername: string | null };
 
 export type Person = {
   id: string;
   name: string;
   roleId: string;
-  org: string;
+  /**
+   * The one contact the row shows, Telegram first: the linked account's
+   * handle as "@handle", else what the card stores (a hand-entered handle or
+   * email), else the account's login email, else "".
+   */
   contact: string;
-  partnerId: string | null;
-  partnerName: string;
   notes: string;
   /** The linked public account, or null for a hand-entered card. */
   builderUserId: string | null;
   /** The CRM person this card belongs to, or null before one is assigned. */
   personId: string | null;
+  /** The linked account's login, or null for a hand-entered card. */
+  account: PersonAccount | null;
+  /** Whether the linked account holds an active Captain grant. Read from hq_account_capabilities with the tags, never from a role. */
+  captain: boolean;
   tags: PersonTag[];
   /**
    * What deleting this card takes with it, read before the destructive step

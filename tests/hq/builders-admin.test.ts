@@ -33,7 +33,7 @@ import {
   createCaptainInvitation as createCaptainInvitationAction, revokeCaptainInvitation as revokeCaptainInvitationAction,
   unassignProjectCaptain,
 } from "@/lib/hq/actions/captains";
-import { correctPersonMatch, createPerson, deletePerson, updatePerson } from "@/lib/hq/actions/people";
+import { correctPersonMatch, createPerson, deletePerson, setPersonCaptain, updatePerson } from "@/lib/hq/actions/people";
 import { getBuilderAdminData, getBuilderProjectReviews } from "@/lib/hq/builder-admin-queries";
 import type { BuilderQuery } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
@@ -166,6 +166,7 @@ describe("builder administration authorization and scoping", () => {
     ["unassigning a Captain", () => unassignProjectCaptain(BARE_PROJECT)],
     ["bulk assigning Captains", () => bulkAssignProjectCaptain({ projectIds: [BARE_PROJECT], captainUserId: "selected" })],
     ["correcting a person match", () => correctPersonMatch({ personId: PROJECT, toUserId: null, reason: "Wrong person" })],
+    ["making a Captain from People", () => setPersonCaptain(PERSON_CARD, true)],
   ] as const)("requires an operator session for %s", async (_, action) => {
     mocks.requireUser.mockRejectedValue(new Error("Not an operator"));
     await expect(action()).rejects.toThrow("Not an operator");
@@ -291,8 +292,8 @@ describe("builder administration authorization and scoping", () => {
       expect(foreign, label).toEqual(await attempt(MISSING));
     }
     expect(await editProjectNote(String(note.id), "Edited")).toEqual(await editProjectNote(MISSING, "Edited"));
-    expect(await updatePerson(String(card.id), { field: "org", value: "Forged" })).toEqual(await updatePerson(MISSING, { field: "org", value: "Forged" }));
-    expect(await updatePerson(MISSING, { field: "org", value: "Forged" })).toMatchObject({ ok: false });
+    expect(await updatePerson(String(card.id), { field: "notes", value: "Forged" })).toEqual(await updatePerson(MISSING, { field: "notes", value: "Forged" }));
+    expect(await updatePerson(MISSING, { field: "notes", value: "Forged" })).toMatchObject({ ok: false });
     // Nothing moved: no activity, no touch, no note, no edit, no deletion, no card change.
     expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
     // 3, not 2: BARE_PROJECT (a project created directly in Admin, with no
@@ -301,15 +302,15 @@ describe("builder administration authorization and scoping", () => {
     expect(await rows("SELECT body,edited_at FROM hq_project_notes")).toEqual([{ body: "Other note", edited_at: null }]);
     expect(await rows("SELECT blocker,touched_by_user_id FROM hq_projects WHERE id=$1", [OTHER_PROJECT])).toEqual([{ blocker: "", touched_by_user_id: null }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_project_gates")).toEqual([{ n: 0 }]);
-    expect(await rows("SELECT org FROM hq_people WHERE id=$1", [card.id])).toEqual([{ org: "" }]);
+    expect(await rows("SELECT notes FROM hq_people WHERE id=$1", [card.id])).toEqual([{ notes: "" }]);
     expect(mocks.refreshHq).not.toHaveBeenCalled();
     // The cookie names the edition the operator works in and authorizes nothing: once the other edition is selected the same ids answer, and the first edition's do not.
     mocks.requireHackathon.mockResolvedValue({ id: 12, name: "Other competition" });
     expect(await setProjectStatus(OTHER_PROJECT, "active")).toEqual({ ok: true });
     expect(await editProjectNote(String(note.id), "Edited")).toEqual({ ok: true });
-    expect(await updatePerson(String(card.id), { field: "org", value: "Real org" })).toEqual({ ok: true });
+    expect(await updatePerson(String(card.id), { field: "notes", value: "Real note" })).toEqual({ ok: true });
     expect(await setProjectStatus(PROJECT, "active")).toEqual({ ok: false });
-    expect(await updatePerson((await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='selected'"))[0].id as string, { field: "org", value: "Forged" })).toMatchObject({ ok: false });
+    expect(await updatePerson((await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='selected'"))[0].id as string, { field: "notes", value: "Forged" })).toMatchObject({ ok: false });
     expect(await rows("SELECT hackathon_id FROM hq_activity ORDER BY created_at")).toEqual([{ hackathon_id: 12 }, { hackathon_id: 12 }, { hackathon_id: 12 }]);
   });
 
@@ -408,11 +409,12 @@ describe("accounts without a login email in Admin", () => {
 describe("People tags, Captain grants and person-match correction", () => {
   const grants = () => rows("SELECT user_id,capability,granted_by_user_id::text AS granted_by,revoked_by_user_id::text AS revoked_by,revoked_at IS NULL AS active,reason FROM hq_account_capabilities ORDER BY granted_at,id");
   const events = () => rows("SELECT kind,actor_kind,actor_id,subject_user_id,metadata FROM hq_audit_events ORDER BY id");
-  async function partnerCaptainRole() {
+  async function partnerContactRole() {
     const [role] = await rows(`INSERT INTO hq_people_roles(label,filter_label,color,bg,is_judge,sort)
-      VALUES('Partner captain','Partner captains','accent','accent-fill',false,0) RETURNING id::text AS id`);
+      VALUES('Partner contact','Partner contacts','accent','accent-fill',false,0) RETURNING id::text AS id`);
     return String(role.id);
   }
+  const NOBODY = "00000000-0000-4000-8000-0000000000ff";
   async function selectedCard() {
     const [card] = await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='selected'");
     return String(card.id);
@@ -466,35 +468,110 @@ describe("People tags, Captain grants and person-match correction", () => {
   });
 
   it("never turns a People role edit, a new person or a tier change into a Captain grant", async () => {
-    const roleId = await partnerCaptainRole();
+    const roleId = await partnerContactRole();
     const card = await selectedCard();
     expect(await updatePerson(card, { field: "roleId", value: roleId })).toEqual({ ok: true });
-    expect(await createPerson({ name: "Liaison Two", roleId, org: "Partner org", contact: "", partnerId: null, notes: "" })).toEqual({ ok: true });
+    expect(await createPerson({ name: "Liaison Two", roleId, telegram: "", email: "" })).toEqual({ ok: true });
     expect(await updateBuilderTier("selected", "member")).toEqual({ ok: true });
     expect(await grants()).toEqual([]);
     expect(await events()).toEqual([]);
     const people = (await getPeople(11)).sort((a, b) => a.name.localeCompare(b.name));
-    expect(people.map((p) => [p.name, p.tags])).toEqual([
-      ["Liaison Two", [{ kind: "role", label: "Partner captain", protected: false }]],
-      ["Selected Builder", [{ kind: "role", label: "Partner captain", protected: false }]],
+    expect(people.map((p) => [p.name, p.captain, p.tags])).toEqual([
+      ["Liaison Two", false, [{ kind: "role", label: "Partner contact", protected: false }]],
+      ["Selected Builder", false, [{ kind: "role", label: "Partner contact", protected: false }]],
     ]);
     expect(people.every((p) => p.tags.every((tag) => !tag.protected))).toBe(true);
     expect((await getBuilderAdminData()).accounts[0]).toMatchObject({ tier: "member", captain: false });
   });
 
-  it("keeps the renamed Partner captain role an ordinary, editable role beside the Captain capability", async () => {
-    const roleId = await partnerCaptainRole();
+  it("keeps the renamed Partner contact role an ordinary, editable role beside the Captain capability", async () => {
+    const roleId = await partnerContactRole();
     const card = await selectedCard();
     await grantCaptainCapability("selected", "Leads the cohort");
     expect(await updatePerson(card, { field: "roleId", value: roleId })).toEqual({ ok: true });
     expect((await getPeople(11))[0].tags).toEqual([
-      { kind: "role", label: "Partner captain", protected: false },
+      { kind: "role", label: "Partner contact", protected: false },
       { kind: "capability", label: "Captain", protected: true },
     ]);
     const [builder] = await rows("SELECT id::text AS id FROM hq_people_roles WHERE label='Builder'");
     expect(await updatePerson(card, { field: "roleId", value: String(builder.id) })).toEqual({ ok: true });
     expect((await getPeople(11))[0].tags[0]).toEqual({ kind: "role", label: "Builder", protected: false });
     expect(await grants()).toHaveLength(1);
+  });
+
+  it("grants and removes Captain from a People card with the fixed reason, and refuses a card without an account, another edition's card and a bad id", async () => {
+    await rows("INSERT INTO hq_people(hackathon_id,name,role_id) SELECT 11,'Hand Entered',id FROM hq_people_roles");
+    const [hand] = await rows("SELECT id::text AS id FROM hq_people WHERE name='Hand Entered'");
+    const [other] = await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='other'");
+    expect(await setPersonCaptain(PERSON_CARD, true)).toEqual({ ok: true });
+    expect(await grants()).toEqual([{ user_id: "selected", capability: "captain", granted_by: OPERATOR, revoked_by: null, active: true, reason: "Granted from People" }]);
+    expect((await getPeople(11)).find((p) => p.id === PERSON_CARD)).toMatchObject({
+      captain: true, tags: [{ kind: "role", label: "Builder", protected: false }, { kind: "capability", label: "Captain", protected: true }],
+    });
+    expect(await setPersonCaptain(PERSON_CARD, false)).toEqual({ ok: true });
+    expect(await grants()).toEqual([expect.objectContaining({ active: false, revoked_by: OPERATOR })]);
+    expect((await getPeople(11)).find((p) => p.id === PERSON_CARD)).toMatchObject({ captain: false, tags: [{ kind: "role", label: "Builder", protected: false }] });
+    expect(await events()).toEqual([
+      expect.objectContaining({ kind: "capability.granted", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "selected" }),
+      expect.objectContaining({ kind: "capability.revoked", actor_kind: "operator", actor_id: OPERATOR, subject_user_id: "selected", metadata: expect.objectContaining({ reason: "Removed from People" }) }),
+    ]);
+    expect(mocks.refreshHq).toHaveBeenCalledTimes(2);
+    // A hand-entered card has no account to grant to; another edition's card
+    // answers like a missing one; a bad id never reaches the database.
+    expect(await setPersonCaptain(String(hand.id), true)).toMatchObject({ ok: false, error: expect.stringContaining("HQ account") });
+    expect(await setPersonCaptain(String(other.id), true)).toEqual(await setPersonCaptain(NOBODY, true));
+    expect(await setPersonCaptain(NOBODY, true)).toEqual({ ok: false, error: "Person not found." });
+    expect(await setPersonCaptain("not-a-uuid", true)).toMatchObject({ ok: false });
+    expect(await grants()).toHaveLength(1);
+    expect(await events()).toHaveLength(2);
+    expect(mocks.refreshHq).toHaveBeenCalledTimes(2);
+  });
+
+  it("carries each linked account's login and Captain state with the card, one contact per row, Telegram first, still in one batched query", async () => {
+    await rows(`INSERT INTO hq_auth_user(id,name,email,"emailVerified") VALUES('second','Second Builder','second@example.test',true)`);
+    await rows(`INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES('second','subject-second',9007199254740990,'second_tg')`);
+    await rows("INSERT INTO hq_builder_profiles(id,email,name) VALUES('second','second@example.test','Second Builder')");
+    await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id,contact) SELECT 11,'second','Second Builder',id,'second@example.test' FROM hq_people_roles");
+    await rows("INSERT INTO hq_people(hackathon_id,name,role_id,contact) SELECT 11,'Hand Entered',id,'@handentered' FROM hq_people_roles");
+    await rows("INSERT INTO hq_people(hackathon_id,name,role_id) SELECT 11,'No Contact',id FROM hq_people_roles");
+    await grantCapability(builderDb, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "second", capability: "captain", reason: "Leads the cohort" });
+    queryCalls = 0;
+    const people = (await getPeople(11)).sort((a, b) => a.name.localeCompare(b.name));
+    expect(queryCalls).toBe(1);
+    expect(people.map((p) => [p.name, p.contact, p.account, p.captain])).toEqual([
+      ["Hand Entered", "@handentered", null, false],
+      ["No Contact", "", null, false],
+      ["Second Builder", "@second_tg", { email: "second@example.test", telegramUsername: "second_tg" }, true],
+      ["Selected Builder", "selected@example.test", { email: "selected@example.test", telegramUsername: null }, false],
+    ]);
+    // The removed columns are gone from the shape, not just from the page.
+    expect(Object.keys(people[0]).sort()).toEqual(["account", "builderUserId", "captain", "contact", "id", "name", "notes", "personId", "removal", "roleId", "tags"]);
+  });
+
+  it("stores one contact for a hand-entered person, the Telegram handle first, and refuses a malformed handle, a malformed email and the removed fields", async () => {
+    const roleId = await partnerContactRole();
+    expect(await createPerson({ name: "Rutger Bos", roleId, telegram: "rutgerb", email: "" })).toEqual({ ok: true });
+    expect(await createPerson({ name: "Iris de Groot", roleId, telegram: "", email: " iris@ing.com " })).toEqual({ ok: true });
+    expect(await createPerson({ name: "Both Given", roleId, telegram: "@both_given", email: "both@example.test" })).toEqual({ ok: true });
+    expect(await createPerson({ name: "Neither", roleId, telegram: "", email: "" })).toEqual({ ok: true });
+    expect(await rows("SELECT name, contact, notes, org, partner_id FROM hq_people WHERE hackathon_id=11 AND builder_user_id IS NULL ORDER BY name")).toEqual([
+      { name: "Both Given", contact: "@both_given", notes: "", org: "", partner_id: null },
+      { name: "Iris de Groot", contact: "iris@ing.com", notes: "", org: "", partner_id: null },
+      { name: "Neither", contact: "", notes: "", org: "", partner_id: null },
+      { name: "Rutger Bos", contact: "@rutgerb", notes: "", org: "", partner_id: null },
+    ]);
+    expect(await createPerson({ name: "Bad Handle", roleId, telegram: "bad handle!", email: "" })).toMatchObject({ ok: false, error: expect.stringContaining("Telegram") });
+    expect(await createPerson({ name: "Short Handle", roleId, telegram: "@abc", email: "" })).toMatchObject({ ok: false, error: expect.stringContaining("Telegram") });
+    expect(await createPerson({ name: "Bad Email", roleId, telegram: "", email: "nope" })).toMatchObject({ ok: false, error: expect.stringContaining("email") });
+    expect(await createPerson({ name: "   ", roleId, telegram: "", email: "" })).toEqual({ ok: false, error: "Name is required." });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=11 AND builder_user_id IS NULL")).toEqual([{ n: 4 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 4 }]);
+    // Nothing edits an organisation, a free contact or a partner any more.
+    const card = await selectedCard();
+    for (const field of ["org", "contact", "partnerId"]) {
+      expect(await updatePerson(card, { field, value: "Forged" } as unknown as Parameters<typeof updatePerson>[1])).toEqual({ ok: false, error: "Invalid value." });
+    }
+    expect(await rows("SELECT org, contact, partner_id FROM hq_people WHERE id=$1", [card])).toEqual([{ org: "", contact: "", partner_id: null }]);
   });
 
   it("clears a wrong person match on the operator's say-so, with the operator on the event", async () => {
