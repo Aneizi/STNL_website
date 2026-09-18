@@ -15,7 +15,7 @@ const ORIGIN = "https://hq.invalid";
 const bounce = (pathname: string) => proxy(new NextRequest(`${ORIGIN}${pathname}`)).headers.get("location");
 
 const MEMBER_LOGIN_PAGES = ["/hq/login", "/hq/signin"];
-const MEMBER_PAGES = ["/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain"];
+const MEMBER_PAGES = ["/hq/profile", "/hq/welcome", "/hq/dashboard", "/hq/initialize", "/hq/join", "/hq/account", "/hq/captain"];
 const DYNAMIC_MEMBER_PAGES = ["/hq/hackathon/41", "/hq/team/00000000-0000-4000-8000-00000000000a", "/hq/team/1234-abcd", "/hq/invite/abc", "/hq/invite/tok_en-42", "/hq/join/917F94-8CE496-4D2C7A-4C70F1"];
 const OPERATOR_PAGES = ["/hq", "/hq/admin", "/hq/people", "/hq/projects", "/hq/partners", "/hq/partners/abc", "/hq/events", "/hq/demo", "/hq/select", "/hq/change-password", "/hq/api/search"];
 
@@ -32,7 +32,7 @@ describe("the member route list", () => {
     expect(isMemberPath(path)).toBe(true);
   });
 
-  it.each([...OPERATOR_PAGES, "/hq/admin/login", "/hq/signup", "/", "/colosseum/start", "/hq/team", "/hq/team/", "/hq/team/a/b", "/hq/team/a.b", "/hq/team/%2e%2e", "/hq/hackathon", "/hq/hackathon/", "/hq/hackathon/a/b", "/hq/hackathon/%2e%2e", "/hq/invite", "/hq/invite/", "/hq/invite/a/b", "/hq/join/", "/hq/join/a/b", "/hq/accounts", "/hq/account/", "/hq/account/other", "/hq/captains", "/hq/captain/notes", "/hq/dashboard/", "/hq/Dashboard"])("rejects %s", (path) => {
+  it.each([...OPERATOR_PAGES, "/hq/admin/login", "/hq/signup", "/", "/colosseum/start", "/hq/team", "/hq/team/", "/hq/team/a/b", "/hq/team/a.b", "/hq/team/%2e%2e", "/hq/hackathon", "/hq/hackathon/", "/hq/hackathon/a/b", "/hq/hackathon/%2e%2e", "/hq/invite", "/hq/invite/", "/hq/invite/a/b", "/hq/join/", "/hq/join/a/b", "/hq/accounts", "/hq/account/", "/hq/account/other", "/hq/account/add-email", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/captains", "/hq/captain/notes", "/hq/dashboard/", "/hq/Dashboard"])("rejects %s", (path) => {
     expect(isMemberPath(path)).toBe(false);
   });
 });
@@ -94,11 +94,11 @@ describe("the proxy and the destination allowlist agree", () => {
 });
 
 describe("safeMemberNext", () => {
-  it.each(["/hq/hackathon/41", "/hq/captain", "/hq/account", "/hq/invite/abc", "/hq/invite/continue", "/hq/dashboard", "/hq/welcome?hackathon=6", "/hq/join?code=abc123", "/hq/initialize", "/hq/team/1234-abcd", "/hq/account?connected=telegram", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/account/add-email", "/hq/captain?from=nav"])("preserves %s", (value) => {
+  it.each(["/hq/hackathon/41", "/hq/captain", "/hq/account", "/hq/invite/abc", "/hq/invite/continue", "/hq/dashboard", "/hq/welcome?hackathon=6", "/hq/join?code=abc123", "/hq/initialize", "/hq/team/1234-abcd", "/hq/account?connected=telegram", "/hq/captain?from=nav"])("preserves %s", (value) => {
     expect(safeMemberNext(value)).toBe(value);
   });
 
-  it.each([undefined, null, 42, "", "hq/dashboard", "/hq/login", "/hq/admin", "/hq/people", "//evil", "//evil.example/hq/dashboard", "https://evil", "https://evil.example/hq/dashboard", "/hq/../..", "/hq/dashboard/../../hq/admin", "/hq/dashboard/../admin", "/\\evil.example", "/hq/%61dmin", "/hq/dashboard\n", "/hq/dashboard ", "/hq/account/other", "/hq/accounts", "/hq/invite/", "/hq/invite/a/b", "/hq/team/a/b", "javascript:alert(1)"])("rejects %s", (value) => {
+  it.each([undefined, null, 42, "", "hq/dashboard", "/hq/login", "/hq/admin", "/hq/people", "//evil", "//evil.example/hq/dashboard", "https://evil", "https://evil.example/hq/dashboard", "/hq/../..", "/hq/dashboard/../../hq/admin", "/hq/dashboard/../admin", "/\\evil.example", "/hq/%61dmin", "/hq/dashboard\n", "/hq/dashboard ", "/hq/account/other", "/hq/account/add-email", "/hq/account/connect-telegram", "/hq/account/disconnect-telegram", "/hq/accounts", "/hq/invite/", "/hq/invite/a/b", "/hq/team/a/b", "javascript:alert(1)"])("rejects %s", (value) => {
     expect(safeMemberNext(value)).toBe("/hq/welcome");
   });
 
