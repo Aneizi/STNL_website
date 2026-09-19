@@ -105,11 +105,11 @@ describe("acceptCaptainInvitationFromContinuation", () => {
     // Sign-up succeeds; the same continuation cookie is still there.
     await seedAccount("acct-signed-up");
     signIn("acct-signed-up");
-    expect(await acceptCaptainInvitationFromContinuation(null, new FormData())).toEqual({ outcome: "granted" });
+    await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow("REDIRECT:/hq/dashboard?welcome=captain");
     expect(await redemptions()).toEqual([{ invitation_id: invitation.id, user_id: "acct-signed-up" }]);
 
     // Submitting again afterwards — a page refresh, a second click — still consumes nothing further.
-    expect(await acceptCaptainInvitationFromContinuation(null, new FormData())).toEqual({ outcome: "already-redeemed" });
+    await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow("REDIRECT:/hq/dashboard");
     expect(await redemptions()).toEqual([{ invitation_id: invitation.id, user_id: "acct-signed-up" }]);
   });
 
@@ -136,17 +136,17 @@ describe("acceptCaptainInvitationFromContinuation", () => {
     const { invitation } = await createInvitation({ maxRedemptions: 5 });
     withContinuationCookie(await continuationFor(invitation.id));
 
-    expect(await acceptCaptainInvitationFromContinuation(null, new FormData())).toEqual({ outcome: "granted" });
+    await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow("REDIRECT:/hq/dashboard?welcome=captain");
     expect(await grants()).toEqual([{ user_id: "acct-a", capability: "captain", active: true }]);
     expect(await redemptions()).toEqual([{ invitation_id: invitation.id, user_id: "acct-a" }]);
 
     // A second submission — a double click, a retried request — reaches the
     // same continuation again and consumes nothing further.
-    expect(await acceptCaptainInvitationFromContinuation(null, new FormData())).toEqual({ outcome: "already-redeemed" });
+    await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow("REDIRECT:/hq/dashboard");
     expect(await redemptions()).toEqual([{ invitation_id: invitation.id, user_id: "acct-a" }]);
   });
 
-  it("passes every outcome acceptCaptainInvitation can return straight through, unmodified", async () => {
+  it("keeps unsuccessful invitation outcomes on the invitation page", async () => {
     await seedAccount("acct-full");
     await seedAccount("acct-other");
     signIn("acct-full");

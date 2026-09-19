@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { cookies } from "next/headers";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { BuilderShell } from "@/components/hq/builder-shell";
 import styles from "@/components/hq/builder-shell.module.css";
 import { builderDatabase } from "@/lib/hq/builder-db";
@@ -57,6 +58,10 @@ export default async function InviteContinuePage() {
   const blocked = continuation.revoked ? "revoked" : continuation.expired ? "expired" : continuation.full ? "full" : null;
   if (blocked) return <DeadEnd outcome={blocked} />;
 
+  // A new email account still needs a name, but returns to this invitation
+  // afterward, never to the builder's team initialization flow.
+  if (member && !member.name.trim()) redirect(`/hq/profile?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`);
+
   return (
     <BuilderShell>
       <h1>
@@ -71,7 +76,7 @@ export default async function InviteContinuePage() {
           <p>{INVITE_INTRO}</p>
           <div className={styles.actions}>
             <Link className={styles.button} href={`/hq/login?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`}>
-              Sign in to continue
+              Log in or sign up
             </Link>
           </div>
         </>

@@ -16,6 +16,7 @@ vi.mock("@/lib/hq/member-auth", () => ({ currentMember: mocks.currentMember }));
 vi.mock("@/lib/hq/builder-db", () => ({ builderDatabase: () => ({}) }));
 vi.mock("@/lib/hq/invite-continuation", () => ({ INVITE_CONTINUATION_COOKIE: "hq_invite_continuation", readInviteContinuation: mocks.readInviteContinuation }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
+vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); } }));
 vi.mock("@/app/hq/(member)/invite/continue/accept-form", () => ({
   AcceptInvitationForm: ({ children }: { children?: ReactNode }) => createElement("div", { "data-testid": "accept-form" }, children),
 }));
@@ -71,7 +72,7 @@ describe("the continuation page", () => {
     const html = await render();
     expect(html).toMatch(/<h1>Become a <em>Captain\.<\/em><\/h1>/);
     expect(html).toContain(`<p>${INTRO}</p>`);
-    expect(html).toMatch(/<a[^>]*href="\/hq\/login\?next=%2Fhq%2Finvite%2Fcontinue"[^>]*>Sign in to continue<\/a>/);
+    expect(html).toMatch(/<a[^>]*href="\/hq\/login\?next=%2Fhq%2Finvite%2Fcontinue"[^>]*>Log in or sign up<\/a>/);
     expect(html).not.toContain("data-testid=\"accept-form\"");
   });
 
@@ -83,7 +84,14 @@ describe("the continuation page", () => {
     expect(html).toMatch(/<h1>Become a <em>Captain\.<\/em><\/h1>/);
     // The explanation belongs to the form so it can leave with the button.
     expect(html).toContain(`<div data-testid="accept-form"><p>${INTRO}</p></div>`);
-    expect(html).not.toContain("Sign in to continue");
+    expect(html).not.toContain("Log in or sign up");
+  });
+
+  it("finishes a new account's name step while preserving the Captain invitation", async () => {
+    withCookie("cont-new");
+    mocks.readInviteContinuation.mockResolvedValue({ invitationId: "inv-new", expired: false, revoked: false, full: false });
+    mocks.currentMember.mockResolvedValue({ id: "acct-new", email: "new@example.test", name: "" });
+    await expect(InviteContinuePage()).rejects.toThrow("REDIRECT:/hq/profile?next=%2Fhq%2Finvite%2Fcontinue");
   });
 
   it.each([
@@ -100,7 +108,7 @@ describe("the continuation page", () => {
       expect(html).toMatch(/<p role="alert" class="[^"]*">/);
       expect(html).toContain(`>${body}</p>`);
       expect(html).not.toContain("data-testid=\"accept-form\"");
-      expect(html).not.toContain("Sign in to continue");
+      expect(html).not.toContain("Log in or sign up");
       expect(html).not.toContain("Captain access"); // the explanation only appears while the link is still open
     }
   });

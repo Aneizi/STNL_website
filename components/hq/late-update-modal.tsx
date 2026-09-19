@@ -7,6 +7,7 @@ import type { ReportingEntryView } from '@/lib/hq/reporting';
 import type { TeamPeriodView } from '@/lib/hq/reporting-surface';
 import { isWeekCurrent, isWeekStarted, LATE_NOTE, periodRangeShortLabel } from '@/lib/hq/reporting-view';
 import styles from './late-update-modal.module.css';
+import { useModalFocus } from './use-modal-focus';
 
 /** The same limit the service enforces (`MAX_BODY_LENGTH`), repeated here because that module is server only. */
 const MAX_BODY = 4000;
@@ -47,15 +48,7 @@ export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClos
   const [pending, start] = useTransition();
   const ready = Boolean(body.trim()) && periodId !== null;
 
-  // Focus moves into the dialog once, and the page behind stops scrolling
-  // while the overlay does. Separate from the Escape listener below so a
-  // re-rendered onClose never pulls focus out of the textarea.
-  useEffect(() => {
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    dialogRef.current?.focus();
-    return () => { document.body.style.overflow = previousOverflow; };
-  }, []);
+  useModalFocus(dialogRef);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
@@ -90,7 +83,7 @@ export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClos
       <p className={styles.kicker}>Late update</p>
       <h2 id='late-title' className={styles.title}>Which week?</h2>
       <form className={styles.form} onSubmit={submit} aria-busy={pending}>
-        <div role='radiogroup' aria-label='Week' className={styles.weeks}>
+        <div role='group' aria-label='Week' className={styles.weeks}>
           {periods.map(period => {
             const range = periodRangeShortLabel(period.startDate, period.endDate);
             return <button key={period.periodId} type='button' className={styles.week} disabled={!isWeekStarted(period, nowMs)} aria-pressed={period.periodId === periodId} onClick={() => setPeriodId(period.periodId)}>

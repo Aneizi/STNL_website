@@ -208,6 +208,7 @@ function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInv
       {created && (
         <div className={styles.block} role="status">
           <p className={styles.lead}>Copy now. This link is not shown again.</p>
+          <p>Invitation code: <strong>{created.token}</strong></p>
           <div className={styles.linkRow}>
             <span className={styles.link}>{link}</span>
             <CopyButton value={link} />

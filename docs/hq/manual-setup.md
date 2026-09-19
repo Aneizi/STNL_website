@@ -264,6 +264,9 @@ NODE
 7. In Admin, grant the test account Captain access, or create a Captain invitation
    and redeem it with that account. Then assign a test project to the Captain.
    Access alone does not create an assignment or a project reminder target.
+   New invitation links use a six-character code. Signed-out invitees choose
+   **Log in or sign up**, finish their name if needed, and return to the
+   invitation. Accepting opens the Home menu without initializing a team.
 8. Run L15–L22 below. Do not point the production bot at the test environment.
 
 Telegram's [webhook API](https://core.telegram.org/bots/api#setwebhook) documents
@@ -357,8 +360,10 @@ rewrite it.
 
 ## 3. Live verification checklist for the next session
 
-These checks remain pending until the isolated environment is running. Existing
-L numbers are retained so earlier implementation-log references still resolve.
+These checks require the isolated environment. For the 18 September redesign,
+start with [the redesign testing handoff](redesign-readiness.md); its migration
+and deployment are complete on staging. Existing L numbers are retained
+so earlier implementation-log references still resolve.
 
 | Checks | Test and expected result |
 |---|---|
@@ -374,12 +379,14 @@ L numbers are retained so earlier implementation-log references still resolve.
 | L18–L20 | Bot draft/preview/save/cancel, sensitive note, edit conflict, retry after failed preview, long text and non-default edition navigation. |
 | L21–L22 | Join links, claimed/expired/reissued seats, lead controls, reassignment and deletion impacts; sensitive notes remain author/admin only. |
 | L23–L27 | Synthetic due reminders, duplicate/overlapping runs, timeout/blocked bot, retry timing, catch-up closure, pauses and DST. No real public reminders. |
-| L28–L29 | Final checklist/official deadline, bounded refresh during an outage, unknown reconciliation, late evidence, repeat correction and unchanged historical cutoff. |
+| L28–L29 | Admin deadline/material settings, bounded refresh during an outage, unknown reconciliation, late evidence and unchanged historical cutoff. The old member submission panel and operator correction UI were removed by the redesign; correction semantics remain service-level checks. |
 
 Also test the full member → Captain → admin flow in mobile Safari and Chrome,
 plus desktop Chrome/Firefox/Safari. Include 375, 768 and 1280 px layouts,
 keyboard navigation, reduced motion, slow network, validation errors, newly saved
-updates, older-page edits, explicit late updates, and admin create/edit/moderation.
+updates, older-page edits, explicit late updates, and operator project/People
+edits. Captain notes must never complete the team's week. Weekly-report
+moderation and pause/correction controls are no longer exposed in the UI.
 Measure authenticated page latency, SQL query counts and network payload sizes
 using representative synthetic data. Bundle compilation alone does not prove
 smooth behavior on devices.

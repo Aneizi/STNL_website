@@ -123,6 +123,16 @@
 .hq .hq-sync-icon-active {
   animation: hq-sync-spin 800ms linear infinite;
 }
+.hq .hq-button-spinner {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  box-sizing: border-box;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: hq-sync-spin 800ms linear infinite;
+}
 
 /* Prefetched loading shell for dynamic HQ routes. It deliberately stays
  * still: the immediate route swap is the feedback, and a static skeleton
@@ -341,6 +351,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .hq .hq-button-spinner {
+    animation: none;
+  }
   .hq *,
   .hq ::before,
   .hq ::after {

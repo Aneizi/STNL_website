@@ -6068,9 +6068,10 @@ Member screens:
 
 Operator screens:
 
-- The chrome is the five-tab bar (Dashboard, Projects, People, Events,
-  Admin) on the handoff type scale; the Links feature and `/hq/links` are
-  removed. Operator login and change-password submit buttons dim to
+- The chrome is the five-tab bar (Dashboard, Projects, Partners, People,
+  Events) on the handoff type scale. Admin is in the account menu and Demo
+  day opens from Projects; the Links feature and `/hq/links` are removed.
+  Operator login and change-password submit buttons dim to
   opacity .5 while pending.
 - Projects is the design's board: the Colosseum block in the expanded row,
   the high potential toggle on the project row itself
@@ -6083,7 +6084,7 @@ Operator screens:
   reporting actions only the panel called are deleted.
 - People has expandable rows, the Make/Remove Captain control
   (`setPersonCaptain`) and the "Partner contact" role.
-- Admin is ten sections: Hackathons, Submission gates, Milestones, Builder
+- Admin has nine sections: Hackathons, Submission gates, Milestones, Builder
   onboarding, Captain invitation links, Captain leaderboard, Reporting
   weeks, Reporting settings and Captain reminders. Campaign numbers, Campaign
   setup, HQ accounts, Event hosting and the reconciliation list are gone,
@@ -6121,3 +6122,209 @@ eslint` 2 errors and 7 warnings, all pre-existing in the untracked design
 file `docs/plans/design_handoff_colosseum_hq/design/support.js`, plus the 18
 pre-existing warnings in `public/deck/deck-stage.js`, none in tracked source;
 `npx vitest run` 79 files, 1,781 tests pass; `npx next build` succeeds.
+
+## Redesign completion review, 18 September 2026
+
+Claude's implementation and integration work reached `7fbfcaf`; the next
+23-job review workflow failed at its usage limit without returning coverage.
+The follow-up review checked the handoff, its recorded decisions, code and
+migration/auth/reporting tests, and exercised the built login pages and
+synthetic component fixtures in the browser.
+
+Fixed team/Captain drafts silently following a new week after refresh, account
+and late-update modal keyboard focus/scroll handling, false clipboard success,
+and lint errors caused by the reference-only design runtime. Regression tests
+cover cross-week drafts, explicit week changes and denied/missing clipboard
+access. Browser checks covered five screens at 375, 768 and 1280 pixels, modal
+keyboard behavior and member/operator route guards.
+
+Final verification: 79 files and 1,785 tests pass, TypeScript and production
+build pass, lint has zero errors and 18 existing deck warnings, and diff checks
+pass. The owner explicitly deferred Colosseum posts/videos sync; the design's
+promise of automatic activity remains a known limitation. No live migration,
+deployment, email or bot delivery was performed. See
+[the redesign testing handoff](redesign-readiness.md) for the schema prerequisites,
+review limits and current staging checklist.
+
+### Redesign staging deployment
+
+At the owner's request, deployed the reviewed checkout and uncommitted review
+fixes to the separate `stnl-hq-staging` project. The stable address now points to
+`dpl_13UPmmKXSeBjBMdyRydN4sYEMwsm`. The source snapshot included the new modal
+focus hook and excluded private setup/environment files, design prototypes and
+scratch routes. The repository's main-project Vercel link was preserved.
+
+The additive migration passed against the verified staging database. Both new
+boolean columns were verified, and before/after counts matched for accounts,
+sessions, projects, roster, People, reporting entries/revisions, invitations and
+outgoing messages. No reset or reseed was performed. Vercel's hosted build and
+all 14 HTTPS smoke checks passed; the exact deployment behind the stable alias
+was verified. Access protection remains enabled. Real provider delivery and
+signed-in interactive testing remain the next step; no email or bot messages
+were sent during deployment verification. Private source manifests, migration
+and smoke reports are in ignored `setup/hq/staging/redesign-*` files.
+
+
+## 18 September 2026 — Public staging access
+
+At the owner's request, disabled Vercel Authentication only on the separate
+`stnl-hq-staging` project. The stable test link now opens without a Vercel
+account. All 14 HTTPS checks passed without bypass headers or Vercel cookies,
+including member/admin route guards and rejection of missing/invalid Telegram
+webhook secrets. No redeployment, database change or main-project change was
+required. Updated the staging access and redesign testing notes.
+
+
+## 18 September 2026 — Menu after team setup
+
+Sign-up and normal sign-in still open Find your team. Completing either the
+team import or teammate join flow now opens the Home menu (`/hq/dashboard`),
+where the hackathon tile opens the team. A join that completes during a retry
+also returns to the menu. Existing-team links keep their direct destination.
+
+All 73 focused onboarding/login/Home tests, TypeScript and scoped lint passed.
+Deployment `dpl_StanJLyfUMxwZy7AhWZcoiubExBC` passed the hosted build and
+15 public HTTPS checks, including the Find your team login destination. The
+stable staging alias serves that exact deployment, with the Vercel gate off.
+No database migration or provider message was needed.
+
+
+## 18 September 2026 — Short Captain invitations and menu entry
+
+New Captain invitation links contain a six-character, case-insensitive code
+from 32 readable letters/digits. Cryptographic sampling is uniform, codes are
+stored only as hashes, and a unique conflict retries without overwriting an
+invitation or duplicating its audit event. Old long links remain valid and
+case-sensitive. Existing expiry, capacity, revocation and exchange rate limits
+remain enforced; no schema migration is needed.
+
+The invitation explicitly offers Log in or sign up. New email and Telegram
+accounts preserve the invitation through their name step. Successful acceptance
+(including an already accepted invitation or existing Captain access) refreshes
+capability data and redirects to the Home menu, without team initialization.
+Admin displays the short code alongside the copyable link.
+
+All 355 focused tests, TypeScript and scoped lint passed. Coverage includes code
+format, collision retry/exhaustion, legacy links, signup continuation, successful
+acceptance redirects, expiry/revocation/capacity and replay protections.
+
+Deployed as `dpl_EzUNzxZPiLEdfT4KN1H9xGV5RJkt` on the stable public staging
+link. Hosted build and all 16 HTTPS checks passed, including the preserved
+Captain invitation destination at login. No live invitations, accounts or
+provider messages were created during this deployment.
+
+
+## 18 September 2026 — Captain welcome popup
+
+A newly accepted Captain reaches the menu with a one-time welcome popup:
+“You’re now a captain. Go to the Captain’s Den.” The Den text links to the
+Captain page. Okay, Escape and the backdrop dismiss it; after 10 seconds it
+fades out over 200 ms. Reduced-motion preferences disable the transition.
+The popup traps focus, restores focus/scrolling on dismissal, and consumes its
+arrival query marker without navigation so refreshing does not repeat it.
+Only a newly granted invitation sets the marker, and Home checks the current
+Captain capability before rendering the popup. Replayed acceptances open the
+plain menu.
+
+All 68 focused tests, TypeScript and scoped lint passed. The actual component
+was checked in a local browser fixture on desktop and at 375px: timing, Okay,
+Escape, backdrop dismissal, focus wrapping/return and scroll restoration.
+No horizontal overflow occurred. The preview server and browser tabs were
+closed after verification.
+
+Deployed as `dpl_5XqN77xRTKJSerpT1zqChZfMoo4i` on the stable public staging
+link. The hosted build and all 17 HTTPS checks passed.
+
+## 18 September 2026 — Captain team assignment guidance
+
+The Captain's Den empty state now says “No teams assigned yet. Reach out to
+an admin to link your teams to you.” Its existing rendering assertion was
+updated. All 57 related tests and scoped lint passed.
+
+Deployed as `dpl_4rgSfWoF1W4s59zJYgULUrankRxT` on the stable public staging
+link. The hosted build and all 17 HTTPS checks passed.
+
+## 18 September 2026 — Keep HQ navigation inside HQ
+
+Back on Find your team now opens `/hq/dashboard`. Removed the login header's
+Back link to `/colosseum/start` and its unused styles. Audited member/operator
+navigation, shell Back links and programmatic destinations: these were the two
+navigation links to public website pages. Explicit project/contact resource
+links continue to open separately in a new tab.
+
+All 52 related tests, TypeScript and scoped lint passed. Existing rendering
+checks now require the welcome page's links to stay in HQ and the login
+header to have no exit link. Sign-in still leads to Find your team.
+
+Deployed as `dpl_BCek6xerPHwEHHjkh8Jb5FGAyP2E` on the stable public staging
+link. The hosted build and all 18 HTTPS checks passed, including the removed
+login exit link and preserved post-login destination.
+
+## 19 September 2026 — Make Captain loading feedback
+
+The People card's Captain control now has its own pending transition. While
+granting or removing access it displays a spinning loader and an action-specific
+label, exposes its busy state, and disables repeat submissions. Other edits
+do not trigger the Captain spinner. Reduced-motion preferences stop the rotation.
+Thrown failures show a retryable error; retry clears the old error immediately.
+
+All six existing People view tests, TypeScript and scoped lint passed. A local
+browser fixture using the actual component verified the animated spinner,
+disabled/busy button, failure recovery, error clearing on retry, and the restored
+Remove Captain control after success. No real account permissions were changed.
+The preview server and tab were closed.
+
+Deployed as `dpl_8oktCfiR2vP5JZC2zDmQhe9Q9ALr` on the stable public staging
+link. Hosted build and all 18 HTTPS checks passed. One initial webhook GET
+check failed; its isolated recheck and a full smoke rerun both passed.
+
+## 19 September 2026 — Daily email quota guidance
+
+The member email sender preserves Resend's `daily_quota_exceeded` classification
+as `EMAIL_DAILY_QUOTA_EXCEEDED`, returned with HTTP 429 and private/no-store
+caching. This uses the provider's specific error name, as documented in
+[Resend's error reference](https://resend.com/docs/api-reference/errors), rather
+than treating every HTTP 429 as a daily quota. Other delivery failures retain
+their generic response; provider details are never sent to the client.
+The per-request delivery context stays isolated, and failed post-commit email
+change notices still do not turn a successful account change into an error.
+
+Login displays “We've reached our daily email limit. Continue with Telegram or
+try again tomorrow.” If Telegram is not configured, it only suggests tomorrow.
+A failed resend keeps code entry available and adds Continue with Telegram,
+preserving the intended destination, including Captain invitation continuation.
+The account email modal also gives the daily-limit explanation and tomorrow
+guidance. Short-term attempt limits keep their existing wait-a-minute message.
+
+All 142 related tests, TypeScript and scoped lint passed. Coverage includes
+returned/thrown provider quota errors, recovery on a later successful send,
+separate rate/monthly errors, request isolation, first-send and resend UI, and
+Telegram continuation. A local browser fixture using the actual form verified
+the quota message and Telegram alternative. No live email was sent; the preview
+server and tab were closed.
+
+Deployed as `dpl_7GNUNt5WDoJcw9gJS79NFuVwu4MP` on the stable public staging
+link. The hosted build and all 18 HTTPS checks passed.
+
+## 19 September 2026 — Normal login from the HQ entry
+
+The proxy sends a cookie-less `/hq` request to `/hq/login`. A missing or empty
+operator cookie takes this path, including when unrelated or member cookies
+are present. An operator cookie still reaches the root dashboard's actual
+database-backed authorization check. Other operator routes retain admin login;
+the member post-login destination remains Find your team.
+
+All 272 route, login and auth-boundary tests, TypeScript and scoped lint passed.
+Deployed as `dpl_BpBkiRjyGhemvv62ix62WJPJ4EW1` on the stable public staging
+link. Hosted build and all 19 HTTPS checks passed, including an explicit
+cookie-less `/hq` request returning 307 to `/hq/login`.
+
+## 19 September 2026 — Staging source checkpoint
+
+Prepared the reviewed HQ work on the `staging` branch at the owner's request.
+The final full-suite check caught one operator-action assertion still expecting
+the old 43-character invitation token; it now checks the six-character format.
+All **1,807 tests across 80 files** pass, as does lint for that corrected test.
+The testing handoff now records the latest deployment and all 19 HTTPS checks.
+Application source matches the verified staging deployment; only tests and
+handoff documentation changed during this checkpoint.

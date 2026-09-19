@@ -5,11 +5,16 @@
 // event commit or roll back together with its redemption row.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn() }));
+const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn(), randomInt: vi.fn() }));
+vi.mock("node:crypto", async (importOriginal) => {
+  const crypto = await importOriginal<typeof import("node:crypto")>();
+  return { ...crypto, randomInt: (max: number) => mocks.randomInt(max) ?? crypto.randomInt(max) };
+});
 vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/hq/builder-db")>()),
   builderDatabase: mocks.builderDatabase,
@@ -147,6 +152,7 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(async () => {
+  mocks.randomInt.mockReset();
   await pg.exec(
     `TRUNCATE hq_users, hq_builder_profiles, hq_audit_events, hq_auth_user, hq_auth_telegram_identity, hq_account_capabilities,
        hq_captain_invitations, hq_captain_invitation_redemptions, hq_hackathons, hq_project_statuses, hq_project_forecasts,
@@ -167,6 +173,7 @@ afterAll(async () => { await pg.close(); });
 describe("createCaptainInvitation", () => {
   it("stores only the hash: no column of any table holds the plaintext token", async () => {
     const { token, invitation } = await createInvitation({ label: "Rotterdam meetup" });
+    expect(token).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
     const invitationRows = await rows("SELECT * FROM hq_captain_invitations");
     const auditRows = await rows("SELECT * FROM hq_audit_events");
     const dump = JSON.stringify([invitationRows, auditRows]);
@@ -186,6 +193,32 @@ describe("createCaptainInvitation", () => {
     await expect(createInvitation({ expiresInDays: -1 })).rejects.toThrow(/future/);
     await expect(createCaptainInvitation(db, { actorOperatorId: OPERATOR, maxRedemptions: 1, expiresAt: "not-a-date" })).rejects.toThrow(/valid expiry/);
     await expect(createCaptainInvitation(db, { actorOperatorId: OPERATOR, maxRedemptions: 1, expiresAt: new Date(Date.now() - 1000).toISOString() })).rejects.toThrow(/future/);
+  });
+});
+
+describe("short invitation codes", () => {
+  it("retries a collision without overwriting an existing invitation or duplicating the audit event", async () => {
+    mocks.randomInt.mockReturnValue(0);
+    const first = await createInvitation();
+    expect(first.token).toBe("AAAAAA");
+    for (let i = 0; i < 6; i++) mocks.randomInt.mockReturnValueOnce(0);
+    mocks.randomInt.mockReturnValue(1);
+    const second = await createInvitation();
+    expect(second.token).toBe("BBBBBB");
+    expect(second.invitation.id).not.toBe(first.invitation.id);
+    expect(await rows("SELECT id FROM hq_captain_invitations")).toHaveLength(2);
+    expect(await events()).toHaveLength(2);
+    await expect(createInvitation()).rejects.toThrow("Could not create an invitation code");
+    expect(await events()).toHaveLength(2);
+  });
+
+  it("accepts lower-case short codes while preserving old case-sensitive links", async () => {
+    const { token, invitation } = await createInvitation();
+    expect(await readCaptainInvitationByToken(db, token.toLowerCase())).toMatchObject({ id: invitation.id });
+    const legacy = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-old-link";
+    await rows("UPDATE hq_captain_invitations SET token_hash = $1 WHERE id = $2::uuid", [createHash("sha256").update(legacy).digest("hex"), invitation.id]);
+    expect(await readCaptainInvitationByToken(db, legacy)).toMatchObject({ id: invitation.id });
+    expect(await readCaptainInvitationByToken(db, legacy.toLowerCase())).toBeNull();
   });
 });
 

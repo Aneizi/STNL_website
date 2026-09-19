@@ -290,7 +290,7 @@ describe("the dashboard menu", () => {
     mocks.builderDatabase.mockReturnValue({});
   });
   afterEach(() => vi.useRealTimers());
-  const render = async () => renderToStaticMarkup(await DashboardPage());
+  const render = async (welcome?: string) => renderToStaticMarkup(await DashboardPage({ searchParams: Promise.resolve({ welcome }) }));
   /** The three tiles' markup, in order: hackathon, Member Portal, Captains' Den. */
   const tiles = (html: string) => html.split("<li").slice(1);
 
@@ -385,6 +385,16 @@ describe("the dashboard menu", () => {
     expect(den).toMatch(/<svg[^>]*width="14"[^>]*height="20"[^>]*viewBox="0 0 13\.6914 19\.6777"[^>]*fill="currentColor"[^>]*aria-hidden="true"/);
     for (const copy of ["href=", "assigned to you", "fill-opacity"]) expect(den).not.toContain(copy);
     expect(mocks.listAssignments).not.toHaveBeenCalled();
+  });
+
+  it("shows the welcome popup only on a new Captain's arrival", async () => {
+    expect(await render("captain")).not.toContain('id="captain-welcome-title"');
+    mocks.requireMemberActor.mockResolvedValue(member({ capabilities: new Set(["captain"]) }));
+    expect(await render()).not.toContain('id="captain-welcome-title"');
+    const html = await render("captain");
+    expect(html).toContain('id="captain-welcome-title"');
+    expect(html).toContain("You&#x27;re now a captain.");
+    expect(html).toContain(">Okay</button>");
   });
 
   it("opens the Captains' Den for a Captain with this edition's own assignment count", async () => {

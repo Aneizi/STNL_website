@@ -96,4 +96,29 @@ describe("public auth HTTP response privacy", () => {
       code: "EMAIL_DELIVERY_FAILED", message: "We could not send your code. Please try again shortly.",
     });
   });
+
+  it("isolates a daily quota failure from another in-flight auth request", async () => {
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { release = resolve; });
+    auth.handler.mockImplementation(async (request) => {
+      if (request.method === "POST") {
+        memberEmailDeliveryFailed("EMAIL_DAILY_QUOTA_EXCEEDED");
+        release();
+        await Promise.resolve();
+        return Response.json({ success: true });
+      }
+      await ready;
+      return Response.json(null);
+    });
+    const [quota, session] = await Promise.all([
+      POST(new Request(`${ORIGIN}/api/auth/email-otp/send-verification-otp`, { method: "POST" })),
+      GET(new Request(`${ORIGIN}/api/auth/get-session`)),
+    ]);
+    expect(quota.status).toBe(429);
+    expect((await quota.json()).code).toBe("EMAIL_DAILY_QUOTA_EXCEEDED");
+    expect(session.status).toBe(200);
+    expect(await session.json()).toBeNull();
+    noStore(quota);
+    noStore(session);
+  });
 });

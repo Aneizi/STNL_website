@@ -6,7 +6,6 @@ import { useActionState, useEffect } from "react";
 import { IconArrowRight } from "symbols-react";
 import styles from "@/components/hq/builder-shell.module.css";
 import { acceptCaptainInvitationFromContinuation, type AcceptCaptainInvitationActionResult } from "@/lib/hq/actions/invite";
-import { CAPTAIN_PATH } from "@/lib/hq/member-routes";
 import { inviteOutcomeCopy } from "../copy";
 
 const INITIAL: AcceptCaptainInvitationActionResult | null = null;
@@ -40,10 +39,10 @@ export function AcceptInvitationForm({ children }: { children?: React.ReactNode 
           {copy.heading} <em>{copy.emphasis}</em>
         </h2>
         <p className={copy.tone === "good" ? styles.success : styles.error}>{copy.body}</p>
-        {result.outcome === "granted" && (
+        {copy.tone === "good" && (
           <div className={styles.actions}>
-            <Link className={styles.button} href={CAPTAIN_PATH}>
-              Go to Captain
+            <Link className={styles.button} href="/hq/dashboard">
+              Go to menu
               <IconArrowRight width={18} height={18} fill="currentColor" aria-hidden="true" />
             </Link>
           </div>

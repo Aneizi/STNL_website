@@ -50,9 +50,17 @@ describe("the proxy and the destination allowlist agree", () => {
     expect(safeMemberNext(path)).toBe(path);
   });
 
-  it.each(OPERATOR_PAGES)("both keep a member off %s", (path) => {
+  it.each(OPERATOR_PAGES.filter((path) => path !== "/hq"))("both keep a member off %s", (path) => {
     expect(bounce(path)).toBe(`${ORIGIN}/hq/admin/login`);
     expect(safeMemberNext(path)).toBe("/hq/welcome");
+  });
+
+  it.each([undefined, "hq_session=", "unrelated=value", "__Secure-stnl_builder.session_token=member-session"])("opens normal member login from /hq without an operator cookie (%s)", (cookie) => {
+    const request = new NextRequest(`${ORIGIN}/hq`, { headers: cookie ? { cookie } : {} });
+    const response = proxy(request);
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(`${ORIGIN}/hq/login`);
+    expect(safeMemberNext("/hq")).toBe("/hq/welcome");
   });
 
   it("treats the retired per-edition page like any other non-member path", () => {
@@ -74,8 +82,8 @@ describe("the proxy and the destination allowlist agree", () => {
     expect(safeMemberNext(`${path}?next=/hq/dashboard#login`)).toBe("/hq/welcome");
   });
 
-  it("passes an operator cookie to the page's real authorization gate", () => {
-    const request = new NextRequest(`${ORIGIN}/hq/admin`, { headers: { cookie: "hq_session=operator-session" } });
+  it.each(["/hq", "/hq/admin"])("passes an operator cookie on %s to the page's real authorization gate", (path) => {
+    const request = new NextRequest(`${ORIGIN}${path}`, { headers: { cookie: "hq_session=operator-session" } });
     expect(proxy(request).headers.get("location")).toBeNull();
   });
 

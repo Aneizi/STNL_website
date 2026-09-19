@@ -1,0 +1,10 @@
+.overlay { position:fixed; inset:0; z-index:60; display:flex; align-items:flex-start; justify-content:center; padding:24px; box-sizing:border-box; overflow:auto; background:rgba(22,19,15,.45); opacity:1; transition:opacity .2s ease; }
+.closing { opacity:0; }
+.dialog { width:min(100%,440px); margin:auto 0; padding:32px; box-sizing:border-box; background:#fbf7f0; color:#16130f; box-shadow:0 24px 64px rgba(22,19,15,.3); font-family:var(--font-archivo),Arial,sans-serif; outline:none; }
+.title { margin:0 0 16px; font-family:var(--font-instrument-serif),Georgia,serif; font-size:40px; font-weight:400; line-height:1.05; letter-spacing:-.02em; }
+.description { margin:0 0 28px; font-size:17px; line-height:1.5; }
+.description a { color:#b74010; text-underline-offset:4px; }
+.okay { min-height:48px; padding:0 24px; border:0; border-radius:0; background:#16130f; color:#fbf7f0; font:inherit; font-weight:600; cursor:pointer; }
+.okay:hover { background:#342d24; }
+.dialog a:focus-visible,.okay:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+@media(prefers-reduced-motion:reduce) { .overlay { transition:none; } }

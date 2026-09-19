@@ -30,6 +30,13 @@ describe("the separate HQ login pages", () => {
     expect(mocks.currentUser).not.toHaveBeenCalled();
   });
 
+  it("keeps Find your team as the default after sign-up and sign-in", async () => {
+    const html = renderToStaticMarkup(await MemberLoginPage({ searchParams: Promise.resolve({}) }));
+    expect(html).toContain('data-next="/hq/welcome"');
+    mocks.currentMember.mockResolvedValue({ id: "member" });
+    await expect(MemberLoginPage({ searchParams: Promise.resolve({}) })).rejects.toThrow("REDIRECT:/hq/welcome");
+  });
+
   it("returns an already signed-in member to their requested member page", async () => {
     mocks.currentMember.mockResolvedValue({ id: "member" });
     await expect(MemberLoginPage({ searchParams: Promise.resolve({ next: "/hq/dashboard" }) })).rejects.toThrow("REDIRECT:/hq/dashboard");

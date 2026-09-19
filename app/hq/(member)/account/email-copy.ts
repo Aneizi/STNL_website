@@ -27,6 +27,7 @@ const MESSAGE_MESSAGES: Record<string, string> = {
 /** The line for a failed step of the email modal, or `fallback` when the failure has no better explanation. */
 export function emailChangeErrorMessage(error: EndpointError | string | undefined, fallback: string): string {
   const failure: EndpointError = typeof error === "string" ? { code: error } : (error ?? {});
+  if (failure.code === "EMAIL_DAILY_QUOTA_EXCEEDED") return "We've reached our daily email limit. Please try again tomorrow.";
   if (failure.status === 429) return CODE_MESSAGES.TOO_MANY_REQUESTS;
   if (failure.code !== undefined && Object.hasOwn(CODE_MESSAGES, failure.code)) return CODE_MESSAGES[failure.code];
   const shared = telegramErrorMessage(failure.code, "connect");

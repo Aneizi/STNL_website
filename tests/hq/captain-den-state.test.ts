@@ -143,9 +143,9 @@ describe("selecting a team", () => {
     expect(view.find((element) => element.type === "input").props.checked).toBe(true);
   });
 
-  it("says so in one line when there are no teams, and still shows the aside", () => {
+  it("explains how to get teams assigned, and still shows the aside", () => {
     const view = den([]);
-    expect(view.has((element) => element.type === "p" && text(element) === "No teams assigned yet.")).toBe(true);
+    expect(view.has((element) => element.type === "p" && text(element) === "No teams assigned yet. Reach out to an admin to link your teams to you.")).toBe(true);
     expect(view.textarea()).toBeNull();
     expect(view.has((element) => element.type === "p" && text(element) === "Your teams")).toBe(true);
     expect(view.has((element) => element.type === "p" && text(element) === "@femkedj")).toBe(true);
@@ -182,6 +182,22 @@ describe("the status and the marker", () => {
 });
 
 describe("adding a note", () => {
+  it("keeps each team's draft week across a refresh until the Captain chooses the current week", async () => {
+    mocks.add.mockResolvedValue({ ok: false, reason: "period_changed", error: "The week changed", currentPeriod: { id: "week-2" } });
+    const view = den();
+    view.fire(view.textarea()!, "onChange", typed("Week one note"));
+    view.fire(view.teamButton("Grachtenpay"), "onClick");
+    view.render({ ...view.props, teams: view.props.teams.map((item) => ({ ...item, current: { ...WEEK_ONE, periodId: "week-2" } })) });
+    view.fire(view.teamButton("Windmolen DAO"), "onClick");
+    view.fire(view.textarea()!, "onChange", typed("Week one note, with detail"));
+    view.fire(view.find((element) => element.type === "form"), "onSubmit", submit); await settle(); view.render();
+    expect(mocks.add.mock.lastCall![0]).toMatchObject({ projectId: "windmolen", body: "Week one note, with detail", expectedPeriodId: "week-1" });
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+    view.fire(view.byText("button", "Use current week"), "onClick");
+    view.fire(view.find((element) => element.type === "form"), "onSubmit", submit); await settle();
+    expect(mocks.add.mock.lastCall![0]).toMatchObject({ projectId: "windmolen", body: "Week one note, with detail", expectedPeriodId: "week-2" });
+  });
+
   it("sends a private note against the open week, shows it and Note added, clears the draft, and never flips the status", async () => {
     const view = den();
     view.fire(view.textarea()!, "onChange", typed("Team dynamics look healthy."));

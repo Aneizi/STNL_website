@@ -1,5 +1,7 @@
 "use client";
 
+import { useModalFocus } from '@/components/hq/use-modal-focus';
+
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, useTransition, type FormEvent, type MouseEvent, type TransitionStartFunction } from "react";
@@ -320,11 +322,13 @@ export type AccountModalProps = {
 
 /** The modal's markup alone, with the state passed in, so a static render can check each step. Overlay click and Cancel close; a click inside stays inside. */
 export function AccountModal({ kind, hasEmail, step, draft, confirmed, otp, pending, leaving, secondsLeft, error, stale, start, onClose, onDraftChange, onOtpChange, onSendCode, onVerify, onDisconnect, onConnect, onStaleError }: AccountModalProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalFocus(dialogRef);
   const title = kind === "email" ? (hasEmail ? "Change email" : "Add email") : kind === "disconnect" ? "Disconnect Telegram?" : "Connect Telegram";
   const cancel = <button type="button" className={styles.cancel} onClick={onClose}>Cancel</button>;
   return (
     <div className={styles.overlay} onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-labelledby="ac-modal-title" className={styles.dialog} onClick={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="ac-modal-title" tabIndex={-1} className={styles.dialog} onClick={(event) => event.stopPropagation()}>
         <h2 id="ac-modal-title" className={styles.dialogTitle}>{title}</h2>
         {kind === "email" && step === "email" && (
           <form className={styles.form} onSubmit={onSendCode}>

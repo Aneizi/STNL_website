@@ -13,7 +13,7 @@ import { recordAuditEvent } from "./audit";
 import { builderDatabase } from "./builder-db";
 import { syncBuilderAccount } from "./builder-store";
 import { isVerifiedAccount, verifiedLoginEmail } from "./identity";
-import { memberEmailDeliveryFailed } from "./member-auth-delivery";
+import { memberEmailDeliveryFailed, type MemberEmailDeliveryFailure } from "./member-auth-delivery";
 import { memberCodeEmail } from "./member-email";
 import { memberEmailLogo } from "./member-email-logo";
 import { hqTelegramIdentity } from "./telegram-identity-plugin";
@@ -56,20 +56,22 @@ function createMemberAuth() {
   const secureCookies = memberAuthUsesSecureCookies();
 
   /**
-   * The one way member email leaves this module. False when nothing was
-   * sent: the address is a placeholder (the last line of defence; the
-   * identity plugin refuses those before any row exists), email is not
-   * configured, or Resend reported a failure. Never throws.
+   * The one way member email leaves this module. Null on success; otherwise
+   * a safe failure code, preserving Resend's daily quota without exposing
+   * provider messages. Never throws. The caller decides whether a failed
+   * email should fail the request or only log a post-commit notice failure.
    */
-  async function deliver(message: MemberEmail): Promise<boolean> {
-    if (isPlaceholderEmail(message.to) || !available.email) return false;
+  async function deliver(message: MemberEmail): Promise<MemberEmailDeliveryFailure | null> {
+    if (isPlaceholderEmail(message.to) || !available.email) return "EMAIL_DELIVERY_FAILED";
     try {
       const resend = new Resend(process.env.RESEND_API_KEY);
       const attachments = message.html ? [await memberEmailLogo()] : undefined;
       const { error } = await resend.emails.send({ from: process.env.EMAIL_FROM!, ...message, ...(attachments ? { attachments } : {}) });
-      return !error;
-    } catch {
-      return false;
+      if (!error) return null;
+      return error.name === "daily_quota_exceeded" ? "EMAIL_DAILY_QUOTA_EXCEEDED" : "EMAIL_DELIVERY_FAILED";
+    } catch (error) {
+      return error !== null && typeof error === "object" && "name" in error && error.name === "daily_quota_exceeded"
+        ? "EMAIL_DAILY_QUOTA_EXCEEDED" : "EMAIL_DELIVERY_FAILED";
     }
   }
 
@@ -234,12 +236,12 @@ function createMemberAuth() {
                 // The notice names no new address: whoever still reads the
                 // old mailbox (the usual reason to move) must not learn the
                 // account's new login identifier.
-                const delivered = await deliver({
+                const failure = await deliver({
                   to: previousEmail,
                   subject: "Your Superteam NL HQ sign-in email changed",
                   text: "The email address for signing in to your Superteam NL HQ account was changed, and this address no longer signs in to it.\n\nIf this was you, there is nothing to do. If it was not, contact Superteam NL right away.",
                 });
-                if (!delivered) context.context.logger.error("hq-member-auth: the previous address was not notified of the email change", { userId: user.id });
+                if (failure) context.context.logger.error("hq-member-auth: the previous address was not notified of the email change", { userId: user.id });
               }
               await recordAuditEvent(builderDatabase(), { kind: "identity.email_changed", actor: { kind: "member", id: user.id }, subjectUserId: user.id, metadata: { hadPreviousEmail: previousEmail !== null } });
               if (user.name.trim() && (await isVerifiedAccount(user))) await syncBuilderAccount({ id: user.id, email: verifiedLoginEmail(user), name: user.name.trim() });
@@ -264,8 +266,9 @@ function createMemberAuth() {
         async sendVerificationOTP({ email, otp, type }) {
           const message = memberCodeEmail({ otp, type });
           // Better Auth absorbs sender errors; the delivery module turns
-          // this flag into an honest 503 for the request.
-          if (!(await deliver({ to: email, ...message }))) memberEmailDeliveryFailed();
+          // this failure into an honest HTTP error for the request.
+          const failure = await deliver({ to: email, ...message });
+          if (failure) memberEmailDeliveryFailed(failure);
         },
       }),
       hqTelegramIdentity({

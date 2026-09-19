@@ -996,20 +996,21 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(await (await request("/get-session", undefined, state.cookie)).json()).toBeNull();
   });
 
-  it("takes a Telegram-first account through the name step without asking for an email", async () => {
+  it.each(["/hq/welcome", "/hq/invite/continue"])("takes a Telegram-first account through the name step to %s", async (destination) => {
     state.tokenOverride = { name: null };
-    const start = await startSignIn({ newUserCallbackURL: "/hq/profile?next=%2Fhq%2Fwelcome" });
+    const start = await startSignIn({ newUserCallbackURL: `/hq/profile?next=${encodeURIComponent(destination)}` });
     const response = await completeCallback(start);
     expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toMatch(/\/hq\/profile\?next=%2Fhq%2Fwelcome$/);
+    expect(new URL(response.headers.get("location")!, ORIGIN).pathname).toBe("/hq/profile");
+    expect(new URL(response.headers.get("location")!, ORIGIN).searchParams.get("next")).toBe(destination);
     const cookie = sessionCookie(response)!.split(";")[0];
     state.cookie = cookie;
     expect((await state.pg!.query("SELECT name FROM hq_auth_user")).rows).toEqual([{ name: "" }]);
 
     const { requireMember } = await import("@/lib/hq/member-auth");
-    await expect(requireMember("/hq/welcome")).rejects.toThrow("REDIRECT:/hq/profile?next=%2Fhq%2Fwelcome");
+    await expect(requireMember(destination)).rejects.toThrow(`REDIRECT:/hq/profile?next=${encodeURIComponent(destination)}`);
     const { default: ProfilePage } = await import("@/app/hq/(member)/profile/page");
-    const html = renderToStaticMarkup(await ProfilePage({ searchParams: Promise.resolve({ next: "/hq/welcome" }) }));
+    const html = renderToStaticMarkup(await ProfilePage({ searchParams: Promise.resolve({ next: destination }) }));
     expect(html).toContain('name="name"');
     expect(html).not.toContain('type="email"');
     expect(html).not.toContain("placeholder.invalid");
@@ -1025,14 +1026,14 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     const { completeMemberProfile } = await import("@/app/hq/(member)/profile/actions");
     const form = new FormData();
     form.set("name", "Named Builder");
-    form.set("next", "/hq/welcome");
+    form.set("next", destination);
     form.set("botAllowed", "on");
-    await expect(completeMemberProfile(null, form)).rejects.toThrow("REDIRECT:/hq/welcome");
+    await expect(completeMemberProfile(null, form)).rejects.toThrow(`REDIRECT:${destination}`);
     expect((await state.pg!.query("SELECT name FROM hq_auth_user")).rows).toEqual([{ name: "Named Builder" }]);
     expect((await state.pg!.query("SELECT email, name FROM hq_builder_profiles")).rows).toEqual([{ email: null, name: "Named Builder" }]);
     expect(state.synced).toHaveBeenCalledWith({ id: expect.any(String), email: null, name: "Named Builder" });
     expect(state.sent).toEqual([]);
-    expect((await requireMember("/hq/welcome")).name).toBe("Named Builder");
+    expect((await requireMember(destination)).name).toBe("Named Builder");
     // The ticked box is the consent the bot needs, recorded for this Telegram account with its audit event.
     const userId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_user")).rows[0].id;
     expect(await getBotConsent(userId)).toMatchObject({ userId, telegramUserId: String(TELEGRAM_ID), messagingEnabled: true, revokedAt: null });

@@ -606,7 +606,7 @@ describe("Captain invitations in Admin", () => {
     const result = await createCaptainInvitationAction({ label: "Rotterdam meetup", maxRedemptions: 2, expiresInDays: 3 });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("expected success");
-    expect(result.token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(result.token).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
     expect(result.invitation).toMatchObject({ label: "Rotterdam meetup", maxRedemptions: 2, usedCount: 0, state: "active", createdByUserId: OPERATOR, createdByName: "Operator" });
     expect(mocks.refreshHq).toHaveBeenCalledTimes(1);
     expect((await getBuilderAdminData()).captainInvitations.map((i) => i.label)).toEqual(["Rotterdam meetup"]);

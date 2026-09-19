@@ -52,13 +52,13 @@ export type BuilderCaptainDenProps = {
 const NO_OPEN_WEEK = "No open week";
 const REPORTING_PAUSED = "Reporting paused";
 const STATUS_DONE = "Team updated this week. No note needed";
-const NO_TEAMS = "No teams assigned yet.";
+const NO_TEAMS = "No teams assigned yet. Reach out to an admin to link your teams to you.";
 const NOTE_FAILED = "The note could not be saved. Your text is kept. Try again.";
 const OLDER_FAILED = "Older notes could not be loaded. Try again.";
 
 /** What the Captain has typed for one team, kept across switching teams and after a failed save. */
-type Draft = { body: string; priv: boolean; saved: boolean; error: string };
-const EMPTY_DRAFT: Draft = { body: "", priv: false, saved: false, error: "" };
+type Draft = { body: string; periodId: string | null; priv: boolean; saved: boolean; error: string };
+const EMPTY_DRAFT: Draft = { body: "", periodId: null, priv: false, saved: false, error: "" };
 
 /**
  * What this browser has added to one team's list beyond the page's first
@@ -129,7 +129,7 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
     event.preventDefault();
     if (!team?.current || blank) return;
     const { projectId, hackathonId } = team;
-    const { periodId } = team.current;
+    const periodId = draft.periodId ?? team.current.periodId;
     const { body, priv } = draft;
     start(async () => {
       patchDraft(projectId, { error: "" });
@@ -145,11 +145,12 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
       }
       if (result.ok) {
         addEntry(projectId, result.entry);
-        patchDraft(projectId, { body: "", saved: true });
+        patchDraft(projectId, { body: "", periodId: null, saved: true });
         router.refresh();
         return;
       }
       patchDraft(projectId, { error: result.error });
+      if (result.reason === "period_changed" && result.currentPeriod) router.refresh();
     });
   };
 
@@ -245,12 +246,20 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
                   <textarea
                     className={styles.textarea}
                     value={draft.body}
-                    onChange={(event) => patchDraft(team.projectId, { body: event.target.value, saved: false })}
+                    onChange={(event) => patchDraft(team.projectId, {
+                      body: event.target.value,
+                      periodId: draft.body.trim() ? draft.periodId : team.current!.periodId,
+                      saved: false,
+                    })}
                     maxLength={MAX_BODY}
                     rows={5}
                     aria-label="Your note"
                     placeholder="What you saw, what you told them, what to watch."
                   />
+                  {draft.body.trim() && draft.periodId !== null && draft.periodId !== team.current?.periodId && <div>
+                    <p role="alert" className={styles.alert}>The week changed while you were writing. Your draft is kept.</p>
+                    <button type="button" className={styles.older} onClick={() => patchDraft(team.projectId, { periodId: team.current!.periodId, error: "" })}>Use current week</button>
+                  </div>}
                   <div className={styles.row}>
                     <button type="submit" className={styles.add} disabled={blank || pending}>Add note</button>
                     <span

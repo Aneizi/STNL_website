@@ -73,13 +73,12 @@ describe("AccountForm", () => {
     expect(html).toContain('fill="currentColor"');
   });
 
-  it("keeps its own header: the brand is plain text, not a link, and Back leads out of HQ", () => {
+  it("keeps its own header with a plain brand and no navigation out of HQ", () => {
     const html = render();
     expect(html).toContain("Superteam NL");
     expect(html).not.toContain("superteam NL");
     expect(html).toMatch(/<span[^>]*><img[^>]*><span>Superteam NL<\/span><\/span>/);
-    expect(html).not.toMatch(/<a[^>]*href="\/"[^>]*>/);
-    expect(html).toMatch(/<a[^>]*href="\/colosseum\/start"[^>]*><svg[^>]*><\/svg>Back<\/a>/);
+    expect(html).not.toMatch(/<a\b/);
     expect(html).not.toContain("Account menu");
   });
 

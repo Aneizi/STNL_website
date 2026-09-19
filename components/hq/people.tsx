@@ -122,7 +122,9 @@ export function PersonRow({
   onDeleted: () => void;
 }) {
   const router = useRouter();
-  const [pending, startTransition] = useTransition();
+  const [saving, startTransition] = useTransition();
+  const [captainPending, startCaptainTransition] = useTransition();
+  const pending = saving || captainPending;
   const [error, setError] = useState("");
   const role = roles.find((r) => r.id === person.roleId) ?? roles[0];
   const linked = person.builderUserId !== null;
@@ -160,11 +162,15 @@ export function PersonRow({
     if (!linked || pending) return;
     const next = !person.captain;
     if (!next && !window.confirm(`Remove Captain from ${person.name}? Their current project assignments are cleared.`)) return;
-    startTransition(async () => {
-      setError("");
-      const result = await setPersonCaptain(person.id, next);
-      if (result.ok) router.refresh();
-      else setError(result.error ?? "Could not change Captain access.");
+    setError("");
+    startCaptainTransition(async () => {
+      try {
+        const result = await setPersonCaptain(person.id, next);
+        if (result.ok) router.refresh();
+        else setError(result.error ?? "Could not change Captain access.");
+      } catch {
+        setError("Could not change Captain access. Try again.");
+      }
     });
   };
 
@@ -318,8 +324,13 @@ export function PersonRow({
                   <button
                     type="button"
                     onClick={toggleCaptain}
-                    disabled={!linked}
+                    disabled={!linked || pending}
+                    aria-busy={captainPending}
                     style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
                       border: "none",
                       cursor: "pointer",
                       height: 44,
@@ -333,7 +344,10 @@ export function PersonRow({
                       opacity: linked ? 1 : 0.5,
                     }}
                   >
-                    {person.captain ? "Remove Captain" : "Make Captain"}
+                    {captainPending && <span className="hq-button-spinner" aria-hidden="true" />}
+                    {captainPending
+                      ? person.captain ? "Removing Captain…" : "Making Captain…"
+                      : person.captain ? "Remove Captain" : "Make Captain"}
                   </button>
                   <span style={{ fontSize: 16, color: "var(--label-2)" }}>{captainHint}</span>
                 </div>

@@ -9,5 +9,5 @@ export default async function WelcomePage(){
   await requireMember('/hq/welcome');
   // Import goes to the open edition, live first; without one the Initialize page answers for itself.
   const [edition]=await builderStore().hackathons();
-  return <BuilderShell back='/colosseum/start'><h1>Find your <em>team.</em></h1><p>Choose how you’d like to take part.</p><BuilderWelcome hackathonId={edition?.id??null}/></BuilderShell>;
+  return <BuilderShell back='/hq/dashboard'><h1>Find your <em>team.</em></h1><p>Choose how you’d like to take part.</p><BuilderWelcome hackathonId={edition?.id??null}/></BuilderShell>;
 }

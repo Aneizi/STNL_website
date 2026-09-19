@@ -76,7 +76,21 @@ describe('onboarding selection',()=>{
     fire(tree,'form','onSubmit',submit);
     await settle();
     expect(mocks.importTeam).toHaveBeenCalledWith({hackathonId:41,url:URL,selectedUsername:'teammate'});
-    expect(mocks.replace).toHaveBeenCalledWith('/hq/team/example');
+    expect(mocks.replace).toHaveBeenCalledWith('/hq/dashboard');
+  });
+
+  it('opens the menu after joining a team',async()=>{
+    const component=()=>BuilderJoin({});
+    mocks.invite.mockResolvedValue({ok:true,data:{team:'Example',projectUrl:URL,code:CODE,members:[member]}});
+    mocks.join.mockResolvedValue({ok:true,data:{url:'/hq/team/example'}});
+    let tree=render(component);
+    fire(tree,'input','onChange',{target:{value:CODE}});
+    tree=render(component);fire(tree,'form','onSubmit',submit);await settle();
+    expect(mocks.replace).not.toHaveBeenCalled();
+    tree=render(component);fire(tree,'select','onChange',{target:{value:member.id}});
+    tree=render(component);fire(tree,'form','onSubmit',submit);await settle();
+    expect(mocks.join).toHaveBeenCalledWith({code:CODE,memberId:member.id});
+    expect(mocks.replace).toHaveBeenCalledWith('/hq/dashboard');
   });
 
   it('refuses a link that is not a Colosseum project link before asking the server',async()=>{

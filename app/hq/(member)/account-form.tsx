@@ -1,9 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { IconArrowLeft, IconArrowRight, IconPaperplaneFill } from "symbols-react";
+import { IconArrowRight, IconPaperplaneFill } from "symbols-react";
 import { memberAuthClient } from "@/lib/hq/member-auth-client";
 import { safeMemberNext, type MemberAuthAvailability } from "@/lib/hq/member-auth-config";
 import styles from "./account.module.css";
@@ -35,7 +34,10 @@ function unavailableCopy(availability: MemberAuthAvailability): { all: string | 
   };
 }
 
-function messageFor(error: { code?: string; status?: number }, verifying = false): string {
+function messageFor(error: { code?: string; status?: number }, verifying = false, telegramAvailable = false): string {
+  if (error.code === "EMAIL_DAILY_QUOTA_EXCEEDED") return telegramAvailable
+    ? "We've reached our daily email limit. Continue with Telegram or try again tomorrow."
+    : "We've reached our daily email limit. Please try again tomorrow.";
   if (error.status === 429 || error.code === "TOO_MANY_REQUESTS") return "Too many attempts. Please wait a minute and try again.";
   if (error.code === "TOO_MANY_ATTEMPTS") return "That code has had too many attempts. Request a new one below.";
   if (error.code === "OTP_EXPIRED" || error.code === "INVALID_OTP") return "That code is incorrect or has expired. Try again or request a new one.";
@@ -50,6 +52,7 @@ export function AccountForm({ next, availability, error: initialError }: Props) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(telegramErrorMessage(initialError) ?? "");
   const [status, setStatus] = useState("");
+  const [emailQuotaReached, setEmailQuotaReached] = useState(false);
   const { secondsLeft, startCooldown } = useResendCooldown();
   const codeInput = useRef<HTMLInputElement>(null);
   const destination = safeMemberNext(next);
@@ -99,9 +102,11 @@ export function AccountForm({ next, availability, error: initialError }: Props) 
     try {
       const result = await memberAuthClient.emailOtp.sendVerificationOtp({ email: address, type: "sign-in" });
       if (result.error) {
-        setError(messageFor(result.error));
+        setEmailQuotaReached(result.error.code === "EMAIL_DAILY_QUOTA_EXCEEDED");
+        setError(messageFor(result.error, false, availability.telegram));
         return;
       }
+      setEmailQuotaReached(false);
       setEmail(address);
       setOtp("");
       setStep("verify");
@@ -123,7 +128,7 @@ export function AccountForm({ next, availability, error: initialError }: Props) 
     try {
       const result = await memberAuthClient.signIn.emailOtp({ email, otp });
       if (result.error) {
-        setError(messageFor(result.error, true));
+        setError(messageFor(result.error, true, availability.telegram));
         return;
       }
       // A full navigation makes the verified cookie available to the server.
@@ -149,10 +154,6 @@ export function AccountForm({ next, availability, error: initialError }: Props) 
           <Image src="/landing/st-orange.png" alt="" width={2154} height={2116} sizes="28px" />
           <span>Superteam NL</span>
         </span>
-        <Link href="/colosseum/start" className={styles.back}>
-          <IconArrowLeft width={16} height={16} fill="currentColor" aria-hidden="true" />
-          Back
-        </Link>
       </header>
       <main className={styles.main}>
         <div className={styles.content}>
@@ -195,6 +196,12 @@ export function AccountForm({ next, availability, error: initialError }: Props) 
                 <button type="button" onClick={changeEmail}>Change email</button>
               </div>
             </form>
+          )}
+          {step === "verify" && emailQuotaReached && availability.telegram && (
+            <button type="button" className={`${styles.provider} ${styles.quotaAlternative}`} disabled={busy} onClick={signInWithTelegram}>
+              <IconPaperplaneFill width={18} height={18} fill="currentColor" aria-hidden="true" />
+              Continue with Telegram
+            </button>
           )}
           <p id="code-status" role="status" className={styles.hint}>{status}</p>
           <p id="account-error" role="alert" className={styles.error}>{error}</p>

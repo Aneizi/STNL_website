@@ -9,12 +9,9 @@
 }
 
 .header { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding: 18px 28px; }
-.page .brand, .page .back { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; color: #16130f; text-decoration: none; }
+.page .brand { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; color: #16130f; text-decoration: none; }
 .brand { font-size: 17px; font-weight: 700; letter-spacing: -.02em; }
 .brand img { width: 28px; height: auto; }
-.page .back { color: #57534a; }
-/* The global anchor hover underlines; Back changes colour only. */
-.page .back:hover { text-decoration: none; }
 .main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 42px 24px 72px; }
 .content { width: min(100%, 460px); }
 .content h1 { margin: 0 0 28px; font-family: inherit; font-size: 32px; font-weight: 600; letter-spacing: -.025em; line-height: 1.2; text-wrap: balance; }
@@ -22,6 +19,7 @@
 .introduction strong { color: #16130f; font-weight: 500; }
 .submit { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 54px; border: 1px solid #16130f; border-radius: 10px; background: #16130f; color: #fbf7f0; padding: 12px 18px; font-size: 17px; font-weight: 500; cursor: pointer; }
 .providers { display: grid; gap: 10px; }
+.quotaAlternative { margin-top: 24px; }
 .provider { display: flex; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 54px; border: 1px solid #16130f; border-radius: 10px; background: #fffcf7; color: #16130f; padding: 12px 18px; font-size: 17px; font-weight: 500; cursor: pointer; }
 .providers .hint { margin: 0; }
 .divider { display: flex; align-items: center; gap: 14px; margin: 24px 0; color: #57534a; font-size: 17px; }
@@ -43,7 +41,7 @@
 @media (hover: hover) {
   .submit:hover:not(:disabled) { background: #342d24; border-color: #342d24; }
   .provider:hover:not(:disabled) { background: #fbf7f0; }
-  .page .back:hover, .codeActions button:hover:not(:disabled) { color: #16130f; }
+  .codeActions button:hover:not(:disabled) { color: #16130f; }
 }
 
 @media (prefers-reduced-motion: no-preference) {

@@ -166,6 +166,20 @@ beforeEach(() => {
 });
 
 describe("this week's update", () => {
+  it("keeps a draft bound to its original week across a refresh until the author chooses the current week", async () => {
+    mocks.add.mockResolvedValue({ ok: false, reason: "period_changed", error: "The week changed", currentPeriod: { id: "week-2" } });
+    const composer = dossier().child("UpdateComposer");
+    composer.event("textarea", "onChange", change("Week one progress"));
+    composer.render({ ...composer.props, reporting: reporting({ current: week(2) }) });
+    composer.event("textarea", "onChange", change("Week one progress, with detail"));
+    composer.event("form", "onSubmit", submit); await settle(); composer.render();
+    expect(mocks.add.mock.lastCall![0]).toMatchObject({ body: "Week one progress, with detail", expectedPeriodId: "week-1" });
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+    composer.event("button", "onClick", undefined, "Use current week");
+    composer.event("form", "onSubmit", submit); await settle();
+    expect(mocks.add.mock.lastCall![0]).toMatchObject({ body: "Week one progress, with detail", expectedPeriodId: "week-2" });
+  });
+
   it("binds the save to the open week, then says it is saved and turns the week Updated", async () => {
     const view = dossier();
     expect(view.find("UpdateComposer").props.completed).toBe(false);
@@ -273,9 +287,9 @@ describe("a late update", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     (modal.find("div").props.onClick as () => void)();
     expect(onClose).toHaveBeenCalledTimes(2);
-    const listener = (document.addEventListener as ReturnType<typeof vi.fn>).mock.calls.find(([type]) => type === "keydown")![1] as (event: { key: string }) => void;
-    listener({ key: "Enter" });
-    listener({ key: "Escape" });
+    const listeners = (document.addEventListener as ReturnType<typeof vi.fn>).mock.calls.filter(([type]) => type === "keydown").map(([, listener]) => listener as (event: { key: string }) => void);
+    listeners.forEach(listener => listener({ key: "Enter" }));
+    listeners.forEach(listener => listener({ key: "Escape" }));
     expect(onClose).toHaveBeenCalledTimes(3);
     expect(modal.find("div").props.role).toBeUndefined();
     expect(modal.all("div")[1].props).toMatchObject({ role: "dialog", "aria-modal": "true", "aria-labelledby": "late-title" });
@@ -445,7 +459,7 @@ describe("the join link", () => {
     expect(mocks.invite).toHaveBeenCalledWith({ projectId: "project", hackathonId: 1 });
     expect(invite.find("button", "Hide join link").props["aria-expanded"]).toBe(true);
     expect(invite.find("input").props).toMatchObject({ value: "https://superteam.nl/hq/join/ABCDEF-123456-ABCDEF-123456", readOnly: true, "aria-label": "Team join link" });
-    invite.event("button", "onClick", undefined, "Copy link");
+    invite.event("button", "onClick", undefined, "Copy link"); await settle(); invite.render();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("https://superteam.nl/hq/join/ABCDEF-123456-ABCDEF-123456");
     expect(invite.has("button", "Copied")).toBe(true);
     invite.event("button", "onClick", undefined, "Hide join link");
@@ -453,6 +467,17 @@ describe("the join link", () => {
     invite.event("button", "onClick", undefined, "Invite teammates"); await settle(); invite.render();
     expect(mocks.invite).toHaveBeenCalledOnce();
     expect(invite.has("input")).toBe(true);
+  });
+
+  it.each(["unavailable", "denied"])("keeps the join link available for manual copying when clipboard access is %s", async (failure) => {
+    mocks.invite.mockResolvedValue({ ok: true, data: { code: "ABCDEF-123456-ABCDEF-123456" } });
+    const invite = dossier().child("InviteControl");
+    invite.event("button", "onClick", undefined, "Invite teammates"); await settle(); invite.render();
+    vi.stubGlobal("navigator", failure === "unavailable" ? {} : { clipboard: { writeText: vi.fn().mockRejectedValue(new Error("Denied")) } });
+    invite.event("button", "onClick", undefined, "Copy link"); await settle(); invite.render();
+    expect(invite.has("button", "Copied")).toBe(false);
+    expect(invite.find("p", "Could not copy. Select the link and copy it manually.").props.role).toBe("alert");
+    expect(invite.find("input").props.readOnly).toBe(true);
   });
 
   it("shows the refusal in place of the link", async () => {

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { CaptainTile, HackathonTile, MenuGrid, PortalTile } from '@/components/hq/builder-menu';
 import { BuilderShell } from '@/components/hq/builder-shell';
+import { BuilderCaptainWelcome } from '@/components/hq/builder-captain-welcome';
 import { requireMemberActor } from '@/lib/hq/actor';
 import { builderDatabase } from '@/lib/hq/builder-db';
 import { builderStore } from '@/lib/hq/builder-store';
@@ -12,8 +13,9 @@ import { weekOfLabel } from '@/lib/hq/reporting-view';
 import styles from './dashboard.module.css';
 export const metadata:Metadata={title:'Home'};
 export const dynamic='force-dynamic';
-export default async function DashboardPage(){
+export default async function DashboardPage({searchParams}:{searchParams:Promise<{welcome?:string|string[]}>}){
   const actor=await requireMemberActor('/hq/dashboard');
+  const params=await searchParams;
   // One request instant: the week label and the due mark answer to the same moment.
   const at=nowMs();
   const store=builderStore();
@@ -34,6 +36,7 @@ export default async function DashboardPage(){
   const firstName=actor.name.trim().split(/\s+/)[0];
 
   return <BuilderShell bare>
+    {captain&&params.welcome==='captain'&&<BuilderCaptainWelcome/>}
     <div className={styles.home}>
       <h1 className={styles.title}>{firstName?`Where to, ${firstName}?`:'Where to?'}</h1>
       <MenuGrid>

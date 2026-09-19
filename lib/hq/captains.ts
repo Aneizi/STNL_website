@@ -1,5 +1,5 @@
 import "server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import { recordAuditEvent, type AuditActor } from "./audit";
 import { loadTeamMembership } from "./authz-sql";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
@@ -33,8 +33,16 @@ const MAX_REDEMPTIONS = 500;
 const MAX_VALIDITY_DAYS = 365;
 const MAX_LABEL_LENGTH = 200;
 
-/** The hashCode pattern from builder-store.ts, without its human-typed-code normalization: a base64url token is already exact and case-sensitive, so upper-casing or stripping characters would corrupt it. */
-const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
+/** Six easy-to-read characters, sampled uniformly from 32 letters and digits. */
+const INVITE_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const newInvitationCode = () => Array.from({ length: 6 }, () => INVITE_CODE_ALPHABET[randomInt(INVITE_CODE_ALPHABET.length)]).join("");
+
+/** New short codes ignore case; previously issued long tokens stay case-sensitive. */
+const hashToken = (token: string) => {
+  const value = token.trim();
+  const normalized = /^[A-HJ-NP-Z2-9]{6}$/i.test(value) ? value.toUpperCase() : value;
+  return createHash("sha256").update(normalized).digest("hex");
+};
 
 const toIso = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
 
@@ -136,8 +144,8 @@ export type CaptainInvitationCreation = { token: string; invitation: CaptainInvi
 
 /**
  * Creates a Captain invitation and returns its plaintext bearer token once.
- * The token is 32 random bytes, base64url encoded (so it passes ID_SEGMENT in
- * lib/hq/member-routes.ts unchanged); only its sha256 hex digest is stored.
+ * The token is a six-character random code; only its sha256 digest is stored.
+ * Hash collisions retry without aborting the transaction or reusing a code.
  * The insert, its RETURNING and the `captain.invitation_created` audit event
  * share one transaction; the token itself never appears in the event or in
  * any column.
@@ -151,28 +159,29 @@ export async function createCaptainInvitation(
   const label = input.label?.trim() || null;
   if (label && label.length > MAX_LABEL_LENGTH) throw new BuilderError(`Label must be ${MAX_LABEL_LENGTH} characters or fewer.`);
 
-  const token = randomBytes(32).toString("base64url");
-  const tokenHash = hashToken(token);
-
-  const invitation = await atomically(db, async (tx) => {
-    const { rows } = await tx.query(
-      `INSERT INTO hq_captain_invitations (token_hash, label, capability, max_redemptions, expires_at, created_by_user_id)
-       VALUES ($1, $2, 'captain', $3, $4, $5::uuid)
-       RETURNING id::text AS id, label, max_redemptions, expires_at, created_at,
-         created_by_user_id::text AS created_by_user_id, ${CREATED_BY_NAME} AS created_by_name,
-         revoked_at, revoked_by_user_id::text AS revoked_by_user_id, '[]'::json AS redemptions`,
-      [tokenHash, label, maxRedemptions, expiresAt.toISOString(), input.actorOperatorId],
-    );
-    const row = rows[0];
-    await recordAuditEvent(tx, {
-      kind: "captain.invitation_created",
-      actor: { kind: "operator", id: input.actorOperatorId },
-      metadata: { invitationId: String(row.id), maxRedemptions, label },
-    });
-    return toListing(row);
+  return atomically(db, async (tx) => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const token = newInvitationCode();
+      const { rows } = await tx.query(
+        `INSERT INTO hq_captain_invitations (token_hash, label, capability, max_redemptions, expires_at, created_by_user_id)
+         VALUES ($1, $2, 'captain', $3, $4, $5::uuid)
+         ON CONFLICT (token_hash) DO NOTHING
+         RETURNING id::text AS id, label, max_redemptions, expires_at, created_at,
+           created_by_user_id::text AS created_by_user_id, ${CREATED_BY_NAME} AS created_by_name,
+           revoked_at, revoked_by_user_id::text AS revoked_by_user_id, '[]'::json AS redemptions`,
+        [hashToken(token), label, maxRedemptions, expiresAt.toISOString(), input.actorOperatorId],
+      );
+      const row = rows[0];
+      if (!row) continue;
+      await recordAuditEvent(tx, {
+        kind: "captain.invitation_created",
+        actor: { kind: "operator", id: input.actorOperatorId },
+        metadata: { invitationId: String(row.id), maxRedemptions, label },
+      });
+      return { token, invitation: toListing(row) };
+    }
+    throw new BuilderError("Could not create an invitation code. Try again.");
   });
-
-  return { token, invitation };
 }
 
 /**

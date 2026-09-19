@@ -72,7 +72,7 @@ export function BuilderInitialize({hackathonId}:{hackathonId:number}) {
     setError('');
     try {
       const result=await importBuilderTeam({hackathonId,url:project.projectUrl,selectedUsername});
-      if(result.ok)router.replace(result.data.url);
+      if(result.ok)router.replace('/hq/dashboard');
       else setError(result.error);
     } catch {setError('Couldn’t import this team. Try again.');}
   });};
@@ -132,13 +132,13 @@ export function BuilderJoin({initialCode=''}:{initialCode?:string}) {
     setError('');
     try {
       const result=await acceptBuilderInvite({code:invite.code,memberId});
-      if(result.ok){router.replace(result.data.url);return;}
+      if(result.ok){router.replace('/hq/dashboard');return;}
       setError(result.error);
       // A teammate may have claimed this name while the form was open.
       // Keep the original error and selection if this refresh cannot connect.
       const updated=await previewBuilderInvite(invite.code).catch(()=>null);
       if(updated?.ok){
-        if(updated.data.joinedUrl){router.replace(updated.data.joinedUrl);return;}
+        if(updated.data.joinedUrl){router.replace('/hq/dashboard');return;}
         setInvite(updated.data);setMemberId('');
       }
     } catch {setError('Couldn’t join this team. Try again.');}

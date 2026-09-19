@@ -24,6 +24,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Exported HTML prototypes and their bundled runtime are design references.
+    "docs/plans/design_handoff_colosseum_hq/design/**",
   ]),
 ]);
 

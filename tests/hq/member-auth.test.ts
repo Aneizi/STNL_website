@@ -9,6 +9,8 @@ const state = vi.hoisted(() => ({
   sent: [] as Array<{ to: string; text: string; html?: string; attachments?: import("resend").Attachment[] }>,
   synced: vi.fn(),
   emailFailure: false,
+  emailErrorName: null as string | null,
+  emailThrows: false,
   cookie: "",
 }));
 
@@ -42,6 +44,11 @@ vi.mock("resend", () => ({
   Resend: class {
     emails = {
       send: async (message: { to: string; text: string; html?: string; attachments?: import("resend").Attachment[] }) => {
+        if (state.emailErrorName) {
+          const error = { name: state.emailErrorName, statusCode: 429, message: "Private provider details" };
+          if (state.emailThrows) throw error;
+          return { error };
+        }
         if (state.emailFailure) return { error: { message: "test sender failure" } };
         state.sent.push(message);
         return { error: null, data: { id: "test-email" } };
@@ -113,6 +120,8 @@ describe("public HQ sign-in through Better Auth", () => {
     state.sent.length = 0;
     state.synced.mockReset();
     state.emailFailure = false;
+    state.emailErrorName = null;
+    state.emailThrows = false;
     state.cookie = "";
     ipNumber += 1;
     await state.pg!.exec("TRUNCATE hq_auth_user, hq_auth_verification, hq_auth_rate_limit, hq_builder_profiles, hq_hackathons CASCADE");
@@ -217,7 +226,7 @@ describe("public HQ sign-in through Better Auth", () => {
     expect((await state.pg!.query("SELECT * FROM hq_people")).rows).toHaveLength(1);
   });
 
-  it("completes a new email-only sign-in profile before creating its Person", async () => {
+  it.each(["/hq/join?code=abc", "/hq/invite/continue"])("completes a new email-only profile and returns to %s", async (destination) => {
     const email = "needs-name@example.com";
     await request("/email-otp/send-verification-otp", { email, type: "sign-in" });
     const response = await request("/sign-in/email-otp", { email, otp: latestCode() });
@@ -227,7 +236,7 @@ describe("public HQ sign-in through Better Auth", () => {
     expect((await state.pg!.query("SELECT * FROM hq_people")).rows).toHaveLength(0);
     const { currentMember, requireMember } = await import("@/lib/hq/member-auth");
     expect((await currentMember())?.name).toBe("");
-    await expect(requireMember("/hq/join?code=abc")).rejects.toThrow("REDIRECT:/hq/profile?next=%2Fhq%2Fjoin%3Fcode%3Dabc");
+    await expect(requireMember(destination)).rejects.toThrow(`REDIRECT:/hq/profile?next=${encodeURIComponent(destination)}`);
 
     const { completeMemberProfile } = await import("@/app/hq/(member)/profile/actions");
     const empty = new FormData();
@@ -238,13 +247,13 @@ describe("public HQ sign-in through Better Auth", () => {
     expect(await completeMemberProfile(null, long)).toEqual({ error: "Enter your name, using 120 characters or fewer." });
     const form = new FormData();
     form.set("name", "Recovered Builder");
-    form.set("next", "/hq/join?code=abc");
+    form.set("next", destination);
     // Without Telegram there is nobody to message: the page never offers the box, and a ticked value stores nothing.
     form.set("botAllowed", "on");
-    await expect(completeMemberProfile(null, form)).rejects.toThrow("REDIRECT:/hq/join?code=abc");
+    await expect(completeMemberProfile(null, form)).rejects.toThrow(`REDIRECT:${destination}`);
     expect((await state.pg!.query("SELECT name FROM hq_people")).rows).toEqual([{ name: "Recovered Builder" }]);
     expect((await state.pg!.query("SELECT count(*)::int AS n FROM hq_telegram_bot_consent")).rows).toEqual([{ n: 0 }]);
-    expect((await requireMember("/hq/join?code=abc")).name).toBe("Recovered Builder");
+    expect((await requireMember(destination)).name).toBe("Recovered Builder");
   });
 
   it("still treats a verified email account as a member", async () => {
@@ -477,6 +486,31 @@ describe("public HQ sign-in through Better Auth", () => {
     const response = await request("/email-otp/send-verification-otp", { email: "sender@example.com", type: "sign-in" });
     expect(response.status).toBe(503);
     expect(state.synced).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("reports the daily email quota without leaking provider details (throws: %s)", async (throws) => {
+    state.emailErrorName = "daily_quota_exceeded";
+    state.emailThrows = throws;
+    const response = await request("/email-otp/send-verification-otp", { email: "quota@example.com", type: "sign-in" });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(await response.json()).toEqual({
+      code: "EMAIL_DAILY_QUOTA_EXCEEDED", message: "We've reached our daily email limit. Please try again tomorrow.",
+    });
+    expect(state.sent).toHaveLength(0);
+    expect(state.synced).not.toHaveBeenCalled();
+    expect((await state.pg!.query("SELECT * FROM hq_auth_user")).rows).toHaveLength(0);
+
+    state.emailErrorName = null;
+    expect((await request("/email-otp/send-verification-otp", { email: "quota@example.com", type: "sign-in" })).status).toBe(200);
+    expect(state.sent).toHaveLength(1);
+  });
+
+  it.each(["rate_limit_exceeded", "monthly_quota_exceeded"])("does not mislabel %s as a daily quota", async (name) => {
+    state.emailErrorName = name;
+    const response = await request("/email-otp/send-verification-otp", { email: "quota@example.com", type: "sign-in" });
+    expect(response.status).toBe(503);
+    expect((await response.json()).code).toBe("EMAIL_DELIVERY_FAILED");
   });
 
   // The GOOGLE_*/GITHUB_* variables stubbed in beforeAll are set on purpose:

@@ -60,13 +60,13 @@ describe("AcceptInvitationForm", () => {
     expect(html).toContain("intro-copy"); // still open: the explanation stays until a result replaces the form
   });
 
-  it("renders the granted outcome with a status role, the design copy, a link to the Captain page and no explanation", () => {
+  it("renders the granted outcome with a status role, the design copy, a fallback link to the menu and no explanation", () => {
     withState({ outcome: "granted" });
     const html = render(intro());
     expect(html).toContain('role="status"');
     expect(html).toMatch(/<h2>You are now a <em>Captain\.<\/em><\/h2>/);
     expect(html).toContain(">Captain access is on your account. An admin will assign your team; until then the Captain page shows no assignments.</p>");
-    expect(html).toMatch(/<a[^>]*href="\/hq\/captain"[^>]*>Go to Captain<svg[^>]*width="18"[^>]*height="18"[^>]*fill="currentColor"[^>]*aria-hidden="true"[^>]*><\/svg><\/a>/);
+    expect(html).toMatch(/<a[^>]*href="\/hq\/dashboard"[^>]*>Go to menu<svg[^>]*width="18"[^>]*height="18"[^>]*fill="currentColor"[^>]*aria-hidden="true"[^>]*><\/svg><\/a>/);
     expect(html).not.toContain("Accept and become a Captain");
     expect(html).not.toContain("intro-copy");
   });
@@ -74,12 +74,12 @@ describe("AcceptInvitationForm", () => {
   it.each([
     ["already-redeemed", "Already"],
     ["already-captain", "Already a"],
-  ] as const)("renders %s as a status, with no link to the Captain page and no explanation", (outcome, heading) => {
+  ] as const)("renders %s with a fallback menu link and no explanation", (outcome, heading) => {
     withState({ outcome });
     const html = render(intro());
     expect(html).toContain('role="status"');
     expect(html).toContain(heading);
-    expect(html).not.toContain('href="/hq/captain"');
+    expect(html).toContain('href="/hq/dashboard"');
     expect(html).not.toContain("intro-copy");
   });
 

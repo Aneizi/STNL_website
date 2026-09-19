@@ -37,10 +37,13 @@ beforeEach(() => {
 });
 
 describe("the welcome page", () => {
-  it("gates itself, then offers import, join and Home as links, with Back to the public start page", async () => {
+  it("gates itself, then offers import, join and Home as links, with Back to the HQ menu", async () => {
     const html = renderToStaticMarkup(await WelcomePage());
     expect(mocks.requireMember).toHaveBeenCalledWith("/hq/welcome");
-    expect(html).toMatch(/<a[^>]*href="\/colosseum\/start"[^>]*>Back<\/a>/);
+    expect(html).toMatch(/<a[^>]*href="\/hq\/dashboard"[^>]*>Back<\/a>/);
+    for (const [, href] of html.matchAll(/<a\b[^>]*href="([^"]+)"/g)) {
+      expect(href).toMatch(/^\/hq\//);
+    }
     expect(html).toContain("Find your <em>team.</em>");
     expect(html).toContain("Choose how you’d like to take part.");
     expect(html).toContain('href="/hq/initialize?hackathon=41"');

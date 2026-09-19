@@ -15,10 +15,8 @@ import { newInviteContinuationId, recordInviteContinuation } from "./invite-cont
 const IP_RATE_LIMIT_WINDOW_MINUTES = 15;
 
 /**
- * Defence in depth against token guessing, not the primary control: a
- * 32-byte random token (lib/hq/captains.ts#createCaptainInvitation) is not
- * brute-forceable within any plausible window, and this endpoint's only
- * observable effect either way is a redirect. Keyed by the requesting
+ * Limits guesses of the six-character invitation codes before looking one
+ * up or issuing a continuation. Keyed by the requesting
  * address rather than a user id — an exchange visitor may have no account —
  * reusing hq_login_limits' fixed-window counter under its own key namespace,
  * the same way lib/hq/actions/auth.ts (operator login) and

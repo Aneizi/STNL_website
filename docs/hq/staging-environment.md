@@ -4,6 +4,73 @@ Created 16 September 2026 with the owner's approval. This is the isolated
 environment for the reviewed `hq-captains-phases-0-2` working tree, including
 uncommitted review fixes. Phase 9 remains excluded.
 
+**18 September redesign deployed:** the reviewed `colosseum-hq` checkout,
+including the completion-review fixes, is live at the stable staging address in
+deployment `dpl_13UPmmKXSeBjBMdyRydN4sYEMwsm`. The additive schema migration
+passed with existing records preserved. Hosted build and all 14 HTTPS smoke
+checks passed. Follow [the redesign testing handoff](redesign-readiness.md)
+for the interactive test pass; Colosseum posts/videos sync remains deferred.
+
+**18 September public testing access:** Vercel Authentication was disabled on
+the separate staging project at the owner's request. The stable link opens
+without a Vercel account. All 14 HTTPS checks passed without bypass headers or
+Vercel cookies; application member/admin sign-in and webhook authentication
+remain enforced.
+
+**18 September team setup navigation:** sign-up/sign-in still opens **Find your
+team**. Successful team import or teammate joining now opens the **Home menu**,
+where the hackathon tile leads to the team. This is live in deployment
+`dpl_StanJLyfUMxwZy7AhWZcoiubExBC`; the hosted build and 15 public HTTPS checks
+passed, alongside 73 focused local tests, TypeScript and scoped lint.
+
+**18 September Captain invitation update:** new links use six-character codes.
+Signed-out invitees see **Log in or sign up**, return to the invitation after
+authentication/name setup, then accept to open the Home menu without team
+initialization. Existing links remain valid. Deployment
+`dpl_EzUNzxZPiLEdfT4KN1H9xGV5RJkt` passed its hosted build, 16 public HTTPS
+checks, 355 focused local tests, TypeScript and scoped lint.
+
+**18 September Captain welcome popup:** newly accepted Captains now see
+“You're now a captain. Go to the Captain's Den” over the menu. The Den text
+links to the Captain page; Okay, Escape or clicking outside dismisses it, and
+it fades out automatically after 10 seconds. Deployment
+`dpl_5XqN77xRTKJSerpT1zqChZfMoo4i` passed its hosted build and 17 public HTTPS
+checks. Local checks covered 68 tests, TypeScript, lint and desktop/mobile
+popup behavior.
+
+**18 September Captain team assignment guidance:** the empty Den now says
+“No teams assigned yet. Reach out to an admin to link your teams to you.”
+Deployment `dpl_4rgSfWoF1W4s59zJYgULUrankRxT` passed its hosted build and all
+17 public HTTPS checks; 57 related local tests and scoped lint also passed.
+
+**18 September HQ navigation:** Back on Find your team returns to the HQ menu.
+The login screen's link to the public start page was removed. The HQ navigation
+audit found no other navigation controls leading to public website pages.
+Deployment `dpl_BCek6xerPHwEHHjkh8Jb5FGAyP2E` passed its hosted build and all
+18 public HTTPS checks, with 52 related tests, TypeScript and scoped lint passing.
+
+**19 September Captain button feedback:** Make Captain shows a spinning loader
+and “Making Captain…” while pending, with duplicate submissions disabled.
+Remove Captain uses the same feedback. Failed requests restore the control and
+show an error. Deployment `dpl_8oktCfiR2vP5JZC2zDmQhe9Q9ALr` passed its hosted
+build and all 18 public HTTPS checks. Local tests, TypeScript, lint and browser
+checks of pending, failure, retry and success behavior passed.
+
+**19 September daily email quota guidance:** Resend's daily-limit response now
+shows “We've reached our daily email limit. Continue with Telegram or try again
+tomorrow.” A failed resend also offers Telegram from the code-entry screen,
+preserving the intended destination. Deployment
+`dpl_7GNUNt5WDoJcw9gJS79NFuVwu4MP` passed its hosted build and all 18 public
+HTTPS checks, alongside 142 related tests, TypeScript, lint and a local browser
+preview with simulated quota responses. No verification emails were sent.
+
+**19 September HQ entry login:** visiting `/hq` without an operator session
+cookie redirects to the normal member login, `/hq/login`. Operator cookies
+still reach the dashboard's full session check; deeper operator pages keep
+their admin login. Deployment `dpl_BpBkiRjyGhemvv62ix62WJPJ4EW1` passed its
+hosted build and all 19 public HTTPS checks, including the cookie-less entry.
+All 272 related local tests, TypeScript and scoped lint passed.
+
 ## Environment
 
 | Item | Value |
@@ -13,7 +80,7 @@ uncommitted review fixes. Phase 9 remains excluded.
 | Separate Vercel project | `stnl-hq-staging` |
 | Fresh Neon resource | `stnl-hq-staging-db`, free plan, Frankfurt |
 | Application runtime | Node.js 24.x, Next.js 16.3.5; functions configured for Frankfurt |
-| Access protection | Vercel Authentication on all deployments, including the stable address |
+| Access protection | Public link; application member/admin sign-in remains required |
 | Test bot | `@stnl_test_bot` |
 | Email sender | `Superteam NL <noreply@nl.superteam.fun>` |
 | Test edition | `900001` — `[TEST] Crypto Worlds Fair — HQ staging` |
@@ -42,20 +109,19 @@ the profile user ID as a string. The parser now accepts both canonical decimal
 strings and safe integer numbers. The correction is deployed and passes 63
 Telegram tests; a completed live sign-in still needs verification.
 
-The webhook is already registered. It has independent Telegram authentication
-and a private Vercel automation bypass so delivery can reach the protected site.
-Do not replace its registered URL with a plain URL or publish the bypass query.
+The webhook is already registered and has independent Telegram authentication.
+Its existing URL includes a private Vercel automation bypass from the original
+protected setup; the bypass is now unnecessary but remains private. No webhook
+registration change is needed for public testing access.
 
 ## 2. Sign in as the test operator
 
 1. Open [operator login](https://stnl-hq-staging.vercel.app/hq/admin/login).
-2. If Vercel appears first, sign into the Vercel account with access to scope
-   `stnl`. This is the environment's outer access gate.
-3. Use username **staging-admin** and the temporary password in the private,
+2. Use username **staging-admin** and the temporary password in the private,
    gitignored local file `setup/hq/staging/operator-credentials.json`.
-4. Complete the required password replacement. Keep the new password privately;
+3. Complete the required password replacement. Keep the new password privately;
    the local JSON file retains the old temporary password afterward.
-5. Select **[TEST] Crypto Worlds Fair — HQ staging**.
+4. Select **[TEST] Crypto Worlds Fair — HQ staging**.
 
 This account is the operator account. Member email/Telegram sign-in is a separate
 flow, matching the application's existing separation of roles.
@@ -65,8 +131,7 @@ flow, matching the application's existing separation of roles.
 1. Open [member sign-in](https://stnl-hq-staging.vercel.app/hq/login).
 2. Test **Continue with email** with an inbox you control. Confirm the code
    arrives from the chosen sender and completes sign-in.
-3. Test **Continue with Telegram** after saving the BotFather entries. Use the
-   same browser that has passed the Vercel access gate.
+3. Test **Continue with Telegram** after saving the BotFather entries.
 4. Check account linking separately: email and Telegram can be linked to one
    account; receiving bot messages requires an additional explicit opt-in.
 5. After linking and opting in, open `@stnl_test_bot` and send `/start`.
@@ -80,8 +145,11 @@ these interactive checks.
 - Imports are enabled and explicitly mapped to Colosseum edition `7`,
   `crypto-worlds-fair`. Paste the direct project-page link. The project's
   country and edition checks still apply.
-- Exercise teammate join links, Captain invitation/assignment, member updates,
-  operator corrections and the submission panel using this test edition.
+- Exercise teammate join links, Captain invitation/assignment from People and
+  Projects, member updates and late updates, private Captain notes, account
+  modals, high-potential flags and Admin reporting settings using this edition.
+  The redesign removed the per-project reporting/submission panel and its
+  operator correction controls.
 - The synthetic HQ reporting window is **14 September–11 October 2026**,
   Amsterdam time, with four periods and a final period on 5–11 October. These
   are test fixture dates; they do not assert the official external deadline.
@@ -95,6 +163,14 @@ these interactive checks.
 
 ## Completed verification
 
+- The Colosseum HQ redesign and completion-review fixes are live in deployment
+  `dpl_13UPmmKXSeBjBMdyRydN4sYEMwsm`; the stable alias was verified against
+  that exact deployment. The hosted build and all 14 HTTPS checks passed,
+  including enabled email/Telegram providers, member/operator boundaries,
+  sign-in redirects, access protection and webhook authentication. Migration
+  checks verified both new boolean columns and preserved counts for projects,
+  roster, People, accounts, sessions, reporting entries/revisions, join links
+  and outgoing messages. No reset/reseed, live OTP or bot delivery was run.
 - Branded verification emails are live in deployment
   `dpl_D5Y7GZBS5ZY7oGqV2gc9evETDrbv`: the supplied logo, a large centered code,
   a simple bordered box, and the existing 15-minute expiry. All 99 focused auth
@@ -162,5 +238,6 @@ from the deployment upload and contain information that must remain private.
 The source snapshot location is recorded in `setup/hq/staging/state.json`. It
 is temporary; recreate it from the reviewed working tree before later redeploys
 if the directory has been cleaned up. Always verify the snapshot's project link
-is **stnl-hq-staging** before deploying. No commit, push or public release was
-performed.
+is **stnl-hq-staging** before deploying. The reviewed HQ source is checkpointed
+on the `staging` branch. The separate test site is publicly reachable; its
+deployment uses the isolated project link described above.

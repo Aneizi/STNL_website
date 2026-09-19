@@ -124,9 +124,15 @@ function InviteControl({ projectId, hackathonId }: { projectId: string; hackatho
       } catch { setError(LINK_FAILED); }
     });
   };
-  const copy = () => {
-    if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {});
-    setCopied(true);
+  const copy = async () => {
+    setError('');
+    setCopied(false);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+    } catch {
+      setError('Could not copy. Select the link and copy it manually.');
+    }
   };
 
   return <>
@@ -156,6 +162,7 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
 }) {
   const router = useRouter();
   const [body, setBody] = useState('');
+  const [draftPeriodId, setDraftPeriodId] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const [pending, start] = useTransition();
@@ -170,7 +177,7 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
       setError('');
       let result;
       try {
-        result = await addReportingUpdate({ projectId, hackathonId, body, expectedPeriodId: current.periodId });
+        result = await addReportingUpdate({ projectId, hackathonId, body, expectedPeriodId: draftPeriodId ?? current.periodId });
       } catch {
         setError(SAVE_FAILED);
         return;
@@ -178,11 +185,14 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
       if (result.ok) {
         onSaved(result.entry, result.completesPeriod);
         setBody('');
+        setDraftPeriodId(null);
         setSaved(true);
         router.refresh();
         return;
       }
       setError(result.error);
+      // Learn the next week without changing the week attached to this draft.
+      if (result.reason === 'period_changed' && result.currentPeriod) router.refresh();
     });
   };
 
@@ -197,7 +207,14 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
     <h2 className={styles.heading}>{completed ? HEADING_DONE : HEADING_OPEN}</h2>
     {saved && <p role='status' className={styles.savedStatus}>{UPDATE_SAVED}</p>}
     <form className={styles.composer} onSubmit={submit} aria-busy={pending}>
-      <textarea className={styles.updateBox} value={body} onChange={event => { setBody(event.target.value); setSaved(false); }} maxLength={MAX_BODY} rows={6} aria-label='Your update' placeholder='What moved, what is in the way, what is next.'/>
+      <textarea className={styles.updateBox} value={body} onChange={event => {
+        if (!body.trim()) setDraftPeriodId(current.periodId);
+        setBody(event.target.value); setSaved(false);
+      }} maxLength={MAX_BODY} rows={6} aria-label='Your update' placeholder='What moved, what is in the way, what is next.'/>
+      {body.trim() && draftPeriodId !== null && draftPeriodId !== current.periodId && <div>
+        <p role='alert' className={styles.alert}>The week changed while you were writing. Your draft is kept.</p>
+        <button type='button' className={styles.lateLink} onClick={() => { setDraftPeriodId(current.periodId); setError(''); }}>Use current week</button>
+      </div>}
       <div className={styles.row}>
         <button type='submit' className={styles.addButton} disabled={!body.trim() || pending}>Add update</button>
         {lateLink}

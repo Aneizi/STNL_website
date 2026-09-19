@@ -30,7 +30,8 @@ const JOIN_PATH_PREFIX = "/hq/join/";
 export const CAPTAIN_PATH = "/hq/captain";
 
 /** Login and its compatibility redirect are public, but never post-auth destinations. */
-const MEMBER_LOGIN_PATHS = ["/hq/login", "/hq/signin"] as const;
+export const MEMBER_LOGIN_PATH = "/hq/login";
+const MEMBER_LOGIN_PATHS = [MEMBER_LOGIN_PATH, "/hq/signin"] as const;
 
 /**
  * Every member page. An entry ending in "/" names a subtree whose next and
