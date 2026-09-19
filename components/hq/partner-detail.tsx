@@ -20,6 +20,7 @@ import {
   updatePartnerDetail,
 } from "@/lib/hq/actions/partners";
 import { fmtDate, fmtWhen } from "@/lib/hq/format";
+import { isTrafficLightStatus } from "@/lib/hq/project-status";
 import type {
   ActionResult,
   Classifiers,
@@ -247,7 +248,7 @@ export function PartnerDetail({
       : view.attributed > 0
         ? 100
         : 0;
-  const statusBySlug = new Map(classifiers.statuses.map((s) => [s.slug, s]));
+  const statusBySlug = new Map(classifiers.statuses.filter((s) => !isTrafficLightStatus(s.slug)).map((s) => [s.slug, s]));
   const stage = classifiers.stages.find((s) => s.slug === view.stageSlug);
   const channelLabel =
     classifiers.channels.find((c) => c.id === view.channelId)?.label ?? "";

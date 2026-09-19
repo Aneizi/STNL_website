@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { showToast } from "@/components/hq/toast";
-import { loadMoreReminderDeliveries, runReportingJobsNow, type RunJobsResult } from "@/lib/hq/actions/jobs";
+import { loadMoreReminderDeliveries, resendCaptainReminder, runReportingJobsNow, type RunJobsResult } from "@/lib/hq/actions/jobs";
 import {
   applyReportingSchedule,
   readColosseumDeadline,
@@ -152,6 +152,32 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
   const [ranSummary, setRanSummary] = useState("");
   const [reminderLimit, setReminderLimit] = useState(reminders.length);
   const [loadingMore, startLoadMore] = useTransition();
+  const [resending, startResend] = useTransition();
+  const [resendingId, setResendingId] = useState<string | null>(null);
+
+  const resend = (reminder: ReminderDeliveryView) => {
+    setResendingId(reminder.id);
+    startResend(async () => {
+      try {
+        const result = await resendCaptainReminder({ deliveryId: reminder.id, expectedOutgoingId: reminder.outgoingId });
+        if (!result.ok) {
+          showToast(result.error);
+          return;
+        }
+        setReminders((current) => current.map((item) => item.id === result.delivery.id ? result.delivery : item));
+        const delivery = result.delivery;
+        showToast(delivery.state === "sent"
+          ? `Telegram reminder sent to ${delivery.captainName}.`
+          : delivery.state === "queued"
+            ? "Reminder queued. Check the delivery status below."
+            : `Reminder not sent: ${reminderLine(delivery, timezone)}.`);
+      } catch {
+        showToast("Could not finish the resend. Reload to check its delivery status.");
+      } finally {
+        setResendingId(null);
+      }
+    });
+  };
 
   const apply = () =>
     startApply(async () => {
@@ -366,8 +392,9 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
           <div>
             <h2 id="captain-reminders-title">Captain reminders</h2>
             <p>Each {nudgeDay}, Captains are told which teams still owe an update.</p>
+            <p>Resend an unsuccessful reminder after a Captain turns on bot notifications.</p>
           </div>
-          <button className={`${styles.secondary} ${styles.buttonLg}`} type="button" onClick={runJobs} disabled={running} style={{ flex: "none" }}>
+          <button className={`${styles.secondary} ${styles.buttonLg}`} type="button" onClick={runJobs} disabled={running || resending || loadingMore} style={{ flex: "none" }}>
             {running ? "Running…" : "Run now"}
           </button>
         </div>
@@ -381,14 +408,28 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
                   <span className={styles.strong}>{reminder.captainName}</span>
                   <span className={styles.reminderDetail}>{reminderLine(reminder, timezone)}</span>
                 </span>
-                <span className={pill.className}>{pill.label}</span>
+                <span className={styles.reminderControls}>
+                  <span className={pill.className}>{pill.label}</span>
+                  {reminder.canResend && (
+                    <button
+                      className={styles.secondary}
+                      type="button"
+                      onClick={() => resend(reminder)}
+                      disabled={resending || running || loadingMore || !data.botConfigured}
+                      aria-label={`Resend Telegram reminder to ${reminder.captainName} for week ${reminder.periodSequence}`}
+                      title={!data.botConfigured ? "The Telegram bot is not configured" : undefined}
+                    >
+                      {resending && resendingId === reminder.id ? "Resending…" : "Resend Telegram"}
+                    </button>
+                  )}
+                </span>
               </li>
             );
           })}
         </ul>
         {reminders.length >= reminderLimit && reminders.length > 0 && (
           <div className={styles.actions}>
-            <button className={`${styles.secondary} ${styles.buttonLg}`} type="button" onClick={showMoreReminders} disabled={loadingMore}>
+            <button className={`${styles.secondary} ${styles.buttonLg}`} type="button" onClick={showMoreReminders} disabled={loadingMore || running || resending}>
               {loadingMore ? "Loading…" : "Show earlier reminders"}
             </button>
           </div>

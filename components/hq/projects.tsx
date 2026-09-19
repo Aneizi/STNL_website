@@ -23,7 +23,6 @@ import {
   createProject,
   deleteProject,
   editProjectNote,
-  logMondayReview,
   removeProjectMember,
   saveProjectBlocker,
   setProjectForecast,
@@ -36,6 +35,7 @@ import {
 import { PROJECT_STAGES } from "@/lib/hq/builder-types";
 import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
+import { isTrafficLightStatus } from "@/lib/hq/project-status";
 import type { ProjectReportingStatus } from "@/lib/hq/reporting";
 import { SUBMISSION_FILTER_LABEL, statusLabel } from "@/lib/hq/reporting-view";
 import type {
@@ -47,6 +47,7 @@ import type {
 } from "@/lib/hq/types";
 import { projectHref } from "./builder-admin";
 import { BuilderProjectImage } from "./builder-project-image";
+import styles from "./projects.module.css";
 
 type PartnerOption = { id: string; name: string };
 type EventOption = { id: string; name: string };
@@ -134,6 +135,8 @@ const microLabel: CSSProperties = {
 /** Shared field style for the details panel, the timeline and the team modal inputs. */
 const panelField: CSSProperties = {
   width: "100%",
+  minWidth: 0,
+  minHeight: 44,
   boxSizing: "border-box",
   padding: "6px 8px",
   border: "1px solid var(--sep)",
@@ -143,11 +146,11 @@ const panelField: CSSProperties = {
   fontSize: 16,
 };
 
-/** The contact fields: monospace and a step smaller, so a handle reads as a handle. */
+/** Monospace contacts, kept at 16px so focusing them does not zoom a phone browser. */
 const contactField: CSSProperties = {
   ...panelField,
   fontFamily: "var(--mono)",
-  fontSize: 14,
+  fontSize: 16,
 };
 
 /** The small accent button beside a field: Team Edit/Add, note Save. */
@@ -162,7 +165,7 @@ const smallAccentBtn: CSSProperties = {
   color: "var(--accent)",
 };
 
-/** One status pill button, in Monday review and in the details panel. */
+/** One status pill button in the details panel. */
 const statusButton = (selected: boolean, color: string): CSSProperties => ({
   border: "none",
   cursor: "pointer",
@@ -172,6 +175,7 @@ const statusButton = (selected: boolean, color: string): CSSProperties => ({
   fontWeight: 600,
   textTransform: "uppercase",
   letterSpacing: "0.08em",
+  whiteSpace: "nowrap",
   background: selected ? `var(--${color})` : "var(--fill-3)",
   color: selected ? "#fff" : "var(--label-2)",
 });
@@ -193,7 +197,7 @@ const segmentButton = (on: boolean): CSSProperties => ({
 // needs no more than the glyph. Weekly holds "Not updated" plus a missed
 // count, so it needs a little more than Check-in. The last track is the
 // action column, wide enough for the two-step delete's "Sure?".
-const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 110px 126px 211px 110px 125px 77px 55px";
+const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 140px 126px 211px 110px 125px 77px 55px";
 
 /** The stage as the team's own settings name it; an unknown value shows as stored. */
 const stageLabel = (stage: string): string => PROJECT_STAGES.find((s) => s.value === stage)?.label ?? stage;
@@ -242,7 +246,7 @@ function CaptainField({
   onCancelReview: () => void;
 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
       <select
         id={id}
         value={project.captainUserId ?? ""}
@@ -278,7 +282,7 @@ function CaptainField({
             {review.unresolved.map((m) => (m.username ? `@${m.username}` : m.name)).join(", ")}. Assign{" "}
             {review.captainName} anyway?
           </span>
-          <div style={{ display: "flex", gap: 6 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             <button type="button" onClick={() => onAssignAnyway(review.unresolved)} style={smallAccentBtn}>
               Assign anyway
             </button>
@@ -329,8 +333,6 @@ export function Projects({
   const [, startTransition] = useTransition();
   const [optimistic, patch] = useOptimistic(projects, applyPatch);
 
-  const [reviewMode, setReviewMode] = useState(false);
-  const [reviewLogged, setReviewLogged] = useState<Record<string, boolean>>({});
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projSearch, setProjSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -379,24 +381,24 @@ export function Projects({
       setNotUpdatedOnly(false);
       setMissedOnly(false);
       setNotSubmittedOnly(false);
-      setReviewMode(false);
       router.replace("/hq/projects");
     }
     prevExpandId.current = expandId;
   }, [expandId, router]);
 
   const gatesTotal = classifiers.gates.length;
-  const statusBySlug = new Map(classifiers.statuses.map((s) => [s.slug, s]));
+  const statuses = classifiers.statuses.filter((s) => !isTrafficLightStatus(s.slug));
+  const statusBySlug = new Map(statuses.map((s) => [s.slug, s]));
   const forecastBySlug = new Map(classifiers.forecasts.map((f) => [f.slug, f]));
   // The board's reporting rows, by project id. A project with no row is not
   // in weekly reporting; the column says so and the three weekly filters
   // leave it out rather than guessing a state for it.
   const reportingBy = new Map(reporting.map((row) => [row.projectId, row]));
 
-  const pickStatus = (projectId: string, slug: string, review: boolean) => {
+  const pickStatus = (projectId: string, slug: string) => {
     startTransition(async () => {
       patch({ kind: "status", id: projectId, slug });
-      await setProjectStatus(projectId, slug, review ? { review: true } : undefined);
+      await setProjectStatus(projectId, slug);
     });
   };
 
@@ -561,14 +563,6 @@ export function Projects({
     setNewProjectOpen(false);
   };
 
-  const onLog = (p: Project) => {
-    const blocker = drafts.current["rblk" + p.id];
-    startTransition(async () => {
-      await logMondayReview(p.id, blocker);
-    });
-    setReviewLogged((m) => ({ ...m, [p.id]: true }));
-  };
-
   const onAddNote = (p: Project) => {
     const txt = (drafts.current["note" + p.id] ?? "").trim();
     if (!txt) return;
@@ -639,11 +633,11 @@ export function Projects({
 
   const statusFilters = [
     { value: "", label: "All" },
-    ...classifiers.statuses.map((s) => ({ value: s.slug, label: s.label })),
+    ...statuses.map((s) => ({ value: s.slug, label: s.label })),
   ];
 
-  const statusButtons = (p: Project, review: boolean) =>
-    classifiers.statuses.map((s) => {
+  const statusButtons = (p: Project) =>
+    statuses.map((s) => {
       const selected = p.statusSlug === s.slug;
       return (
         <button
@@ -651,8 +645,8 @@ export function Projects({
           type="button"
           aria-pressed={selected}
           onClick={() => {
-            pickStatus(p.id, s.slug, review);
-            if (!review) flash();
+            pickStatus(p.id, s.slug);
+            flash();
           }}
           style={statusButton(selected, s.color)}
         >
@@ -662,7 +656,8 @@ export function Projects({
     });
 
   return (
-    <div>
+    <>
+    <div className={styles.board} style={{ "--project-columns": gridColumns } as CSSProperties}>
       <div
         style={{
           display: "flex",
@@ -675,35 +670,14 @@ export function Projects({
         <h1 style={pageTitle}>
           Projects <span style={{ fontWeight: 400, color: "var(--faded)" }}>{optimistic.length}</span>
         </h1>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button
-            type="button"
-            aria-pressed={reviewMode}
-            onClick={() => {
-              setReviewMode(!reviewMode);
-              setReviewLogged({});
-              setNewProjectOpen(false);
-            }}
-            style={{
-              ...primaryBtn,
-              background: reviewMode ? "var(--label-1)" : "var(--fill-3)",
-              color: reviewMode ? "var(--bg)" : "var(--accent-deep)",
-            }}
-          >
-            {reviewMode ? "Exit review" : "Monday review"}
-          </button>
-          <button
-            type="button"
-            aria-expanded={newProjectOpen}
-            onClick={() => {
-              setNewProjectOpen(!newProjectOpen);
-              setReviewMode(false);
-            }}
-            style={primaryBtn}
-          >
-            New project
-          </button>
-        </div>
+        <button
+          type="button"
+          aria-expanded={newProjectOpen}
+          onClick={() => setNewProjectOpen(!newProjectOpen)}
+          style={primaryBtn}
+        >
+          New project
+        </button>
       </div>
 
       {newProjectOpen ? (
@@ -782,108 +756,6 @@ export function Projects({
         </div>
       ) : null}
 
-      {reviewMode ? (
-        <>
-          <div
-            style={{
-              background: "var(--accent-fill)",
-              borderRadius: 0,
-              padding: "10px 14px",
-              marginTop: 14,
-              fontSize: 16,
-              color: "var(--label-1)",
-            }}
-          >
-            <span style={{ fontWeight: 600, color: "var(--accent)" }}>Monday review.</span> Set a
-            status, note one blocker, then Log. Each log stamps today as the check-in date.
-          </div>
-          <div
-            style={{
-              background: "var(--card)",
-              borderRadius: 0,
-              boxShadow: "var(--shadow-1)",
-              marginTop: 12,
-              overflow: "hidden",
-            }}
-          >
-            {optimistic.map((p) => (
-              <div
-                key={p.id}
-                style={{
-                  display: "flex",
-                  gap: 10,
-                  alignItems: "center",
-                  padding: "10px 16px",
-                  flexWrap: "wrap",
-                }}
-              >
-                <span style={{ fontSize: 17, fontWeight: 600, width: 150, flex: "none" }}>
-                  {p.name}
-                </span>
-                <span
-                  style={{
-                    fontSize: 14,
-                    color: "var(--label-3)",
-                    width: 78,
-                    flex: "none",
-                    fontVariantNumeric: "tabular-nums",
-                  }}
-                >
-                  {fmtDate(p.lastCheckIn)}
-                </span>
-                <div style={{ display: "flex", gap: 4, flex: "none" }}>{statusButtons(p, true)}</div>
-                <input
-                  onChange={(e) => {
-                    drafts.current["rblk" + p.id] = e.target.value;
-                  }}
-                  defaultValue={p.blocker}
-                  aria-label={`Blocker for ${p.name}`}
-                  placeholder="One blocker, or leave clear"
-                  style={{
-                    flex: 1,
-                    minWidth: 160,
-                    padding: "7px 10px",
-                    border: "1px solid var(--sep)",
-                    borderRadius: 0,
-                    background: "transparent",
-                    color: "var(--label-1)",
-                    fontSize: 16,
-                  }}
-                />
-                {reviewLogged[p.id] ? (
-                  <span
-                    style={{
-                      fontSize: 16,
-                      fontWeight: 600,
-                      color: "var(--green)",
-                      padding: "6px 14px",
-                    }}
-                  >
-                    Logged
-                  </span>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => onLog(p)}
-                    style={{
-                      border: "none",
-                      cursor: "pointer",
-                      padding: "6px 14px",
-                      borderRadius: 0,
-                      fontSize: 16,
-                      fontWeight: 600,
-                      background: "var(--fill-3)",
-                      color: "var(--accent)",
-                    }}
-                  >
-                    Log
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </>
-      ) : (
         <>
           <div
             style={{
@@ -909,7 +781,7 @@ export function Projects({
                 width: 190,
               }}
             />
-            <div style={{ display: "flex", boxShadow: "0 0 0 1px var(--sep)", padding: 2 }}>
+            {statuses.length > 0 ? <div className={styles.filters} style={{ boxShadow: "0 0 0 1px var(--sep)", padding: 2 }}>
               {statusFilters.map((s) => {
                 const selected = statusFilter === s.value;
                 return (
@@ -924,7 +796,7 @@ export function Projects({
                   </button>
                 );
               })}
-            </div>
+            </div> : null}
             <select
               value={forecastFilter}
               onChange={(e) => setForecastFilter(e.target.value)}
@@ -947,7 +819,7 @@ export function Projects({
             </select>
             {/* Four independent toggles, so any combination is askable: an
                 unassigned team that also missed a week is one click each. */}
-            <div style={{ display: "flex", boxShadow: "0 0 0 1px var(--sep)", padding: 2, flexWrap: "wrap" }}>
+            <div className={styles.filters} style={{ boxShadow: "0 0 0 1px var(--sep)", padding: 2 }}>
               {[
                 { label: "Unassigned", on: unassignedOnly, set: setUnassignedOnly },
                 { label: "Not updated", on: notUpdatedOnly, set: setNotUpdatedOnly },
@@ -975,14 +847,12 @@ export function Projects({
               overflowX: "auto",
             }}
           >
-            <div style={{ minWidth: 1200 }}>
+            <div className={styles.table}>
               <div
+                className={styles.tableHeader}
                 style={{
-                  display: "grid",
                   textAlign: "left",
                   overflowWrap: "break-word",
-                  gridTemplateColumns: gridColumns,
-                  gap: 10,
                   padding: "10px 16px",
                   borderBottom: "1px solid var(--sep)",
                   fontSize: 14,
@@ -1010,6 +880,10 @@ export function Projects({
                 const expanded = expandedId === p.id;
                 const status = statusBySlug.get(p.statusSlug);
                 const colosseumUrl = p.colosseum ? projectHref(p.colosseum.url) : undefined;
+                // Imported rosters include the lead, who already has a dedicated
+                // chip below. Match the username so namesakes stay on the team.
+                const leadUsername = p.colosseum?.leadUsername.trim().toLowerCase();
+                const teammates = p.members.filter((member) => !leadUsername || member.username?.trim().toLowerCase() !== leadUsername);
                 // The roster rows a lead can be chosen from: those with a
                 // Colosseum username. The stored lead stays offered even if
                 // its row has since lost its username, so the select never
@@ -1028,6 +902,7 @@ export function Projects({
                       role="button"
                       tabIndex={0}
                       aria-expanded={expanded}
+                      aria-controls={`project-details-${p.id}`}
                       onClick={() => toggleExpanded(p.id)}
                       onKeyDown={(e) => {
                         if (e.target !== e.currentTarget) return;
@@ -1036,13 +911,10 @@ export function Projects({
                           toggleExpanded(p.id);
                         }
                       }}
-                      className="hq-row-hover"
+                      className={`hq-row-hover ${styles.projectRow}`}
                       style={{
-                        display: "grid",
                         textAlign: "left",
                         overflowWrap: "break-word",
-                        gridTemplateColumns: gridColumns,
-                        gap: 10,
                         padding: "11px 16px",
                         fontSize: 17,
                         cursor: "pointer",
@@ -1053,6 +925,7 @@ export function Projects({
                       {/* Logo, name, and a fixed slot for the HP badge, so
                           names line up whether or not a row carries one. */}
                       <span
+                        className={styles.projectName}
                         style={{
                           display: "grid",
                           gridTemplateColumns: "30px minmax(0,1fr) 36px",
@@ -1091,8 +964,8 @@ export function Projects({
                           </span>
                         ) : null}
                       </span>
-                      <span style={{ color: "var(--label-2)" }}>{p.leadName}</span>
-                      <span>
+                      <span data-label="Lead" style={{ color: "var(--label-2)" }}>{p.leadName}</span>
+                      <span data-label="Status" style={{ whiteSpace: "nowrap" }}>
                         {status ? (
                           <Badge
                             label={status.label}
@@ -1101,9 +974,10 @@ export function Projects({
                           />
                         ) : null}
                       </span>
-                      <span style={{ fontSize: 16, color: "var(--label-2)" }}>
+                      <span data-label="Forecast" style={{ fontSize: 16, color: "var(--label-2)" }}>
                         {forecastBySlug.get(p.forecastSlug)?.label ?? ""}
                       </span>
+                      <span data-label="Gates">
                       <span style={{ display: "flex", alignItems: "center", gap: 10, paddingRight: 24 }}>
                         <span
                           style={{
@@ -1135,7 +1009,9 @@ export function Projects({
                           {done}/{gatesTotal}
                         </span>
                       </span>
+                      </span>
                       <span
+                        data-label="Check-in"
                         style={{
                           fontSize: 16,
                           color: stale ? "var(--red)" : "var(--label-2)",
@@ -1148,7 +1024,7 @@ export function Projects({
                           missed underneath. Colosseum's own submitted signal
                           stays out of this column: they are separate facts,
                           and the filters above keep them separate too. */}
-                      <span style={{ fontSize: 16, color: "var(--label-2)", lineHeight: 1.25 }}>
+                      <span data-label="Weekly" style={{ fontSize: 16, color: "var(--label-2)", lineHeight: 1.25 }}>
                         {weekly
                           ? <>
                               <span style={{ color: weekly.paused ? "var(--label-3)" : weekly.current?.completed ? "var(--green)" : "var(--label-1)" }}>
@@ -1161,17 +1037,19 @@ export function Projects({
                       {/* A blocker is a yes/no signal at this altitude; the
                           text itself is one row-click away, in the panel. */}
                       <span
+                        className={styles.blockerCell}
+                        data-label="Blocker"
                         title={p.blocker || undefined}
                         aria-label={p.blocker ? `Blocked: ${p.blocker}` : "No blocker"}
-                        style={{ fontSize: 17, color: "var(--orange)", lineHeight: 1, textAlign: "center" }}
+                        style={{ fontSize: 17, color: "var(--orange)", lineHeight: 1 }}
                       >
-                        {p.blocker ? "✓" : ""}
+                        {p.blocker ? "✓" : <span className={styles.mobileOnly}>None</span>}
                       </span>
                       {/* The × is a glyph, not an icon: it carries a larger
                           type size than the armed "Sure?" it swaps with. */}
                       <button
                         type="button"
-                        className="hq-hover-accent"
+                        className={`hq-hover-accent ${styles.deleteProject}`}
                         onClick={del.onClick}
                         title={del.title}
                         aria-label={del.armed ? "Confirm delete" : `Delete ${p.name}`}
@@ -1190,22 +1068,20 @@ export function Projects({
                       >
                         {del.label}
                       </button>
+                      <span className={styles.mobileDisclosure} aria-hidden="true">{expanded ? "Hide details −" : "Show details +"}</span>
                     </div>
                     {expanded ? (
                       <div
-                        className="hq-fade-in"
+                        id={`project-details-${p.id}`}
+                        role="region"
+                        aria-label={`${p.name} details`}
+                        className={`hq-fade-in ${styles.expanded}`}
                         style={{
                           padding: "18px 16px",
                           background: "var(--fill-4)",
                         }}
                       >
-                        <div
-                          style={{
-                            display: "grid",
-                            gridTemplateColumns: "repeat(auto-fit,minmax(336px,1fr))",
-                            gap: 20,
-                          }}
-                        >
+                        <div className={styles.detailsGrid}>
                           <div>
                             <div style={{ ...blockHeading, marginBottom: 10 }}>Colosseum</div>
                             <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
@@ -1329,15 +1205,7 @@ export function Projects({
                                 </span>
                               )}
                             </div>
-                            <div
-                              style={{
-                                display: "grid",
-                                gridTemplateColumns: "74px minmax(0,1fr)",
-                                columnGap: 10,
-                                rowGap: 7,
-                                alignItems: "center",
-                              }}
-                            >
+                            <div className={styles.detailFields}>
                               <label htmlFor={`lead-${p.id}`} style={microLabel}>Lead</label>
                               {p.colosseum ? (
                                 <select
@@ -1389,7 +1257,7 @@ export function Projects({
                                 style={{
                                   display: "flex",
                                   flexWrap: "wrap",
-                                  gap: 5,
+                                  gap: 8,
                                   alignItems: "center",
                                 }}
                               >
@@ -1410,7 +1278,7 @@ export function Projects({
                                 >
                                   {p.leadName}
                                 </button>
-                                {p.members.map((m) => (
+                                {teammates.map((m) => (
                                   <button
                                     key={m.id}
                                     type="button"
@@ -1489,11 +1357,10 @@ export function Projects({
                                   </option>
                                 ))}
                               </select>
-                              <span style={microLabel}>Status</span>
-                              {/* Status is the panel's most-changed field; one
-                                  click beats opening a select. No review flag:
-                                  only Monday review stamps the check-in date. */}
-                              <div style={{ display: "flex", gap: 4 }}>{statusButtons(p, false)}</div>
+                              {statuses.length > 0 ? <>
+                                <span id={`status-label-${p.id}`} style={microLabel}>Status</span>
+                                <div className={styles.statusOptions} role="group" aria-labelledby={`status-label-${p.id}`}>{statusButtons(p)}</div>
+                              </> : null}
                               <label htmlFor={`forecast-${p.id}`} style={microLabel}>Forecast</label>
                               <select
                                 id={`forecast-${p.id}`}
@@ -1658,7 +1525,7 @@ export function Projects({
             </Link>
           </div>
         </>
-      )}
+    </div>
       {teamProject ? (
         <TeamModal
           project={teamProject}
@@ -1668,7 +1535,7 @@ export function Projects({
           onRemove={(memberId) => onRemoveMember(teamProject.id, memberId)}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -1693,13 +1560,32 @@ function TeamModal({
   const armed = useConfirmDelete();
   const [nameDraft, setNameDraft] = useState("");
   const [contactDraft, setContactDraft] = useState("");
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialogRef.current?.querySelector<HTMLElement>("input, button")?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
+      if (e.key === "Tab") {
+        const controls = dialogRef.current?.querySelectorAll<HTMLElement>("input:not(:disabled), button:not(:disabled)");
+        if (!controls?.length) return;
+        const first = controls[0];
+        const last = controls[controls.length - 1];
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      previousFocus?.focus();
+    };
   }, [onClose]);
 
   const add = () => {
@@ -1725,10 +1611,11 @@ function TeamModal({
       }}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="team-modal-title"
-        className="hq-pop-in-modal"
+        className={`hq-pop-in-modal ${styles.teamModal}`}
         onClick={(e) => e.stopPropagation()}
         style={{
           width: 440,
@@ -1742,15 +1629,7 @@ function TeamModal({
         <div id="team-modal-title" style={{ fontFamily: "var(--serif)", fontSize: 28, fontWeight: 400 }}>
           {project.name} team
         </div>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(0,1fr) minmax(0,1fr) 28px",
-            gap: 6,
-            marginTop: 14,
-            alignItems: "center",
-          }}
-        >
+        <div className={styles.teamGrid}>
           <span style={microLabel}>Name</span>
           <span style={microLabel}>Contact</span>
           <span />

@@ -65,24 +65,13 @@ export function Dashboard({
 
   const stale = projects.filter((p) => isStale(p.lastCheckIn, settings.staleDays, now));
 
-  const weekItems = [
-    ...projects
-      .filter((p) => p.statusSlug === "red")
-      .map((p) => ({
-        id: p.id,
-        color: "var(--red)",
-        text: `${p.name}: ${p.blocker || "red status, no blocker noted"}`,
-        meta: `last check-in ${fmtDate(p.lastCheckIn)}`,
-      })),
-    ...projects
-      .filter((p) => p.statusSlug === "amber" && p.blocker)
-      .map((p) => ({
-        id: p.id,
-        color: "var(--orange)",
-        text: `${p.name}: ${p.blocker}`,
-        meta: `last check-in ${fmtDate(p.lastCheckIn)}`,
-      })),
-  ];
+  const weekItems = projects
+    .filter((p) => p.blocker.trim())
+    .map((p) => ({
+      id: p.id,
+      text: `${p.name}: ${p.blocker}`,
+      meta: `last check-in ${fmtDate(p.lastCheckIn)}`,
+    }));
 
   return (
     <div>
@@ -254,17 +243,6 @@ export function Dashboard({
                 padding: "9px 0",
               }}
             >
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: 999,
-                  background: w.color,
-                  flex: "none",
-                  position: "relative",
-                  top: -1,
-                }}
-              />
               <span style={{ fontSize: 17, flex: 1 }}>{w.text}</span>
               <span
                 style={{

@@ -10,7 +10,7 @@ import type { ReminderDeliveryView } from "@/lib/hq/jobs";
 import type { ReportingPeriod } from "@/lib/hq/reporting";
 
 vi.mock("@/components/hq/toast", () => ({ showToast: vi.fn() }));
-vi.mock("@/lib/hq/actions/jobs", () => ({ loadMoreReminderDeliveries: vi.fn(), runReportingJobsNow: vi.fn() }));
+vi.mock("@/lib/hq/actions/jobs", () => ({ loadMoreReminderDeliveries: vi.fn(), runReportingJobsNow: vi.fn(), resendCaptainReminder: vi.fn() }));
 vi.mock("@/lib/hq/actions/reporting-admin", () => ({ applyReportingSchedule: vi.fn(), readColosseumDeadline: vi.fn(), saveReportingConfiguration: vi.fn() }));
 
 import { ReportingAdmin } from "@/components/hq/reporting-admin";
@@ -26,6 +26,7 @@ function period(sequence: number, startDate: string, endDate: string, mode: Repo
 
 function reminder(overrides: Partial<ReminderDeliveryView> & Pick<ReminderDeliveryView, "id" | "captainName" | "state">): ReminderDeliveryView {
   return {
+    outgoingId: null, canResend: false,
     captainUserId: `user-${overrides.id}`, hackathonId: 6, periodId: "period-1", periodSequence: 1,
     periodStartDate: "2026-09-14", periodEndDate: "2026-09-20", reminderType: "weekly_nudge", dueAt: "2026-09-16T10:00:00.000Z",
     reason: null, projectCount: 1, providerMessageId: null, attempts: 1, lastError: null, nextAttemptAt: null,
@@ -107,6 +108,19 @@ describe("Reporting settings", () => {
 });
 
 describe("Captain reminders", () => {
+  it("offers a per-Captain resend only for eligible reminders, and disables sending without a bot", () => {
+    const reminders = [
+      reminder({ id: "r1", captainName: "Femke de Jong", state: "sent" }),
+      reminder({ id: "r2", captainName: "Joost Vermeer", state: "skipped", reason: "messaging_disabled", canResend: true }),
+      reminder({ id: "r3", captainName: "Lotte Bakker", state: "queued", deliveryUncertain: true }),
+    ];
+    const html = render({ reminders });
+    expect(html.match(/>Resend Telegram</g)).toHaveLength(1);
+    expect(html).toContain('aria-label="Resend Telegram reminder to Joost Vermeer for week 1"');
+    expect(html).not.toMatch(/<button[^>]*disabled=""[^>]*aria-label="Resend/);
+    expect(render({ reminders, botConfigured: false })).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Resend/);
+  });
+
   it("names the reminder day, and renders each delivery as a comma phrase with one of three pills", () => {
     const html = render();
     expect(html).toContain("Captain reminders");

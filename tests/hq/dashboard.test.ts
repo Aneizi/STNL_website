@@ -170,23 +170,21 @@ describe("Dashboard", () => {
     }
   });
 
-  it("puts red projects first under Needs attention, then amber ones with a blocker", () => {
+  it("lists project blockers under Needs attention without traffic-light flags", () => {
     const html = render();
     expect(html).toContain(">Needs attention</h2>");
     expect(textsAt(html, 17).slice(3)).toEqual([
-      "Kaasketen: lead unreachable since kickoff, team of one",
-      "Fietsroute: red status, no blocker noted",
       "Grachtenpay: waiting on Helius RPC quota upgrade",
+      "Kaasketen: lead unreachable since kickoff, team of one",
       "Windmolen DAO: needs a frontend dev, posted in Telegram",
     ]);
     expect(textsAt(html, 14).slice(4)).toEqual([
-      "last check-in Sep 5",
-      "last check-in Sep 7",
       "last check-in Sep 16",
+      "last check-in Sep 5",
       "last check-in Sep 15",
     ]);
-    expect(html.match(/border-radius:999px;background:var\(--red\)/g)).toHaveLength(2);
-    expect(html.match(/border-radius:999px;background:var\(--orange\)/g)).toHaveLength(2);
+    expect(html).not.toMatch(/border-radius:999px;background:var\(--(?:red|orange)\)/);
+    expect(html).not.toContain("red status");
     expect(html).not.toContain("Stroopwafel Swap");
     expect(html).not.toContain("Tulip Ledger");
   });

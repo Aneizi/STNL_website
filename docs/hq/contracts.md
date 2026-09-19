@@ -1035,6 +1035,17 @@ kind, no permission and no second definition of a week.
    each other both attempt it and only one gets a row back. The queued
    message carries the same four values as its `dedupe_key`, so even a bug
    past the first lock cannot produce a second message.
+   An operator can explicitly resend an unsuccessful reminder with
+   `resendCaptainReminder` in `lib/hq/actions/jobs.ts`. `retryReminder` locks
+   the same delivery record, checks the selected edition and the outgoing id
+   shown to the operator, and reruns preparation with current consent, chat,
+   assignments and reporting state. Each resend gets a new outgoing row;
+   the prior queue outcome remains intact. Sent, queued and uncertain
+   deliveries cannot be resent, nor can reminders for a closed or ended
+   period or an archived edition. The action drains only its new outgoing
+   row through `flushBotMessages({ outgoingId })`; scheduled runs still do
+   not repeat a recorded reminder. Admin's reminder row shows the latest
+   attempt and offers **Resend Telegram** while the reminder is eligible.
 3. **The scan is a hint, and so is the enqueue. The dispatch is the truth.**
    `outstandingForCaptain` in `lib/hq/reminder-dispatch.ts` is the one
    definition of what a Captain still owes, and it runs TWICE: once inside

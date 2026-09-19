@@ -1,10 +1,12 @@
 "use server";
 
+import { z } from "zod";
 import { requireUser } from "../auth";
 import { builderDatabase } from "../builder-db";
 import { requireHackathon } from "../hackathon";
-import { listReminderDeliveries, runDueWork, type JobRunSummary, type ReminderDeliveryView } from "../jobs";
-import { isTelegramBotConfigured } from "../telegram-bot-api";
+import { listReminderDeliveries, reconcileReminderDeliveries, retryReminder, runDueWork, type JobRunSummary, type ReminderDeliveryView } from "../jobs";
+import { isTelegramBotConfigured, telegramBotConfig, telegramSender } from "../telegram-bot-api";
+import { flushBotMessages } from "../telegram-bot-store";
 import { refreshHq } from "./util";
 
 /**
@@ -20,10 +22,9 @@ import { refreshHq } from "./util";
  * recorded at most once per Captain, edition and week, and pressing the
  * button twice sends nothing twice.
  *
- * Deliberately NOT a per-Captain "send it again" control. A reminder that
- * Telegram refused permanently stays refused, because re-queueing one by hand
- * is how "avoid aggressive retries that spam Captains" gets broken; what an
- * admin gets instead is the delivery state and the reason.
+ * An explicit per-Captain resend is separate from the scheduled pass. It
+ * retries an unsuccessful reminder after settings change, rechecking the
+ * current recipient and teams without repeating successful deliveries.
  *
  * Operator gated, so this module must stay clear of the public member auth
  * graph (`tests/hq/operator-imports.test.ts`); `lib/hq/jobs.ts` reaches the
@@ -80,4 +81,41 @@ export async function loadMoreReminderDeliveries(limit: number): Promise<{ ok: t
   const hackathon = await requireHackathon();
   const deliveries = await listReminderDeliveries(builderDatabase(), { hackathonId: hackathon.id, limit });
   return { ok: true, view: { botConfigured: isTelegramBotConfigured(), deliveries } };
+}
+
+const resendSchema = z.object({ deliveryId: z.string().uuid(), expectedOutgoingId: z.string().uuid().nullable() });
+
+/** Retries only the selected Captain's unsuccessful reminder in the selected edition. */
+export async function resendCaptainReminder(input: z.infer<typeof resendSchema>): Promise<{ ok: true; delivery: ReminderDeliveryView } | { ok: false; error: string }> {
+  await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = resendSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Unknown reminder. Reload and try again." };
+  const config = telegramBotConfig();
+  if (!config) return { ok: false, error: "The Telegram bot is not configured." };
+  const db = builderDatabase();
+  try {
+    const result = await retryReminder(db, { ...parsed.data, hackathonId: hackathon.id });
+    if (!result.ok) {
+      const errors = {
+        not_found: "This reminder is not available in the selected hackathon.",
+        not_due: "This reminder's week is no longer open or due, or the hackathon is archived.",
+        not_retryable: "This reminder is already sent, still retrying, or its delivery is uncertain. Reload to see its latest status.",
+        changed: "This reminder has already been retried. Reload to see its latest status.",
+        already_recorded: "This reminder has already been retried. Reload to see its latest status.",
+      };
+      return { ok: false, error: errors[result.reason] };
+    }
+    if (result.state === "queued") {
+      await flushBotMessages(db, telegramSender(config), { outgoingId: result.outgoingId, limit: 1 });
+      await reconcileReminderDeliveries(db);
+    }
+    const [delivery] = await listReminderDeliveries(db, { hackathonId: hackathon.id, deliveryId: parsed.data.deliveryId });
+    refreshHq();
+    if (!delivery) return { ok: false, error: "This reminder is no longer available. Reload to see the latest history." };
+    return { ok: true, delivery };
+  } catch (error) {
+    console.error("Manual Captain reminder resend failed", error);
+    return { ok: false, error: "The resend could not finish. Reload to check its delivery status before trying again." };
+  }
 }

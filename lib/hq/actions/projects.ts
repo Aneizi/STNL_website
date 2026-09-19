@@ -5,6 +5,7 @@ import { requireUser } from "../auth";
 import { builderDatabase } from "../builder-db";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
+import { isTrafficLightStatus } from "../project-status";
 import { deleteTeamRecord } from "../record-deletion";
 import type { ActionResult } from "../types";
 import { activityStmt, hqToday, inHackathon, refreshHq } from "./util";
@@ -552,9 +553,8 @@ export async function logMondayReview(
   if (!project) return { ok: false };
 
   const finalBlocker = blocker !== undefined ? blocker : project.blocker;
-  const noteBody = `Monday review: ${project.statusSlug}${
-    finalBlocker ? `, blocker: ${finalBlocker}` : ", no blocker"
-  }`;
+  const reviewStatus = isTrafficLightStatus(project.statusSlug) ? "" : `${project.statusSlug}, `;
+  const noteBody = `Monday review: ${reviewStatus}${finalBlocker ? `blocker: ${finalBlocker}` : "no blocker"}`;
 
   const today = await hqToday(project.hackathonId);
   // Only rewrite the blocker column when the reviewer actually typed one —

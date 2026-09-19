@@ -28,6 +28,8 @@ import {
   expireEndedReminders,
   listReminderDeliveries,
   prepareReminder,
+  reconcileReminderDeliveries,
+  retryReminder,
   runDueWork,
 } from "@/lib/hq/jobs";
 import { createUpdate, ensureReportingPeriods, enableReporting, listReportingPeriods, pauseReporting, reportingStatus } from "@/lib/hq/reporting";
@@ -286,6 +288,130 @@ describe("dueReminders", () => {
 /* ---------------------------------------------------------------------------
  * What one reminder contains
  * ------------------------------------------------------------------------ */
+
+describe("resending a Captain reminder", () => {
+  async function skippedReminder() {
+    await seedBotReach(CAPTAIN, "5551", "5551", false);
+    const period = await periodOne();
+    const result = await prepareReminder(db, { captainUserId: CAPTAIN, hackathonId: EDITION, periodId: period.id, atMs: NUDGE_1 });
+    if (!result.ok) throw new Error("Expected a recorded reminder");
+    return { deliveryId: result.deliveryId, hackathonId: EDITION, expectedOutgoingId: null, atMs: NUDGE_1 + 60_000 };
+  }
+
+  it("sends the skipped reminder after notifications are enabled, keeping one reminder record", async () => {
+    const input = await skippedReminder();
+    expect((await listReminderDeliveries(db, { hackathonId: EDITION, atMs: NUDGE_1 }))[0].canResend).toBe(true);
+    await seedBotReach(CAPTAIN, "5551");
+    const result = await retryReminder(db, input);
+    expect(result).toMatchObject({ ok: true, state: "queued", projects: 2 });
+    if (!result.ok || result.state !== "queued") throw new Error("Expected queued resend");
+    const { sender, sent } = fakeSender();
+    await flushBotMessages(db, sender, { outgoingId: result.outgoingId, limit: 1, now: input.atMs });
+    await reconcileReminderDeliveries(db);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].chatId).toBe("5551");
+    expect(sent[0].text).toContain("Alpha");
+    expect(await deliveries()).toHaveLength(1);
+    expect((await listReminderDeliveries(db, { hackathonId: EDITION, atMs: input.atMs }))[0]).toMatchObject({ state: "sent", canResend: false });
+    expect(await dueReminders(db, { atMs: input.atMs })).toEqual([]);
+  });
+
+  it("rechecks disabled consent and a bot chat opened after the first attempt", async () => {
+    const input = await skippedReminder();
+    expect(await retryReminder(db, input)).toMatchObject({ ok: true, state: "skipped", reason: "messaging_disabled" });
+    await rows("UPDATE hq_telegram_bot_consent SET messaging_enabled=true, chat_id=NULL WHERE user_id=$1", [CAPTAIN]);
+    expect(await retryReminder(db, input)).toMatchObject({ ok: true, state: "skipped", reason: "no_chat" });
+    expect(await outgoing()).toHaveLength(0);
+    await seedBotReach(CAPTAIN, "5551");
+    expect(await retryReminder(db, input)).toMatchObject({ ok: true, state: "queued" });
+  });
+
+  it("rebuilds the teams and chat after a Telegram refusal and ignores an older queued reminder", async () => {
+    const blocked = fakeSender({ ok: false, retryable: false, code: "telegram_403", detail: "Forbidden: bot was blocked by the user" });
+    await runDueWork({ db, sender: blocked.sender, now: NUDGE_1 });
+    const [first] = await listReminderDeliveries(db, { hackathonId: EDITION, atMs: NUDGE_1 });
+    await seedAssignedCaptain(SECOND_CAPTAIN, PROJECT_A);
+    await seedBotReach(SECOND_CAPTAIN, "5552");
+    await prepareReminder(db, { captainUserId: SECOND_CAPTAIN, hackathonId: EDITION, periodId: first.periodId, atMs: NUDGE_1 });
+    await seedBotReach(CAPTAIN, "5551", "6551");
+    const result = await retryReminder(db, { deliveryId: first.id, hackathonId: EDITION, expectedOutgoingId: first.outgoingId, atMs: NUDGE_1 + 60_000 });
+    if (!result.ok || result.state !== "queued") throw new Error("Expected queued resend");
+    const { sender, sent } = fakeSender();
+    await flushBotMessages(db, sender, { outgoingId: result.outgoingId, limit: 1, now: NUDGE_1 + 60_000 });
+    await reconcileReminderDeliveries(db);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].chatId).toBe("6551");
+    expect(sent[0].text).toContain("Beta");
+    expect(sent[0].text).not.toContain("Alpha");
+    const queue = await outgoing();
+    expect(queue.find((row) => row.id === first.outgoingId)).toMatchObject({ state: "skipped", skip_reason: "telegram_403" });
+    expect(queue.find((row) => row.chat_id === "5552")).toMatchObject({ state: "queued" });
+  });
+
+  it("accepts only one concurrent resend and rejects a stale click even after that resend fails", async () => {
+    const input = await skippedReminder();
+    await seedBotReach(CAPTAIN, "5551");
+    const results = await Promise.all([retryReminder(db, input), retryReminder(db, input)]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(await outgoing()).toHaveLength(1);
+    const blocked = fakeSender({ ok: false, retryable: false, code: "telegram_403", detail: null });
+    await flushBotMessages(db, blocked.sender, { now: input.atMs });
+    await reconcileReminderDeliveries(db);
+    expect(await retryReminder(db, input)).toEqual({ ok: false, reason: "changed" });
+    expect(blocked.sent).toHaveLength(1);
+    const [latest] = await listReminderDeliveries(db, { hackathonId: EDITION, atMs: input.atMs });
+    expect(await retryReminder(db, { ...input, expectedOutgoingId: latest.outgoingId })).toMatchObject({ ok: true, state: "queued" });
+  });
+
+  it.each(["sent", "queued", "uncertain"])("does not resend a %s delivery", async (state) => {
+    const input = await skippedReminder();
+    await rows("UPDATE hq_reminder_deliveries SET state=$2, last_error=$3 WHERE id=$1::uuid", [input.deliveryId, state === "uncertain" ? "failed" : state, state === "uncertain" ? "timeout" : null]);
+    expect(await retryReminder(db, input)).toEqual({ ok: false, reason: "not_retryable" });
+    expect((await listReminderDeliveries(db, { hackathonId: EDITION, atMs: input.atMs }))[0].canResend).toBe(false);
+    expect(await outgoing()).toHaveLength(0);
+  });
+
+  it.each(["ended", "closed", "archived", "not_due"])("refuses a resend when the period is %s", async (state) => {
+    const input = await skippedReminder();
+    if (state === "ended") input.atMs = PERIOD_1_END;
+    if (state === "not_due") input.atMs = NUDGE_1 - 1;
+    if (state === "closed") await rows("UPDATE hq_reporting_periods SET closed_at=now()");
+    if (state === "archived") await rows("UPDATE hq_hackathons SET archived_at=now() WHERE id=$1", [EDITION]);
+    expect(await retryReminder(db, input)).toEqual({ ok: false, reason: "not_due" });
+    expect((await listReminderDeliveries(db, { hackathonId: EDITION, atMs: input.atMs }))[0].canResend).toBe(false);
+    expect(await outgoing()).toHaveLength(0);
+  });
+
+  it("rejects a reminder from another edition", async () => {
+    const input = await skippedReminder();
+    expect(await retryReminder(db, { ...input, hackathonId: OTHER_EDITION })).toEqual({ ok: false, reason: "not_found" });
+    expect(await outgoing()).toHaveLength(0);
+  });
+
+  it("does not send teams that have updated since the first attempt", async () => {
+    const input = await skippedReminder();
+    await seedTeamMember(PROJECT_A, TEAM_MEMBER);
+    await seedTeamMember(PROJECT_B, "member-two");
+    await createUpdate(member(TEAM_MEMBER), { projectId: PROJECT_A, hackathonId: EDITION, body: "Done.", atMs: input.atMs }, db);
+    await createUpdate(member("member-two"), { projectId: PROJECT_B, hackathonId: EDITION, body: "Done too.", atMs: input.atMs }, db);
+    await seedBotReach(CAPTAIN, "5551");
+    expect(await retryReminder(db, input)).toMatchObject({ ok: true, state: "skipped", reason: "nothing_outstanding" });
+    expect(await outgoing()).toHaveLength(0);
+  });
+
+  it("rechecks consent at dispatch even after the resend was queued", async () => {
+    const input = await skippedReminder();
+    await seedBotReach(CAPTAIN, "5551");
+    const result = await retryReminder(db, input);
+    if (!result.ok || result.state !== "queued") throw new Error("Expected queued resend");
+    await seedBotReach(CAPTAIN, "5551", "5551", false);
+    const { sender, sent } = fakeSender();
+    await flushBotMessages(db, sender, { outgoingId: result.outgoingId, limit: 1, now: input.atMs });
+    await reconcileReminderDeliveries(db);
+    expect(sent).toHaveLength(0);
+    expect((await deliveries())[0]).toMatchObject({ state: "skipped", reason: "messaging_disabled" });
+  });
+});
 
 describe("prepareReminder", () => {
   it("queues one message naming only the Captain's outstanding teams", async () => {

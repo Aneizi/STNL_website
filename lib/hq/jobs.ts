@@ -165,7 +165,7 @@ export async function dueReminders(
 }
 
 export type PrepareReminderResult =
-  | { ok: true; state: "queued"; deliveryId: string; projects: number }
+  | { ok: true; state: "queued"; deliveryId: string; outgoingId: string; projects: number }
   | { ok: true; state: "skipped"; deliveryId: string; reason: ReminderSkipReason }
   | { ok: false; reason: "already_recorded" | "not_due" };
 
@@ -219,16 +219,27 @@ async function botReachFailure(tx: BuilderQuery, userId: string): Promise<Remind
  *   Captain is a recorded skip rather than a queued message nobody can
  *   receive.
  */
+type PrepareReminderInput = {
+  captainUserId: string;
+  hackathonId: number;
+  periodId: string;
+  reminderType?: string;
+  atMs?: number;
+  hqOrigin?: string | null;
+};
+
 export async function prepareReminder(
   db: BuilderDatabase | BuilderQuery,
-  input: {
-    captainUserId: string;
-    hackathonId: number;
-    periodId: string;
-    reminderType?: string;
-    atMs?: number;
-    hqOrigin?: string | null;
-  },
+  input: PrepareReminderInput,
+): Promise<PrepareReminderResult> {
+  return prepareReminderAttempt(db, input);
+}
+
+/** The scheduled attempt and an explicit resend use the same current-state checks. */
+async function prepareReminderAttempt(
+  db: BuilderDatabase | BuilderQuery,
+  input: PrepareReminderInput,
+  retry?: { deliveryId: string; outgoingId: string | null },
 ): Promise<PrepareReminderResult> {
   const atMs = input.atMs ?? Date.now();
   const reminderType = input.reminderType ?? REMINDER_TYPE_WEEKLY;
@@ -255,7 +266,12 @@ export async function prepareReminder(
     // writing `now()` here would compare two different readings and make the
     // answer depend on how far apart the application server and the database
     // happen to be.
-    const { rows: claimed } = await tx.query(
+    const { rows: claimed } = retry ? await tx.query(
+      `UPDATE hq_reminder_deliveries SET state='queued', reason=NULL, provider_message_id=NULL,
+         attempts=0, last_error=NULL, next_attempt_at=NULL, resolved_at=NULL, updated_at=$2::timestamptz
+       WHERE id=$1::uuid RETURNING id::text AS id`,
+      [retry.deliveryId, new Date(atMs).toISOString()],
+    ) : await tx.query(
       `INSERT INTO hq_reminder_deliveries (captain_user_id, hackathon_id, period_id, reminder_type, due_at, state, created_at, updated_at)
        VALUES ($1, $2, $3::uuid, $4, $5::timestamptz, 'queued', $6::timestamptz, $6::timestamptz)
        ON CONFLICT (captain_user_id, hackathon_id, period_id, reminder_type) DO NOTHING
@@ -312,10 +328,11 @@ export async function prepareReminder(
       kind: REMINDER_KIND,
       body,
       replyMarkup: inlineKeyboard(keyboard),
-      // Captain, edition, period and type: the plan's reminder key, and the
-      // same string the delivery row is unique on, so the queue and the
-      // record cannot disagree about what one reminder is.
-      dedupeKey: `reminder:${reminderType}:${input.captainUserId}:${input.hackathonId}:${period.id}`,
+      // Scheduled attempts use the reminder's unique key. Explicit resends
+      // use the previous outgoing id so the same attempt cannot queue twice.
+      dedupeKey: retry
+        ? `reminder:resend:${deliveryId}:${retry.outgoingId ?? "initial"}`
+        : `reminder:${reminderType}:${input.captainUserId}:${input.hackathonId}:${period.id}`,
       // Deliberately no project id. A reminder is about several projects, so
       // the single-project re-check in `flushBotMessages` has nothing to
       // check; `deliverable()` recognises the reminder kind and re-decides
@@ -324,11 +341,58 @@ export async function prepareReminder(
       projectId: null,
       hackathonId: input.hackathonId,
     });
+    if (!outgoingId) throw new Error("The reminder attempt was already queued.");
     await tx.query(
       "UPDATE hq_reminder_deliveries SET outgoing_id=$2::uuid, project_count=$3, updated_at=now() WHERE id=$1::uuid",
       [deliveryId, outgoingId, outstanding.projectNames.length],
     );
-    return { ok: true, state: "queued", deliveryId, projects: outstanding.projectNames.length };
+    return { ok: true, state: "queued", deliveryId, outgoingId, projects: outstanding.projectNames.length };
+  });
+}
+
+export type RetryReminderResult = PrepareReminderResult | { ok: false; reason: "not_found" | "not_retryable" | "changed" };
+
+/**
+ * Operator-requested resend of an unsuccessful reminder. The action supplies
+ * the selected edition and the outgoing id the operator saw. Locking the row
+ * and comparing that id makes concurrent clicks and stale pages harmless,
+ * even when the first resend has already failed by the time the next arrives.
+ * The old outgoing record stays intact; a new attempt gets a new queue row.
+ */
+export async function retryReminder(
+  db: BuilderDatabase,
+  input: { deliveryId: string; hackathonId: number; expectedOutgoingId: string | null; atMs?: number; hqOrigin?: string | null },
+): Promise<RetryReminderResult> {
+  return db.transaction(async (tx) => {
+    const { rows } = await tx.query(
+      `SELECT captain_user_id, period_id::text AS period_id, reminder_type, state, last_error,
+              outgoing_id::text AS outgoing_id, provider_message_id
+       FROM hq_reminder_deliveries WHERE id=$1::uuid AND hackathon_id=$2 FOR UPDATE`,
+      [input.deliveryId, input.hackathonId],
+    );
+    const row = rows[0];
+    if (!row) return { ok: false, reason: "not_found" };
+    const outgoingId = row.outgoing_id == null ? null : String(row.outgoing_id);
+    if (outgoingId !== input.expectedOutgoingId) return { ok: false, reason: "changed" };
+    if (!["skipped", "failed"].includes(String(row.state)) || row.provider_message_id != null || isUncertain(row.last_error)) {
+      return { ok: false, reason: "not_retryable" };
+    }
+    // Dispatch can resolve the reminder before its queue row is finished.
+    // Never replace a message another worker may still be sending.
+    if (outgoingId) {
+      const { rows: outgoing } = await tx.query(
+        "SELECT state, last_error, provider_message_id FROM hq_telegram_outgoing WHERE id=$1::uuid FOR UPDATE",
+        [outgoingId],
+      );
+      if (outgoing.some((message) => !["skipped", "failed"].includes(String(message.state)) || message.provider_message_id != null || isUncertain(message.last_error))) {
+        return { ok: false, reason: "not_retryable" };
+      }
+    }
+    return prepareReminderAttempt(tx, {
+      captainUserId: String(row.captain_user_id), hackathonId: input.hackathonId,
+      periodId: String(row.period_id), reminderType: String(row.reminder_type),
+      atMs: input.atMs, hqOrigin: input.hqOrigin,
+    }, { deliveryId: input.deliveryId, outgoingId });
   });
 }
 
@@ -475,6 +539,8 @@ export async function closeDuePeriods(
 /** One reminder as an admin reads it. Names, counts and outcomes; never a project id and never any update text. */
 export type ReminderDeliveryView = {
   id: string;
+  outgoingId: string | null;
+  canResend: boolean;
   captainUserId: string;
   captainName: string;
   hackathonId: number;
@@ -516,6 +582,8 @@ const isUncertain = (lastError: unknown): boolean =>
 
 const toDeliveryView = (row: Record<string, unknown>): ReminderDeliveryView => ({
   id: String(row.id),
+  outgoingId: row.outgoing_id == null ? null : String(row.outgoing_id),
+  canResend: Boolean(row.period_open) && ["skipped", "failed"].includes(String(row.state)) && row.provider_message_id == null && !isUncertain(row.last_error),
   captainUserId: String(row.captain_user_id),
   captainName: String(row.captain_name ?? row.captain_user_id),
   hackathonId: Number(row.hackathon_id),
@@ -543,20 +611,22 @@ const toDeliveryView = (row: Record<string, unknown>): ReminderDeliveryView => (
 /** The edition's reminder history, newest first. Operator gated by its caller; this is a read, not a decision. */
 export async function listReminderDeliveries(
   db: BuilderQuery,
-  input: { hackathonId: number; limit?: number },
+  input: { hackathonId: number; limit?: number; deliveryId?: string; atMs?: number },
 ): Promise<ReminderDeliveryView[]> {
   const limit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 50)));
   const { rows } = await db.query(
     `SELECT d.id::text AS id, d.captain_user_id, b.name AS captain_name, d.hackathon_id, d.period_id::text AS period_id,
             p.sequence, p.start_date, p.end_date, d.reminder_type, d.due_at, d.state, d.reason, d.project_count,
-            d.provider_message_id, d.attempts, d.last_error, d.next_attempt_at, d.created_at, d.resolved_at
+            d.provider_message_id, d.attempts, d.last_error, d.next_attempt_at, d.created_at, d.resolved_at, d.outgoing_id,
+            (p.closed_at IS NULL AND p.nudge_at <= $4::timestamptz AND $4::timestamptz < p.ends_at AND h.archived_at IS NULL) AS period_open
      FROM hq_reminder_deliveries d
      JOIN hq_reporting_periods p ON p.id = d.period_id
+     JOIN hq_hackathons h ON h.id = d.hackathon_id
      LEFT JOIN hq_builder_profiles b ON b.id = d.captain_user_id
-     WHERE d.hackathon_id = $1
+     WHERE d.hackathon_id = $1 AND ($3::uuid IS NULL OR d.id = $3::uuid)
      ORDER BY d.created_at DESC, d.id DESC
      LIMIT $2`,
-    [input.hackathonId, limit],
+    [input.hackathonId, limit, input.deliveryId ?? null, new Date(input.atMs ?? Date.now()).toISOString()],
   );
   return rows.map(toDeliveryView);
 }

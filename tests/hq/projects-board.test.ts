@@ -14,7 +14,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {}, refresh() 
 vi.mock("@/components/hq/toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/lib/hq/actions/projects", () => ({
   addProjectMember: vi.fn(), addProjectNote: vi.fn(), createProject: vi.fn(), deleteProject: vi.fn(), editProjectNote: vi.fn(),
-  logMondayReview: vi.fn(), removeProjectMember: vi.fn(), saveProjectBlocker: vi.fn(), setProjectForecast: vi.fn(),
+  removeProjectMember: vi.fn(), saveProjectBlocker: vi.fn(), setProjectForecast: vi.fn(),
   setProjectHighPotential: vi.fn(), setProjectStatus: vi.fn(), toggleProjectGate: vi.fn(), updateProjectDetail: vi.fn(),
   updateProjectMember: vi.fn(),
 }));
@@ -38,6 +38,7 @@ const classifiers: Classifiers = {
     { id: "s1", slug: "green", label: "Green", color: "green", countsAsActive: true },
     { id: "s2", slug: "amber", label: "Amber", color: "orange", countsAsActive: true },
     { id: "s3", slug: "red", label: "Red", color: "red", countsAsActive: false },
+    { id: "s4", slug: "onboarding", label: "Onboarding", color: "accent", countsAsActive: false },
   ],
   forecasts: [
     { id: "f1", slug: "committed", label: "Committed", color: "green" },
@@ -94,8 +95,8 @@ const reporting: ProjectReportingStatus[] = [{
 
 const NOW = Date.parse("2026-09-16T18:00:00Z");
 
-const render = (expandId: string | null = null) => renderToStaticMarkup(createElement(Projects, {
-  projects: [grachtenpay, kaasketen],
+const render = (expandId: string | null = null, projects: Project[] = [grachtenpay, kaasketen]) => renderToStaticMarkup(createElement(Projects, {
+  projects,
   partnerOptions: [{ id: "pt3", name: "Rabobank Innovation" }],
   eventOptions: [{ id: "e1", name: "Kickoff Amsterdam" }],
   captainOptions: [{ id: "c1", name: "Femke de Jong" }, { id: "c2", name: "Joost Vermeer" }],
@@ -103,10 +104,11 @@ const render = (expandId: string | null = null) => renderToStaticMarkup(createEl
 }));
 
 describe("the Projects board", () => {
-  it("renders the header, the two header buttons, the filter bar and the nine columns, with the Source column gone", () => {
+  it("renders the header, New project, the filter bar and nine columns without Monday review or Source", () => {
     const html = render();
     expect(html).toMatch(/<h1[^>]*>Projects <span[^>]*>2<\/span><\/h1>/);
-    expect(html).toMatch(/<button[^>]*>Monday review<\/button>/);
+    expect(html).not.toContain("Monday review");
+    expect(html).not.toContain("Exit review");
     expect(html).toMatch(/<button[^>]*>New project<\/button>/);
     expect(html).not.toContain("Assign Captains");
     expect(html).toContain('placeholder="Filter by name or lead"');
@@ -123,13 +125,13 @@ describe("the Projects board", () => {
     expect(html).not.toMatch(/[—·]/);
   });
 
-  it("renders every row collapsed with its logo, the HP badge only where flagged, the status pill, the gates count and the weekly state", () => {
+  it("renders collapsed rows with HP, gates and weekly states while hiding traffic-light statuses", () => {
     const html = render();
     expect(html.match(/role="button"[^>]*aria-expanded="false"/g)).toHaveLength(2);
     expect(html.match(/title="High potential"[^>]*>HP<\/span>/g)).toHaveLength(1);
     expect(html.match(/project-fallback\.png/g)?.length).toBeGreaterThanOrEqual(2);
-    expect(html).toContain(">Amber<");
-    expect(html).toContain(">Red<");
+    expect(html).not.toMatch(/>(Green|Amber|Yellow|Red)</);
+    expect(html).toContain(">Onboarding<");
     expect(html).toContain(">3/5<");
     expect(html).toContain(">0/5<");
     expect(html).toContain(">Updated<");
@@ -143,8 +145,11 @@ describe("the Projects board", () => {
   });
 
   it("expands an imported project into the four blocks, with the lead chosen from the Colosseum roster", () => {
-    const html = render(GRACHTENPAY);
+    const html = render(GRACHTENPAY, [{ ...grachtenpay, statusSlug: "onboarding" }, kaasketen]);
     expect(html).toMatch(/role="button"[^>]*aria-expanded="true"/);
+    expect(html).not.toMatch(/>(Green|Amber|Yellow|Red)</);
+    expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>Onboarding<\/button>/);
+    expect(html).toMatch(/<span[^>]*>Onboarding<\/span>/);
     for (const heading of ["Colosseum", "Submission gates", "Details", "Timeline"]) {
       expect(html).toMatch(new RegExp(`<(?:div|span)[^>]*>${heading}</(?:div|span)>`));
     }
@@ -162,6 +167,9 @@ describe("the Projects board", () => {
     expect(html).toMatch(/<select id="lead-[^"]+"[^>]*>/);
     expect(html).toMatch(/<option value="nienkev" selected="">Nienke Visser \(@nienkev\)<\/option>/);
     expect(html).toContain("<option value=\"timk\">Tim Kuiper (@timk)</option>");
+    expect(html.match(/class="hq-chip-lead"[^>]*>Nienke Visser<\/button>/g)).toHaveLength(1);
+    expect(html).not.toMatch(/class="hq-chip-member"[^>]*>Nienke Visser<\/button>/);
+    expect(html).toMatch(/class="hq-chip-member"[^>]*>Tim Kuiper<\/button>/);
     expect(html).not.toContain('aria-haspopup="dialog"');
     expect(html).toMatch(/<option value="c1" selected="">Femke de Jong<\/option>/);
     expect(html).toContain(">No Captain<");
@@ -186,5 +194,27 @@ describe("the Projects board", () => {
     expect(html).toMatch(/<input id="lead-[^"]+"[^>]*value="Pieter van Dijk"/);
     expect(html).toMatch(/<button[^>]*aria-haspopup="dialog"[^>]*>Add<\/button>/);
     expect(html).toContain("Last touched by Nienke, Sep 10. Changes save as you go.");
+  });
+
+  it("keeps a different teammate with the lead's name while matching the lead's username regardless of case", () => {
+    const html = render(GRACHTENPAY, [{
+      ...grachtenpay,
+      colosseum: { ...grachtenpay.colosseum!, leadUsername: "NIENKEV" },
+      members: [...grachtenpay.members, { id: "m3", name: "Nienke Visser", contact: "", username: "another-nienke" }],
+    }]);
+    expect(html.match(/class="hq-chip-lead"[^>]*>Nienke Visser<\/button>/g)).toHaveLength(1);
+    expect(html.match(/class="hq-chip-member"[^>]*>Nienke Visser<\/button>/g)).toHaveLength(1);
+    expect(html).toMatch(/class="hq-chip-member"[^>]*>Tim Kuiper<\/button>/);
+  });
+
+  it("shows the former lead as a teammate when another roster member becomes lead", () => {
+    const html = render(GRACHTENPAY, [{
+      ...grachtenpay, leadName: "Tim Kuiper",
+      colosseum: { ...grachtenpay.colosseum!, leadUsername: "timk" },
+    }]);
+    expect(html.match(/class="hq-chip-lead"[^>]*>Tim Kuiper<\/button>/g)).toHaveLength(1);
+    expect(html).not.toMatch(/class="hq-chip-member"[^>]*>Tim Kuiper<\/button>/);
+    expect(html).toMatch(/class="hq-chip-member"[^>]*>Nienke Visser<\/button>/);
+    expect(html).toContain('<option value="nienkev">Nienke Visser (@nienkev)</option>');
   });
 });

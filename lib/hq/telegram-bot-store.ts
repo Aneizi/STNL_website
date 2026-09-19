@@ -715,7 +715,7 @@ async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: numb
 export async function flushBotMessages(
   db: BuilderQuery,
   sender: TelegramSender,
-  options: { limit?: number; now?: number; owner?: string; deadlineMs?: number } = {},
+  options: { limit?: number; now?: number; owner?: string; deadlineMs?: number; outgoingId?: string } = {},
 ): Promise<FlushResult> {
   const limit = Math.max(1, Math.min(50, Math.floor(options.limit ?? 10)));
   const owner = options.owner ?? crypto.randomUUID();
@@ -729,8 +729,9 @@ export async function flushBotMessages(
        claimed_by = NULL, claim_expires_at = NULL, next_attempt_at = NULL
      WHERE state = 'queued' AND attempts >= $1
        AND (claim_expires_at IS NULL OR claim_expires_at <= $2::timestamptz)
+       AND ($3::uuid IS NULL OR id = $3::uuid)
      RETURNING id`,
-    [MAX_SEND_ATTEMPTS, new Date(options.now ?? Date.now()).toISOString()],
+    [MAX_SEND_ATTEMPTS, new Date(options.now ?? Date.now()).toISOString(), options.outgoingId ?? null],
   );
   result.failed += exhausted.rows.length;
   // Claim only the next message. Claiming a whole batch lets later rows'
@@ -750,11 +751,12 @@ export async function flushBotMessages(
        WHERE state = 'queued' AND attempts < $4
          AND (next_attempt_at IS NULL OR next_attempt_at <= $1::timestamptz)
          AND (claim_expires_at IS NULL OR claim_expires_at <= $1::timestamptz)
+         AND ($5::uuid IS NULL OR id = $5::uuid)
        ORDER BY created_at, id LIMIT 1 FOR UPDATE SKIP LOCKED
      )
      RETURNING id::text AS id, chat_id::text AS chat_id, user_id, kind, body, reply_markup, attempts,
                project_id::text AS project_id, hackathon_id`,
-      [at, new Date(now + SEND_CLAIM_MS).toISOString(), owner, MAX_SEND_ATTEMPTS],
+      [at, new Date(now + SEND_CLAIM_MS).toISOString(), owner, MAX_SEND_ATTEMPTS, options.outgoingId ?? null],
     );
     if (!rows.length) break;
     const row = rows[0];

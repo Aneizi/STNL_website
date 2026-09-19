@@ -224,8 +224,7 @@ describe("PartnerDetail", () => {
     expect(html).toContain("Femke confirmed the lab will host office hours every Tuesday.");
     expect(html.indexOf("Sep 15, 11:20")).toBeLessThan(html.indexOf("Sep 2, 09:40"));
     expect(html).toContain(">Windmolen DAO</span>");
-    expect(html).toMatch(/color:var\(--orange\);background:var\(--orange-fill\)">Amber<\/span>/);
-    expect(html).toMatch(/color:var\(--green\);background:var\(--green-fill\)">Green<\/span>/);
+    expect(html).not.toMatch(/>(Green|Amber|Yellow|Red)</);
     expect(html).not.toContain("border-bottom");
   });
 
