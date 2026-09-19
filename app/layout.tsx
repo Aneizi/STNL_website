@@ -18,7 +18,7 @@ const instrumentSerif = Instrument_Serif({
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default: "Superteam NL (STNL) | Solana Netherlands",
+    default: "Superteam NL",
     template: "%s - Superteam NL",
   },
   description:

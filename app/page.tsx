@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
+import { IconArrowRight } from "symbols-react";
 import { ColosseumInvitation } from "@/components/colosseum-invitation";
 import { ExternalMark } from "@/components/external-mark";
 import { JoinMenu } from "@/components/join-menu";
@@ -13,7 +14,7 @@ export const metadata: Metadata = {
 const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange focus-visible:ring-offset-2 focus-visible:ring-offset-cream";
 
-const NAV_ITEM = `py-2 -my-2 text-ink transition-colors duration-200 hover:text-orange ${FOCUS_RING}`;
+const NAV_ITEM = `py-2 -my-2 transition-colors duration-200 hover:text-orange ${FOCUS_RING}`;
 
 export default function HomePage() {
   return (
@@ -71,13 +72,13 @@ export default function HomePage() {
           aria-label="Primary"
           className="flex flex-wrap items-center justify-center gap-2 text-[13px] font-semibold uppercase tracking-[0.14em]"
         >
-          <Link href="/about" className={NAV_ITEM}>
+          <Link href="/about" className={`${NAV_ITEM} text-ink`}>
             About
           </Link>
           <span aria-hidden="true" className="text-faded">
             /
           </span>
-          <Link href="/events" className={NAV_ITEM}>
+          <Link href="/events" className={`${NAV_ITEM} text-ink`}>
             Events
           </Link>
           <span aria-hidden="true" className="text-faded">
@@ -87,7 +88,7 @@ export default function HomePage() {
             href={LINKS.earn}
             target="_blank"
             rel="noreferrer"
-            className={NAV_ITEM}
+            className={`${NAV_ITEM} text-ink`}
           >
             <span className="relative pr-[11px]">
               Earn
@@ -98,7 +99,19 @@ export default function HomePage() {
           <span aria-hidden="true" className="text-faded">
             /
           </span>
-          <JoinMenu className={NAV_ITEM} align="center" side="top" />
+          <JoinMenu className={`${NAV_ITEM} text-ink`} align="center" side="top" />
+          <span aria-hidden="true" className="mx-1 h-[11px] w-px bg-line" />
+          <Link
+            href="/hq"
+            className={`${NAV_ITEM} flex items-center gap-1.5 text-muted`}
+          >
+            HQ
+            <IconArrowRight
+              aria-hidden="true"
+              fill="currentColor"
+              className="h-2 w-3 shrink-0"
+            />
+          </Link>
         </nav>
       </div>
     </main>
