@@ -19,7 +19,7 @@ export type InviteOutcomeCopy = { heading: string; emphasis: string; body: strin
 
 /** What accepting does, shown while the invitation is still open, to a signed-in and a signed-out visitor alike. */
 export const INVITE_INTRO =
-  "Accepting gives your HQ account Captain access, nothing else. It grants no admin access and no project assignment; an admin assigns your team separately, and nothing about your existing teams or roles changes.";
+  "Accepting gives your HQ account Captain access. It grants no admin access and no project assignment; an admin assigns your team separately, and nothing about your existing teams or roles changes.";
 
 const NOT_FOUND: InviteOutcomeCopy = {
   heading: "Invitation",

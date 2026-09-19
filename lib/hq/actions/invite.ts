@@ -8,6 +8,7 @@ import { builderDatabase } from "../builder-db";
 import { acceptCaptainInvitation, type AcceptCaptainInvitationResult } from "../captains";
 import { INVITE_CONTINUATION_COOKIE, readInviteContinuation } from "../invite-continuation";
 import { INVITE_CONTINUE_PATH } from "../member-routes";
+import { setBotConsent, TelegramNotConnectedError } from "../telegram-consent";
 
 // The member half of the Captain invitation flow; lib/hq/actions/captains.ts
 // is the operator half (creating and revoking links) and stays
@@ -21,7 +22,10 @@ import { INVITE_CONTINUE_PATH } from "../member-routes";
 // member-only actions.
 
 export type AcceptCaptainInvitationOutcome = AcceptCaptainInvitationResult["outcome"] | "invalid-continuation";
-export type AcceptCaptainInvitationActionResult = { outcome: AcceptCaptainInvitationOutcome };
+export type AcceptCaptainInvitationActionResult = {
+  outcome: AcceptCaptainInvitationOutcome;
+  botError?: "not-connected" | "save-failed";
+};
 
 /**
  * The only write path for a Captain invitation redemption reachable from the
@@ -38,7 +42,7 @@ export type AcceptCaptainInvitationActionResult = { outcome: AcceptCaptainInvita
  */
 export async function acceptCaptainInvitationFromContinuation(
   _previous: AcceptCaptainInvitationActionResult | null,
-  _formData: FormData,
+  formData: FormData,
 ): Promise<AcceptCaptainInvitationActionResult> {
   const actor = await requireMemberActor(INVITE_CONTINUE_PATH);
   const continuationId = (await cookies()).get(INVITE_CONTINUATION_COOKIE)?.value;
@@ -51,6 +55,17 @@ export async function acceptCaptainInvitationFromContinuation(
   // lib/hq/actions/builders.ts does for its own member mutations.
   if (["granted", "already-captain", "already-redeemed"].includes(result.outcome)) {
     revalidatePath("/hq", "layout");
+    // Only a fresh acceptance saves the submitted preference. Retried or old
+    // forms must not overwrite a decision the captain later made in Account.
+    if (result.outcome === "granted" && formData.get("botMessagingPreference") === "included") {
+      try {
+        await setBotConsent(actor, formData.get("botMessaging") === "on");
+      } catch (error) {
+        // Captain access has already been granted. Keep that success visible
+        // and let the member recover the optional reminder setting in Account.
+        return { outcome: result.outcome, botError: error instanceof TelegramNotConnectedError ? "not-connected" : "save-failed" };
+      }
+    }
     redirect(result.outcome === "granted" ? "/hq/dashboard?welcome=captain" : "/hq/dashboard");
   }
   return { outcome: result.outcome };

@@ -1,0 +1,13 @@
+.reminders { margin:28px 0; padding:16px 0; border-top:1px dashed var(--line); border-bottom:1px dashed var(--line); }
+.switchRow { position:relative; display:flex; justify-content:space-between; align-items:center; gap:16px; min-height:44px; font-size:16px; font-weight:600; cursor:pointer; }
+.switchRow:has(.switchInput:disabled) { cursor:default; }
+.switchInput { position:absolute; opacity:0; width:1px; height:1px; }
+/* Match the switch in Account; CSS follows the native checkbox even before hydration. */
+.switchTrack { position:relative; width:48px; height:28px; border-radius:14px; background:var(--muted); flex:none; transition:background .2s ease; }
+.switchKnob { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:var(--cream); transition:left .2s ease; }
+.switchInput:checked + .switchTrack { background:var(--orange); }
+.switchInput:checked + .switchTrack .switchKnob { left:23px; }
+.switchInput:disabled + .switchTrack { opacity:.5; }
+.switchInput:focus-visible + .switchTrack { outline:2px solid var(--orange); outline-offset:4px; }
+.reminders .description { margin:8px 0 0; font-size:15px; color:var(--muted); }
+@media (prefers-reduced-motion:reduce) { .switchTrack,.switchKnob { transition:none; } }

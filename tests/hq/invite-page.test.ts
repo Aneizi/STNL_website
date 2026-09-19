@@ -11,20 +11,25 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-const mocks = vi.hoisted(() => ({ currentMember: vi.fn(), readInviteContinuation: vi.fn(), cookies: vi.fn() }));
+const mocks = vi.hoisted(() => ({ currentMember: vi.fn(), readInviteContinuation: vi.fn(), cookies: vi.fn(), getTelegramIdentity: vi.fn(), getBotConsent: vi.fn(), acceptForm: vi.fn() }));
 vi.mock("@/lib/hq/member-auth", () => ({ currentMember: mocks.currentMember }));
+vi.mock("@/lib/hq/identity", () => ({ getTelegramIdentity: mocks.getTelegramIdentity }));
+vi.mock("@/lib/hq/telegram-consent", () => ({ getBotConsent: mocks.getBotConsent }));
 vi.mock("@/lib/hq/builder-db", () => ({ builderDatabase: () => ({}) }));
 vi.mock("@/lib/hq/invite-continuation", () => ({ INVITE_CONTINUATION_COOKIE: "hq_invite_continuation", readInviteContinuation: mocks.readInviteContinuation }));
 vi.mock("next/headers", () => ({ cookies: mocks.cookies }));
 vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`REDIRECT:${path}`); } }));
 vi.mock("@/app/hq/(member)/invite/continue/accept-form", () => ({
-  AcceptInvitationForm: ({ children }: { children?: ReactNode }) => createElement("div", { "data-testid": "accept-form" }, children),
+  AcceptInvitationForm: (props: { children?: ReactNode }) => {
+    mocks.acceptForm(props);
+    return createElement("div", { "data-testid": "accept-form" }, props.children);
+  },
 }));
 
 import InviteContinuePage from "@/app/hq/(member)/invite/continue/page";
 
 const INTRO =
-  "Accepting gives your HQ account Captain access, nothing else. It grants no admin access and no project assignment; an admin assigns your team separately, and nothing about your existing teams or roles changes.";
+  "Accepting gives your HQ account Captain access. It grants no admin access and no project assignment; an admin assigns your team separately, and nothing about your existing teams or roles changes.";
 const NOT_FOUND = "This invitation link is not one we recognise. Ask the admin who sent it for a fresh one.";
 
 function withCookie(value: string | undefined) {
@@ -41,6 +46,8 @@ const render = async () => {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.currentMember.mockResolvedValue(null);
+  mocks.getTelegramIdentity.mockResolvedValue(null);
+  mocks.getBotConsent.mockResolvedValue(null);
   withCookie(undefined);
 });
 
@@ -85,6 +92,24 @@ describe("the continuation page", () => {
     // The explanation belongs to the form so it can leave with the button.
     expect(html).toContain(`<div data-testid="accept-form"><p>${INTRO}</p></div>`);
     expect(html).not.toContain("Log in or sign up");
+    expect(mocks.acceptForm).toHaveBeenCalledWith(expect.objectContaining({ hasTelegram: false, botEnabled: false }));
+    expect(mocks.getBotConsent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["no saved preference", null, true],
+    ["reminders already enabled", { messagingEnabled: true }, true],
+    ["reminders explicitly disabled", { messagingEnabled: false }, false],
+  ])("uses the connected member's %s when presenting the reminder switch", async (_label, consent, expected) => {
+    withCookie("cont-telegram");
+    mocks.readInviteContinuation.mockResolvedValue({ invitationId: "inv-telegram", expired: false, revoked: false, full: false });
+    mocks.currentMember.mockResolvedValue({ id: "acct-telegram", email: null, name: "Captain" });
+    mocks.getTelegramIdentity.mockResolvedValue({ username: "captain" });
+    mocks.getBotConsent.mockResolvedValue(consent);
+    await render();
+    expect(mocks.getTelegramIdentity).toHaveBeenCalledWith("acct-telegram");
+    expect(mocks.getBotConsent).toHaveBeenCalledWith("acct-telegram");
+    expect(mocks.acceptForm).toHaveBeenCalledWith(expect.objectContaining({ hasTelegram: true, botEnabled: expected }));
   });
 
   it("finishes a new account's name step while preserving the Captain invitation", async () => {

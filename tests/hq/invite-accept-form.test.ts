@@ -27,8 +27,8 @@ function withState(result: AcceptCaptainInvitationActionResult | null, pending =
 const intro = () => createElement("p", null, "intro-copy");
 
 // Every render is held to the member copy rule: no em dash, no middot.
-const render = (children?: ReactNode) => {
-  const html = renderToStaticMarkup(createElement(AcceptInvitationForm, null, children));
+const render = (children?: ReactNode, props: { hasTelegram?: boolean; botEnabled?: boolean } = {}) => {
+  const html = renderToStaticMarkup(createElement(AcceptInvitationForm, { hasTelegram: true, botEnabled: true, ...props }, children));
   expect(html).not.toMatch(/[—·]/);
   return html;
 };
@@ -58,6 +58,49 @@ describe("AcceptInvitationForm", () => {
     expect(html).toMatch(/<button[^>]*disabled[^>]*>/);
     expect(html).not.toContain("Accept and become a Captain");
     expect(html).toContain("intro-copy"); // still open: the explanation stays until a result replaces the form
+    expect(html).toMatch(/<input[^>]*type="checkbox"[^>]*disabled=""/);
+  });
+
+  it("offers the recommended reminder switch inside the acceptance form, checked for a new connected account", () => {
+    withState(null);
+    const html = render();
+    expect(html).toContain("Bot reminders on Telegram");
+    expect(html).toContain("Recommended for captains.");
+    expect(html).toContain("Your choice is saved when you accept");
+    expect(html).toMatch(/<form[^>]*>.*<input[^>]*name="botMessagingPreference"[^>]*value="included"/);
+    const checkbox = html.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0];
+    expect(checkbox).toContain('role="switch"');
+    expect(checkbox).toContain('name="botMessaging"');
+    expect(checkbox).toContain('aria-describedby="bot-reminders-description"');
+    expect(checkbox).toContain('checked=""');
+  });
+
+  it("keeps an existing disabled preference unchecked", () => {
+    withState(null);
+    const html = render(undefined, { botEnabled: false });
+    expect(html).not.toContain('checked=""');
+    expect(html.match(/<input[^>]*type="checkbox"[^>]*>/)?.[0]).not.toContain('disabled=""');
+  });
+
+  it("keeps the switch disabled and unchecked without Telegram while allowing invitation acceptance", () => {
+    withState(null);
+    const html = render(undefined, { hasTelegram: false });
+    expect(html).not.toContain('checked=""');
+    expect(html).toMatch(/<input[^>]*type="checkbox"[^>]*disabled=""/);
+    expect(html.match(/<input[^>]*name="botMessagingPreference"[^>]*>/)?.[0]).toContain('disabled=""');
+    expect(html).toContain('href="/hq/account"');
+    expect(html).toContain("Connect Telegram in Account");
+    expect(html.match(/<button[^>]*type="submit"[^>]*>/)?.[0]).not.toContain("disabled");
+  });
+
+  it.each(["not-connected", "save-failed"] as const)("keeps Captain access visible and offers recovery for reminder failure %s", (botError) => {
+    withState({ outcome: "granted", botError });
+    const html = render();
+    expect(html).toContain("Captain access is on your account.");
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('href="/hq/account"');
+    expect(html).toContain('href="/hq/dashboard"');
+    expect(html).not.toContain("Accept and become a Captain");
   });
 
   it("renders the granted outcome with a status role, the design copy, a fallback link to the menu and no explanation", () => {

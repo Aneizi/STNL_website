@@ -29,6 +29,7 @@ import { acceptCaptainInvitationFromContinuation } from "@/lib/hq/actions/invite
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { createCaptainInvitation } from "@/lib/hq/captains";
 import { INVITE_CONTINUATION_COOKIE, newInviteContinuationId, recordInviteContinuation } from "@/lib/hq/invite-continuation";
+import * as botConsent from "@/lib/hq/telegram-consent";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const OPERATOR = "00000000-0000-4000-8000-000000000001";
@@ -54,6 +55,18 @@ async function seedAccount(id: string) {
   await rows(`INSERT INTO hq_builder_profiles(id,email,name) VALUES($1,$2,$3)`, [id, `${id}@example.test`, id]);
 }
 
+async function connectTelegram(id: string) {
+  await rows(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES($1,'https://oauth.telegram.org',$2,'telegram',$1)`, [id, `subject-${id}`]);
+  await rows(`INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id) VALUES($1,$2,1234567)`, [id, `subject-${id}`]);
+}
+
+function reminderChoice(enabled: boolean) {
+  const form = new FormData();
+  form.set("botMessagingPreference", "included");
+  if (enabled) form.set("botMessaging", "on");
+  return form;
+}
+
 async function createInvitation(overrides: Partial<{ maxRedemptions: number; expiresInDays: number }> = {}) {
   return createCaptainInvitation(db, { actorOperatorId: OPERATOR, maxRedemptions: 1, expiresInDays: 7, ...overrides });
 }
@@ -70,6 +83,7 @@ beforeAll(async () => {
 }, 30_000);
 
 beforeEach(async () => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
   mocks.builderDatabase.mockReturnValue(db);
   await pg.exec(
@@ -81,6 +95,78 @@ beforeEach(async () => {
 afterAll(async () => { await pg.close(); });
 
 describe("acceptCaptainInvitationFromContinuation", () => {
+  it("saves the checked reminder preference on acceptance and does not overwrite later changes on replay", async () => {
+    await seedAccount("acct-bot");
+    await connectTelegram("acct-bot");
+    signIn("acct-bot");
+    const { invitation } = await createInvitation();
+    withContinuationCookie(await continuationFor(invitation.id));
+
+    await expect(acceptCaptainInvitationFromContinuation(null, reminderChoice(true))).rejects.toThrow("REDIRECT:/hq/dashboard?welcome=captain");
+    expect(await botConsent.getBotConsent("acct-bot")).toMatchObject({ messagingEnabled: true });
+    expect(await rows("SELECT metadata FROM hq_audit_events WHERE kind = 'bot.consent_changed'")).toEqual([{ metadata: { enabled: true } }]);
+
+    await botConsent.setBotConsent({ kind: "member", id: "acct-bot" }, false);
+    await expect(acceptCaptainInvitationFromContinuation(null, reminderChoice(true))).rejects.toThrow("REDIRECT:/hq/dashboard");
+    expect(await botConsent.getBotConsent("acct-bot")).toMatchObject({ messagingEnabled: false });
+    expect(await redemptions()).toHaveLength(1);
+  });
+
+  it("honours an unchecked switch when reminders were previously enabled", async () => {
+    await seedAccount("acct-bot");
+    await connectTelegram("acct-bot");
+    await botConsent.setBotConsent({ kind: "member", id: "acct-bot" }, true);
+    signIn("acct-bot");
+    const { invitation } = await createInvitation();
+    withContinuationCookie(await continuationFor(invitation.id));
+    await expect(acceptCaptainInvitationFromContinuation(null, reminderChoice(false))).rejects.toThrow("REDIRECT:/hq/dashboard?welcome=captain");
+    expect(await botConsent.getBotConsent("acct-bot")).toMatchObject({ messagingEnabled: false });
+  });
+
+  it("leaves consent untouched when no reminder preference was submitted", async () => {
+    await seedAccount("acct-bot");
+    await connectTelegram("acct-bot");
+    signIn("acct-bot");
+    const { invitation } = await createInvitation();
+    withContinuationCookie(await continuationFor(invitation.id));
+    await expect(acceptCaptainInvitationFromContinuation(null, new FormData())).rejects.toThrow("REDIRECT:/hq/dashboard?welcome=captain");
+    expect(await botConsent.getBotConsent("acct-bot")).toBeNull();
+  });
+
+  it("does not enable reminders when the invitation is refused", async () => {
+    await seedAccount("acct-bot");
+    await connectTelegram("acct-bot");
+    signIn("acct-bot");
+    const { invitation } = await createInvitation();
+    withContinuationCookie(await continuationFor(invitation.id));
+    await rows("UPDATE hq_captain_invitations SET revoked_at = now() WHERE id = $1::uuid", [invitation.id]);
+    expect(await acceptCaptainInvitationFromContinuation(null, reminderChoice(true))).toEqual({ outcome: "revoked" });
+    expect(await botConsent.getBotConsent("acct-bot")).toBeNull();
+    expect(await redemptions()).toEqual([]);
+  });
+
+  it("preserves Captain access and returns a recovery message if Telegram was disconnected before submission", async () => {
+    await seedAccount("acct-bot");
+    signIn("acct-bot");
+    const { invitation } = await createInvitation();
+    withContinuationCookie(await continuationFor(invitation.id));
+    expect(await acceptCaptainInvitationFromContinuation(null, reminderChoice(true))).toEqual({ outcome: "granted", botError: "not-connected" });
+    expect(await grants()).toEqual([{ user_id: "acct-bot", capability: "captain", active: true }]);
+    expect(await botConsent.getBotConsent("acct-bot")).toBeNull();
+  });
+
+  it("offers Account recovery if saving reminders fails after Captain access was granted", async () => {
+    await seedAccount("acct-bot");
+    await connectTelegram("acct-bot");
+    signIn("acct-bot");
+    const { invitation } = await createInvitation();
+    withContinuationCookie(await continuationFor(invitation.id));
+    vi.spyOn(botConsent, "setBotConsent").mockRejectedValueOnce(new Error("database unavailable"));
+    expect(await acceptCaptainInvitationFromContinuation(null, reminderChoice(true))).toEqual({ outcome: "granted", botError: "save-failed" });
+    expect(await grants()).toEqual([{ user_id: "acct-bot", capability: "captain", active: true }]);
+    expect(await redemptions()).toHaveLength(1);
+  });
+
   it("refuses a signed-out visitor: requireMemberActor's own gate, before any continuation is even read", async () => {
     mocks.requireMember.mockImplementation(async (next?: string) => { throw new Error(`REDIRECT:/hq/login?next=${encodeURIComponent(next ?? "")}`); });
     withContinuationCookie(undefined);

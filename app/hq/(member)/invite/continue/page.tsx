@@ -5,9 +5,11 @@ import { redirect } from "next/navigation";
 import { BuilderShell } from "@/components/hq/builder-shell";
 import styles from "@/components/hq/builder-shell.module.css";
 import { builderDatabase } from "@/lib/hq/builder-db";
+import { getTelegramIdentity } from "@/lib/hq/identity";
 import { INVITE_CONTINUATION_COOKIE, readInviteContinuation } from "@/lib/hq/invite-continuation";
 import { currentMember } from "@/lib/hq/member-auth";
 import { INVITE_CONTINUE_PATH } from "@/lib/hq/member-routes";
+import { getBotConsent } from "@/lib/hq/telegram-consent";
 import { INVITE_INTRO, inviteOutcomeCopy, type InviteOutcome } from "../copy";
 import { AcceptInvitationForm } from "./accept-form";
 
@@ -62,13 +64,19 @@ export default async function InviteContinuePage() {
   // afterward, never to the builder's team initialization flow.
   if (member && !member.name.trim()) redirect(`/hq/profile?next=${encodeURIComponent(INVITE_CONTINUE_PATH)}`);
 
+  const telegram = member ? await getTelegramIdentity(member.id) : null;
+  const consent = member && telegram ? await getBotConsent(member.id) : null;
+
   return (
     <BuilderShell>
       <h1>
         Become a <em>Captain.</em>
       </h1>
       {member ? (
-        <AcceptInvitationForm>
+        <AcceptInvitationForm
+          hasTelegram={telegram !== null}
+          botEnabled={telegram !== null && (consent?.messagingEnabled ?? true)}
+        >
           <p>{INVITE_INTRO}</p>
         </AcceptInvitationForm>
       ) : (
