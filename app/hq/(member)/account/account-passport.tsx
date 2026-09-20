@@ -204,6 +204,7 @@ export function AccountPassport(props: AccountPassportProps) {
 
   // The switch flips at once and is put back if the write fails.
   const toggleBot = (next: boolean) => {
+    if (switchPending || next === bot) return;
     const previous = bot;
     setBot(next);
     setSwitchError("");
@@ -217,6 +218,9 @@ export function AccountPassport(props: AccountPassportProps) {
         }
         setBot(result.enabled);
         router.refresh();
+        // Save consent before leaving HQ. Same-tab navigation also works
+        // after an async save on mobile, where a popup may be blocked.
+        if (next && result.enabled && props.botUrl) window.location.assign(props.botUrl);
       } catch {
         setBot(previous);
         setSwitchError(CONNECTION_FAILED);
@@ -261,9 +265,17 @@ export function AccountPassport(props: AccountPassportProps) {
             <div>
               <label className={styles.switchRow}>
                 <span>Bot reminders on Telegram</span>
-                <input type="checkbox" className={styles.switchInput} checked={bot} disabled={switchPending} onChange={(event) => toggleBot(event.target.checked)} />
-                <span aria-hidden="true" className={`${styles.switchTrack} ${bot ? styles.switchTrackOn : ""}`}><span className={styles.switchKnob} /></span>
+                <span className={styles.switchTarget}>
+                  {!bot && <svg className={styles.switchArrows} width="60" height="80" viewBox="0 0 60 80" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="M5 8Q32 8 50 28m-11-2 11 2-2-11" />
+                    <path d="M3 40h49m-9-8 9 8-9 8" />
+                    <path d="M5 72Q32 72 50 52m-11 2 11-2-2 11" />
+                  </svg>}
+                  <input type="checkbox" className={styles.switchInput} checked={bot} disabled={switchPending} aria-busy={switchPending} onChange={(event) => toggleBot(event.target.checked)} />
+                  <span aria-hidden="true" className={`${styles.switchTrack} ${bot ? styles.switchTrackOn : ""}`}><span className={styles.switchKnob} /></span>
+                </span>
               </label>
+              {!bot && props.botUrl && <p className={styles.switchHint}>Turning this on opens the bot chat.</p>}
               <TelegramBotStart botUrl={props.botUrl} inverse />
               {switchError && <p role="alert" className={styles.switchError}>{switchError}</p>}
             </div>

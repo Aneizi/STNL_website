@@ -7,18 +7,33 @@
 .page .brand { display:flex; align-items:center; gap:10px; min-height:44px; color:inherit; text-decoration:none; font-size:17px; font-weight:700; white-space:nowrap; }
 .page .brand:hover { color:#16130f; text-decoration:none; }
 .brand img { width:28px; height:auto; display:block; }
-.accountMenu { position:relative; }
+.accountMenu { position:relative; display:flex; align-items:center; gap:16px; min-width:0; }
+.reminderPrompt { display:flex; align-items:center; gap:12px; min-height:44px; padding:0; border:0; background:none; color:var(--ink); font:inherit; font-size:14px; font-weight:600; text-align:right; cursor:pointer; }
+.reminderPrompt:hover span { text-decoration:underline; text-underline-offset:4px; }
+.reminderArrow { flex:none; color:var(--accent); }
+.avatar { flex:none; }
+@media (prefers-reduced-motion:no-preference) {
+  .reminderArrow { animation:reminderRock 2.8s ease-in-out infinite; }
+}
+@keyframes reminderRock { 0%,100% { transform:translateX(-4px); } 50% { transform:translateX(4px); } }
+@media (max-width:600px) {
+  .header:has(.reminderPrompt) { gap:12px; }
+  .header:has(.reminderPrompt) .brandName { display:none; }
+  .accountMenu { gap:12px; }
+  .reminderPrompt { max-width:176px; gap:8px; font-size:13px; line-height:1.35; }
+  .reminderArrow { width:32px; }
+}
 .avatar { display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:50%; border:1px solid rgba(22,19,15,.2); background:#f3ede2; color:#16130f; font:inherit; font-size:15px; font-weight:700; cursor:pointer; padding:0; }
 .avatar:hover { border-color:#16130f; }
 .avatar[aria-expanded="true"] { background:#16130f; color:#fbf7f0; border-color:#16130f; }
-.menu { position:absolute; right:0; top:calc(100% + 8px); min-width:200px; background:#fff; box-shadow:0 1px 2px rgba(22,19,15,.08),0 12px 32px rgba(22,19,15,.14); padding:6px; display:flex; flex-direction:column; animation:menuPop .15s ease; }
+.menu { position:absolute; right:0; top:calc(100% + 8px); width:max-content; min-width:200px; max-width:calc(100vw - 40px); background:#fff; box-shadow:0 1px 2px rgba(22,19,15,.08),0 12px 32px rgba(22,19,15,.14); padding:6px; display:flex; flex-direction:column; animation:menuPop .15s ease; }
 @keyframes menuPop { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
 .menuName { padding:10px 12px 8px; font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .page .menuItem { display:flex; align-items:center; min-height:44px; padding:0 12px; width:100%; box-sizing:border-box; text-align:left; border:0; background:none; color:#16130f; text-decoration:none; font:inherit; font-size:16px; cursor:pointer; }
 .page .menuItem:hover { background:#f3ede2; color:#16130f; text-decoration:none; }
 .page .menuItem:disabled { opacity:.5; cursor:pointer; }
 .menuError { margin:0; padding:8px 12px; font-size:15px; color:#a52b16; }
-.page .brand:focus-visible,.page .avatar:focus-visible,.page .menuItem:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+.page .brand:focus-visible,.page .avatar:focus-visible,.page .menuItem:focus-visible,.page .reminderPrompt:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
 .page .back { display:inline-block; margin-bottom:28px; color:#57534a; text-decoration:none; font-size:15px; }
 .page .back:hover { color:#16130f; text-decoration:underline; text-underline-offset:4px; }
 .main { max-width:660px; margin:auto; padding:64px 24px 100px; overflow-wrap:anywhere; }

@@ -1,6 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
+import { revalidatePath } from "next/cache";
 import { requireMemberActor } from "../actor";
 import { currentMemberSession, getAuth } from "../member-auth";
 import { getMemberAuthAvailability } from "../member-auth-config";
@@ -101,6 +102,7 @@ export async function setBotMessaging(enabled: boolean): Promise<BotMessagingRes
   const actor = await requireMemberActor("/hq/account");
   try {
     const consent = await setBotConsent(actor, enabled === true);
+    revalidatePath("/hq/dashboard");
     return { ok: true, enabled: consent.messagingEnabled };
   } catch (error) {
     if (error instanceof TelegramNotConnectedError) return { ok: false, code: "TELEGRAM_NOT_CONNECTED" };

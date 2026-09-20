@@ -29,6 +29,7 @@ export const SIGN_OUT_FAILED = 'Could not sign out. Please try again.';
 
 type AccountMenuProps = {
   name: string;
+  reminderPrompt?: boolean;
   open: boolean;
   pending: boolean;
   error: string;
@@ -42,27 +43,31 @@ type AccountMenuProps = {
 };
 
 /** The markup alone, with the state passed in, so a static render can check it. */
-export function AccountMenu({ name, open, pending, error, onToggle, onClose, onSignOut, wrapperRef, avatarRef }: AccountMenuProps) {
+export function AccountMenu({ name, reminderPrompt = false, open, pending, error, onToggle, onClose, onSignOut, wrapperRef, avatarRef }: AccountMenuProps) {
   const shownName = name.trim();
   return <div className={styles.accountMenu} ref={wrapperRef}>
+    {reminderPrompt && <button type='button' className={styles.reminderPrompt} onClick={onToggle} aria-expanded={open}>
+      <span>Turn on Telegram reminders</span>
+      <svg className={styles.reminderArrow} width='40' height='24' viewBox='0 0 40 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M3 12h32m-9-8 9 8-9 8'/></svg>
+    </button>}
     <button type='button' className={styles.avatar} aria-label='Account menu' aria-expanded={open} onClick={onToggle} ref={avatarRef}>{initials(shownName)}</button>
     {open && <div role='menu' className={styles.menu}>
       {shownName && <div className={styles.menuName}>{shownName}</div>}
-      <Link href='/hq/account' role='menuitem' className={styles.menuItem} onClick={onClose}>Account</Link>
+      <Link href='/hq/account' role='menuitem' className={styles.menuItem} onClick={onClose}>{reminderPrompt ? 'Account & Telegram reminders' : 'Account'}</Link>
       <button type='button' role='menuitem' className={styles.menuItem} disabled={pending} onClick={onSignOut}>Sign out</button>
       {error && <p role='alert' className={styles.menuError}>{error}</p>}
     </div>}
   </div>;
 }
 
-export function BuilderAccountMenu() {
+export function BuilderAccountMenu({ reminderPrompt = false }: { reminderPrompt?: boolean }) {
   const account = useContext(MemberAccountContext);
   if (!account) return null;
-  return <SignedInMenu name={account.name} />;
+  return <SignedInMenu name={account.name} reminderPrompt={reminderPrompt} />;
 }
 
 /** Split out so the hooks run only when there is a member to show. */
-function SignedInMenu({ name }: { name: string }) {
+function SignedInMenu({ name, reminderPrompt }: { name: string; reminderPrompt: boolean }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -115,6 +120,7 @@ function SignedInMenu({ name }: { name: string }) {
 
   return <AccountMenu
     name={name}
+    reminderPrompt={reminderPrompt}
     open={open}
     pending={pending}
     error={error}

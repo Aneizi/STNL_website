@@ -32,6 +32,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("server-only", () => ({}));
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 // The icon package ships its source, so importing it makes vitest transform thousands of icons; the pages here render markup, not icons.
 vi.mock("symbols-react", async () => {
   const { createElement } = await import("react");

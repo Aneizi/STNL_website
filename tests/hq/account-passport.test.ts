@@ -117,12 +117,16 @@ describe("AccountPassport", () => {
 
   it("draws the switch from the stored decision: a real checkbox in the row, the track orange when on", () => {
     const on = render({ bot: true });
-    expect(on).toMatch(/<label[^>]*><span>Bot reminders on Telegram<\/span><input type="checkbox"[^>]*checked=""[^>]*><span aria-hidden="true"[^>]*switchTrackOn[^>]*><span[^>]*><\/span><\/span><\/label>/);
+    expect(on).toContain("Bot reminders on Telegram");
+    expect(on).toMatch(/<input type="checkbox"[^>]*checked=""[^>]*><span aria-hidden="true"[^>]*switchTrackOn/);
     expect(on).not.toMatch(/<input type="checkbox"[^>]*disabled/);
     const off = render({ bot: false });
     expect(off).toMatch(/<input type="checkbox"[^>]*>/);
     expect(off).not.toMatch(/<input type="checkbox"[^>]*checked/);
     expect(off).not.toContain("switchTrackOn");
+    expect(off.match(/<svg[^>]*switchArrows[^>]*>(.*?)<\/svg>/)?.[1].match(/<path/g)).toHaveLength(3);
+    expect(on).not.toContain("switchArrows");
+    for (const html of [on, off]) expect(html).toContain('href="https://t.me/fixture_bot"');
   });
 
   it("shows the round trip's notice as a status and its failure as an alert, in the notice slot before the rows", () => {

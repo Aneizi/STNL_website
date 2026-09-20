@@ -36,6 +36,14 @@ describe("initials", () => {
 });
 
 describe("the account menu", () => {
+  it("places the reminder prompt before the avatar and names its account destination", () => {
+    const html = menu({ reminderPrompt: true, open: true });
+    expect(html.indexOf("Turn on Telegram reminders")).toBeLessThan(html.indexOf('aria-label="Account menu"'));
+    expect(html).toContain("Account &amp; Telegram reminders");
+    expect(html).toContain('href="/hq/account"');
+    expect(menu()).not.toContain("Turn on Telegram reminders");
+    expect(provided(createElement(BuilderAccountMenu, { reminderPrompt: true }), null)).toBe("");
+  });
   it("closed: a 44px avatar with the initials, expanded false, and no menu, name or items", () => {
     const html = menu();
     expect(html).toMatch(/<button[^>]*type="button"[^>]*aria-label="Account menu"[^>]*aria-expanded="false"[^>]*>NV<\/button>/);
@@ -108,7 +116,7 @@ describe("the shell", () => {
     expect(html).toMatch(/<img[^>]*alt=""[^>]*>/);
     expect(html).toMatch(/<img[^>]*sizes="28px"[^>]*>/);
     expect(html).toContain("st-orange.png");
-    expect(html).toContain("Superteam NL</a>");
+    expect(html).toContain("Superteam NL</span></a>");
     expect(html).not.toContain("superteam NL");
     expect(html).toMatch(/aria-label="Account menu"[^>]*>FB<\/button>/);
     expect(html).toContain("<p>content</p>");

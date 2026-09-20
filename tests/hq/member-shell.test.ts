@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   captainReportingBoard: vi.fn(),
   memberWeekSummaries: vi.fn(),
   builderDatabase: vi.fn(),
+  getBotConsent: vi.fn(),
   pathname: "/hq/dashboard",
 }));
 vi.mock("server-only", () => ({}));
@@ -47,6 +48,7 @@ vi.mock("@/lib/hq/builder-store", () => ({
 // which this unit test never sets, and the DB-shaped functions themselves
 // are stubbed below so nothing here touches a real connection.
 vi.mock("@/lib/hq/builder-db", () => ({ builderDatabase: mocks.builderDatabase }));
+vi.mock("@/lib/hq/telegram-consent", () => ({ getBotConsent: mocks.getBotConsent }));
 vi.mock("@/lib/hq/captains", () => ({ leaderboard: mocks.leaderboard, listAssignments: mocks.listAssignments }));
 // The captain page's reporting half (phase 6). tests/hq/captain-page.test.ts
 // drives the same page against real rows; here it is stubbed, like the two
@@ -234,7 +236,8 @@ describe("the captain page", () => {
     expect(html).toMatch(/<a[^>]*href="https:\/\/colosseum\.com\/arena\/projects\/explore\/solo"[^>]*>View on Colosseum<\/a>/);
     expect(html).toContain(">Your note</p>");
     expect(html).toContain('placeholder="What you saw, what you told them, what to watch."');
-    expect(html).toContain('maxLength="4000"');
+    expect(html).toContain('0/280 characters. Whitespace does not count.');
+    expect(html).not.toMatch(/<textarea[^>]*maxlength=/i);
     expect(html).toContain("Keep private");
     expect(html).toContain("Add note");
     expect(html).toMatch(/<span id="priv-tip" role="tooltip"[^>]*hidden=""[^>]*>Only visible to you and HQ admins<\/span>/);
@@ -294,6 +297,25 @@ describe("the dashboard menu", () => {
   const render = async (welcome?: string) => renderToStaticMarkup(await DashboardPage({ searchParams: Promise.resolve({ welcome }) }));
   /** The three tiles' markup, in order: hackathon, Member Portal, Captains' Den. */
   const tiles = (html: string) => html.split("<li").slice(1);
+
+  it("prompts from the stored reminder choice, including connected accounts that never opted in", async () => {
+    vi.stubEnv("TELEGRAM_BOT_USERNAME", "fixture_bot");
+    try {
+      mocks.requireMemberActor.mockResolvedValue(member({ telegram: { userId: "7" } }));
+      for (const consent of [null, { messagingEnabled: false }]) {
+        mocks.getBotConsent.mockResolvedValue(consent);
+        const page = await DashboardPage({ searchParams: Promise.resolve({}) });
+        expect(page.props.reminderPrompt).toBe(true);
+      }
+      expect(mocks.getBotConsent).toHaveBeenCalledWith("acct-1");
+      mocks.getBotConsent.mockResolvedValue({ messagingEnabled: true });
+      expect((await DashboardPage({ searchParams: Promise.resolve({}) })).props.reminderPrompt).toBe(false);
+      mocks.requireMemberActor.mockResolvedValue(member());
+      expect((await DashboardPage({ searchParams: Promise.resolve({}) })).props.reminderPrompt).toBe(true);
+      vi.stubEnv("TELEGRAM_BOT_USERNAME", "");
+      expect((await DashboardPage({ searchParams: Promise.resolve({}) })).props.reminderPrompt).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
 
   it("greets the member by first name over exactly three tiles, and nothing of the old menu", async () => {
     const html = await render();

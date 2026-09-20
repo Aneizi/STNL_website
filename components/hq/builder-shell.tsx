@@ -15,11 +15,11 @@ import styles from './builder-shell.module.css';
  * Captains' Den, Account) lays itself out edge to edge below the header.
  * `back` has no effect under `bare`; such a page renders its own links.
  */
-export function BuilderShell({children,back,bare=false}:{children:React.ReactNode;back?:string;bare?:boolean}) {
+export function BuilderShell({children,back,bare=false,reminderPrompt=false}:{children:React.ReactNode;back?:string;bare?:boolean;reminderPrompt?:boolean}) {
   return <div className={styles.page}>
     <header className={styles.header}>
-      <Link className={styles.brand} href='/hq/dashboard' aria-label='Superteam NL home'><Image src='/landing/st-orange.png' alt='' width={2154} height={2116} sizes='28px'/>Superteam NL</Link>
-      <BuilderAccountMenu/>
+      <Link className={styles.brand} href='/hq/dashboard' aria-label='Superteam NL home'><Image src='/landing/st-orange.png' alt='' width={2154} height={2116} sizes='28px'/><span className={styles.brandName}>Superteam NL</span></Link>
+      <BuilderAccountMenu reminderPrompt={reminderPrompt}/>
     </header>
     {bare
       ? <main className={styles.bare}>{children}</main>

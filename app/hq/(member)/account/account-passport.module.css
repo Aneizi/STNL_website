@@ -29,12 +29,19 @@
 /* The switch: the checkbox is real but hidden, the track and knob draw its state. `position:relative` keeps the hidden input inside the row; the ring lands on the track when the input has keyboard focus. */
 .switchRow { position:relative; display:flex; justify-content:space-between; align-items:center; gap:16px; padding-top:24px; border-top:1px dashed #57534a; font-size:16px; cursor:pointer; }
 .switchInput { position:absolute; opacity:0; width:1px; height:1px; }
+.switchTarget { position:relative; display:flex; align-items:center; justify-content:flex-end; width:112px; min-height:80px; flex:none; }
+.switchArrows { position:absolute; left:0; top:0; color:var(--accent); pointer-events:none; }
+.switchHint { margin:0 0 12px; font-size:14px; color:var(--cream); }
+@media (prefers-reduced-motion:no-preference) {
+  .switchArrows { animation:pointToSwitch 2.8s ease-in-out infinite; }
+}
+@keyframes pointToSwitch { 0%,100% { transform:translateX(-2px); } 50% { transform:translateX(4px); } }
 .switchTrack { position:relative; width:48px; height:28px; border-radius:14px; background:#57534a; flex:none; transition:background .2s ease; }
 .switchTrackOn { background:#ee5b23; }
 .switchKnob { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#fbf7f0; transition:left .2s ease; }
 .switchTrackOn .switchKnob { left:23px; }
 .switchInput:focus-visible + .switchTrack { outline:2px solid #ee5b23; outline-offset:4px; }
-.switchError { margin:8px 0 0; font-size:14px; color:#a52b16; }
+.switchError { margin:8px 0 0; font-size:14px; color:var(--cream); }
 .overlay { position:fixed; inset:0; z-index:50; background:rgba(22,19,15,.55); display:flex; align-items:flex-start; justify-content:center; padding:24px; overflow:auto; box-sizing:border-box; }
 .dialog { width:min(100%,480px); margin:auto 0; background:#fbf7f0; color:#16130f; padding:28px; box-sizing:border-box; box-shadow:0 24px 64px rgba(22,19,15,.35); animation:acPop .18s ease; }
 @keyframes acPop { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
@@ -61,4 +68,5 @@
 .resend:disabled { opacity:.5; cursor:pointer; }
 .alert { margin:16px 0 0; color:#a52b16; }
 @media (max-width:900px) { .layout { grid-template-columns:minmax(0,1fr); } }
+@media (max-width:540px) { .card { padding:24px; } }
 @media (prefers-reduced-motion:reduce) { .switchTrack,.switchKnob { transition:none; } .dialog { animation:none; } }
