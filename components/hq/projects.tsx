@@ -13,7 +13,7 @@ import {
 } from "react";
 import { IconBubbleAndPencil } from "@/components/hq/icons/IconBubbleAndPencil";
 import { showToast } from "@/components/hq/toast";
-import { Badge, FormField, input, pageTitle, primaryBtn } from "@/components/hq/ui";
+import { FormField, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
 import { updateBuilderProjectLead } from "@/lib/hq/actions/builders-admin";
 import { assignProjectCaptain, unassignProjectCaptain } from "@/lib/hq/actions/captains";
@@ -27,7 +27,6 @@ import {
   saveProjectBlocker,
   setProjectForecast,
   setProjectHighPotential,
-  setProjectStatus,
   toggleProjectGate,
   updateProjectDetail,
   updateProjectMember,
@@ -35,7 +34,6 @@ import {
 import { PROJECT_STAGES } from "@/lib/hq/builder-types";
 import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
-import { isTrafficLightStatus } from "@/lib/hq/project-status";
 import type { ProjectReportingStatus } from "@/lib/hq/reporting";
 import { SUBMISSION_FILTER_LABEL, statusLabel } from "@/lib/hq/reporting-view";
 import type {
@@ -49,18 +47,14 @@ import { projectHref } from "./builder-admin";
 import { BuilderProjectImage } from "./builder-project-image";
 import styles from "./projects.module.css";
 
-type PartnerOption = { id: string; name: string };
-type EventOption = { id: string; name: string };
 type CaptainOption = { id: string; name: string };
 /** A roster row the service could not resolve either way, echoed back verbatim (by memberId) as the acknowledgement of the second "Assign anyway" call. */
 type UnresolvedCaptainRosterRow = { memberId: string; name: string; username: string | null };
 type CaptainReview = { projectId: string; captainUserId: string; captainName: string; unresolved: UnresolvedCaptainRosterRow[] };
 
 type ProjectPatch =
-  | { kind: "status"; id: string; slug: string }
   | { kind: "forecast"; id: string; slug: string }
   | { kind: "gate"; id: string; gateId: string; done: boolean }
-  | { kind: "partner"; id: string; partnerId: string | null; partnerName: string }
   | { kind: "captain"; id: string; captainUserId: string | null; captainName: string }
   | { kind: "highPotential"; id: string; highPotential: boolean }
   | { kind: "lead"; id: string; leadName: string; leadUsername: string }
@@ -74,8 +68,6 @@ function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
   return list.map((p) => {
     if (p.id !== patch.id) return p;
     switch (patch.kind) {
-      case "status":
-        return { ...p, statusSlug: patch.slug };
       case "forecast":
         return { ...p, forecastSlug: patch.slug };
       case "gate":
@@ -85,8 +77,6 @@ function applyPatch(list: Project[], patch: ProjectPatch): Project[] {
             ? [...p.gates, patch.gateId]
             : p.gates.filter((g) => g !== patch.gateId),
         };
-      case "partner":
-        return { ...p, partnerId: patch.partnerId, partnerName: patch.partnerName };
       case "captain":
         return { ...p, captainUserId: patch.captainUserId, captainName: patch.captainName };
       case "highPotential":
@@ -165,21 +155,6 @@ const smallAccentBtn: CSSProperties = {
   color: "var(--accent)",
 };
 
-/** One status pill button in the details panel. */
-const statusButton = (selected: boolean, color: string): CSSProperties => ({
-  border: "none",
-  cursor: "pointer",
-  padding: "5px 12px",
-  borderRadius: 2,
-  fontSize: 13,
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.08em",
-  whiteSpace: "nowrap",
-  background: selected ? `var(--${color})` : "var(--fill-3)",
-  color: selected ? "#fff" : "var(--label-2)",
-});
-
 /** One button of the filter bar's segmented controls. */
 const segmentButton = (on: boolean): CSSProperties => ({
   border: "none",
@@ -197,7 +172,7 @@ const segmentButton = (on: boolean): CSSProperties => ({
 // needs no more than the glyph. Weekly holds "Not updated" plus a missed
 // count, so it needs a little more than Check-in. The last track is the
 // action column, wide enough for the two-step delete's "Sure?".
-const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 140px 126px 211px 110px 125px 77px 55px";
+const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 125px 77px 55px";
 
 /** The stage as the team's own settings name it; an unknown value shows as stored. */
 const stageLabel = (stage: string): string => PROJECT_STAGES.find((s) => s.value === stage)?.label ?? stage;
@@ -303,8 +278,6 @@ function CaptainField({
 
 export function Projects({
   projects,
-  partnerOptions,
-  eventOptions,
   captainOptions,
   reporting,
   classifiers,
@@ -313,8 +286,6 @@ export function Projects({
   expandId,
 }: {
   projects: Project[];
-  partnerOptions: PartnerOption[];
-  eventOptions: EventOption[];
   /** Accounts with an active Captain grant, resolved server side, never every account filtered on the client. */
   captainOptions: CaptainOption[];
   /**
@@ -335,7 +306,6 @@ export function Projects({
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projSearch, setProjSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("");
   const [forecastFilter, setForecastFilter] = useState("");
   // The four reporting filters the plan names. Independent booleans, not one
   // select: "Keep those indicators independent and combinable", so an admin
@@ -375,7 +345,6 @@ export function Projects({
       setExpandedId(expandId);
       setCaptainReview(null);
       setProjSearch("");
-      setStatusFilter("");
       setForecastFilter("");
       setUnassignedOnly(false);
       setNotUpdatedOnly(false);
@@ -387,20 +356,11 @@ export function Projects({
   }, [expandId, router]);
 
   const gatesTotal = classifiers.gates.length;
-  const statuses = classifiers.statuses.filter((s) => !isTrafficLightStatus(s.slug));
-  const statusBySlug = new Map(statuses.map((s) => [s.slug, s]));
   const forecastBySlug = new Map(classifiers.forecasts.map((f) => [f.slug, f]));
   // The board's reporting rows, by project id. A project with no row is not
   // in weekly reporting; the column says so and the three weekly filters
   // leave it out rather than guessing a state for it.
   const reportingBy = new Map(reporting.map((row) => [row.projectId, row]));
-
-  const pickStatus = (projectId: string, slug: string) => {
-    startTransition(async () => {
-      patch({ kind: "status", id: projectId, slug });
-      await setProjectStatus(projectId, slug);
-    });
-  };
 
   const pickForecast = (projectId: string, slug: string) => {
     startTransition(async () => {
@@ -409,15 +369,7 @@ export function Projects({
     });
   };
 
-  const pickPartner = (projectId: string, partnerId: string) => {
-    const partnerName = partnerOptions.find((o) => o.id === partnerId)?.name ?? "";
-    startTransition(async () => {
-      patch({ kind: "partner", id: projectId, partnerId: partnerId || null, partnerName });
-      await updateProjectDetail(projectId, { field: "partnerId", value: partnerId || null });
-    });
-  };
-
-  // Captain assignment is not a fire-and-forget patch like partner: the
+  // Captain assignment waits for the service result because the
   // service can refuse (a conflict) or ask for a second, explicit
   // confirmation (unresolved roster identity; captainReview holds that
   // pending state above). acknowledgedUnresolvedIds is only ever the
@@ -483,17 +435,9 @@ export function Projects({
     });
   };
 
-  // A project may already name an event that isn't tracked (typed before the
-  // picker existed, or since renamed). Keep it as an option so opening the
-  // editor can't silently drop it.
-  const eventOptionsFor = (current: string) =>
-    current && !eventOptions.some((o) => o.name === current)
-      ? [{ id: `current-${current}`, name: current }, ...eventOptions]
-      : eventOptions;
-
   const saveDetail = (
     projectId: string,
-    field: "leadName" | "leadContact" | "eventSrc",
+    field: "leadName" | "leadContact",
     value: string,
   ) => {
     startTransition(async () => {
@@ -553,13 +497,13 @@ export function Projects({
       name: d.ProjName,
       leadName: d.ProjLead ?? "",
       leadContact: d.ProjContact ?? "",
-      partnerId: d.ProjPartner || null,
-      eventSrc: d.ProjEvent ?? "",
+      partnerId: null,
+      eventSrc: "",
     };
     startTransition(async () => {
       await createProject(payload);
     });
-    d.ProjName = d.ProjLead = d.ProjContact = d.ProjPartner = d.ProjEvent = "";
+    d.ProjName = d.ProjLead = d.ProjContact = "";
     setNewProjectOpen(false);
   };
 
@@ -617,7 +561,6 @@ export function Projects({
   const filtered = optimistic.filter((p) => {
     const weekly = reportingBy.get(p.id);
     return (!q || p.name.toLowerCase().includes(q) || p.leadName.toLowerCase().includes(q))
-      && (!statusFilter || p.statusSlug === statusFilter)
       && (!forecastFilter || p.forecastSlug === forecastFilter)
       && (!unassignedOnly || !p.captainUserId)
       // "Not updated this period" is about the week that is open now, so a
@@ -630,30 +573,6 @@ export function Projects({
       // matches here.
       && (!notSubmittedOnly || weekly?.submissionStatus === "not_submitted");
   });
-
-  const statusFilters = [
-    { value: "", label: "All" },
-    ...statuses.map((s) => ({ value: s.slug, label: s.label })),
-  ];
-
-  const statusButtons = (p: Project) =>
-    statuses.map((s) => {
-      const selected = p.statusSlug === s.slug;
-      return (
-        <button
-          key={s.id}
-          type="button"
-          aria-pressed={selected}
-          onClick={() => {
-            pickStatus(p.id, s.slug);
-            flash();
-          }}
-          style={statusButton(selected, s.color)}
-        >
-          {s.label}
-        </button>
-      );
-    });
 
   return (
     <>
@@ -720,36 +639,6 @@ export function Projects({
               style={input}
             />
           </FormField>
-          <FormField label="Partner" minWidth={150}>
-            <select
-              onChange={(e) => {
-                drafts.current.ProjPartner = e.target.value;
-              }}
-              style={input}
-            >
-              <option value="">None</option>
-              {partnerOptions.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
-          </FormField>
-          <FormField label="Event" minWidth={140}>
-            <select
-              onChange={(e) => {
-                drafts.current.ProjEvent = e.target.value;
-              }}
-              style={input}
-            >
-              <option value="">None</option>
-              {eventOptions.map((o) => (
-                <option key={o.id} value={o.name}>
-                  {o.name}
-                </option>
-              ))}
-            </select>
-          </FormField>
           <button type="button" onClick={onCreateProject} style={{ ...primaryBtn, padding: "9px 16px" }}>
             Add
           </button>
@@ -781,22 +670,6 @@ export function Projects({
                 width: 190,
               }}
             />
-            {statuses.length > 0 ? <div className={styles.filters} style={{ boxShadow: "0 0 0 1px var(--sep)", padding: 2 }}>
-              {statusFilters.map((s) => {
-                const selected = statusFilter === s.value;
-                return (
-                  <button
-                    key={s.value}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => setStatusFilter(s.value)}
-                    style={segmentButton(selected)}
-                  >
-                    {s.label}
-                  </button>
-                );
-              })}
-            </div> : null}
             <select
               value={forecastFilter}
               onChange={(e) => setForecastFilter(e.target.value)}
@@ -864,7 +737,6 @@ export function Projects({
               >
                 <span>Project</span>
                 <span>Lead</span>
-                <span>Status</span>
                 <span>Forecast</span>
                 <span>Gates</span>
                 <span>Check-in</span>
@@ -878,7 +750,6 @@ export function Projects({
                 const stale = isStale(p.lastCheckIn, settings.staleDays, now);
                 const weekly = reportingBy.get(p.id) ?? null;
                 const expanded = expandedId === p.id;
-                const status = statusBySlug.get(p.statusSlug);
                 const colosseumUrl = p.colosseum ? projectHref(p.colosseum.url) : undefined;
                 // Imported rosters include the lead, who already has a dedicated
                 // chip below. Match the username so namesakes stay on the team.
@@ -965,15 +836,6 @@ export function Projects({
                         ) : null}
                       </span>
                       <span data-label="Lead" style={{ color: "var(--label-2)" }}>{p.leadName}</span>
-                      <span data-label="Status" style={{ whiteSpace: "nowrap" }}>
-                        {status ? (
-                          <Badge
-                            label={status.label}
-                            color={status.color}
-                            bg={`${status.color}-fill`}
-                          />
-                        ) : null}
-                      </span>
                       <span data-label="Forecast" style={{ fontSize: 16, color: "var(--label-2)" }}>
                         {forecastBySlug.get(p.forecastSlug)?.label ?? ""}
                       </span>
@@ -1309,23 +1171,6 @@ export function Projects({
                                   </button>
                                 )}
                               </div>
-                              <label htmlFor={`partner-${p.id}`} style={microLabel}>Partner</label>
-                              <select
-                                id={`partner-${p.id}`}
-                                value={p.partnerId ?? ""}
-                                onChange={(e) => {
-                                  pickPartner(p.id, e.target.value);
-                                  flash();
-                                }}
-                                style={panelField}
-                              >
-                                <option value="">None</option>
-                                {partnerOptions.map((o) => (
-                                  <option key={o.id} value={o.id}>
-                                    {o.name}
-                                  </option>
-                                ))}
-                              </select>
                               <label htmlFor={`captain-${p.id}`} style={microLabel}>Captain</label>
                               <CaptainField
                                 id={`captain-${p.id}`}
@@ -1340,27 +1185,6 @@ export function Projects({
                                 }}
                                 onCancelReview={() => setCaptainReview(null)}
                               />
-                              <label htmlFor={`event-${p.id}`} style={microLabel}>Event</label>
-                              <select
-                                id={`event-${p.id}`}
-                                defaultValue={p.eventSrc}
-                                onChange={(e) => {
-                                  saveDetail(p.id, "eventSrc", e.target.value);
-                                  flash();
-                                }}
-                                style={panelField}
-                              >
-                                <option value="">None</option>
-                                {eventOptionsFor(p.eventSrc).map((o) => (
-                                  <option key={o.id} value={o.name}>
-                                    {o.name}
-                                  </option>
-                                ))}
-                              </select>
-                              {statuses.length > 0 ? <>
-                                <span id={`status-label-${p.id}`} style={microLabel}>Status</span>
-                                <div className={styles.statusOptions} role="group" aria-labelledby={`status-label-${p.id}`}>{statusButtons(p)}</div>
-                              </> : null}
                               <label htmlFor={`forecast-${p.id}`} style={microLabel}>Forecast</label>
                               <select
                                 id={`forecast-${p.id}`}

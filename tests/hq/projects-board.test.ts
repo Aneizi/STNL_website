@@ -1,5 +1,5 @@
 // The operator Projects board, rendered to static markup: the header and
-// filter bar, the table with its nine columns and the fixed HP slot, the
+// filter bar, the table with its eight columns and the fixed HP slot, the
 // Weekly column's states, and the expanded row's four blocks (Colosseum,
 // Submission gates, Details, Timeline) for an imported project and for one
 // created in HQ. Nothing here reaches a database: the actions are mocked by
@@ -15,7 +15,7 @@ vi.mock("@/components/hq/toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/lib/hq/actions/projects", () => ({
   addProjectMember: vi.fn(), addProjectNote: vi.fn(), createProject: vi.fn(), deleteProject: vi.fn(), editProjectNote: vi.fn(),
   removeProjectMember: vi.fn(), saveProjectBlocker: vi.fn(), setProjectForecast: vi.fn(),
-  setProjectHighPotential: vi.fn(), setProjectStatus: vi.fn(), toggleProjectGate: vi.fn(), updateProjectDetail: vi.fn(),
+  setProjectHighPotential: vi.fn(), toggleProjectGate: vi.fn(), updateProjectDetail: vi.fn(),
   updateProjectMember: vi.fn(),
 }));
 vi.mock("@/lib/hq/actions/captains", () => ({
@@ -97,14 +97,12 @@ const NOW = Date.parse("2026-09-16T18:00:00Z");
 
 const render = (expandId: string | null = null, projects: Project[] = [grachtenpay, kaasketen]) => renderToStaticMarkup(createElement(Projects, {
   projects,
-  partnerOptions: [{ id: "pt3", name: "Rabobank Innovation" }],
-  eventOptions: [{ id: "e1", name: "Kickoff Amsterdam" }],
   captainOptions: [{ id: "c1", name: "Femke de Jong" }, { id: "c2", name: "Joost Vermeer" }],
   reporting, classifiers, settings, now: NOW, expandId,
 }));
 
 describe("the Projects board", () => {
-  it("renders the header, New project, the filter bar and nine columns without Monday review or Source", () => {
+  it("renders the header, New project, the filter bar and eight columns without Monday review or Source", () => {
     const html = render();
     expect(html).toMatch(/<h1[^>]*>Projects <span[^>]*>2<\/span><\/h1>/);
     expect(html).not.toContain("Monday review");
@@ -112,26 +110,26 @@ describe("the Projects board", () => {
     expect(html).toMatch(/<button[^>]*>New project<\/button>/);
     expect(html).not.toContain("Assign Captains");
     expect(html).toContain('placeholder="Filter by name or lead"');
-    expect(html).toContain(">All<");
+    expect(html).not.toContain(">All<");
     expect(html).toContain(">All forecasts<");
     expect(html).not.toContain("All sources");
     for (const toggle of ["Unassigned", "Not updated", "Missed weeks", "Not submitted"]) {
       expect(html).toMatch(new RegExp(`<button[^>]*aria-pressed="false"[^>]*>${toggle}</button>`));
     }
     const headers = [...html.matchAll(/<span(?: style="[^"]*")?>(Project|Lead|Status|Forecast|Gates|Check-in|Weekly|Blocker)<\/span>/g)].map((m) => m[1]);
-    expect(headers).toEqual(["Project", "Lead", "Status", "Forecast", "Gates", "Check-in", "Weekly", "Blocker"]);
+    expect(headers).toEqual(["Project", "Lead", "Forecast", "Gates", "Check-in", "Weekly", "Blocker"]);
     expect(html).not.toContain(">Source<");
     expect(html).toMatch(/<a[^>]*href="\/hq\/demo"[^>]*>Demo day →<\/a>/);
     expect(html).not.toMatch(/[—·]/);
   });
 
-  it("renders collapsed rows with HP, gates and weekly states while hiding traffic-light statuses", () => {
+  it("renders collapsed rows with HP, gates and weekly states without project statuses", () => {
     const html = render();
     expect(html.match(/role="button"[^>]*aria-expanded="false"/g)).toHaveLength(2);
     expect(html.match(/title="High potential"[^>]*>HP<\/span>/g)).toHaveLength(1);
     expect(html.match(/project-fallback\.png/g)?.length).toBeGreaterThanOrEqual(2);
     expect(html).not.toMatch(/>(Green|Amber|Yellow|Red)</);
-    expect(html).toContain(">Onboarding<");
+    expect(html).not.toContain(">Onboarding<");
     expect(html).toContain(">3/5<");
     expect(html).toContain(">0/5<");
     expect(html).toContain(">Updated<");
@@ -148,8 +146,8 @@ describe("the Projects board", () => {
     const html = render(GRACHTENPAY, [{ ...grachtenpay, statusSlug: "onboarding" }, kaasketen]);
     expect(html).toMatch(/role="button"[^>]*aria-expanded="true"/);
     expect(html).not.toMatch(/>(Green|Amber|Yellow|Red)</);
-    expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>Onboarding<\/button>/);
-    expect(html).toMatch(/<span[^>]*>Onboarding<\/span>/);
+    expect(html).not.toMatch(/>(Onboarding|Status|Event|Partner)</);
+    expect(html).toMatch(/<select id="forecast-[^"]+"[^>]*>/);
     for (const heading of ["Colosseum", "Submission gates", "Details", "Timeline"]) {
       expect(html).toMatch(new RegExp(`<(?:div|span)[^>]*>${heading}</(?:div|span)>`));
     }
@@ -173,7 +171,6 @@ describe("the Projects board", () => {
     expect(html).not.toContain('aria-haspopup="dialog"');
     expect(html).toMatch(/<option value="c1" selected="">Femke de Jong<\/option>/);
     expect(html).toContain(">No Captain<");
-    expect(html.match(/<option value="">None<\/option>/g)).toHaveLength(2);
     expect(html).toContain("Last touched by Bram, Sep 16. Changes save as you go.");
     expect(html).toContain('placeholder="Add a note"');
     expect(html).toContain("Sep 16, 17:10, Bram");

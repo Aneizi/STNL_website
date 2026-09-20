@@ -12,9 +12,7 @@ import { nowMs } from "@/lib/hq/format";
 import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
 import {
   getClassifiers,
-  getEventOptions,
   getHackathon,
-  getPartners,
   getProjects,
   getSettings,
 } from "@/lib/hq/queries";
@@ -28,13 +26,11 @@ export default async function ProjectsPage(props: {
 }) {
   const { expand } = await props.searchParams;
   const hackathonId = await requireHackathonId();
-  const [, hackathon, projects, partners, eventOptions, classifiers, settings, importRequests, captainGrants, reporting] =
+  const [, hackathon, projects, classifiers, settings, importRequests, captainGrants, reporting] =
     await Promise.all([
       requireUser(),
       getHackathon(hackathonId),
       getProjects(hackathonId),
-      getPartners(hackathonId),
-      getEventOptions(hackathonId),
       getClassifiers(hackathonId),
       getSettings(hackathonId),
       getImportRequests(),
@@ -50,8 +46,6 @@ export default async function ProjectsPage(props: {
     <>
       <Projects
         projects={projects}
-        partnerOptions={partners.map((p) => ({ id: p.id, name: p.name }))}
-        eventOptions={eventOptions}
         captainOptions={captainGrants.map((g) => ({ id: g.userId, name: g.userName }))}
         reporting={reporting.statuses}
         classifiers={classifiers}
