@@ -28,6 +28,7 @@ import { grantCapability, revokeCapability } from "@/lib/hq/capabilities";
 import { assignCaptain, unassignCaptain } from "@/lib/hq/captains";
 import {
   createUpdate,
+  editUpdate,
   enableReporting,
   listReportingPeriods,
   readAuthorizedUpdates,
@@ -136,7 +137,7 @@ const allText = (outcome: BotOutcome) => outcome.replies.map((reply) => reply.te
  */
 function expectDeadButton(outcome: BotOutcome) {
   expect(["stale_draft", "action_not_found", "action_already_used", "action_expired"]).toContain(outcome.outcome);
-  expect(allText(outcome)).toContain("no longer good");
+  expect(allText(outcome)).toContain("no longer active");
 }
 
 /** A member actor, for the few places a test writes through the service directly. */
@@ -318,6 +319,87 @@ describe("permissions", () => {
 });
 
 describe("adding an update", () => {
+  it("keeps navigation and audience changes in place, starts new text steps, and offers a menu after saving", async () => {
+    const delivered: Parameters<TelegramSender["sendMessage"]>[0][] = [];
+    let currentMessageId = 40;
+    const sender: TelegramSender = {
+      async sendMessage(message) {
+        delivered.push(message);
+        currentMessageId = message.editMessageId ?? currentMessageId + 1;
+        return { ok: true, messageId: currentMessageId };
+      },
+      async answerCallbackQuery() {},
+    };
+    const submit = async (update: TelegramUpdate) => {
+      const before = delivered.length;
+      const response = await handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender, hqOrigin: HQ });
+      expect(response.status).toBe(200);
+      expect(delivered).toHaveLength(before + 1);
+      return delivered.at(-1)!;
+    };
+    const tap = async (label: string, edits = true) => {
+      const previousId = currentMessageId;
+      const keyboard = delivered.at(-1)!.replyMarkup as { inline_keyboard: { text: string; callback_data: string }[][] };
+      const key = keyboard.inline_keyboard.flat().find((button) => button.text === label)!;
+      expect(key).toBeDefined();
+      const update = callbackUpdate(CAPTAIN_TELEGRAM, key.callback_data);
+      update.callback_query!.message!.message_id = currentMessageId;
+      const reply = await submit(update);
+      expect(reply.editMessageId).toBe(edits ? previousId : undefined);
+      return reply;
+    };
+    expect((await submit(messageUpdate(CAPTAIN_TELEGRAM, "/start"))).editMessageId).toBeUndefined();
+    await tap("My projects");
+    await tap("Vault Team");
+    expect((await tap("Add update", false)).text).toContain("Vault Team");
+    expect((await submit(messageUpdate(CAPTAIN_TELEGRAM, "Shipping this week"))).editMessageId).toBeUndefined();
+    expect((await tap("Keep private")).text).toContain("Vault Team members cannot see it");
+    expect((await tap("Share with Vault Team")).text).toContain("Shared with Vault Team members");
+    expect((await tap("Rewrite", false)).text).toContain("Vault Team");
+    await submit(messageUpdate(CAPTAIN_TELEGRAM, "Shipping next week"));
+    expect((await tap("Save", false)).text).toContain("Saved to Vault Team");
+    await tap("Back to menu");
+    expect(delivered.every((message) => !/\bthe team\b/i.test(message.text))).toBe(true);
+    expect(await rows("SELECT body FROM hq_reporting_entries")).toEqual([{ body: "Shipping next week" }]);
+  });
+
+  it("cancels with one menu edit and handles stale controls in that same message", async () => {
+    const { preview } = await composeTo("Vault Team", "Never mind");
+    const delivered: Parameters<TelegramSender["sendMessage"]>[0][] = [];
+    const sender: TelegramSender = { sendMessage: async (message) => { delivered.push(message); return { ok: true, messageId: 42 }; }, answerCallbackQuery: async () => {} };
+    const press = callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Cancel"));
+    press.callback_query!.message!.message_id = 42;
+    const submit = (update: TelegramUpdate) => handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender });
+    expect((await submit(press)).body).toMatchObject({ outcome: "cancelled" });
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toMatchObject({ editMessageId: 42, text: expect.stringContaining("Nothing was saved") });
+    const stale = callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save"));
+    stale.callback_query!.message!.message_id = 42;
+    await submit(stale);
+    expect(delivered).toHaveLength(2);
+    expect(delivered[1]).toMatchObject({ editMessageId: 42, text: expect.stringContaining("no longer active") });
+  });
+
+  it("recovers a deleted menu with one fresh message", async () => {
+    const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
+    const delivered: Parameters<TelegramSender["sendMessage"]>[0][] = [];
+    const sender: TelegramSender = {
+      sendMessage: async (message) => {
+        delivered.push(message);
+        return message.editMessageId ? { ok: false, retryable: false, code: "edit_unavailable", detail: null } : { ok: true, messageId: 43 };
+      },
+      answerCallbackQuery: async () => {},
+    };
+    const press = callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "My projects"));
+    press.callback_query!.message!.message_id = 42;
+    expect((await handleTelegramWebhookRequest(webhookRequest(press), { db, config: BOT_CONFIG, sender })).status).toBe(200);
+    expect(delivered).toHaveLength(2);
+    expect(delivered[0].editMessageId).toBe(42);
+    expect(delivered[1].editMessageId).toBeUndefined();
+    expect(delivered[1].text).toBe(delivered[0].text);
+    expect(delivered[1].replyMarkup).toEqual(delivered[0].replyMarkup);
+  });
+
   it("keeps composing and My notes in the edition named by the reminder", async () => {
     await rows("INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES(82,'default-edition','Earlier edition',current_date-10,current_date+30)");
     const action = await createBotAction(db, { userId: CAPTAIN, chatId: CHAT, kind: "compose.page", hackathonId: EDITION });
@@ -337,7 +419,7 @@ describe("adding an update", () => {
     const { preview } = await composeTo("Vault Team", "Met the team, shipping the swap flow this week.");
     expect(preview.outcome).toBe("preview");
     expect(allText(preview)).toContain("Met the team");
-    expect(allText(preview)).toContain("Shared with the team");
+    expect(allText(preview)).toContain("Shared with Vault Team members");
 
     const saved = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")));
     expect(saved.outcome).toBe("saved");
@@ -394,7 +476,29 @@ describe("adding an update", () => {
 });
 
 describe("sensitive notes", () => {
-  it("packs a My notes page whose names and snippets expand during HTML escaping", async () => {
+  it("reads a long private note in place after reassignment, preserving every word", async () => {
+    const body = "&".repeat(1000);
+    expect((await createUpdate(member(CAPTAIN, ["captain"]), { projectId: PROJECT, hackathonId: EDITION, body, visibility: "sensitive" }, db)).ok).toBe(true);
+    await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: PROJECT, hackathonId: EDITION });
+    const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
+    const notes = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "My notes")));
+    let screen = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(notes, "Read")));
+    const screens: string[] = [];
+    for (let index = 0; index < 10; index++) {
+      expect(screen.replies).toHaveLength(1);
+      expect(screen.replies[0].newMessage).toBeUndefined();
+      expect(allText(screen)).toContain("Vault Team");
+      expect(buttons(screen).some((button) => button.text === "Rewrite")).toBe(false);
+      screens.push(allText(screen));
+      if (!buttons(screen).some((button) => button.text === "Next")) break;
+      screen = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(screen, "Next")));
+    }
+    expect(screens.length).toBeGreaterThan(1);
+    expect((screens.join("").match(/&amp;/g) ?? []).length).toBe(1000);
+    expect(screens.join("")).toContain("no longer have access to edit updates for Vault Team");
+  });
+
+  it("keeps My notes on one screen even when names and snippets expand during HTML escaping", async () => {
     await rows("UPDATE hq_projects SET name=$2 WHERE id=$1", [PROJECT, '"'.repeat(120)]);
     for (let index = 0; index < 4; index += 1) {
       const result = await createUpdate(member(CAPTAIN, ["captain"]), { projectId: PROJECT, hackathonId: EDITION, body: '"'.repeat(160), visibility: "shared", source: "hq" }, db);
@@ -402,14 +506,14 @@ describe("sensitive notes", () => {
     }
     const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
     const notes = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "My notes")));
-    expect(notes.replies.length).toBeGreaterThan(1);
+    expect(notes.replies).toHaveLength(1);
     expect(notes.replies.every((reply) => reply.text.length <= TELEGRAM_TEXT_LIMIT)).toBe(true);
     expect(buttons(notes).filter((button) => button.text.startsWith("Read"))).toHaveLength(4);
   });
   it("offers the sensitive audience to the assigned Captain and saves it restricted", async () => {
     const { preview } = await composeTo("Vault Team", "The lead is stretched thin, I am watching it.");
-    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive")));
-    expect(allText(marked)).toContain("Kept between you and Superteam NL admins");
+    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
+    expect(allText(marked)).toContain("Only you and Superteam NL admins");
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(marked, "Save")));
 
     const entries = await rows("SELECT visibility FROM hq_reporting_entries");
@@ -434,12 +538,12 @@ describe("sensitive notes", () => {
     // capability cannot hide an update from their own teammates.
     await rows(`INSERT INTO hq_project_members(project_id,name,colosseum_username,builder_user_id,joined_at) VALUES($1,$2,$2,$2,now())`, [PROJECT, CAPTAIN]);
     const { preview } = await composeTo("Vault Team", "Progress this week.");
-    expect(buttons(preview).map((button) => button.text)).not.toContain("Make it sensitive");
+    expect(buttons(preview).map((button) => button.text)).not.toContain("Keep private");
   });
 
   it("lets the author read their own note after a reassignment, and nothing else of that team", async () => {
     const { preview } = await composeTo("Vault Team", "Quiet concern about the roadmap.");
-    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive")));
+    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(marked, "Save")));
     // A team update the former Captain must NOT be able to reach afterwards.
     await createUpdate(
@@ -466,7 +570,7 @@ describe("sensitive notes", () => {
     // everything after the summary unreachable.
     const body = `${"A".repeat(300)} END_OF_NOTE`;
     const { preview } = await composeTo("Vault Team", body);
-    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive")));
+    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(marked, "Save")));
     await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: PROJECT, hackathonId: EDITION });
 
@@ -475,10 +579,10 @@ describe("sensitive notes", () => {
     const opened = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(notes, "Read")));
     expect(opened.outcome).toBe("note");
     expect(allText(opened)).toContain("END_OF_NOTE");
-    expect(allText(opened)).toContain("Sensitive.");
+    expect(allText(opened)).toContain("Private.");
     // Read only: the team is not theirs any more, so there is no Rewrite.
     expect(buttons(opened).map((button) => button.text)).not.toContain("Rewrite");
-    expect(allText(opened)).toContain("cannot be changed from here");
+    expect(allText(opened)).toContain("no longer have access to edit updates for Vault Team");
   });
 
   it("offers Rewrite from a note the Captain still holds the team for", async () => {
@@ -513,7 +617,7 @@ describe("sensitive notes", () => {
 
   it("shows another Captain nothing of a sensitive note, not even that it exists", async () => {
     const { preview } = await composeTo("Vault Team", "Only for admins.");
-    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive")));
+    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(marked, "Save")));
 
     await connectTelegram(OTHER_CAPTAIN, LEAD_TELEGRAM);
@@ -528,6 +632,31 @@ describe("sensitive notes", () => {
 });
 
 describe("editing a note", () => {
+  it("pages a conflict without saving and restarts review if HQ changes the saved version again", async () => {
+    const actor = member(CAPTAIN, ["captain"]);
+    const created = await createUpdate(actor, { projectId: PROJECT, hackathonId: EDITION, body: "Original" }, db);
+    if (!created.ok) throw new Error("fixture save failed");
+    const action = await createBotAction(db, { userId: CAPTAIN, chatId: CHAT, kind: "note.edit", projectId: PROJECT, entryId: created.entry.id });
+    await run(callbackUpdate(CAPTAIN_TELEGRAM, action.id));
+    const preview = await run(messageUpdate(CAPTAIN_TELEGRAM, "My draft"));
+    await editUpdate(actor, { entryId: created.entry.id, expectedVersion: 1, body: "A".repeat(4000), visibility: "shared" }, db);
+    const refused = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")));
+    expect(refused.outcome).toBe("conflict");
+    expect(allText(refused)).toContain("Page 1 of");
+    const next = buttonId(refused, "Next");
+    await editUpdate(actor, { entryId: created.entry.id, expectedVersion: 2, body: "B".repeat(4000), visibility: "shared" }, db);
+    const restarted = await run(callbackUpdate(CAPTAIN_TELEGRAM, next));
+    expect(allText(restarted)).toContain("Page 1 of");
+    expect(allText(restarted)).toContain("BBBB");
+    const final = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(restarted, "Next")));
+    expect(allText(final)).toContain("My draft");
+    expect(buttons(final).some((button) => button.text === "Save over the current version")).toBe(true);
+    expect(await rows("SELECT version FROM hq_reporting_entries")).toEqual([{ version: 3 }]);
+    expect(await rows("SELECT id FROM hq_telegram_outgoing")).toHaveLength(0);
+    expect((await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(final, "Save over the current version")))).outcome).toBe("saved");
+    expect(await rows("SELECT body, version FROM hq_reporting_entries")).toEqual([{ body: "My draft", version: 4 }]);
+  });
+
   it("rewrites the author's own note through the edit flow, keeping its history", async () => {
     const { preview } = await composeTo("Vault Team", "First version.");
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")));
@@ -635,13 +764,13 @@ describe("duplicate deliveries and stale actions", () => {
 
   it("never writes an update body into the outgoing queue", async () => {
     const { preview } = await composeTo("Vault Team", "A sentence that must not be stored twice.");
-    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive")));
+    const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(marked, "Save")));
     const queued = await rows("SELECT body FROM hq_telegram_outgoing");
     expect(queued).toHaveLength(1);
     expect(String(queued[0].body)).not.toContain("must not be stored twice");
     // The confirmation carries the team's status, which a Captain's note leaves as it was.
-    expect(String(queued[0].body)).toContain("Team status");
+    expect(String(queued[0].body)).toContain("Vault Team member update");
     expect(String(queued[0].body)).toContain("Not updated");
   });
 
@@ -684,7 +813,7 @@ describe("duplicate deliveries and stale actions", () => {
     expect(draft?.projectId).toBe(PROJECT);
     const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
     const list = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "My projects")));
-    expect(allText(list)).toContain("no teams assigned");
+    expect(allText(list)).toContain("No projects assigned");
   });
 
   it("takes the account's bot state with the account", async () => {
@@ -739,7 +868,7 @@ describe("a button belongs to one draft, and to one state of it", () => {
     const { preview } = await composeTo("Vault Team", "Single logical update");
     // Changing the audience re-renders the preview, so there are now two Save
     // buttons in the chat for one logical update.
-    const sensitive = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive")));
+    const sensitive = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
     const [first, second] = await Promise.all([
       run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save"))),
       run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(sensitive, "Save"))),
@@ -754,11 +883,11 @@ describe("a button belongs to one draft, and to one state of it", () => {
   it("does not let an old Share button re-open a different draft's sensitive note", async () => {
     await makeCaptain(CAPTAIN, SECOND_PROJECT);
     const original = await composeTo("Vault Team", "Original note");
-    const oldSensitive = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(original.preview, "Make it sensitive")));
+    const oldSensitive = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(original.preview, "Keep private")));
     const second = await composeTo("Bridge Team", "Sensitive Bridge information");
-    await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(second.preview, "Make it sensitive")));
+    await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(second.preview, "Keep private")));
 
-    const stale = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(oldSensitive, "Share it with the team")));
+    const stale = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(oldSensitive, "Share with Vault Team")));
     expectDeadButton(stale);
     // The Bridge note is still sensitive. It used to be quietly shared.
     expect(await readBotDraft(db, { userId: CAPTAIN, chatId: CHAT })).toMatchObject({ visibility: "sensitive", projectId: SECOND_PROJECT });
@@ -806,7 +935,7 @@ describe("one transaction around a save", () => {
 
   it("rebuilds changed visibility after a failed preview without applying the toggle twice", async () => {
     const { preview } = await composeTo("Vault Team", "Keep the sensitive audience");
-    const update = callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Make it sensitive"));
+    const update = callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private"));
     const refusing: TelegramSender = { sendMessage: async () => ({ ok: false, retryable: true, code: "telegram_500", detail: null }), answerCallbackQuery: async () => {} };
     expect((await handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender: refusing })).status).toBe(502);
     const sender = countingSender();
@@ -1011,37 +1140,40 @@ describe("escaping and delivery", () => {
     expect(await rows("SELECT id FROM hq_reporting_entries")).toHaveLength(1);
   });
 
-  it("keeps every message it actually sends inside Telegram's limit, and loses nothing of a long note", async () => {
-    // A thousand ampersands: each escapes to five characters, so the preview
-    // is well over one message. It used to be sliced in the transport, which
-    // cut an entity in half and took the audience line with it.
+  it("pages a long preview in place without losing text or allowing Save before the audience", async () => {
     const body = "&".repeat(1000);
     const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
     const list = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "Add update")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(list, "Vault Team")));
-
-    const sent: string[] = [];
+    const sent: Parameters<TelegramSender["sendMessage"]>[0][] = [];
     const sender: TelegramSender = {
       async sendMessage(message) {
-        // The transport refuses an over-length message rather than corrupting
-        // it, so anything the view got wrong shows up here as a failure.
-        if (message.text.length > TELEGRAM_TEXT_LIMIT) return { ok: false, retryable: false, code: "message_too_long", detail: null };
-        sent.push(message.text);
-        return { ok: true, messageId: sent.length };
+        expect(message.text.length).toBeLessThanOrEqual(TELEGRAM_TEXT_LIMIT);
+        sent.push(message);
+        return { ok: true, messageId: 42 };
       },
       async answerCallbackQuery() {},
     };
-    const result = await handleTelegramWebhookRequest(
-      webhookRequest(messageUpdate(CAPTAIN_TELEGRAM, body)),
-      { db, config: BOT_CONFIG, sender, hqOrigin: HQ },
-    );
-    expect(result.status).toBe(200);
-    expect(sent.length).toBeGreaterThan(1);
-    const joined = sent.join("");
-    // Every ampersand survived, whole, and the audience is still stated.
+    const handle = (update: TelegramUpdate) => handleTelegramWebhookRequest(webhookRequest(update), { db, config: BOT_CONFIG, sender, hqOrigin: HQ });
+    expect((await handle(messageUpdate(CAPTAIN_TELEGRAM, body))).status).toBe(200);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].editMessageId).toBeUndefined();
+    const keys = () => (sent.at(-1)!.replyMarkup as { inline_keyboard: { text: string; callback_data: string }[][] }).inline_keyboard.flat();
+    expect(keys().some((key) => key.text === "Save")).toBe(false);
+    let next = keys().find((key) => key.text === "Next");
+    while (next) {
+      const press = callbackUpdate(CAPTAIN_TELEGRAM, next.callback_data);
+      press.callback_query!.message!.message_id = 42;
+      expect((await handle(press)).status).toBe(200);
+      expect(sent.at(-1)?.editMessageId).toBe(42);
+      next = keys().find((key) => key.text === "Next");
+    }
+    const joined = sent.map((message) => message.text).join("");
     expect((joined.match(/&amp;/g) ?? []).length).toBe(1000);
     expect(joined).not.toMatch(/&(?!amp;|lt;|gt;|quot;|#39;)/);
-    expect(joined).toContain("Shared with the team");
+    expect(sent.at(-1)?.text).toContain("Shared with Vault Team members");
+    expect(keys().some((key) => key.text === "Save")).toBe(true);
+    expect(await rows("SELECT id FROM hq_reporting_entries")).toHaveLength(0);
   });
 
   it("does not deliver a queued message after the person turns bot messages off", async () => {

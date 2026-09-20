@@ -11,7 +11,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   ADD_UPDATE_MESSAGES,
-  AUDIENCE_NOTES,
+  audienceLine,
+  reportingRefusal,
   BOT_COPY,
   conflictMessages,
   EDIT_UPDATE_MESSAGES,
@@ -88,16 +89,28 @@ describe("what a week reads like", () => {
   });
 
   it("names the audience in full before a save, never after it", () => {
-    expect(previewMessages(PROJECT, "text", "shared").join("\n")).toContain(AUDIENCE_NOTES.shared);
-    expect(previewMessages(PROJECT, "text", "sensitive").join("\n")).toContain(AUDIENCE_NOTES.sensitive);
+    expect(previewMessages(PROJECT, "text", "shared").join("\n")).toContain(audienceLine("shared", PROJECT.projectName));
+    expect(previewMessages(PROJECT, "text", "sensitive").join("\n")).toContain(audienceLine("sensitive", PROJECT.projectName));
+  });
+
+  it("names project members separately from admins and escapes names in audience copy", () => {
+    const projectName = "<Orbit> & Co";
+    for (const visibility of ["shared", "sensitive"] as const) {
+      const text = previewMessages({ ...PROJECT, projectName }, "Note", visibility).join("\n");
+      expect(text).toContain("&lt;Orbit&gt; &amp; Co members");
+      expect(text).toContain("Superteam NL admins");
+      expect(text).not.toMatch(/\bthe team\b/i);
+    }
+    expect(reportingRefusal("create", "not_eligible", "Orbit")).toContain("Orbit is not in weekly reporting");
+    expect(reportingRefusal("edit", "audience_not_confirmed", "Orbit")).toContain("Orbit members");
   });
 
   it("says which week the save landed in and what it says now", () => {
-    expect(savedMessage("Vault Team", WEEK, true)).toBe("Saved to Vault Team.\nTeam status, week of 14 to 20 September: Updated.");
+    expect(savedMessage("Vault Team", WEEK, true)).toBe("Saved to Vault Team.\nVault Team member update, week of 14 to 20 September: Updated.");
     // Stated as the team's status, not as what the save did: a Captain's note
     // never completes the team's week, so "is now" would claim too much.
-    expect(savedMessage("Vault Team", WEEK, false)).toBe("Saved to Vault Team.\nTeam status, week of 14 to 20 September: Not updated.");
-    expect(savedMessage("Vault Team", null, false)).toBe("Saved to Vault Team.\nTeam status, this week: Not updated.");
+    expect(savedMessage("Vault Team", WEEK, false)).toBe("Saved to Vault Team.\nVault Team member update, week of 14 to 20 September: Not updated.");
+    expect(savedMessage("Vault Team", null, false)).toBe("Saved to Vault Team.\nVault Team member update, this week: Not updated.");
   });
 
   it("names the week that is open now when a draft crossed midnight, and keeps the text", () => {
@@ -188,8 +201,8 @@ describe("message length", () => {
 
   it("keeps the audience line, which used to be the first thing a truncation took", () => {
     const parts = previewMessages(PROJECT, AMPERSANDS, "shared");
-    expect(parts.join("\n")).toContain("Shared.");
-    expect(parts.join("\n")).toContain(AUDIENCE_NOTES.shared);
+    expect(parts.join("\n")).toContain("Shared with");
+    expect(parts.join("\n")).toContain(audienceLine("shared", PROJECT.projectName));
   });
 
   it("keeps an emoji whole rather than splitting a surrogate pair", () => {
@@ -215,7 +228,7 @@ describe("message length", () => {
   it("keeps a very long project name from crowding out the message", () => {
     const parts = previewMessages({ ...PROJECT, projectName: "N".repeat(1000) }, "body", "shared");
     for (const part of parts) expect(part.length).toBeLessThanOrEqual(TELEGRAM_TEXT_LIMIT);
-    expect(parts.join("\n")).toContain("Shared.");
+    expect(parts.join("\n")).toContain("Shared with");
   });
 });
 
@@ -263,7 +276,8 @@ describe("copy", () => {
     ...Object.values(LABELS),
     ...Object.values(ADD_UPDATE_MESSAGES),
     ...Object.values(EDIT_UPDATE_MESSAGES),
-    ...Object.values(AUDIENCE_NOTES),
+    audienceLine("shared", PROJECT.projectName),
+    audienceLine("sensitive", PROJECT.projectName),
     weekLine(WEEK),
     savedMessage("Team", WEEK, true),
     reminderMessage({ editionName: "Edition", period: { startDate: "2026-09-14", endDate: "2026-09-20" }, projectNames: ["Team"] }),

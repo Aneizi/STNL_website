@@ -92,6 +92,8 @@ export type TelegramSendOutcome =
 
 export type OutgoingMessage = {
   chatId: string;
+  /** Update this bot message in place instead of adding another message to the chat. */
+  editMessageId?: number;
   text: string;
   /** Inline keyboard, already built by the view. Passed through untouched. */
   replyMarkup?: unknown;
@@ -148,20 +150,29 @@ export function telegramSender(config: TelegramBotConfig): TelegramSender {
         return { ok: false, retryable: false, code: "message_too_long", detail: `${message.text.length} characters` };
       }
       try {
-        const { status, payload } = await call(config, "sendMessage", {
+        const editing = message.editMessageId !== undefined;
+        const { status, payload } = await call(config, editing ? "editMessageText" : "sendMessage", {
           chat_id: message.chatId,
+          ...(editing ? { message_id: message.editMessageId } : {}),
           text: message.text,
           ...(message.parseMode ? { parse_mode: message.parseMode } : {}),
-          ...(message.replyMarkup ? { reply_markup: message.replyMarkup } : {}),
+          ...(message.replyMarkup || editing ? { reply_markup: message.replyMarkup ?? { inline_keyboard: [] } } : {}),
           link_preview_options: { is_disabled: message.disableWebPagePreview !== false },
         });
         if (status >= 200 && status < 300 && payload?.ok) {
           return { ok: true, messageId: payload.result?.message_id ?? null };
         }
+        // A redelivery may repeat an edit Telegram already applied.
+        if (editing && status === 400 && payload?.description?.toLowerCase().includes("message is not modified")) {
+          return { ok: true, messageId: message.editMessageId! };
+        }
+        // Only these definite refusals allow a new message. Timeouts and
+        // rate limits must retry the edit, or they would create duplicates.
+        const unavailable = editing && status === 400 && /message to edit not found|message can't be edited/i.test(payload?.description ?? "");
         return {
           ok: false,
           retryable: !PERMANENT_STATUS.has(status),
-          code: `telegram_${status}`,
+          code: unavailable ? "edit_unavailable" : `telegram_${status}`,
           // Telegram's words, kept for an operator to read on the delivery
           // row. Never rendered into a chat.
           detail: payload?.description ?? null,

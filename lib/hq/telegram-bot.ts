@@ -42,22 +42,20 @@ import {
   type BotDraft,
 } from "./telegram-bot-store";
 import {
-  ADD_UPDATE_MESSAGES,
   BOT_COPY,
   conflictMessages,
   escapeHtml,
-  EDIT_UPDATE_MESSAGES,
   inlineKeyboard,
   LABELS,
   openHqButton,
   ownNoteMessages,
-  packMessages,
   page,
   periodChangedMessages,
   previewMessages,
   projectListLine,
   projectMessage,
   refusalMessages,
+  reportingRefusal,
   savedMessage,
   snippet,
   weekLine,
@@ -116,14 +114,29 @@ export type TelegramUpdate = {
  * failure, and it gives them that by NOT recording the update as done when a
  * send fails retryably, so Telegram redelivers it and the reply is rebuilt.
  *
- * A long note becomes several replies, built by `packMessages`, with the
- * keyboard on the last one.
+ * A callback edits its existing message; a text-entry prompt starts a new
+ * message. Long notes are paged, so each reply is still one screen.
  */
-export type BotReply = { chatId: string; text: string; keyboard: Keyboard };
+export type BotReply = { chatId: string; text: string; keyboard: Keyboard; newMessage?: boolean };
 
-/** Several messages that belong together: the keyboard goes on the last, so the controls follow the content. */
-function replies(chatId: string, texts: readonly string[], keyboard: Keyboard = []): BotReply[] {
-  return texts.map((text, index) => ({ chatId, text, keyboard: index === texts.length - 1 ? keyboard : [] }));
+/** Page through content in one message, showing save controls after the full preview and audience. */
+async function pagedReplies(
+  session: Session,
+  texts: readonly string[],
+  keyboard: Keyboard,
+  index: number,
+  pageButton: (label: string, index: number) => Promise<Button>,
+  lastPageKeyboard: Keyboard = [],
+): Promise<BotReply[]> {
+  const view = page(texts, index, 1);
+  const navigation: Button[] = [];
+  if (view.hasPrevious) navigation.push(await pageButton(LABELS.previous, view.index - 1));
+  if (view.hasNext) navigation.push(await pageButton(LABELS.next, view.index + 1));
+  return [{
+    chatId: session.chatId,
+    text: `${view.items[0]}${texts.length > 1 ? `\n\nPage ${view.index + 1} of ${texts.length}` : ""}`,
+    keyboard: [...(!view.hasNext ? lastPageKeyboard : []), navigation, ...keyboard].filter((row) => row.length),
+  }];
 }
 
 export type BotOutcome = {
@@ -213,7 +226,7 @@ const draftButton = (
   action: Omit<Parameters<typeof createBotAction>[1], "userId" | "chatId" | "draftId" | "draftRevision">,
 ): Promise<Button> => button(session, text, { ...action, hackathonId: draft.hackathonId, draftId: draft.id, draftRevision: draft.revision });
 
-async function mainMenu(session: Session): Promise<BotReply> {
+async function mainMenu(session: Session, notice?: string): Promise<BotReply> {
   const [projects, add, notes] = await Promise.all([
     button(session, LABELS.myProjects, { kind: "projects.page", page: 0 }),
     button(session, LABELS.addUpdate, { kind: "compose.page", page: 0 }),
@@ -221,7 +234,7 @@ async function mainMenu(session: Session): Promise<BotReply> {
   ]);
   return {
     chatId: session.chatId,
-    text: `<b>${BOT_COPY.menuTitle}</b>\n${BOT_COPY.menuBody}`,
+    text: `${notice ? `${escapeHtml(notice)}\n\n` : ""}<b>${BOT_COPY.menuTitle}</b>\n${BOT_COPY.menuBody}`,
     keyboard: [[projects], [add], [notes], openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH))],
   };
 }
@@ -246,7 +259,7 @@ async function loadBoard(session: Session): Promise<{ hackathonId: number; cards
   // there gets an empty board, exactly as they would from the menu.
   const hackathonId = session.hackathonId ?? (await builderStore().currentHackathonId());
   if (hackathonId === null) return null;
-  const board = await captainReportingBoard(session.actor, hackathonId, session.db);
+  const board = await captainReportingBoard(session.actor, hackathonId, session.db, session.now);
   const cards = [...board.cards].sort((a, b) =>
     byOutstandingFirst(
       { current: a.current, missedPeriods: a.status.missedPeriods, projectName: a.status.projectName },
@@ -307,7 +320,7 @@ async function projectReply(session: Session, card: CaptainReportingCard): Promi
       }),
     ]);
   }
-  rows.push([await button(session, LABELS.back, { kind: "projects.page", page: 0 })]);
+  rows.push([await button(session, LABELS.backToProjects, { kind: "projects.page", page: 0 })]);
   rows.push(openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH)));
   return { chatId: session.chatId, text: projectMessage(summary, card.teamContact), keyboard: rows.filter((row) => row.length) };
 }
@@ -321,10 +334,10 @@ async function projectReply(session: Session, card: CaptainReportingCard): Promi
  * sequence "prepare a preview, prepare another, press Save on the first"
  * a refusal rather than a save of the second team's text.
  */
-async function previewReplies(session: Session, draft: BotDraft, summary: ProjectSummary, mayUseSensitive: boolean): Promise<BotReply[]> {
+async function previewReplies(session: Session, draft: BotDraft, summary: ProjectSummary, mayUseSensitive: boolean, index = 0): Promise<BotReply[]> {
+  const save = await draftButton(session, draft, LABELS.save, { kind: "draft.save", projectId: draft.projectId });
   const rows: Keyboard = [
     [
-      await draftButton(session, draft, LABELS.save, { kind: "draft.save", projectId: draft.projectId }),
       await draftButton(session, draft, LABELS.edit, { kind: "draft.rewrite", projectId: draft.projectId }),
     ],
   ];
@@ -332,12 +345,13 @@ async function previewReplies(session: Session, draft: BotDraft, summary: Projec
     rows.push([
       draft.visibility === "shared"
         ? await draftButton(session, draft, LABELS.markSensitive, { kind: "draft.visibility", visibility: "sensitive" })
-        : await draftButton(session, draft, LABELS.markShared, { kind: "draft.visibility", visibility: "shared" }),
+        : await draftButton(session, draft, `${LABELS.markShared} ${snippet(summary.projectName, 40)}`, { kind: "draft.visibility", visibility: "shared" }),
     ]);
   }
   rows.push([await draftButton(session, draft, LABELS.cancel, { kind: "draft.cancel" })]);
   rows.push(openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH)));
-  return replies(session.chatId, previewMessages(summary, draft.body ?? "", draft.visibility), rows.filter((row) => row.length));
+  return pagedReplies(session, previewMessages(summary, draft.body ?? "", draft.visibility), rows, index,
+    (text, page) => draftButton(session, draft, text, { kind: "draft.preview", page }), [[save]]);
 }
 
 /* -------------------------------------------------------------------------
@@ -434,9 +448,9 @@ async function enableConsentPress(session: Session, callback: TelegramCallbackQu
   // construction, so a double tap or a redelivery writes nothing the second
   // time and records nothing either.
   await setBotConsent(session.actor, true);
-  const menu = await mainMenu(session);
+  const menu = await mainMenu(session, BOT_COPY.messagingOn);
   return {
-    replies: [{ chatId: session.chatId, text: BOT_COPY.messagingOn, keyboard: [] }, menu],
+    replies: [menu],
     answer: { callbackQueryId: callback.id },
     queued: false,
     outcome: "consent_enabled",
@@ -460,7 +474,7 @@ async function handleMessage(session: Session, message: TelegramMessage): Promis
     const command = commandOf(text);
     if (command === "/cancel") {
       await clearBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId });
-      return { replies: [{ chatId: session.chatId, text: BOT_COPY.cancelled, keyboard: [] }, await mainMenu(session)], answer: null, queued: false, outcome: "cancelled" };
+      return { replies: [await mainMenu(session, BOT_COPY.cancelled)], answer: null, queued: false, outcome: "cancelled" };
     }
     if (COMMANDS.has(command)) return { replies: [await mainMenu(session)], answer: null, queued: false, outcome: "menu" };
     return { replies: [await mainMenu(session)], answer: null, queued: false, outcome: "unknown_command" };
@@ -524,7 +538,7 @@ async function handleCallback(session: Session, callback: TelegramCallbackQuery)
     // Already used covers the double tap and the redelivered press: the first
     // one did the work, the second says so and writes nothing.
     return {
-      replies: [{ chatId: session.chatId, text: BOT_COPY.staleAction, keyboard: [] }, await mainMenu(session)],
+      replies: [await mainMenu(session, BOT_COPY.staleAction)],
       answer: { callbackQueryId: callback.id },
       queued: false,
       outcome: `action_${resolved.reason}`,
@@ -567,10 +581,14 @@ async function dispatch(session: Session, action: BotAction): Promise<Dispatched
       // A previous attempt may have advanced this draft before its preview
       // send failed. Rebuild the current controls without replaying the edit.
       const current = session.retry ? await readBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId }, session.now) : null;
-      if (current?.id === action.draftId) return resumeDraft(session, current);
+      if (current?.id === action.draftId) return resumeDraft(session, current, action.kind === "draft.preview" ? action.page : 0);
       return staleReply(session, "stale_draft");
     }
     switch (action.kind) {
+      case "draft.preview":
+        return resumeDraft(session, draft, action.page);
+      case "draft.review":
+        return reviewDraft(session, draft, action);
       case "draft.rewrite":
         return rewriteDraft(session, draft);
       case "draft.visibility":
@@ -579,7 +597,7 @@ async function dispatch(session: Session, action: BotAction): Promise<Dispatched
         if (!(await claimBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId, draftId: draft.id, expectedRevision: draft.revision }, session.now))) {
           return staleReply(session, "stale_draft");
         }
-        return { replies: [{ chatId: session.chatId, text: BOT_COPY.cancelled, keyboard: [] }, await mainMenu(session)], queued: false, outcome: "cancelled" };
+        return { replies: [await mainMenu(session, BOT_COPY.cancelled)], queued: false, outcome: "cancelled" };
       case "draft.save":
         return save(session, action, draft, {});
       case "draft.save_into_current":
@@ -649,7 +667,7 @@ async function projectFor(
 }
 
 const staleReply = async (session: Session, outcome: string): Promise<Dispatched> => ({
-  replies: [{ chatId: session.chatId, text: BOT_COPY.staleAction, keyboard: [] }, await mainMenu(session)],
+  replies: [await mainMenu(session, BOT_COPY.staleAction)],
   queued: false,
   outcome,
 });
@@ -660,10 +678,17 @@ async function openProject(session: Session, action: BotAction): Promise<Dispatc
   return { replies: [await projectReply(session, project.card)], queued: false, outcome: "project" };
 }
 
+const composeHeader = (project: ProjectSummary): string => [
+  `<b>${escapeHtml(snippet(project.projectName, 160))}</b>`,
+  escapeHtml(weekLine(project.current)),
+  "",
+  escapeHtml(BOT_COPY.compose),
+].join("\n");
+
 /** The composer prompt, whose only control is a Cancel bound to the draft it was opened for. */
 async function composePrompt(session: Session, draft: BotDraft, header: string, outcome: string): Promise<Dispatched> {
   const cancel = await draftButton(session, draft, LABELS.cancel, { kind: "draft.cancel" });
-  return { replies: [{ chatId: session.chatId, text: header, keyboard: [[cancel]] }], queued: false, outcome };
+  return { replies: [{ chatId: session.chatId, text: header, keyboard: [[cancel]], newMessage: true }], queued: false, outcome };
 }
 
 async function startCompose(session: Session, action: BotAction): Promise<Dispatched> {
@@ -694,32 +719,28 @@ async function startCompose(session: Session, action: BotAction): Promise<Dispat
     },
     session.now,
   );
-  const header = [
-    `<b>${escapeHtml(snippet(project.summary.projectName, 160))}</b>`,
-    escapeHtml(weekLine(project.summary.current)),
-    "",
-    escapeHtml(BOT_COPY.compose),
-  ].join("\n");
-  return composePrompt(session, draft, header, "compose");
+  return composePrompt(session, draft, composeHeader(project.summary), "compose");
 }
 
 async function rewriteDraft(session: Session, draft: BotDraft): Promise<Dispatched> {
+  const project = await projectFor(session, draft.projectId, draft.hackathonId);
+  if (!project) return staleReply(session, "stale_project");
   const advanced = await advanceBotDraft(
     session.db,
     { userId: session.actor.id, chatId: session.chatId, draftId: draft.id, expectedRevision: draft.revision, step: "awaiting_text", body: null },
     session.now,
   );
   if (!advanced) return staleReply(session, "stale_draft");
-  return composePrompt(session, advanced, escapeHtml(BOT_COPY.compose), "compose");
+  return composePrompt(session, advanced, composeHeader(project.summary), "compose");
 }
 
 /** Rebuild a draft's controls after a failed reply, while checking its current project access. */
-async function resumeDraft(session: Session, draft: BotDraft): Promise<Dispatched> {
+async function resumeDraft(session: Session, draft: BotDraft, index = 0): Promise<Dispatched> {
   session.hackathonId = draft.hackathonId;
   const project = await projectFor(session, draft.projectId, draft.hackathonId);
   if (!project) return staleReply(session, "stale_project");
-  if (draft.step === "awaiting_text") return composePrompt(session, draft, escapeHtml(BOT_COPY.compose), "compose");
-  return { replies: await previewReplies(session, draft, project.summary, project.mayUseSensitive), queued: false, outcome: "preview" };
+  if (draft.step === "awaiting_text") return composePrompt(session, draft, composeHeader(project.summary), "compose");
+  return { replies: await previewReplies(session, draft, project.summary, project.mayUseSensitive, index), queued: false, outcome: "preview" };
 }
 
 /**
@@ -744,7 +765,7 @@ async function setDraftVisibility(session: Session, action: BotAction, draft: Bo
     session.now,
   );
   if (!saved) return staleReply(session, "stale_draft");
-  if (saved.step !== "preview") return composePrompt(session, saved, escapeHtml(BOT_COPY.compose), "compose");
+  if (saved.step !== "preview") return composePrompt(session, saved, composeHeader(project.summary), "compose");
   return { replies: await previewReplies(session, saved, project.summary, project.mayUseSensitive), queued: false, outcome: "preview" };
 }
 
@@ -782,7 +803,7 @@ async function startEdit(session: Session, action: BotAction): Promise<Dispatche
     },
     session.now,
   );
-  return composePrompt(session, draft, escapeHtml(BOT_COPY.compose), "edit_compose");
+  return composePrompt(session, draft, composeHeader(project.summary), "edit_compose");
 }
 
 /** One entry by id, through the service's current project and audience checks. */
@@ -823,8 +844,8 @@ async function ownNotes(session: Session, action: BotAction): Promise<Dispatched
   for (const entry of own.entries) {
     lines.push(
       "",
-      `<b>${escapeHtml(snippet(entry.projectName, 120))}</b>${entry.visibility === "sensitive" ? escapeHtml(" (sensitive)") : ""}`,
-      `<blockquote>${escapeHtml(snippet(entry.body, 140))}</blockquote>`,
+      `<b>${escapeHtml(snippet(entry.projectName, 60))}</b>${entry.visibility === "sensitive" ? escapeHtml(" (private)") : ""}`,
+      `<blockquote>${escapeHtml(snippet(entry.body, 60))}</blockquote>`,
     );
     // One button per note, because a snippet is a way to recognise a note and
     // never a way to read it: without this, everything after the snippet was
@@ -839,7 +860,7 @@ async function ownNotes(session: Session, action: BotAction): Promise<Dispatched
   }
   rows.push([back]);
   rows.push(openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH)));
-  return { replies: replies(session.chatId, packMessages(lines.map((fixed) => ({ fixed }))), rows.filter((row) => row.length)), queued: false, outcome: "notes" };
+  return { replies: [{ chatId: session.chatId, text: lines.join("\n"), keyboard: rows.filter((row) => row.length) }], queued: false, outcome: "notes" };
 }
 
 /**
@@ -865,7 +886,7 @@ async function openOwnNote(session: Session, action: BotAction): Promise<Dispatc
   } else {
     rows.push([]);
   }
-  rows.push([await button(session, LABELS.back, { kind: "notes.page" })]);
+  rows.push([await button(session, LABELS.backToNotes, { kind: "notes.page" })]);
   rows.push(openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH)));
   const messages = ownNoteMessages({
     projectName: note.projectName,
@@ -873,9 +894,14 @@ async function openOwnNote(session: Session, action: BotAction): Promise<Dispatc
     visibility: note.visibility,
     periodStart: note.periodStart,
     periodEnd: note.periodEnd,
+    readOnly: !editable?.canEdit,
   });
-  const text = editable?.canEdit ? messages : [...messages, escapeHtml(BOT_COPY.noteReadOnly)];
-  return { replies: replies(session.chatId, text, rows.filter((row) => row.length)), queued: false, outcome: "note" };
+  return {
+    replies: await pagedReplies(session, messages, rows, action.page,
+      (text, page) => button(session, text, { kind: "note.open", entryId: note.id, projectId: note.projectId, page })),
+    queued: false,
+    outcome: "note",
+  };
 }
 
 /** One of the account's own notes by id, through the author-only service read. */
@@ -920,7 +946,7 @@ class SaveAborted extends Error {
     | { kind: "stale" }
     | { kind: "period_changed"; currentPeriod: ReportingPeriod | null; body: string }
     | { kind: "conflict"; current: ReportingEntryView; body: string }
-    | { kind: "refused"; message: string; body: string; outcome: string }) {
+    | { kind: "refused"; reason: string; body: string; outcome: string }) {
     super("save aborted");
     this.name = "SaveAborted";
   }
@@ -964,7 +990,13 @@ async function save(
       // what keeps the message honest about that.
       const [status] = await reportingStatus(tx, { hackathonId: claimed.hackathonId, projectIds: [claimed.projectId], atMs: session.now });
       const period = status?.current ?? null;
-      const keyboard: Keyboard = [openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH))].filter((row) => row.length);
+      const menuAction = await createBotAction(tx, {
+        userId: session.actor.id, chatId: session.chatId, kind: "menu", hackathonId: claimed.hackathonId,
+      }, session.now);
+      const keyboard: Keyboard = [
+        [{ text: LABELS.back, callbackId: menuAction.id }],
+        openHqButton(hqLink(session.hqOrigin, CAPTAIN_PATH)),
+      ].filter((row) => row.length);
       await enqueueBotMessage(tx, {
         chatId: session.chatId,
         userId: session.actor.id,
@@ -1006,7 +1038,7 @@ async function saveNew(session: Session, draft: BotDraft, options: { intoCurrent
   if (result.reason === "period_changed") {
     throw new SaveAborted({ kind: "period_changed", currentPeriod: result.currentPeriod ?? null, body: draft.body ?? "" });
   }
-  throw new SaveAborted({ kind: "refused", message: ADD_UPDATE_MESSAGES[result.reason] ?? BOT_COPY.saveFailed, body: draft.body ?? "", outcome: "create_refused" });
+  throw new SaveAborted({ kind: "refused", reason: result.reason, body: draft.body ?? "", outcome: "create_refused" });
 }
 
 /** An edit of the author's own entry, or the refusal that stops the transaction and gives the draft back. */
@@ -1029,7 +1061,7 @@ async function saveEdit(session: Session, draft: BotDraft, options: { overrideVe
   if (result.reason === "conflict" && result.current) {
     throw new SaveAborted({ kind: "conflict", current: result.current, body: draft.body ?? "" });
   }
-  throw new SaveAborted({ kind: "refused", message: EDIT_UPDATE_MESSAGES[result.reason] ?? BOT_COPY.saveFailed, body: draft.body ?? "", outcome: "edit_refused" });
+  throw new SaveAborted({ kind: "refused", reason: result.reason, body: draft.body ?? "", outcome: "edit_refused" });
 }
 
 /**
@@ -1041,24 +1073,55 @@ async function saveEdit(session: Session, draft: BotDraft, options: { overrideVe
  * collapsed into a generic error, which is the rule phase 3 set for imports
  * and the case the plan names for HQ and Telegram editing at once.
  */
-async function abortReply(session: Session, draft: BotDraft, detail: SaveAborted["detail"]): Promise<Dispatched> {
+async function abortReply(session: Session, draft: BotDraft, detail: SaveAborted["detail"], index = 0): Promise<Dispatched> {
   if (detail.kind === "stale") return staleReply(session, "stale_draft");
+  const project = await projectFor(session, draft.projectId, draft.hackathonId);
+  if (!project) return staleReply(session, "stale_project");
   const cancel = await draftButton(session, draft, LABELS.cancel, { kind: "draft.cancel" });
+  const cursor = detail.kind === "refused" ? `${detail.outcome}:${detail.reason}` : detail.kind;
+  const navigation = (text: string, page: number) => draftButton(session, draft, text, {
+    kind: "draft.review", cursor, page, expectedVersion: detail.kind === "conflict" ? detail.current.version : null,
+  });
+  let messages: string[];
+  let saveButton: Button | null = null;
   if (detail.kind === "period_changed") {
-    const move = await draftButton(session, draft, LABELS.saveIntoNewWeek, { kind: "draft.save_into_current", projectId: draft.projectId });
-    return {
-      replies: replies(session.chatId, periodChangedMessages(detail.currentPeriod, detail.body), [[move], [cancel]]),
-      queued: false,
-      outcome: "period_changed",
-    };
+    if (detail.currentPeriod) {
+      saveButton = await draftButton(session, draft, LABELS.saveIntoNewWeek, { kind: "draft.save_into_current", projectId: draft.projectId });
+    }
+    messages = periodChangedMessages(detail.currentPeriod, detail.body, project.summary.projectName);
+  } else if (detail.kind === "conflict") {
+    saveButton = await draftButton(session, draft, LABELS.saveAnyway, { kind: "draft.save_over", projectId: draft.projectId, expectedVersion: detail.current.version });
+    messages = conflictMessages(detail.current.body, detail.body, project.summary.projectName);
+  } else {
+    messages = refusalMessages(reportingRefusal(detail.outcome === "create_refused" ? "create" : "edit", detail.reason, project.summary.projectName), detail.body, project.summary.projectName);
   }
-  if (detail.kind === "conflict") {
-    const again = await draftButton(session, draft, LABELS.saveAnyway, { kind: "draft.save_over", projectId: draft.projectId, expectedVersion: detail.current.version });
-    return {
-      replies: replies(session.chatId, conflictMessages(detail.current.body, detail.body), [[again], [cancel]]),
-      queued: false,
-      outcome: "conflict",
-    };
+  return {
+    replies: await pagedReplies(session, messages, [[cancel]], index, navigation, saveButton ? [[saveButton]] : []),
+    queued: false,
+    outcome: detail.kind === "refused" ? detail.outcome : detail.kind,
+  };
+}
+
+/** Paging a refused save only re-reads current facts. It never tries the write again. */
+async function reviewDraft(session: Session, draft: BotDraft, action: BotAction): Promise<Dispatched> {
+  const project = await projectFor(session, draft.projectId, draft.hackathonId);
+  if (!project || draft.step !== "preview") return staleReply(session, "stale_draft");
+  const body = draft.body ?? "";
+  if (action.cursor === "period_changed") {
+    const periods = await listReportingPeriods(session.db, draft.hackathonId);
+    const currentPeriod = periods.find((period) => period.id === project.card.current?.periodId) ?? null;
+    return abortReply(session, draft, { kind: "period_changed", currentPeriod, body }, action.page);
   }
-  return { replies: replies(session.chatId, refusalMessages(detail.message, detail.body), [[cancel]]), queued: false, outcome: detail.outcome };
+  if (action.cursor === "conflict" && draft.entryId) {
+    const current = await findEntry(session, draft.projectId, draft.hackathonId, draft.entryId);
+    if (!current?.canEdit || !current.authorIsYou) return staleReply(session, "stale_entry");
+    // If HQ saved again while the captain was reading, restart the review
+    // so an overwrite never skips straight to the end of an unseen version.
+    return abortReply(session, draft, { kind: "conflict", current, body }, action.expectedVersion === current.version ? action.page : 0);
+  }
+  const [outcome, reason] = (action.cursor ?? "").split(":");
+  if ((outcome === "create_refused" || outcome === "edit_refused") && reason) {
+    return abortReply(session, draft, { kind: "refused", outcome, reason, body }, action.page);
+  }
+  return staleReply(session, "stale_draft");
 }

@@ -27,7 +27,6 @@
 
 import {
   ADD_UPDATE_MESSAGES,
-  AUDIENCE_NOTES,
   deadlineLabel,
   EDIT_UPDATE_MESSAGES,
   missedLabel,
@@ -79,6 +78,8 @@ export function snippet(body: string, length = SNIPPET): string {
  * always shorter than Telegram's real limit, never longer.
  */
 export const TELEGRAM_TEXT_LIMIT = 4096;
+/** Leave room for the page indicator added to an in-place screen. */
+export const TELEGRAM_SCREEN_LIMIT = 4000;
 
 const OPEN_QUOTE = "<blockquote>";
 const CLOSE_QUOTE = "</blockquote>";
@@ -215,15 +216,17 @@ export const LABELS = {
   openHq: "Open HQ",
   connect: "Connect to HQ",
   back: "Back to menu",
-  backToProject: "Back to the project",
+  backToProject: "Back to project",
+  backToProjects: "Back to projects",
+  backToNotes: "Back to notes",
   previous: "Previous",
   next: "Next",
   save: "Save",
   edit: "Rewrite",
   read: "Read",
   cancel: "Cancel",
-  markSensitive: "Make it sensitive",
-  markShared: "Share it with the team",
+  markSensitive: "Keep private",
+  markShared: "Share with",
   saveIntoNewWeek: "Save into the week that is open now",
   saveAnyway: "Save over the current version",
   enableMessages: "Turn on bot messages",
@@ -239,33 +242,31 @@ export const REMINDER_PROJECT_LIMIT = 20;
 export const BOT_COPY = {
   privateOnly: "I only handle reporting in a private chat. Message me directly and I will pick up from there.",
   notConnected:
-    "Welcome to Superteam NL HQ.\n\nThis Telegram account is not connected to an HQ account yet. Open HQ, sign in, and connect Telegram from your account page. Then send me /start again.",
+    "This Telegram account is not connected to an HQ account yet. Open HQ to sign in and connect Telegram, then send /start.",
   noHqAccountLink: "Open HQ to sign in and connect Telegram, then send me /start again.",
   messagingOff:
-    "Your HQ account is connected.\n\nBefore I can work with you here, turn on bot messages. That is the permission that lets Superteam NL reach you in Telegram, and you can turn it off again at any time from your HQ account page.",
+    "Turn on bot messages to receive updates and reminders here. You can turn them off in your HQ account.",
   messagingOn: "Bot messages are on. You can turn them off again from your HQ account page at any time.",
   noCaptainAccess:
-    "Your HQ account is connected.\n\nThis bot is for Captains, and your account does not have Captain access yet. Superteam NL grants it, either directly or through an invitation link. Ask in the Superteam NL Telegram group and someone will sort it out. Everything else in HQ keeps working in the meantime.",
+    "This bot needs Captain access. Ask in the Superteam NL Telegram group or accept a captain invitation in HQ.",
   menuTitle: "Superteam NL HQ",
   menuBody: "Pick what you want to do.",
   noProjects:
-    "You have no teams assigned right now. When Superteam NL assigns you one it will show up here, and nothing is needed from you before then.",
-  projectsTitle: "Your teams",
-  chooseProject: "Pick a team to add an update to.",
+    "No projects assigned yet. They will appear here when Superteam NL assigns you as captain.",
+  projectsTitle: "Your projects",
+  chooseProject: "Choose a project for your update.",
   compose: "Send your update as one message. Plain text, no attachments.",
   composeTooLong: "That is longer than an update can be. Shorten it and send it again.",
   composeEmpty: "That came through empty. Send the text of your update.",
   attachmentIgnored: "I can only read plain text here. Send your update as a message.",
   previewTitle: "Here is what will be saved.",
   cancelled: "Nothing was saved. The text is gone.",
-  draftExpired: "That draft is too old, so I let it go. Start again from the menu and your team will be there.",
+  draftExpired: "That draft expired. Choose a project to start again.",
   staleAction:
-    "That button is no longer good. Things may have changed since the message it came from, so start again from the menu.",
-  noNotes: "You have not written any notes yet. Add one from a team above and it will show up here.",
+    "That button is no longer active. Use the menu below.",
+  noNotes: "No notes yet. Choose Add update from the menu to write one.",
   notesTitle: "Your notes",
   notesBody: "These are the notes you wrote. Pick one to read it in full.",
-  noteReadOnly:
-    "This note is yours to read, but the team is not assigned to you any more, so it cannot be changed from here.",
   unknownCommand: "I did not recognise that. Use the menu below.",
   saveFailed: "I could not save that. The text is below so you do not lose it. Try again in a moment.",
   hqUnavailable: "HQ is not reachable from here right now. Try again in a moment.",
@@ -273,7 +274,7 @@ export const BOT_COPY = {
   // nothing else: no update text, no note, no audience word, because a
   // notification reaches a chat whose contents HQ does not control.
   reminderTitle: "Weekly update reminder",
-  reminderLead: "These teams still need this week's update:",
+  reminderLead: "These projects still need this week's update:",
   reminderTail: "Add an update here, or open HQ.",
 } as const;
 
@@ -299,24 +300,48 @@ export type ProjectSummary = {
 export function projectListLine(project: ProjectSummary): string {
   const status = project.current ? statusLabel(project.current.completed) : "Not in weekly reporting yet";
   const missed = missedLabel(project.missedPeriods);
-  return `${escapeHtml(project.projectName)}\n${escapeHtml(missed ? `${status}. ${missed}.` : `${status}.`)}`;
+  return `${escapeHtml(snippet(project.projectName, 80))}\n${escapeHtml(missed ? `${status}. ${missed}.` : `${status}.`)}`;
 }
 
 /** A project's own screen: which week it is, where it stands, and what can be done about it. */
 export function projectMessage(project: ProjectSummary, contact: string | null): string {
-  const lines = [`<b>${escapeHtml(project.projectName)}</b>`, escapeHtml(weekLine(project.current))];
+  const lines = [`<b>${escapeHtml(snippet(project.projectName, 80))}</b>`, escapeHtml(weekLine(project.current))];
   const missed = missedLabel(project.missedPeriods);
   if (missed) lines.push(escapeHtml(`${missed} so far.`));
-  if (contact) lines.push(escapeHtml(`Team contact: ${contact}`));
+  if (contact) lines.push(escapeHtml(`${snippet(project.projectName, 80)} contact: ${snippet(contact, 240)}`));
   return lines.join("\n");
 }
 
 /** A project name as a heading, capped so a very long one cannot crowd out the rest of a message. */
 const heading = (name: string) => `<b>${escapeHtml(snippet(name, 160))}</b>`;
 
+/** Keep the project visible while paging, reserving room before packing the body. */
+function projectMessages(parts: MessagePart[], projectName?: string): string[] {
+  const title = projectName ? `${heading(projectName)}\n` : "";
+  return packMessages(parts, TELEGRAM_SCREEN_LIMIT - title.length).map((text) => `${title}${text}`);
+}
+
 /** What each audience means, as the preview says it. */
-export const audienceLine = (visibility: "shared" | "sensitive"): string =>
-  visibility === "sensitive" ? `Sensitive. ${AUDIENCE_NOTES.sensitive}` : `Shared. ${AUDIENCE_NOTES.shared}`;
+export const audienceLine = (visibility: "shared" | "sensitive", projectName: string): string => {
+  const name = snippet(projectName, 160);
+  return visibility === "sensitive"
+    ? `Private. Only you and Superteam NL admins can see this. ${name} members cannot see it.`
+    : `Shared with ${name} members, their captain and Superteam NL admins.`;
+};
+
+export const noteReadOnly = (projectName: string): string =>
+  `You can read this note, but you no longer have access to edit updates for ${snippet(projectName, 160)}.`;
+
+/** Project-specific wording for service refusals, without changing the website's copy. */
+export function reportingRefusal(kind: "create" | "edit", reason: string, projectName: string): string {
+  const name = snippet(projectName, 160);
+  if (reason === "visibility_not_allowed") return `Only the captain assigned to ${name} can keep a note private.`;
+  if (kind === "create" && reason === "not_authorized") return `${name} is not available to your account.`;
+  if (kind === "create" && reason === "not_eligible") return `${name} is not in weekly reporting yet. Ask Superteam NL to add it.`;
+  if (kind === "edit" && reason === "audience_not_confirmed") return `Confirm who can read this note before sharing it with ${name} members.`;
+  const messages = kind === "create" ? ADD_UPDATE_MESSAGES : EDIT_UPDATE_MESSAGES;
+  return Object.hasOwn(messages, reason) ? messages[reason as keyof typeof messages] : BOT_COPY.saveFailed;
+}
 
 /**
  * The preview: the text as it will be saved, and who will be able to read it.
@@ -328,11 +353,11 @@ export const audienceLine = (visibility: "shared" | "sensitive"): string =>
  * message of their own rather than dropping them.
  */
 export function previewMessages(project: ProjectSummary, body: string, visibility: "shared" | "sensitive"): string[] {
-  return packMessages([
-    { fixed: `${heading(project.projectName)}\n${escapeHtml(weekLine(project.current))}\n\n${escapeHtml(BOT_COPY.previewTitle)}` },
+  return projectMessages([
+    { fixed: `${escapeHtml(weekLine(project.current))}\n\n${escapeHtml(BOT_COPY.previewTitle)}` },
     { quote: body },
-    { fixed: escapeHtml(audienceLine(visibility)) },
-  ]);
+    { fixed: escapeHtml(audienceLine(visibility, project.projectName)) },
+  ], project.projectName);
 }
 
 /**
@@ -346,7 +371,7 @@ export function savedMessage(projectName: string, period: { startDate: string; e
   // Capped, because this is the one message that goes through the durable
   // queue, where an over-length row would be a permanent skip rather than a
   // second message.
-  return `Saved to ${escapeHtml(snippet(projectName, 160))}.\n${escapeHtml(`Team status, ${week}: ${statusLabel(completed)}.`)}`;
+  return `Saved to ${escapeHtml(snippet(projectName, 160))}.\n${escapeHtml(`${snippet(projectName, 160)} member update, ${week}: ${statusLabel(completed)}.`)}`;
 }
 
 /**
@@ -358,28 +383,28 @@ export function savedMessage(projectName: string, period: { startDate: string; e
  * are the service's own wording from `reporting-view.ts` plus the fact the
  * chat needs in order to offer the button.
  */
-export function periodChangedMessages(currentPeriod: { startDate: string; endDate: string } | null, body: string): string[] {
+export function periodChangedMessages(currentPeriod: { startDate: string; endDate: string } | null, body: string, projectName?: string): string[] {
   const week = currentPeriod ? `The week that is open now runs ${periodRangeLabel(currentPeriod.startDate, currentPeriod.endDate)}.` : "There is no open week right now.";
-  return packMessages([
+  return projectMessages([
     { fixed: `${escapeHtml(ADD_UPDATE_MESSAGES.period_changed)}\n${escapeHtml(week)}` },
     { quote: body },
-  ]);
+  ], projectName);
 }
 
 /** Both versions, in full. Two bodies can easily outrun one message, so they are packed rather than concatenated. */
-export function conflictMessages(currentBody: string, yourBody: string): string[] {
-  return packMessages([
+export function conflictMessages(currentBody: string, yourBody: string, projectName?: string): string[] {
+  return projectMessages([
     { fixed: escapeHtml(EDIT_UPDATE_MESSAGES.conflict) },
     { fixed: escapeHtml("Saved now:") },
     { quote: currentBody },
     { fixed: escapeHtml("Yours:") },
     { quote: yourBody },
-  ]);
+  ], projectName);
 }
 
 /** A refusal that keeps the text: the service's own wording, then the words somebody typed, in full. */
-export function refusalMessages(message: string, body: string): string[] {
-  return packMessages([{ fixed: escapeHtml(message) }, { quote: body }]);
+export function refusalMessages(message: string, body: string, projectName?: string): string[] {
+  return projectMessages([{ fixed: escapeHtml(message) }, { quote: body }], projectName);
 }
 
 /**
@@ -389,13 +414,14 @@ export function refusalMessages(message: string, body: string): string[] {
  * account no longer holds, so it must not be a 220 character summary of
  * itself: everything after that was simply unreachable.
  */
-export function ownNoteMessages(note: { projectName: string; body: string; visibility: "shared" | "sensitive"; periodStart: string; periodEnd: string }): string[] {
-  return packMessages([
+export function ownNoteMessages(note: { projectName: string; body: string; visibility: "shared" | "sensitive"; periodStart: string; periodEnd: string; readOnly?: boolean }): string[] {
+  return projectMessages([
     {
-      fixed: `${heading(note.projectName)}\n${escapeHtml(`Week of ${periodRangeLabel(note.periodStart, note.periodEnd)}.`)}\n${escapeHtml(audienceLine(note.visibility))}`,
+      fixed: `${escapeHtml(`Week of ${periodRangeLabel(note.periodStart, note.periodEnd)}.`)}\n${escapeHtml(audienceLine(note.visibility, note.projectName))}`,
     },
     { quote: note.body },
-  ]);
+    ...(note.readOnly ? [{ fixed: escapeHtml(noteReadOnly(note.projectName)) }] : []),
+  ], note.projectName);
 }
 
 export type ReminderView = {

@@ -210,6 +210,8 @@ export type BotActionKind =
   | "draft.cancel"
   | "draft.rewrite"
   | "draft.visibility"
+  | "draft.preview"
+  | "draft.review"
   | "draft.save_into_current"
   | "draft.save_over"
   | "consent.enable";
@@ -231,7 +233,7 @@ export const isWriteAction = (kind: BotActionKind): boolean => WRITE_KINDS.has(k
 
 /** The kinds that act on a draft, and which are therefore pinned to the exact draft generation they were rendered from. */
 const DRAFT_KINDS: ReadonlySet<BotActionKind> = new Set([
-  "draft.save", "draft.save_into_current", "draft.save_over", "draft.cancel", "draft.rewrite", "draft.visibility",
+  "draft.save", "draft.save_into_current", "draft.save_over", "draft.cancel", "draft.rewrite", "draft.visibility", "draft.preview", "draft.review",
 ]);
 
 export const isDraftAction = (kind: BotActionKind): boolean => DRAFT_KINDS.has(kind);

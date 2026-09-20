@@ -97,7 +97,7 @@ const chat = z.object({ id: z.union([z.number(), z.string()]), type: z.string().
 const user = z.object({ id: z.union([z.number(), z.string()]), is_bot: z.boolean().optional() }).passthrough();
 const message = z
   .object({
-    message_id: z.number().optional(),
+    message_id: z.number().int().positive().optional(),
     chat: chat.optional(),
     from: user.optional(),
     text: z.string().max(8192).optional(),
@@ -219,12 +219,22 @@ export async function handleTelegramWebhookRequest(request: Request, dependencie
         retryableSendFailure = "reply_budget";
         break;
       }
-      const outcome = await sender.sendMessage({
+      const target = update.data.callback_query?.message?.message_id;
+      const outgoing = {
         chatId: reply.chatId,
         text: reply.text,
-        parseMode: "HTML",
+        parseMode: "HTML" as const,
+        ...(target && !reply.newMessage ? { editMessageId: target } : {}),
         ...(reply.keyboard.length ? { replyMarkup: inlineKeyboard(reply.keyboard) } : {}),
-      });
+      };
+      let outcome = await sender.sendMessage(outgoing);
+      if (!outcome.ok && outcome.code === "edit_unavailable") {
+        if (Date.now() + TELEGRAM_REQUEST_TIMEOUT_MS >= deadlineMs) {
+          retryableSendFailure = "reply_budget";
+          break;
+        }
+        outcome = await sender.sendMessage({ ...outgoing, editMessageId: undefined });
+      }
       if (!outcome.ok && outcome.retryable) {
         retryableSendFailure = outcome.code;
         break;
