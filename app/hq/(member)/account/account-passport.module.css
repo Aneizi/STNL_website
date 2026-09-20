@@ -3,7 +3,7 @@
  * main carries the focus ring for links and buttons; inputs get theirs here.
  * Selectors are prefixed where app/hq/hq.css's `.hq a`, `.hq a:hover` and
  * `.hq input::placeholder` would otherwise win. */
-.main { padding:56px clamp(20px,4vw,64px) 96px; overflow-wrap:anywhere; }
+.main { width:100%; max-width:1200px; box-sizing:border-box; margin-inline:auto; padding:56px clamp(20px,4vw,64px) 96px; overflow-wrap:anywhere; }
 .main .home { display:inline-flex; align-items:center; gap:8px; min-height:44px; font-size:15px; color:#57534a; margin-bottom:20px; text-decoration:none; }
 .main .home:hover { color:#16130f; text-decoration:none; }
 .layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(360px,540px); gap:clamp(32px,5vw,64px); align-items:start; }
