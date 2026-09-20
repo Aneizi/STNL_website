@@ -7,7 +7,7 @@
 // assertion below is an assertion about what the service would actually
 // return in production.
 import type { PGlite } from "@electric-sql/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn() }));
@@ -119,8 +119,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => { await pg.close(); });
+afterEach(() => vi.useRealTimers());
 
 beforeEach(async () => {
+  // Keep JavaScript and the embedded database inside the fixture reporting week.
+  vi.setSystemTime(new Date("2026-09-16T09:00:00.000Z"));
   await pg.exec(`
     DELETE FROM hq_reporting_entries; DELETE FROM hq_reporting_outcomes; DELETE FROM hq_reporting_eligibility;
     DELETE FROM hq_reporting_periods; DELETE FROM hq_reporting_config;

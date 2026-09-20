@@ -11,7 +11,7 @@
 // hand back the entry that is saved now, because the screens keep the
 // person's unsaved text either way.
 import type { PGlite } from "@electric-sql/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -137,8 +137,11 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => { await pg.close(); });
+afterEach(() => vi.useRealTimers());
 
 beforeEach(async () => {
+  // Keep JavaScript and the embedded database inside the fixture reporting week.
+  vi.setSystemTime(new Date("2026-09-16T10:00:00.000Z"));
   vi.clearAllMocks();
   mocks.builderDatabase.mockReturnValue(db);
   mocks.requireHackathon.mockResolvedValue({ id: EDITION, name: "Worlds Fair", slug: "worlds-fair", startDate: "2026-09-14", endDate: "2026-10-12" });

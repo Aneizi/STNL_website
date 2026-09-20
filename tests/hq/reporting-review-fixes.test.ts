@@ -11,7 +11,7 @@
 // Nothing is mocked except `server-only`: the authorization decisions are the
 // real ones over real rows.
 import type { PGlite } from "@electric-sql/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn() }));
@@ -108,8 +108,11 @@ beforeAll(async () => {
 });
 
 afterAll(async () => { await pg.close(); });
+afterEach(() => vi.useRealTimers());
 
 beforeEach(async () => {
+  // Keep JavaScript and the embedded database inside the fixture reporting week.
+  vi.setSystemTime(IN_WEEK_ONE);
   await pg.exec(`
     DELETE FROM hq_reporting_entries; DELETE FROM hq_reporting_outcomes;
     DELETE FROM hq_reporting_pause_intervals; DELETE FROM hq_reporting_eligibility;

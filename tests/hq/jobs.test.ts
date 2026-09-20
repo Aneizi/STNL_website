@@ -8,7 +8,7 @@
 // the outgoing queue are the real ones over real rows, so an assertion below
 // is an assertion about what the job would do in production.
 import type { PGlite } from "@electric-sql/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 // Source syncing has its own database and transport integration suite.
 // Reminder tests must never call Colosseum for their synthetic projects.
 vi.mock("@/lib/hq/colosseum-updates", () => ({ syncDueColosseumUpdates: vi.fn(async () => ({ synced: 0, failed: 0, skipped: 0, stoppedOnBudget: false })) }));
@@ -164,8 +164,11 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => { await pg.close(); });
+afterEach(() => vi.useRealTimers());
 
 beforeEach(async () => {
+  // Keep JavaScript and the embedded database inside the fixture reporting week.
+  vi.setSystemTime(NUDGE_1);
   await pg.exec(`
     DELETE FROM hq_reminder_deliveries;
     DELETE FROM hq_telegram_outgoing; DELETE FROM hq_telegram_actions; DELETE FROM hq_telegram_drafts; DELETE FROM hq_telegram_updates;

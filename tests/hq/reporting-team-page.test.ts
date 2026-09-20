@@ -17,7 +17,7 @@
 import type { PGlite } from "@electric-sql/pglite";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -96,10 +96,12 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => { await pg.close(); });
+afterEach(() => vi.useRealTimers());
 
 beforeEach(async () => {
   vi.clearAllMocks();
   vi.useRealTimers();
+  vi.setSystemTime(MONDAY_IN_WEEK_ONE);
   mocks.builderDatabase.mockReturnValue(db);
   await pg.exec(`
     DELETE FROM hq_reporting_entries; DELETE FROM hq_reporting_outcomes; DELETE FROM hq_reporting_eligibility;
