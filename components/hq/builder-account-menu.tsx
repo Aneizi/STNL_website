@@ -11,7 +11,7 @@ import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { memberAuthClient } from '@/lib/hq/member-auth-client';
 import styles from './builder-shell.module.css';
 
-/** What the header shows for a signed-in member; null when there is none, so the pre-auth screens, a signed-out invite page and an operator session carry no avatar. */
+/** What the header shows for a signed-in member; null when there is none, including a visitor with only an operator session. */
 export type MemberAccountState = { name: string } | null;
 
 const MemberAccountContext = createContext<MemberAccountState>(null);

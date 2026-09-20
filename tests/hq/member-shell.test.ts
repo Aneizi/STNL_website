@@ -12,6 +12,7 @@ import type { MemberActor } from "@/lib/hq/actor";
 
 const mocks = vi.hoisted(() => ({
   currentActor: vi.fn(),
+  currentMember: vi.fn(),
   requireMemberActor: vi.fn(),
   teams: vi.fn(),
   ownedProjects: vi.fn(),
@@ -33,7 +34,7 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ replace() {}, refresh() {}, push() {} }),
 }));
 vi.mock("@/lib/hq/actor", () => ({ currentActor: mocks.currentActor, requireMemberActor: mocks.requireMemberActor }));
-vi.mock("@/lib/hq/member-auth", () => ({ currentMember: vi.fn(), requireMember: vi.fn() }));
+vi.mock("@/lib/hq/member-auth", () => ({ currentMember: mocks.currentMember, requireMember: vi.fn() }));
 vi.mock("@/lib/hq/builder-store", () => ({
   builderStore: () => ({
     teams: mocks.teams,
@@ -425,8 +426,8 @@ describe("the member layout", () => {
   const shell = createElement(BuilderShell, null, createElement("p", null, "content"));
   const render = async () => renderToStaticMarkup(await HqMemberLayout({ children: shell }));
 
-  it("hands the actor's name to the avatar menu of the shell a page renders, and reads nothing else", async () => {
-    mocks.currentActor.mockResolvedValue(member({ capabilities: new Set(["captain"]) }));
+  it("hands the member's name to the avatar menu of the shell a page renders, and reads nothing else", async () => {
+    mocks.currentMember.mockResolvedValue({ id: "acct-1", name: "Fictional Builder", email: null });
     const html = await render();
     expect(html).toMatch(/<button[^>]*aria-label="Account menu"[^>]*aria-expanded="false"[^>]*>FB<\/button>/);
     expect(html.match(/<a[^>]*aria-label="Superteam NL home"[^>]*>/)?.[0]).toContain('href="/hq/dashboard"');
@@ -440,10 +441,12 @@ describe("the member layout", () => {
     // The header needs no team read: the Home page loads the teams it renders.
     expect(mocks.teams).not.toHaveBeenCalled();
     expect(mocks.ownedProjects).not.toHaveBeenCalled();
+    expect(mocks.currentActor).not.toHaveBeenCalled();
     expect(readFileSync(join(ROOT, "app/hq/(member)/layout.tsx"), "utf8")).not.toContain("builder-store");
   });
 
-  it("renders no avatar for a visitor, and none for an operator session, which is not a member", async () => {
+  it("renders no avatar without a member session, even when an operator is signed in", async () => {
+    mocks.currentMember.mockResolvedValue(null);
     mocks.currentActor.mockResolvedValue(null);
     expect(await render()).not.toContain("Account menu");
     mocks.currentActor.mockResolvedValue({ kind: "operator", id: "op", displayName: "Operator" });
@@ -452,5 +455,14 @@ describe("the member layout", () => {
     expect(html).not.toContain("Operator");
     expect(html).not.toContain("Sign out");
     expect(html).toContain("Superteam NL");
+  });
+
+  it("keeps the Telegram member's account menu when an admin session is also present", async () => {
+    mocks.currentActor.mockResolvedValue({ kind: "operator", id: "op", displayName: "Operator" });
+    mocks.currentMember.mockResolvedValue({ id: "telegram-member", name: "Telegram Builder", email: null });
+    const html = await render();
+    expect(html).toMatch(/aria-label="Account menu"[^>]*>TB<\/button>/);
+    expect(html).not.toContain("Operator");
+    expect(mocks.currentActor).not.toHaveBeenCalled();
   });
 });
