@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh() {}, replace() {}, push() {} }) }));
 vi.mock("@/lib/hq/actions/telegram", () => ({ confirmEmailChange: vi.fn(), confirmLinkTelegram: vi.fn(), confirmUnlinkTelegram: vi.fn(), setBotMessaging: vi.fn() }));
 vi.mock("@/lib/hq/member-auth-client", () => ({ memberAuthClient: {} }));
+vi.mock("@/components/hq/use-reminder-guide", () => ({ useReminderGuide: () => ({ visible: true, animate: true, dismiss() {}, finishBounce() {} }) }));
 // The icon package ships its source; the stand-in renders the props it is given, so the fill="currentColor" convention is still asserted.
 vi.mock("symbols-react", () => {
   const icon = (props: Record<string, unknown>) => createElement("svg", props);
@@ -124,7 +125,8 @@ describe("AccountPassport", () => {
     expect(off).toMatch(/<input type="checkbox"[^>]*>/);
     expect(off).not.toMatch(/<input type="checkbox"[^>]*checked/);
     expect(off).not.toContain("switchTrackOn");
-    expect(off.match(/<svg[^>]*switchArrows[^>]*>(.*?)<\/svg>/)?.[1].match(/<path/g)).toHaveLength(3);
+    expect(off.match(/<svg[^>]*guideArrow/g)).toHaveLength(3);
+    expect(off).not.toMatch(/<path[^>]*d="[^"]*[QC]/);
     expect(on).not.toContain("switchArrows");
     for (const html of [on, off]) expect(html).toContain('href="https://t.me/fixture_bot"');
   });

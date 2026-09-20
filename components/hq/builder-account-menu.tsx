@@ -9,16 +9,19 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { memberAuthClient } from '@/lib/hq/member-auth-client';
+import { useReminderGuide } from './use-reminder-guide';
 import styles from './builder-shell.module.css';
 
 /** What the header shows for a signed-in member; null when there is none, including a visitor with only an operator session. */
-export type MemberAccountState = { name: string } | null;
+export type MemberAccountState = { name: string; id?: string } | null;
 
 const MemberAccountContext = createContext<MemberAccountState>(null);
 
 export function MemberAccountProvider({ value, children }: { value: MemberAccountState; children: React.ReactNode }) {
   return <MemberAccountContext.Provider value={value}>{children}</MemberAccountContext.Provider>;
 }
+
+export function useMemberAccount() { return useContext(MemberAccountContext); }
 
 /** The first letter of the first two words, upper-cased: "Nienke Visser" is NV, "Femke de Jong" is FD, a single word gives one letter and an empty name nothing. */
 export function initials(name: string): string {
@@ -30,6 +33,8 @@ export const SIGN_OUT_FAILED = 'Could not sign out. Please try again.';
 type AccountMenuProps = {
   name: string;
   reminderPrompt?: boolean;
+  animateReminder?: boolean;
+  onReminderBounceEnd?: () => void;
   open: boolean;
   pending: boolean;
   error: string;
@@ -43,12 +48,12 @@ type AccountMenuProps = {
 };
 
 /** The markup alone, with the state passed in, so a static render can check it. */
-export function AccountMenu({ name, reminderPrompt = false, open, pending, error, onToggle, onClose, onSignOut, wrapperRef, avatarRef }: AccountMenuProps) {
+export function AccountMenu({ name, reminderPrompt = false, animateReminder = false, onReminderBounceEnd, open, pending, error, onToggle, onClose, onSignOut, wrapperRef, avatarRef }: AccountMenuProps) {
   const shownName = name.trim();
   return <div className={styles.accountMenu} ref={wrapperRef}>
     {reminderPrompt && <button type='button' className={styles.reminderPrompt} onClick={onToggle} aria-expanded={open}>
       <span>Turn on Telegram reminders</span>
-      <svg className={styles.reminderArrow} width='40' height='24' viewBox='0 0 40 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M3 12h32m-9-8 9 8-9 8'/></svg>
+      <svg className={`${styles.reminderArrow} ${animateReminder ? styles.reminderBounce : ''}`} onAnimationEnd={onReminderBounceEnd} width='96' height='20' viewBox='0 0 96 20' fill='none' stroke='currentColor' strokeWidth='1.25' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M1 10h92m-9-7 9 7-9 7' vectorEffect='non-scaling-stroke'/></svg>
     </button>}
     <button type='button' className={styles.avatar} aria-label='Account menu' aria-expanded={open} onClick={onToggle} ref={avatarRef}>{initials(shownName)}</button>
     {open && <div role='menu' className={styles.menu}>
@@ -61,14 +66,15 @@ export function AccountMenu({ name, reminderPrompt = false, open, pending, error
 }
 
 export function BuilderAccountMenu({ reminderPrompt = false }: { reminderPrompt?: boolean }) {
-  const account = useContext(MemberAccountContext);
+  const account = useMemberAccount();
   if (!account) return null;
-  return <SignedInMenu name={account.name} reminderPrompt={reminderPrompt} />;
+  return <SignedInMenu name={account.name} userId={account.id} reminderPrompt={reminderPrompt} />;
 }
 
 /** Split out so the hooks run only when there is a member to show. */
-function SignedInMenu({ name, reminderPrompt }: { name: string; reminderPrompt: boolean }) {
+function SignedInMenu({ name, userId, reminderPrompt }: { name: string; userId?: string; reminderPrompt: boolean }) {
   const router = useRouter();
+  const guide = useReminderGuide(userId, 'account');
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState('');
@@ -120,12 +126,14 @@ function SignedInMenu({ name, reminderPrompt }: { name: string; reminderPrompt: 
 
   return <AccountMenu
     name={name}
-    reminderPrompt={reminderPrompt}
+    reminderPrompt={reminderPrompt && guide.visible}
+    animateReminder={guide.animate}
+    onReminderBounceEnd={guide.finishBounce}
     open={open}
     pending={pending}
     error={error}
     onToggle={() => { setOpen((current) => !current); setError(''); }}
-    onClose={() => setOpen(false)}
+    onClose={() => { guide.dismiss(); setOpen(false); }}
     onSignOut={signOut}
     wrapperRef={wrapperRef}
     avatarRef={avatarRef}

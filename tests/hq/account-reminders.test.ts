@@ -1,7 +1,7 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ state: [] as unknown[], position: 0, work: null as Promise<unknown> | null, save: vi.fn(), refresh: vi.fn(), navigate: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: [] as unknown[], position: 0, guideDone: false, work: null as Promise<unknown> | null, save: vi.fn(), refresh: vi.fn(), navigate: vi.fn() }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useState: (initial: unknown) => {
@@ -16,6 +16,8 @@ vi.mock("react", async (original) => ({
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mocks.refresh }) }));
 vi.mock("@/lib/hq/actions/telegram", () => ({ confirmEmailChange: vi.fn(), confirmLinkTelegram: vi.fn(), confirmUnlinkTelegram: vi.fn(), setBotMessaging: mocks.save }));
 vi.mock("@/lib/hq/member-auth-client", () => ({ memberAuthClient: {} }));
+vi.mock("@/components/hq/builder-account-menu", () => ({ useMemberAccount: () => ({ id: 'test-account' }) }));
+vi.mock("@/components/hq/use-reminder-guide", () => ({ useReminderGuide: (_userId: unknown, step: string) => ({ visible: !mocks.guideDone, animate: true, dismiss() { if (step === 'reminders') mocks.guideDone = true; }, finishBounce() {} }) }));
 vi.mock("@/app/hq/(member)/use-resend-cooldown", () => ({ useResendCooldown: () => ({ secondsLeft: 0, startCooldown() {} }) }));
 vi.mock("symbols-react", () => ({ IconArrowLeft: () => null, IconArrowRight: () => null }));
 
@@ -41,7 +43,7 @@ function toggle(tree: Element[], enabled: boolean) {
 }
 
 beforeEach(() => {
-  vi.resetAllMocks(); mocks.state = []; mocks.work = null;
+  vi.resetAllMocks(); mocks.state = []; mocks.work = null; mocks.guideDone = false;
   vi.stubGlobal("window", { location: { assign: mocks.navigate } });
 });
 afterEach(() => vi.unstubAllGlobals());
@@ -51,6 +53,7 @@ describe("enabling Telegram reminders", () => {
     let finish!: (value: unknown) => void;
     mocks.save.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     toggle(render(), true);
+    expect(render().some(element => String(element.props.className).includes('switchArrows'))).toBe(false);
     expect(mocks.save).toHaveBeenCalledWith(true);
     expect(mocks.navigate).not.toHaveBeenCalled();
     finish({ ok: true, enabled: true });
@@ -69,6 +72,7 @@ describe("enabling Telegram reminders", () => {
     const tree = render();
     expect(tree.find(element => element.props.type === "checkbox")?.props.checked).toBe(false);
     expect(tree.find(element => element.props.role === "alert")).toBeDefined();
+    expect(tree.some(element => String(element.props.className).includes('switchArrows'))).toBe(false);
   });
 
   it("does not open Telegram when disabling reminders", async () => {
@@ -77,6 +81,15 @@ describe("enabling Telegram reminders", () => {
     await mocks.work;
     expect(mocks.save).toHaveBeenCalledWith(false);
     expect(mocks.navigate).not.toHaveBeenCalled();
+  });
+
+  it("does not bring the arrows back after enabling and then disabling reminders", async () => {
+    mocks.save.mockImplementation(async enabled => ({ ok: true, enabled }));
+    toggle(render(), true);
+    await mocks.work;
+    toggle(render(), false);
+    await mocks.work;
+    expect(render().some(element => String(element.props.className).includes('switchArrows'))).toBe(false);
   });
 
   it("still saves when no bot link is configured", async () => {

@@ -6,7 +6,7 @@
 .main { padding:56px clamp(20px,4vw,64px) 96px; overflow-wrap:anywhere; }
 .main .home { display:inline-flex; align-items:center; gap:8px; min-height:44px; font-size:15px; color:#57534a; margin-bottom:20px; text-decoration:none; }
 .main .home:hover { color:#16130f; text-decoration:none; }
-.layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(320px,440px); gap:clamp(32px,5vw,64px); align-items:start; }
+.layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(360px,540px); gap:clamp(32px,5vw,64px); align-items:start; }
 .column { min-width:0; }
 .title { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(44px,6vw,64px); line-height:1; font-weight:400; letter-spacing:-.02em; margin:0 0 40px; }
 .notice { margin:0 0 24px; color:#2a604a; font-weight:600; }
@@ -19,7 +19,8 @@
 .rowFilled:hover { background:#342d24; color:#fbf7f0; }
 .rowBlocked { display:flex; justify-content:space-between; align-items:center; gap:16px; min-height:56px; padding:0 20px; border:1px solid #b4ac9d; color:#8a8579; font-weight:600; font-size:16px; cursor:not-allowed; }
 .rowHint { font-size:14px; font-weight:400; }
-.card { background:#16130f; color:#fbf7f0; padding:32px; display:flex; flex-direction:column; gap:36px; box-shadow:0 24px 56px rgba(22,19,15,.25); min-width:0; }
+.passport { --guide-gutter:clamp(28px,6vw,80px); --card-padding:32px; min-width:0; padding:0 0 128px var(--guide-gutter); }
+.card { container-type:inline-size; background:#16130f; color:#fbf7f0; padding:var(--card-padding); display:flex; flex-direction:column; gap:36px; box-shadow:0 24px 56px rgba(22,19,15,.25); min-width:0; }
 .kicker { margin:0; font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#b4ac9d; }
 .name { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(36px,4vw,44px); line-height:1; margin:8px 0 0; letter-spacing:-.02em; }
 .facts { margin:0; display:grid; grid-template-columns:auto minmax(0,1fr); gap:14px 20px; font-size:16px; }
@@ -27,15 +28,23 @@
 .facts dd { margin:0; }
 .factEmail { overflow-wrap:anywhere; }
 /* The switch: the checkbox is real but hidden, the track and knob draw its state. `position:relative` keeps the hidden input inside the row; the ring lands on the track when the input has keyboard focus. */
-.switchRow { position:relative; display:flex; justify-content:space-between; align-items:center; gap:16px; padding-top:24px; border-top:1px dashed #57534a; font-size:16px; cursor:pointer; }
+.switchRow { position:relative; display:flex; flex-direction:column; align-items:center; gap:16px; padding-top:24px; border-top:1px dashed #57534a; font-size:16px; text-align:center; cursor:pointer; }
 .switchInput { position:absolute; opacity:0; width:1px; height:1px; }
-.switchTarget { position:relative; display:flex; align-items:center; justify-content:flex-end; width:112px; min-height:80px; flex:none; }
-.switchArrows { position:absolute; left:0; top:0; color:var(--accent); pointer-events:none; }
+.switchTarget { position:relative; display:flex; align-items:center; justify-content:center; width:48px; min-height:48px; flex:none; }
+.switchArrows { position:absolute; inset:0; color:var(--accent); pointer-events:none; }
+.guideArrow { position:absolute; fill:none; stroke:currentColor; stroke-width:1.25; stroke-linecap:round; stroke-linejoin:round; overflow:visible; }
+.guideArrow path { vector-effect:non-scaling-stroke; }
+/* The shafts start in the reserved cream margin and finish beside the toggle.
+ * Container units keep them aimed at the centre as the card changes width. */
+.arrowLeft,.arrowCorner { width:calc(50cqw + var(--card-padding) + var(--guide-gutter) - 36px); right:calc(100% + 12px); }
+.arrowLeft { height:20px; top:calc(50% - 10px); --bounce-x:8px; --bounce-y:0px; }
+.arrowCorner { height:104px; top:calc(50% + 12px); --bounce-x:6px; --bounce-y:-6px; }
+.arrowBottom { width:20px; height:112px; left:calc(50% - 10px); top:calc(50% + 24px); --bounce-x:0px; --bounce-y:-8px; }
 .switchHint { margin:0 0 12px; font-size:14px; color:var(--cream); }
 @media (prefers-reduced-motion:no-preference) {
-  .switchArrows { animation:pointToSwitch 2.8s ease-in-out infinite; }
+  .guideBounce { animation:pointToSwitch 1.4s ease-in-out 1; }
 }
-@keyframes pointToSwitch { 0%,100% { transform:translateX(-2px); } 50% { transform:translateX(4px); } }
+@keyframes pointToSwitch { 0%,100% { translate:0 0; } 50% { translate:var(--bounce-x) var(--bounce-y); } }
 .switchTrack { position:relative; width:48px; height:28px; border-radius:14px; background:#57534a; flex:none; transition:background .2s ease; }
 .switchTrackOn { background:#ee5b23; }
 .switchKnob { position:absolute; top:3px; left:3px; width:22px; height:22px; border-radius:50%; background:#fbf7f0; transition:left .2s ease; }
@@ -68,5 +77,5 @@
 .resend:disabled { opacity:.5; cursor:pointer; }
 .alert { margin:16px 0 0; color:#a52b16; }
 @media (max-width:900px) { .layout { grid-template-columns:minmax(0,1fr); } }
-@media (max-width:540px) { .card { padding:24px; } }
+@media (max-width:540px) { .passport { --card-padding:24px; } }
 @media (prefers-reduced-motion:reduce) { .switchTrack,.switchKnob { transition:none; } .dialog { animation:none; } }

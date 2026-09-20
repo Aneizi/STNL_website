@@ -1,6 +1,8 @@
 "use client";
 
 import { TelegramBotStart } from "@/components/hq/telegram-bot-start";
+import { useMemberAccount } from "@/components/hq/builder-account-menu";
+import { useReminderGuide } from "@/components/hq/use-reminder-guide";
 
 import { useModalFocus } from '@/components/hq/use-modal-focus';
 
@@ -61,6 +63,10 @@ const arrow = <IconArrowRight width={18} height={18} fill="currentColor" aria-hi
 export function AccountPassport(props: AccountPassportProps) {
   const { name, role, email, hasEmail, telegram, teamName, emailAvailable, telegramAvailable } = props;
   const router = useRouter();
+  const account = useMemberAccount();
+  const { dismiss: dismissAccountGuide } = useReminderGuide(account?.id, 'account');
+  const reminderGuide = useReminderGuide(account?.id, 'reminders');
+  const { dismiss: dismissReminderGuide } = reminderGuide;
   const [pending, start] = useTransition();
   const [switchPending, startSwitch] = useTransition();
   const [modal, setModal] = useState<Modal | null>(null);
@@ -80,6 +86,9 @@ export function AccountPassport(props: AccountPassportProps) {
   /** The row that opened the modal, so focus returns to it when the modal closes. */
   const opener = useRef<HTMLElement | null>(null);
   const hasTelegram = telegram !== null;
+
+  useEffect(() => { dismissAccountGuide(); }, [dismissAccountGuide]);
+  useEffect(() => { if (props.bot) dismissReminderGuide(); }, [props.bot, dismissReminderGuide]);
 
   useEffect(() => {
     if (!modal) return;
@@ -205,6 +214,7 @@ export function AccountPassport(props: AccountPassportProps) {
   // The switch flips at once and is put back if the write fails.
   const toggleBot = (next: boolean) => {
     if (switchPending || next === bot) return;
+    dismissReminderGuide();
     const previous = bot;
     setBot(next);
     setSwitchError("");
@@ -251,35 +261,37 @@ export function AccountPassport(props: AccountPassportProps) {
             )}
           </div>
         </div>
-        <div className={styles.card}>
-          <div>
-            <p className={styles.kicker}>{role}</p>
-            <p className={styles.name}>{name}</p>
-          </div>
-          <dl className={styles.facts}>
-            <dt>Email</dt><dd className={styles.factEmail}>{email ?? "None"}</dd>
-            <dt>Telegram</dt><dd>{telegram ? (telegram.username ? `@${telegram.username}` : "Connected") : "Not connected"}</dd>
-            <dt>Team</dt><dd>{teamName ?? "None"}</dd>
-          </dl>
-          {hasTelegram && (
+        <div className={styles.passport}>
+          <div className={styles.card}>
             <div>
-              <label className={styles.switchRow}>
-                <span>Bot reminders on Telegram</span>
-                <span className={styles.switchTarget}>
-                  {!bot && <svg className={styles.switchArrows} width="60" height="80" viewBox="0 0 60 80" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M5 8Q32 8 50 28m-11-2 11 2-2-11" />
-                    <path d="M3 40h49m-9-8 9 8-9 8" />
-                    <path d="M5 72Q32 72 50 52m-11 2 11-2-2 11" />
-                  </svg>}
-                  <input type="checkbox" className={styles.switchInput} checked={bot} disabled={switchPending} aria-busy={switchPending} onChange={(event) => toggleBot(event.target.checked)} />
-                  <span aria-hidden="true" className={`${styles.switchTrack} ${bot ? styles.switchTrackOn : ""}`}><span className={styles.switchKnob} /></span>
-                </span>
-              </label>
-              {!bot && props.botUrl && <p className={styles.switchHint}>Turning this on opens the bot chat.</p>}
-              <TelegramBotStart botUrl={props.botUrl} inverse />
-              {switchError && <p role="alert" className={styles.switchError}>{switchError}</p>}
+              <p className={styles.kicker}>{role}</p>
+              <p className={styles.name}>{name}</p>
             </div>
-          )}
+            <dl className={styles.facts}>
+              <dt>Email</dt><dd className={styles.factEmail}>{email ?? "None"}</dd>
+              <dt>Telegram</dt><dd>{telegram ? (telegram.username ? `@${telegram.username}` : "Connected") : "Not connected"}</dd>
+              <dt>Team</dt><dd>{teamName ?? "None"}</dd>
+            </dl>
+            {hasTelegram && (
+              <div>
+                <TelegramBotStart botUrl={props.botUrl} inverse />
+                {!bot && props.botUrl && <p className={styles.switchHint}>Turning this on opens the bot chat.</p>}
+                {switchError && <p role="alert" className={styles.switchError}>{switchError}</p>}
+                <label className={styles.switchRow}>
+                  <span>Bot reminders on Telegram</span>
+                  <span className={styles.switchTarget}>
+                    {!bot && reminderGuide.visible && <span className={styles.switchArrows} aria-hidden="true" onAnimationEnd={reminderGuide.finishBounce}>
+                      <svg className={`${styles.guideArrow} ${styles.arrowLeft} ${reminderGuide.animate ? styles.guideBounce : ''}`} viewBox="0 0 200 20" preserveAspectRatio="none"><path d="M1 10H197m-10-7 10 7-10 7" /></svg>
+                      <svg className={`${styles.guideArrow} ${styles.arrowCorner} ${reminderGuide.animate ? styles.guideBounce : ''}`} viewBox="0 0 200 104" preserveAspectRatio="none"><path d="M1 103 197 3m-12-2 12 2-5 11" /></svg>
+                      <svg className={`${styles.guideArrow} ${styles.arrowBottom} ${reminderGuide.animate ? styles.guideBounce : ''}`} viewBox="0 0 20 112" preserveAspectRatio="none"><path d="M10 111V3m-7 10 7-10 7 10" /></svg>
+                    </span>}
+                    <input type="checkbox" className={styles.switchInput} checked={bot} disabled={switchPending} aria-busy={switchPending} onChange={(event) => toggleBot(event.target.checked)} />
+                    <span aria-hidden="true" className={`${styles.switchTrack} ${bot ? styles.switchTrackOn : ""}`}><span className={styles.switchKnob} /></span>
+                  </span>
+                </label>
+              </div>
+            )}
+          </div>
         </div>
       </div>
       {modal && (

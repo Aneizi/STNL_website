@@ -11,6 +11,6 @@ import { currentMember } from "@/lib/hq/member-auth";
 // account menu. Admin sessions and Captain capabilities do not affect it.
 export default async function HqMemberLayout({ children }: { children: React.ReactNode }) {
   const member = await currentMember();
-  const value: MemberAccountState = member ? { name: member.name } : null;
+  const value: MemberAccountState = member ? { name: member.name, id: member.id } : null;
   return <MemberAccountProvider value={value}>{children}</MemberAccountProvider>;
 }
