@@ -116,22 +116,20 @@ describe("Dashboard", () => {
     expect(html).not.toMatch(FORBIDDEN);
   });
 
-  it("shows the four funnel counts as current numbers with no target, bar or glide path", () => {
+  it("shows committed projects and verified submissions as current numbers with no target, bar or glide path", () => {
     const html = render();
-    const labels = ["Prospects reached", "Committed projects", "Active at kickoff", "Verified submissions"].map(
+    const labels = ["Committed projects", "Verified submissions"].map(
       (label) => html.indexOf(`<div style="font-size:16px;color:var(--label-2)">${label}</div>`),
     );
     expect(labels.every((index, i) => index > (labels[i - 1] ?? -1))).toBe(true);
-    expect(textsAt(html, 40)).toEqual(["112", "14", "9", "2"]);
-    expect(textsAt(html, 14).slice(0, 4)).toEqual([
-      "Builders contacted through partners, events and Telegram",
+    expect(textsAt(html, 40)).toEqual(["14", "2"]);
+    expect(textsAt(html, 14).slice(0, 2)).toEqual([
       "3 of 6 tracked here are committed",
-      "Teams that pushed code in kickoff week",
       "Every submission gate checked",
     ]);
     expect(html).toContain("repeat(auto-fit,minmax(264px,1fr))");
     expect(html).not.toContain("/ ");
-    expect(html).not.toMatch(/target|glide|Monday review|height:4px/);
+    expect(html).not.toMatch(/Prospects reached|Active at kickoff|target|glide|Monday review|height:4px/);
   });
 
   it("names the stale projects in the Check-ins banner, and drops it when every project has checked in", () => {
@@ -178,7 +176,7 @@ describe("Dashboard", () => {
       "Kaasketen: lead unreachable since kickoff, team of one",
       "Windmolen DAO: needs a frontend dev, posted in Telegram",
     ]);
-    expect(textsAt(html, 14).slice(4)).toEqual([
+    expect(textsAt(html, 14).slice(2)).toEqual([
       "last check-in Sep 16",
       "last check-in Sep 5",
       "last check-in Sep 15",
@@ -192,7 +190,7 @@ describe("Dashboard", () => {
   it("separates rows and cards by spacing, never rule lines", () => {
     const html = render();
     expect(html).not.toContain("border-bottom");
-    expect(html.match(/box-shadow:var\(--shadow-1\);padding:24px;margin-top:0"/g)).toHaveLength(6);
+    expect(html.match(/box-shadow:var\(--shadow-1\);padding:24px;margin-top:0"/g)).toHaveLength(4);
     expect(html.match(/box-shadow:var\(--shadow-1\);padding:24px;margin-top:28px/g)).toHaveLength(1);
   });
 

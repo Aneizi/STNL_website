@@ -38,23 +38,12 @@ export function Dashboard({
     (p) => p.gates.length === classifiers.gates.length
   ).length;
 
-  // Current counts only: the manual funnel numbers are seed-only values now,
-  // shown as they are, with no target beside them.
+  // Current counts only, with no target beside them.
   const funnel = [
-    {
-      label: "Prospects reached",
-      cur: settings.prospectsReached,
-      sub: settings.prospectsSub,
-    },
     {
       label: "Committed projects",
       cur: settings.committedManual,
       sub: `${committed} of ${projects.length} tracked here are committed`,
-    },
-    {
-      label: "Active at kickoff",
-      cur: settings.activeAtKickoff,
-      sub: settings.activeSub,
     },
     {
       label: "Verified submissions",
