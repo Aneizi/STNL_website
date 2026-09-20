@@ -1,0 +1,114 @@
+.board {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+.table { min-width: 1200px; }
+.tableHeader, .projectRow {
+  display: grid;
+  grid-template-columns: var(--project-columns);
+  gap: 10px;
+}
+.projectRow > * { min-width: 0; }
+.blockerCell { text-align: center; }
+.mobileOnly, .mobileDisclosure { display: none; }
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  gap: 4px;
+}
+
+.expanded { min-width: 0; overflow-wrap: anywhere; }
+.detailsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(336px, 100%), 1fr));
+  gap: 24px;
+}
+.detailsGrid > * { min-width: 0; }
+.detailFields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+.detailFields > * { min-width: 0; }
+.detailFields > :is(label, span) { white-space: nowrap; }
+.expanded :is(button, input, select, textarea), .teamModal :is(button, input) {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.expanded button { min-height: 40px; min-width: 40px; }
+.expanded button svg { margin: auto; }
+.expanded input[type="checkbox"] { flex: none; }
+.expanded label:has(input[type="checkbox"]) { min-height: 44px; box-sizing: border-box; }
+.expanded a { display: inline-flex; align-items: center; min-height: 40px; }
+
+.teamModal {
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.teamModal button { min-height: 44px; min-width: 44px; }
+.teamGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;
+  gap: 8px;
+  margin-top: 16px;
+  align-items: center;
+}
+
+/* A row becomes a labelled card when the desktop columns no longer fit. */
+@container (max-width: 1199px) {
+  .table { min-width: 0; }
+  .tableHeader { display: none; }
+  .projectRow {
+    position: relative;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    border-bottom: 1px solid var(--sep);
+  }
+  .projectName { grid-column: 1 / -1; padding-right: 44px; min-height: 44px; }
+  .projectRow > [data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--label-2);
+  }
+  .blockerCell { text-align: left; }
+  .mobileOnly { display: inline; color: var(--label-2); }
+  .mobileDisclosure {
+    display: block;
+    grid-column: 1 / -1;
+    color: var(--accent-deep);
+    font-size: 14px;
+    font-weight: 600;
+    padding: 8px 0;
+  }
+  .deleteProject { position: absolute; top: 12px; right: 12px; min-width: 44px; min-height: 44px; }
+  .expanded { border-bottom: 1px solid var(--sep); }
+}
+
+@container (max-width: 599px) {
+  .detailFields { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .detailFields > :is(label, span) { margin-top: 8px; }
+  .filters button { min-height: 44px; }
+  .board input:not([type="checkbox"]), .board select { min-height: 44px; }
+  .expanded button { min-height: 44px; min-width: 44px; }
+}
+
+@media (max-width: 599px) {
+  .teamGrid { grid-template-columns: minmax(0, 1fr) 44px; grid-auto-flow: dense; gap: 12px; }
+  .teamGrid > :nth-child(-n + 3) { display: none; }
+  .teamGrid > input { grid-column: 1; }
+  .teamGrid > button { grid-column: 2; grid-row: span 2; align-self: start; }
+  .teamGrid > input:nth-child(3n + 1):not(:nth-child(4)) { margin-top: 12px; }
+}

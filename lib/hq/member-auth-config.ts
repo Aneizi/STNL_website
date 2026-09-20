@@ -1,11 +1,16 @@
 export type MemberAuthAvailability = {
   configured: boolean;
   email: boolean;
-  google: boolean;
-  github: boolean;
+  telegram: boolean;
 };
 
 type AuthEnvironment = Record<string, string | undefined>;
+
+/** Public bot link for the UI. Read on the server; no bot credentials reach the client. */
+export function getTelegramBotUrl(env: AuthEnvironment = process.env): string | null {
+  const username = env.TELEGRAM_BOT_USERNAME?.trim().replace(/^@/, "");
+  return username && /^[A-Za-z0-9_]{5,32}$/.test(username) ? `https://t.me/${username}` : null;
+}
 
 export function memberAuthOrigin(env: AuthEnvironment = process.env): string | null {
   try {
@@ -19,26 +24,31 @@ export function memberAuthOrigin(env: AuthEnvironment = process.env): string | n
   }
 }
 
+/**
+ * Whether the member cookies carry the Secure attribute and the __Secure-
+ * name prefix: exactly when the configured origin is https, which is every
+ * origin `memberAuthOrigin` accepts except http://localhost outside
+ * production. Better Auth takes the prefix from the baseURL scheme but the
+ * attribute from `defaultCookieAttributes` (cookies/index.mjs), so both are
+ * set from this one answer and can never disagree.
+ */
+export function memberAuthUsesSecureCookies(env: AuthEnvironment = process.env): boolean {
+  return memberAuthOrigin(env)?.startsWith("https:") ?? false;
+}
+
 export function getMemberAuthAvailability(env: AuthEnvironment = process.env): MemberAuthAvailability {
   const configured = Boolean(env.DATABASE_URL && (env.BETTER_AUTH_SECRET?.length ?? 0) >= 32 && memberAuthOrigin(env));
   return {
     configured,
     email: configured && Boolean(env.RESEND_API_KEY && env.EMAIL_FROM),
-    google: configured && Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET),
-    github: configured && Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
+    // Email and Telegram are the only public sign-in methods; no other
+    // credentials in the environment can add one.
+    // TELEGRAM_BOT_USERNAME is UI copy only and does not gate availability.
+    telegram: configured && Boolean(env.TELEGRAM_LOGIN_CLIENT_ID && env.TELEGRAM_LOGIN_CLIENT_SECRET),
   };
 }
 
-/** Keep authentication redirects within public HQ, never the admin surface. */
-export function safeMemberNext(value: unknown): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u0020]/.test(value)) return "/hq/welcome";
-  try {
-    const url = new URL(value, "https://hq.invalid");
-    const routes = ["/hq/welcome", "/hq/dashboard", "/hq/join", "/hq/initialize", "/hq/profile"];
-    const isTeam = /^\/hq\/team\/[a-zA-Z0-9_-]+$/.test(url.pathname);
-    if (url.origin !== "https://hq.invalid" || (!routes.includes(url.pathname) && !isTeam)) return "/hq/welcome";
-    return `${url.pathname}${url.search}`;
-  } catch {
-    return "/hq/welcome";
-  }
-}
+// The post-auth destination allowlist lives with the member route list, so
+// the proxy and the redirects read the same routes; re-exported here for the
+// sign-in surfaces that already import it from this module.
+export { safeMemberNext } from "./member-routes";

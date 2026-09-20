@@ -1,0 +1,27 @@
+/* The late-update modal. The overlay scrolls and the dialog sits at
+ * `margin:auto 0` inside it, so a tall week grid on a short screen scrolls
+ * rather than clips. Radius 0 throughout: this is a redesigned member page. */
+.overlay { position:fixed; inset:0; z-index:50; background:rgba(22,19,15,.55); display:flex; align-items:flex-start; justify-content:center; padding:24px; overflow:auto; box-sizing:border-box; }
+.dialog { width:min(100%,560px); margin:auto 0; background:#fbf7f0; color:#16130f; padding:28px; box-sizing:border-box; border-radius:0; box-shadow:0 24px 64px rgba(22,19,15,.35); font-family:var(--font-archivo),Arial,sans-serif; font-size:17px; line-height:1.55; outline:none; }
+.kicker { margin:0; font-size:14px; font-weight:600; text-transform:uppercase; letter-spacing:.14em; color:#ee5b23; }
+.title { font-family:var(--font-instrument-serif),Georgia,serif; font-size:40px; line-height:1; font-weight:400; letter-spacing:-.02em; margin:8px 0 20px; }
+.form { display:flex; flex-direction:column; gap:20px; }
+.weeks { display:grid; grid-template-columns:repeat(auto-fit,minmax(110px,1fr)); gap:10px; }
+/* A week that has started is selectable; the selected one is ink; a week that has not started yet is faded and inert. */
+.week { display:flex; flex-direction:column; gap:4px; min-height:64px; padding:12px 14px; border:1px solid #b4ac9d; border-radius:0; background:transparent; color:#16130f; font:inherit; text-align:left; cursor:pointer; }
+.week[aria-pressed="true"] { border-color:#16130f; background:#16130f; color:#fbf7f0; }
+.week:disabled { border-color:rgba(22,19,15,.15); background:transparent; color:#b4ac9d; cursor:not-allowed; }
+.weekName { font-weight:600; }
+.weekRange { font-size:14px; }
+.textarea { width:100%; box-sizing:border-box; min-height:110px; padding:14px 16px; border:1px solid #16130f; border-radius:0; background:#fdfbf7; color:#16130f; font:inherit; font-size:17px; line-height:1.5; resize:vertical; }
+.textarea::placeholder { color:#57534a; opacity:1; }
+.note { margin:0; font-size:15px; color:#57534a; }
+.alert { margin:0; font-size:15px; color:#a52b16; }
+.actions { display:flex; gap:12px; flex-wrap:wrap; }
+.submit,.cancel { display:inline-flex; align-items:center; min-height:48px; padding:0 20px; border-radius:0; font:inherit; font-weight:600; cursor:pointer; }
+.submit { background:#16130f; color:#fbf7f0; border:0; }
+.submit:hover { background:#342d24; }
+.submit:disabled { opacity:.5; cursor:pointer; }
+.cancel { background:none; color:#16130f; border:1px solid #16130f; }
+.cancel:hover { background:#f1e9dc; }
+.dialog button:focus-visible,.dialog textarea:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }

@@ -27,8 +27,12 @@ const seedDataSchema = z.object({
   ),
   partnerChannels: z.array(z.string().min(1)),
   // The edition everything below is filed under. Further editions are added
-  // in Admin. The id is Colosseum's hackathon id (World's Fair is 6); the
-  // slug keys banner artwork in lib/hq/hackathon-art.ts.
+  // in Admin. `id` is HQ's OWN internal hq_hackathons.id, not Colosseum's —
+  // an earlier comment here read it the other way round, which is what the
+  // standing "never hard-code an external id" rule exists to stop. The
+  // external Colosseum edition id and slug are operator data, typed into
+  // Admin and stored in hq_hackathon_onboarding, never seeded. The slug here
+  // keys banner artwork in lib/hq/hackathon-art.ts.
   hackathon: z.object({
     id: z.number().int().min(1),
     slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
@@ -89,10 +93,15 @@ const EVENT_TYPES: Array<[label: string, supportsEndDate: boolean]> = [
   ["Other", false],
 ];
 
+// "Partner contact" is the partner organisation's named liaison, an ordinary
+// editable People role. It is not the Captain capability (an admin-granted
+// account capability, lib/hq/capabilities.ts) that People shows as a
+// Captain tag and grants from the card's Captain control; the two are kept
+// apart by name on purpose.
 const PEOPLE_ROLES: Array<
   [label: string, filterLabel: string, color: string, bg: string, isJudge: boolean]
 > = [
-  ["Captain", "Captains", "accent", "accent-fill", false],
+  ["Partner contact", "Partner contacts", "accent", "accent-fill", false],
   ["Judge", "Judges", "indigo", "fill-3", true],
   ["Mentor", "Mentors", "green", "green-fill", false],
   ["Sponsor", "Sponsors", "orange", "orange-fill", false],
@@ -175,7 +184,7 @@ async function main() {
       ON CONFLICT (slug) DO UPDATE SET label = ${label}, sort = ${i}`;
   }
 
-  // The hackathon upserts by its Colosseum id, so a reseed can correct its
+  // The hackathon upserts by its internal HQ id, so a reseed can correct its
   // name, slug or dates without touching anything filed under it.
   const { hackathon } = data;
   const [{ id: hackathonId }] = await sql`

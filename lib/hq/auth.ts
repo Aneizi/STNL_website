@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { getSql } from "./db";
 import { readSession } from "./session";
 
-export type HqUser = {
+type HqUser = {
   id: string;
   username: string;
   displayName: string;
@@ -67,7 +67,7 @@ export async function currentUser(): Promise<HqUser | null> {
  */
 export async function requireUser(opts?: { allowMustChange?: boolean }): Promise<HqUser> {
   const user = await loadUser();
-  if (!user) redirect("/hq/login");
+  if (!user) redirect("/hq/admin/login");
   if (user.mustChangePassword && !opts?.allowMustChange) redirect("/hq/change-password");
   return user;
 }

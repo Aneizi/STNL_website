@@ -1,10 +1,10 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useEffect, useOptimistic, useRef, useState, useTransition } from "react";
 import { FormField, card, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { createPartner, setPartnerStage } from "@/lib/hq/actions/partners";
-import type { Classifiers, Partner, Stage } from "@/lib/hq/types";
+import type { ActionResult, Classifiers, Partner, Stage } from "@/lib/hq/types";
 
 type StageMove = { id: string; stageSlug: string };
 
@@ -17,6 +17,8 @@ const STAGE_FILLS: Record<string, string> = {
 };
 
 const isOutcomeStage = (s: Stage) => s.slug === "agreed" || s.slug === "rejected";
+
+const ADD_FAILED = "The partner could not be added. Try again.";
 
 type Drafts = {
   name: string;
@@ -33,12 +35,14 @@ export function PartnersBoard({
   partners: Partner[];
   classifiers: Classifiers;
 }) {
-  const router = useRouter();
   const [, startTransition] = useTransition();
+  // Its own transition, so a stage move in flight never dims the Add button.
+  const [adding, startAdd] = useTransition();
   const [board, moveCard] = useOptimistic(partners, (state: Partner[], move: StageMove) =>
     state.map((p) => (p.id === move.id ? { ...p, stageSlug: move.stageSlug } : p)),
   );
   const [newPartnerOpen, setNewPartnerOpen] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
   const [dragOverStage, setDragOverStage] = useState<string | null>(null);
   const [justDropped, setJustDropped] = useState<string | null>(null);
   const dropTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -53,33 +57,45 @@ export function PartnersBoard({
     [],
   );
 
+  // Every toggle starts from blank drafts, opening and closing alike.
   const toggleNewPartner = () => {
-    if (!newPartnerOpen) {
-      drafts.current = {
-        name: "",
-        channelId: classifiers.channels[0]?.id ?? "",
-        captain: "",
-        contact: "",
-        target: "",
-      };
-    }
+    drafts.current = {
+      name: "",
+      channelId: classifiers.channels[0]?.id ?? "",
+      captain: "",
+      contact: "",
+      target: "",
+    };
+    setAddError(null);
     setNewPartnerOpen(!newPartnerOpen);
   };
 
+  // The form stays open, drafts intact, until the server has the partner;
+  // a refusal shows beside the fields instead of losing what was typed.
   const submitNewPartner = () => {
     const d = drafts.current;
     if (!d.name) return;
     const parsed = Number(d.target || 10);
-    startTransition(async () => {
-      await createPartner({
-        name: d.name,
-        channelId: d.channelId,
-        captainName: d.captain,
-        captainContact: d.contact,
-        target: Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 10,
-      });
+    startAdd(async () => {
+      let result: ActionResult;
+      try {
+        result = await createPartner({
+          name: d.name,
+          channelId: d.channelId,
+          captainName: d.captain,
+          captainContact: d.contact,
+          target: Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 10,
+        });
+      } catch {
+        result = { ok: false };
+      }
+      if (!result.ok) {
+        setAddError(result.error ?? ADD_FAILED);
+        return;
+      }
+      setAddError(null);
+      setNewPartnerOpen(false);
     });
-    setNewPartnerOpen(false);
   };
 
   return (
@@ -96,7 +112,7 @@ export function PartnersBoard({
         <h1 style={pageTitle}>
           Partners <span style={{ fontWeight: 400, color: "var(--faded)" }}>{board.length}</span>
         </h1>
-        <button onClick={toggleNewPartner} style={primaryBtn}>
+        <button type="button" onClick={toggleNewPartner} style={primaryBtn}>
           New partner
         </button>
       </div>
@@ -105,7 +121,6 @@ export function PartnersBoard({
           className="hq-fade-in"
           style={{
             ...card,
-            marginTop: 14,
             display: "flex",
             gap: 10,
             flexWrap: "wrap",
@@ -159,18 +174,28 @@ export function PartnersBoard({
               onChange={(e) => {
                 drafts.current.target = e.target.value;
               }}
-              style={input}
+              style={{ ...input, width: "100%" }}
             />
           </FormField>
-          <button onClick={submitNewPartner} style={{ ...primaryBtn, padding: "9px 16px" }}>
+          <button
+            type="button"
+            onClick={submitNewPartner}
+            disabled={adding}
+            style={{ ...primaryBtn, padding: "9px 16px", opacity: adding ? 0.5 : 1 }}
+          >
             Add
           </button>
+          {addError ? (
+            <p role="alert" style={{ width: "100%", margin: 0, fontSize: 14, color: "var(--red)" }}>
+              {addError}
+            </p>
+          ) : null}
         </div>
       ) : null}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit,minmax(288px,1fr))",
           gap: 12,
           marginTop: 16,
           alignItems: "stretch",
@@ -230,13 +255,12 @@ export function PartnersBoard({
             alignItems: "baseline",
             gap: 8,
             padding: "2px 4px 10px",
-            borderBottom: "1px solid var(--sep)",
             marginBottom: 10,
           }}
         >
           <span
             style={{
-              fontSize: 12,
+              fontSize: 14,
               fontWeight: 600,
               textTransform: "uppercase",
               letterSpacing: "0.08em",
@@ -246,7 +270,7 @@ export function PartnersBoard({
           </span>
           <span
             style={{
-              fontSize: 12,
+              fontSize: 14,
               color: "var(--label-3)",
               fontVariantNumeric: "tabular-nums",
             }}
@@ -255,25 +279,32 @@ export function PartnersBoard({
           </span>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1 }}>
+          {/* A real link, as in the design: middle-click, focus ring and the
+              address bar all work. Nothing is prefetched, since a board of
+              cards would otherwise fetch every detail page on scroll. */}
           {cards.map((p) => (
-            <div
+            <Link
               key={p.id}
+              href={`/hq/partners/${p.id}`}
+              prefetch={false}
               draggable
-              onClick={() => router.push(`/hq/partners/${p.id}`)}
               onDragStart={(e) => {
                 e.dataTransfer.setData("text/plain", p.id);
                 e.dataTransfer.effectAllowed = "move";
               }}
-              className={`hq-card-hover hq-drop-flash${
+              className={`hq-card-link hq-card-hover hq-drop-flash${
                 justDropped === p.id ? " hq-just-dropped" : ""
               }`}
               style={
                 {
+                  display: "block",
                   background: "var(--card)",
                   borderRadius: 0,
                   boxShadow: "var(--shadow-1)",
                   padding: "12px 14px",
                   cursor: "grab",
+                  color: "inherit",
+                  textDecoration: "none",
                   "--hq-drop-color": stage.dropColor,
                 } as React.CSSProperties
               }
@@ -286,10 +317,10 @@ export function PartnersBoard({
                   gap: 8,
                 }}
               >
-                <span style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</span>
+                <span style={{ fontSize: 17, fontWeight: 600 }}>{p.name}</span>
                 <span
                   style={{
-                    fontSize: 12,
+                    fontSize: 14,
                     color: "var(--label-2)",
                     fontVariantNumeric: "tabular-nums",
                     whiteSpace: "nowrap",
@@ -298,13 +329,13 @@ export function PartnersBoard({
                   {p.attributed}/{p.target}
                 </span>
               </div>
-              <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 2 }}>
+              <div style={{ fontSize: 14, color: "var(--label-3)", marginTop: 2 }}>
                 {p.channelLabel}
               </div>
-              <div style={{ fontSize: 13, color: "var(--label-2)", marginTop: 6 }}>
+              <div style={{ fontSize: 16, color: "var(--label-2)", marginTop: 6 }}>
                 {p.captainName}
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       </div>

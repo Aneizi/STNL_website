@@ -1,0 +1,12 @@
+{
+  "hackathons": [
+    {
+      "id": 6,
+      "name": "Frontier",
+      "slug": "frontier",
+      "phase": 4,
+      "landingPageUrl": "https://colosseum.com/frontier",
+      "emoji": "🏔️"
+    }
+  ]
+}

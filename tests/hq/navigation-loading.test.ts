@@ -37,9 +37,9 @@ describe("HQ navigation loading boundary", () => {
 
     expect(pages.length).toBeGreaterThan(4);
 
-    // The two pages reachable without a session render from the request alone.
+    // Admin login and required password changes sit outside the HQ navigation.
     const navigable = pages.filter(
-      (page) => !page.startsWith("login/") && !page.startsWith("change-password/"),
+      (page) => !page.startsWith("admin/login/") && !page.startsWith("change-password/"),
     );
     const uncovered = navigable.filter(
       (page) =>

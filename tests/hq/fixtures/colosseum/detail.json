@@ -1,0 +1,111 @@
+{
+  "submitted": {
+    "projectType": "HACKATHON",
+    "project": {
+      "id": 90001,
+      "hackathonId": 6,
+      "submittedAt": "2026-05-11T20:00:00.000Z",
+      "name": "Tulip Ledger",
+      "slug": "tulip-ledger",
+      "description": "Fictional payments demo used by tests.",
+      "repoLink": "https://github.com/example-org/tulip-ledger",
+      "country": "Netherlands",
+      "category": "Payments & Remittance",
+      "website": null,
+      "presentationLink": "https://www.example.com/tulip-ledger/deck",
+      "technicalDemoLink": null,
+      "pitchVideoLink": "https://www.example.com/tulip-ledger/pitch",
+      "demoVideoLink": null,
+      "twitterHandle": "tulipledger",
+      "tracks": [],
+      "image": {
+        "id": 7001,
+        "uid": "fixture-image-tulip-ledger",
+        "url": "https://static.narrative-violation.com/fixtures/projects/tulip-ledger.png",
+        "name": "tulip-ledger.png",
+        "size": 12345,
+        "mimetype": "image/png"
+      },
+      "comments": 0,
+      "prize": null,
+      "isUniversityProject": false,
+      "universityName": null,
+      "isSolanaMobile": false,
+      "hackathon": {
+        "id": 6,
+        "name": "Frontier",
+        "landingPageUrl": "https://colosseum.com/frontier",
+        "emoji": "🏔️",
+        "slug": "frontier"
+      },
+      "teamMembers": [
+        {
+          "username": "fictional_builder_1",
+          "displayName": "Fictional Builder One",
+          "avatarUrl": null
+        },
+        {
+          "username": "Fictional_Builder_2",
+          "displayName": "Fictional Builder Two",
+          "avatarUrl": "https://static.narrative-violation.com/fixtures/avatars/fictional-builder-two.png"
+        }
+      ]
+    },
+    "projectCompletion": {
+      "isComplete": true,
+      "fieldErrors": []
+    }
+  },
+  "unsubmitted": {
+    "projectType": "HACKATHON",
+    "project": {
+      "id": 90003,
+      "hackathonId": 6,
+      "submittedAt": null,
+      "name": "Windmill Vault",
+      "slug": "windmill-vault",
+      "description": "Fictional draft project used by tests.",
+      "repoLink": "https://github.com/example-org/windmill-vault",
+      "country": "Netherlands",
+      "category": "Payments & Remittance",
+      "website": null,
+      "presentationLink": null,
+      "technicalDemoLink": null,
+      "pitchVideoLink": null,
+      "demoVideoLink": null,
+      "twitterHandle": null,
+      "tracks": [],
+      "image": {
+        "id": 7003,
+        "uid": "fixture-image-windmill-vault",
+        "url": "https://static.narrative-violation.com/fixtures/projects/windmill-vault.png",
+        "name": "windmill-vault.png",
+        "size": 34567,
+        "mimetype": "image/png"
+      },
+      "comments": 0,
+      "prize": null,
+      "isUniversityProject": false,
+      "universityName": null,
+      "isSolanaMobile": false,
+      "hackathon": {
+        "id": 6,
+        "name": "Frontier",
+        "landingPageUrl": "https://colosseum.com/frontier",
+        "emoji": "🏔️",
+        "slug": "frontier"
+      },
+      "teamMembers": [
+        {
+          "username": "fictional_builder_4",
+          "displayName": "Fictional Builder Four",
+          "avatarUrl": null
+        }
+      ]
+    },
+    "projectCompletion": {
+      "isComplete": false,
+      "fieldErrors": ["presentationLink", "pitchVideoLink"]
+    }
+  }
+}

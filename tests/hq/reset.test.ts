@@ -12,6 +12,7 @@ import {
   RESET_STATEMENTS,
 } from "@/scripts/hq/reset-statements";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
+import { applySqlFile } from "./helpers/db";
 
 const SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8");
 
@@ -46,6 +47,17 @@ async function seedEverything() {
   );
   await run(`INSERT INTO hq_login_attempts (username, ip, success) VALUES ('cap','1.2.3.4',true)`);
   await run(`INSERT INTO hq_login_limits (key, count, window_start) VALUES ('cap',1,now())`);
+
+  await run(`INSERT INTO hq_auth_user (id, name, email) VALUES ('member-1','Member','member@example.com')`);
+  await run(`INSERT INTO hq_auth_session (id, "expiresAt", token, "userId")
+             VALUES ('session-1', now() + interval '1 day', 'token-1', 'member-1')`);
+  await run(`INSERT INTO hq_auth_account (id, issuer, "accountId", "providerId", "userId")
+             VALUES ('account-1', 'https://oauth.telegram.org', '1234123412341234123', 'telegram', 'member-1')`);
+  await run(`INSERT INTO hq_auth_telegram_identity (user_id, provider_subject, telegram_user_id)
+             VALUES ('member-1', '1234123412341234123', 7000000000123)`);
+  await run(`INSERT INTO hq_auth_verification (id, identifier, value, "expiresAt")
+             VALUES ('verification-1', 'sign-in-otp:member@example.com', 'hash:0', now() + interval '5 minutes')`);
+  await run(`INSERT INTO hq_auth_rate_limit (id, key, count, "lastRequest") VALUES ('limit-1', '1.2.3.4/sign-in', 1, 0)`);
 
   const hackathon = await id(
     `INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
@@ -109,6 +121,86 @@ async function seedEverything() {
   );
   await run(`INSERT INTO hq_link_notes (link_id, author_user_id, body)
              VALUES ('${link}','${user}','note')`);
+
+  // Public account side: one account, its CRM person, and a row in every
+  // builder table so nothing there is kept or cleared vacuously.
+  await run(`INSERT INTO hq_builder_profiles (id, email, name) VALUES ('builder-1', 'builder@example.com', 'Builder')`);
+  await run(`INSERT INTO hq_crm_persons (display_name, builder_user_id) VALUES ('Builder', 'builder-1')`);
+  await run(`INSERT INTO hq_hackathon_onboarding (hackathon_id, external_hackathon_id, external_hackathon_slug)
+             VALUES ('${hackathon}', 6, 'fictional-edition')`);
+  await run(`INSERT INTO hq_builder_enrollments (user_id, hackathon_id) VALUES ('builder-1', '${hackathon}')`);
+  await run(`INSERT INTO hq_project_onboarding (project_id, hackathon_id, external_id, project_url, slug, raw, owner_user_id, lead_username)
+             VALUES ('${project}', '${hackathon}', 90001, 'https://colosseum.com/arena/projects/explore/tulip-ledger', 'tulip-ledger', '{}', 'builder-1', 'fictional_builder_1')`);
+  await run(`INSERT INTO hq_colosseum_update_sync(project_id) VALUES('${project}')`);
+  await run(`INSERT INTO hq_colosseum_updates(project_id,external_id,author_name,body,source_url,published_at,source_updated_at)
+             VALUES('${project}',900101,'Fictional Builder One','A prior update','https://colosseum.com/arena/projects/tulip-ledger/updates/900101',now(),now())`);
+  const member = await id(`SELECT id FROM hq_project_members LIMIT 1`);
+  await run(`INSERT INTO hq_team_invites (project_id, member_id, created_by, token_hash)
+             VALUES ('${project}', '${member}', 'builder-1', 'fictional-token-hash')`);
+  await run(`INSERT INTO hq_project_import_requests (user_id, hackathon_id, project_url)
+             VALUES ('builder-1', '${hackathon}', 'https://colosseum.com/arena/projects/explore/unlisted')`);
+  await run(`INSERT INTO hq_event_host_requests (user_id, hackathon_id, title, details)
+             VALUES ('builder-1', '${hackathon}', 'Meetup', 'A fictional workshop')`);
+  // A Captain grant and the audit event behind it (task T1.2).
+  await run(`INSERT INTO hq_account_capabilities (user_id, capability, granted_by_user_id, reason)
+             VALUES ('builder-1', 'captain', '${user}', 'seeded for the reset test')`);
+  await run(`INSERT INTO hq_audit_events (kind, actor_kind, actor_id, subject_user_id, metadata)
+             VALUES ('capability.granted', 'operator', '${user}', 'builder-1', '{"capability":"captain"}')`);
+  // The account's bot-messaging decision (task T2.3), which survives like the login it belongs to.
+  await run(`INSERT INTO hq_telegram_bot_consent (user_id, telegram_user_id, messaging_enabled, consented_at)
+             VALUES ('builder-1', 7000000000123, true, now())`);
+  // A Captain invitation, its redemption, and the resulting project assignment (task T4.1).
+  const invitation = await id(
+    `INSERT INTO hq_captain_invitations (token_hash, capability, max_redemptions, expires_at, created_by_user_id)
+     VALUES ('fictional-invitation-hash', 'captain', 1, now() + interval '7 days', '${user}') RETURNING id`,
+  );
+  await run(`INSERT INTO hq_captain_invitation_redemptions (invitation_id, user_id) VALUES ('${invitation}', 'builder-1')`);
+  await run(`INSERT INTO hq_captain_assignments (project_id, captain_user_id, assigned_by_user_id)
+             VALUES ('${project}', 'builder-1', '${user}')`);
+  // HQ ownership of the project, which an import writes and an admin writes
+  // for a hand-created project; per project, so it goes with the project.
+  await run(`INSERT INTO hq_project_ownership (project_id, hackathon_id, owner_user_id, source)
+             VALUES ('${project}', '${hackathon}', 'builder-1', 'import') ON CONFLICT (project_id) DO NOTHING`);
+  // Weekly reporting (phase 5): the edition's schedule settings, which are
+  // Admin configuration and survive, and a full chain of reporting rows for
+  // the project, which are the edition's CRM and do not.
+  await run(`INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date) VALUES ('${hackathon}', '2026-10-05')`);
+  const period = await id(
+    `INSERT INTO hq_reporting_periods (hackathon_id, sequence, mode, start_date, end_date, starts_at, ends_at, closed_at)
+     VALUES ('${hackathon}', 1, 'weekly', '2026-09-14', '2026-09-20', '2026-09-13T22:00:00Z', '2026-09-20T22:00:00Z', now()) RETURNING id`,
+  );
+  await run(`INSERT INTO hq_reporting_eligibility (project_id, hackathon_id) VALUES ('${project}', '${hackathon}')`);
+  // A pause that has already ended: the history half of the eligibility row,
+  // which goes with it rather than outliving the project it exempted.
+  await run(`INSERT INTO hq_reporting_pause_intervals (project_id, hackathon_id, paused_at, resumed_at)
+             VALUES ('${project}', '${hackathon}', '2026-09-15T00:00:00Z', '2026-09-22T00:00:00Z')`);
+  const entry = await id(
+    `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body)
+     VALUES ('${project}', '${period}', 'member', 'builder-1', 'Shipped the importer') RETURNING id`,
+  );
+  await run(`INSERT INTO hq_reporting_entry_revisions (entry_id, version, body, visibility, editor_kind, editor_id)
+             VALUES ('${entry}', 1, 'Shipped the importer', 'shared', 'member', 'builder-1')`);
+  await run(`INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis, entry_id, captain_user_id)
+             VALUES ('${period}', '${project}', true, 'entry', '${entry}', 'builder-1')`);
+  // The Telegram bot's chat state (phase 7). The draft and the callback
+  // action point at the edition's project and go with it; the processed
+  // update ledger and the delivery history are account-level and survive,
+  // the way the consent row above does.
+  await run(`INSERT INTO hq_telegram_drafts (user_id, chat_id, step, project_id, hackathon_id, period_id, expires_at)
+             VALUES ('builder-1', 7000000000123, 'awaiting_text', '${project}', '${hackathon}', '${period}', now() + interval '20 minutes')`);
+  await run(`INSERT INTO hq_telegram_actions (user_id, chat_id, kind, project_id, expires_at)
+             VALUES ('builder-1', 7000000000123, 'project.open', '${project}', now() + interval '1 day')`);
+  await run(`INSERT INTO hq_telegram_updates (update_id, state, completed_at) VALUES (900001, 'done', now())`);
+  await run(`INSERT INTO hq_telegram_outgoing (chat_id, user_id, kind, body, state, sent_at)
+             VALUES (7000000000123, 'builder-1', 'update.saved', 'Saved. Week 1 is Updated.', 'sent', now())`);
+  // The Wednesday reminder decision (phase 8), which names one of the
+  // edition's weeks and goes with it.
+  await run(`INSERT INTO hq_reminder_deliveries (captain_user_id, hackathon_id, period_id, reminder_type, due_at, state, project_count)
+             VALUES ('builder-1', '${hackathon}', '${period}', 'weekly_nudge', '2026-09-16T10:00:00Z', 'sent', 2)`);
+  // The closing submission reconciliation (phase 10), which names one of the
+  // edition's weeks and one of its projects, and goes with both.
+  await run(`INSERT INTO hq_submission_reconciliations (period_id, project_id, hackathon_id, state)
+             VALUES ('${period}', '${project}', '${hackathon}', 'pending')`);
 }
 
 beforeEach(async () => {
@@ -117,6 +209,9 @@ beforeEach(async () => {
     await run(statement);
   }
   await applyUpgrades({ query: (text) => run(text) as Promise<Record<string, unknown>[]> });
+  // The public account and builder tables are classified too, so they have to exist here.
+  await applySqlFile(pg, "member-auth-schema.sql");
+  await applySqlFile(pg, "builder-schema.sql");
   await seedEverything();
 });
 

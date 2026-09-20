@@ -2,8 +2,7 @@ import type { Classifiers } from "./types";
 
 /**
  * The eight classifier tables are small, ordered, and read by nearly every HQ
- * page. The Neon driver speaks HTTP, so each statement is its own request:
- * aggregating them server-side turns eight round trips into one. `sort` orders
+ * page. Aggregating them server-side turns eight round trips into one. `sort` orders
  * each aggregate and is then dropped from the payload.
  *
  * Seven lists are shared by every hackathon; the submission gates belong to

@@ -2,10 +2,15 @@
 
 import { z } from "zod";
 import { requireUser } from "../auth";
+import { builderDatabase } from "../builder-db";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
+import { deleteTeamRecord } from "../record-deletion";
 import type { ActionResult } from "../types";
-import { activityStmt, hqToday, refreshHq } from "./util";
+import { activityStmt, hqToday, inHackathon, refreshHq } from "./util";
+
+// Missing records and records outside the selected edition return the same
+// refusal. The hackathon cookie selects scope; it does not authorize access.
 
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
@@ -59,7 +64,7 @@ export async function createProject(input: z.infer<typeof createSchema>): Promis
     `,
     activityStmt(user.id, hackathon.id, `Added project ${name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -81,10 +86,13 @@ export async function updateProjectDetail(
   const parsed = detailField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
 
-  const project = await getProject(projectId);
-  if (!project || project.hackathonId !== selected.id) return { ok: false, error: "Project not found in this hackathon." };
+  const project = inHackathon(await getProject(projectId), selected.id);
+  if (!project) return { ok: false, error: "Project not found in this hackathon." };
+  // An imported project's lead is one of its Colosseum roster rows, chosen
+  // through updateBuilderProjectLead; free text would detach the name from
+  // the identity behind it.
   if (project.imported && parsed.data.field === "leadName") {
-    return { ok: false, error: "Choose the lead from the Colosseum roster in Imported teams." };
+    return { ok: false, error: "Choose the lead from the project's Colosseum roster." };
   }
   const { name, hackathonId } = project;
 
@@ -96,43 +104,23 @@ export async function updateProjectDetail(
   `;
 
   const data = parsed.data;
-  let update;
-  let message: string;
-  switch (data.field) {
-    case "name": {
-      const trimmed = data.value.trim();
-      if (!trimmed) return { ok: false };
-      update = sql`UPDATE hq_projects SET name = ${trimmed} WHERE id = ${projectId}`;
-      message = `Renamed project to ${trimmed}`;
-      break;
-    }
-    case "leadName":
-      update = sql`UPDATE hq_projects SET lead_name = ${data.value} WHERE id = ${projectId}`;
-      message = `Updated ${name}`;
-      break;
-    case "leadContact":
-      update = sql`UPDATE hq_projects SET lead_contact = ${data.value} WHERE id = ${projectId}`;
-      message = `Updated ${name}`;
-      break;
-    case "eventSrc":
-      update = sql`UPDATE hq_projects SET event_src = ${data.value} WHERE id = ${projectId}`;
-      message = `Updated ${name}`;
-      break;
-    case "partnerId":
-      // Only a partner of the same hackathon can be attached; any other id
-      // clears the attribution rather than crossing editions.
-      update = sql`
-        UPDATE hq_projects
-        SET partner_id = (SELECT id FROM hq_partners
-                          WHERE id = ${data.value}::uuid AND hackathon_id = ${hackathonId})
-        WHERE id = ${projectId}
-      `;
-      message = `Updated ${name}`;
-      break;
-  }
+  const value = data.field === "name" ? data.value.trim() : data.value;
+  if (data.field === "name" && !value) return { ok: false };
+  // Statements are lazy; only the validated field's update enters the batch.
+  const update = {
+    name: sql`UPDATE hq_projects SET name = ${value} WHERE id = ${projectId}`,
+    leadName: sql`UPDATE hq_projects SET lead_name = ${value} WHERE id = ${projectId}`,
+    leadContact: sql`UPDATE hq_projects SET lead_contact = ${value} WHERE id = ${projectId}`,
+    eventSrc: sql`UPDATE hq_projects SET event_src = ${value} WHERE id = ${projectId}`,
+    // A partner from another edition clears attribution rather than crossing editions.
+    partnerId: sql`UPDATE hq_projects SET partner_id = (
+      SELECT id FROM hq_partners WHERE id = ${value}::uuid AND hackathon_id = ${hackathonId}
+    ) WHERE id = ${projectId}`,
+  }[data.field];
+  const message = data.field === "name" ? `Renamed project to ${value}` : `Updated ${name}`;
 
   await sql.transaction([update, touch, activityStmt(user.id, hackathonId, message)]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -166,9 +154,9 @@ export async function addProjectMember(
   if (!parsedName.success || !parsedContact.success) return { ok: false };
   const trimmedName = parsedName.data.trim();
   if (!trimmedName) return { ok: false };
-  const project = await getProject(projectId);
-  if (!project || project.hackathonId !== selected.id) return { ok: false, error: "Project not found in this hackathon." };
-  if (project.imported) return { ok: false, error: "Imported teammates must be listed on the Colosseum project. The roster cannot be extended in HQ." };
+  const project = inHackathon(await getProject(projectId), selected.id);
+  if (!project) return { ok: false, error: "Project not found in this hackathon." };
+  if (project.imported) return { ok: false, error: "The roster of an imported project comes from Colosseum and cannot be extended in HQ." };
 
   const sql = getSql();
   const today = await hqToday(project.hackathonId);
@@ -187,7 +175,7 @@ export async function addProjectMember(
     `,
     activityStmt(user.id, project.hackathonId, `Updated team on ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -205,9 +193,9 @@ export async function updateProjectMember(
   if (!id.safeParse(memberId).success) return { ok: false };
   const parsed = memberField.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid value." };
-  const member = await getMemberProject(memberId);
-  if (!member || member.hackathonId !== selected.id) return { ok: false, error: "Teammate not found in this hackathon." };
-  if (member.imported && parsed.data.field === "name") return { ok: false, error: "This teammate's identity comes from Colosseum. Only their contact can be edited in HQ." };
+  const member = inHackathon(await getMemberProject(memberId), selected.id);
+  if (!member) return { ok: false, error: "Teammate not found in this hackathon." };
+  if (member.imported && parsed.data.field === "name") return { ok: false, error: "This teammate's name comes from Colosseum. Only the contact can be edited in HQ." };
 
   const sql = getSql();
   const today = await hqToday(member.hackathonId);
@@ -226,7 +214,7 @@ export async function updateProjectMember(
     `,
     activityStmt(user.id, member.hackathonId, `Updated team on ${member.projectName}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -234,9 +222,9 @@ export async function removeProjectMember(memberId: string): Promise<ActionResul
   const user = await requireUser();
   const selected = await requireHackathon();
   if (!id.safeParse(memberId).success) return { ok: false };
-  const member = await getMemberProject(memberId);
-  if (!member || member.hackathonId !== selected.id) return { ok: false, error: "Teammate not found in this hackathon." };
-  if (member.imported) return { ok: false, error: "This teammate belongs to the imported Colosseum roster and cannot be removed in HQ." };
+  const member = inHackathon(await getMemberProject(memberId), selected.id);
+  if (!member) return { ok: false, error: "Teammate not found in this hackathon." };
+  if (member.imported) return { ok: false, error: "This teammate is on the Colosseum roster and cannot be removed in HQ." };
 
   const sql = getSql();
   const today = await hqToday(member.hackathonId);
@@ -248,53 +236,19 @@ export async function removeProjectMember(memberId: string): Promise<ActionResul
     `,
     activityStmt(user.id, member.hackathonId, `Updated team on ${member.projectName}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
-/**
- * Status change. In Monday-review mode the design persists the pick and
- * touches the project but does NOT log activity; the Log button does that.
- */
-export async function setProjectStatus(
-  projectId: string,
-  statusSlug: string,
-  opts?: { review?: boolean },
-): Promise<ActionResult> {
-  const user = await requireUser();
-  if (!id.safeParse(projectId).success) return { ok: false };
-  const project = await getProject(projectId);
-  if (!project) return { ok: false };
-
-  const sql = getSql();
-  const today = await hqToday(project.hackathonId);
-  const statusRows = await sql`SELECT id FROM hq_project_statuses WHERE slug = ${statusSlug}`;
-  if (!statusRows[0]) return { ok: false };
-
-  const statements = [
-    sql`
-      UPDATE hq_projects
-      SET status_id = ${statusRows[0].id}, touched_by_user_id = ${user.id}, touched_at = ${today}
-      WHERE id = ${projectId}
-    `,
-  ];
-  if (!opts?.review) {
-    statements.push(
-      activityStmt(user.id, project.hackathonId, `Set ${project.name} to ${statusSlug}`),
-    );
-  }
-  await sql.transaction(statements);
-  refreshHq();
-  return { ok: true };
-}
 
 export async function setProjectForecast(
   projectId: string,
   forecastSlug: string,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -314,7 +268,7 @@ export async function setProjectForecast(
       `Moved ${project.name} to ${forecastSlug.replace("_", " ")}`,
     ),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -324,8 +278,9 @@ export async function toggleProjectGate(
   done: boolean,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success || !id.safeParse(gateId).success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -354,7 +309,36 @@ export async function toggleProjectGate(
       `${done ? "Checked" : "Unchecked"} gate on ${project.name}`,
     ),
   ]);
-  refreshHq();
+  refreshHq("projects");
+  return { ok: true };
+}
+
+/** Operator-owned flag, independent of the imported Colosseum snapshot. */
+export async function setProjectHighPotential(
+  projectId: string,
+  highPotential: boolean,
+): Promise<ActionResult> {
+  const user = await requireUser();
+  const selected = await requireHackathon();
+  if (!id.safeParse(projectId).success || typeof highPotential !== "boolean") return { ok: false };
+  const project = inHackathon(await getProject(projectId), selected.id);
+  if (!project) return { ok: false };
+
+  const sql = getSql();
+  const today = await hqToday(project.hackathonId);
+  await sql.transaction([
+    sql`
+      UPDATE hq_projects
+      SET high_potential = ${highPotential}, touched_by_user_id = ${user.id}, touched_at = ${today}
+      WHERE id = ${projectId}
+    `,
+    activityStmt(
+      user.id,
+      project.hackathonId,
+      highPotential ? `Marked ${project.name} high potential` : `Removed high potential from ${project.name}`,
+    ),
+  ]);
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -363,10 +347,11 @@ export async function saveProjectBlocker(
   blocker: string,
 ): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsed = text(500).safeParse(blocker);
   if (!parsed.success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -379,16 +364,17 @@ export async function saveProjectBlocker(
     `,
     activityStmt(user.id, project.hackathonId, `Updated blocker on ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
 export async function addProjectNote(projectId: string, body: string): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   const parsed = z.string().min(1).max(2000).safeParse(body);
   if (!parsed.success) return { ok: false };
-  const project = await getProject(projectId);
+  const project = inHackathon(await getProject(projectId), selected.id);
   if (!project) return { ok: false };
 
   const sql = getSql();
@@ -404,28 +390,18 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
     `,
     activityStmt(user.id, project.hackathonId, `Note on ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
-/**
- * Deletes a project and everything hanging off it. Gates, notes, members and
- * the finalist row cascade in the schema; an award won by that finalist has
- * its winner cleared rather than being deleted. Two-step confirmed in the UI,
- * so there is no soft-delete to undo it from.
- */
+/** All team deletion goes through the shared, scoped and audited transaction. */
 export async function deleteProject(projectId: string): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
-  const project = await getProject(projectId);
-  if (!project) return { ok: false, error: "Project not found." };
-
-  const sql = getSql();
-  await sql.transaction([
-    sql`DELETE FROM hq_projects WHERE id = ${projectId}`,
-    activityStmt(user.id, project.hackathonId, `Deleted project ${project.name}`),
-  ]);
-  refreshHq();
+  const removed = await deleteTeamRecord(builderDatabase(), { projectId, hackathonId: selected.id, operatorId: user.id });
+  if (!removed) return { ok: false, error: "Project not found." };
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -437,6 +413,7 @@ export async function deleteProject(projectId: string): Promise<ActionResult> {
  */
 export async function editProjectNote(noteId: string, body: string): Promise<ActionResult> {
   const user = await requireUser();
+  const selected = await requireHackathon();
   if (!id.safeParse(noteId).success) return { ok: false };
   const parsed = z.string().min(1).max(2000).safeParse(body);
   if (!parsed.success) return { ok: false };
@@ -448,10 +425,13 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
     JOIN hq_projects p ON p.id = n.project_id
     WHERE n.id = ${noteId}
   `;
-  const note = rows[0];
+  const note = inHackathon(
+    rows[0] ? { projectId: String(rows[0].project_id), name: String(rows[0].name), hackathonId: Number(rows[0].hackathon_id) } : null,
+    selected.id,
+  );
   if (!note) return { ok: false };
 
-  const today = await hqToday(note.hackathon_id);
+  const today = await hqToday(note.hackathonId);
   await sql.transaction([
     sql`
       UPDATE hq_project_notes SET body = ${parsed.data}, edited_at = now()
@@ -459,66 +439,10 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
     `,
     sql`
       UPDATE hq_projects SET touched_by_user_id = ${user.id}, touched_at = ${today}
-      WHERE id = ${note.project_id}
+      WHERE id = ${note.projectId}
     `,
-    activityStmt(user.id, note.hackathon_id, `Edited note on ${note.name}`),
+    activityStmt(user.id, note.hackathonId, `Edited note on ${note.name}`),
   ]);
-  refreshHq();
-  return { ok: true };
-}
-
-/**
- * The Log button in Monday review: stamps today's check-in, saves the
- * blocker draft (when provided), and appends the review note.
- */
-export async function logMondayReview(
-  projectId: string,
-  blocker: string | undefined,
-): Promise<ActionResult> {
-  const user = await requireUser();
-  if (!id.safeParse(projectId).success) return { ok: false };
-  if (blocker !== undefined && !text(500).safeParse(blocker).success) return { ok: false };
-
-  const sql = getSql();
-  const rows = await sql`
-    SELECT p.name, p.blocker, p.hackathon_id, s.slug AS status_slug
-    FROM hq_projects p
-    JOIN hq_project_statuses s ON s.id = p.status_id
-    WHERE p.id = ${projectId}
-  `;
-  const project = rows[0];
-  if (!project) return { ok: false };
-
-  const finalBlocker = blocker !== undefined ? blocker : project.blocker;
-  const noteBody = `Monday review: ${project.status_slug}${
-    finalBlocker ? `, blocker: ${finalBlocker}` : ", no blocker"
-  }`;
-
-  const today = await hqToday(project.hackathon_id);
-  // Only rewrite the blocker column when the reviewer actually typed one —
-  // the read-back value could race a save from another operator.
-  const updateStmt =
-    blocker !== undefined
-      ? sql`
-          UPDATE hq_projects
-          SET blocker = ${blocker}, last_check_in = ${today},
-              touched_by_user_id = ${user.id}, touched_at = ${today}
-          WHERE id = ${projectId}
-        `
-      : sql`
-          UPDATE hq_projects
-          SET last_check_in = ${today},
-              touched_by_user_id = ${user.id}, touched_at = ${today}
-          WHERE id = ${projectId}
-        `;
-  await sql.transaction([
-    updateStmt,
-    sql`
-      INSERT INTO hq_project_notes (project_id, author_user_id, body)
-      VALUES (${projectId}, ${user.id}, ${noteBody})
-    `,
-    activityStmt(user.id, project.hackathon_id, `Monday review logged for ${project.name}`),
-  ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }

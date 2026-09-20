@@ -4,7 +4,7 @@
 // from the style atoms because server components (dashboard) import those,
 // and a module reachable from a Server Component may not import React hooks.
 import { useEffect, useRef, useState } from "react";
-import { IconDocumentOnClipboardFill } from "./icons/IconDocumentOnClipboardFill";
+import { IconDocumentOnClipboardFill } from "./icons";
 
 /**
  * "Saved" flash beside a heading — the only confirmation for controls that
@@ -130,7 +130,7 @@ export function CopyButton({ value }: { value: string }) {
         background: "none",
         padding: "0 2px",
         color: copied ? "var(--green)" : "var(--label-2)",
-        fontSize: 11,
+        fontSize: 13,
         fontWeight: 600,
         whiteSpace: "nowrap",
       }}
@@ -138,7 +138,7 @@ export function CopyButton({ value }: { value: string }) {
       {copied ? (
         "Copied"
       ) : (
-        <IconDocumentOnClipboardFill width={12} height={14.5} style={{ display: "block" }} />
+        <IconDocumentOnClipboardFill width={13} height={15.75} style={{ display: "block" }} />
       )}
     </button>
   );

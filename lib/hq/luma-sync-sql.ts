@@ -9,7 +9,7 @@
 import type { NormalizedLumaEvent } from "@/lib/luma/normalize";
 import { guessEventTypeId, type EventTypeChoice } from "./luma-event-type";
 
-/** The tagged-template shape both drivers in lib/hq/db.ts share. */
+/** The statement-builder shape supplied by lib/hq/db.ts and SQL tests. */
 export type Tagged = (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
 
 /**

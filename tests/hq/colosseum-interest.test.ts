@@ -1,22 +1,18 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InterestInput } from "@/lib/colosseum-interest";
 
 vi.mock("server-only", () => ({}));
 import { saveColosseumInterest } from "@/lib/hq/colosseum-interest";
+import { applyMigrations } from "./helpers/db";
 
-const SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8");
 const INPUT: InterestInput = {
   name: "Test Builder", contactMethod: "telegram", contact: "@testbuilder",
   builtOnSolana: false, path: "beginner",
 };
 
-// Exercise the SQL used in production with real PostgreSQL constraints.
-// Both schema shapes are constructed from the repository schema, so these
-// tests also work before the separate multi-hackathon upgrade is committed.
-describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) => {
+// Public submissions run against the same migrated schema as HQ.
+describe("Colosseum People storage", () => {
   let pg: PGlite;
   const db = {
     query: async (text: string, params: unknown[] = []) =>
@@ -25,32 +21,15 @@ describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) =
 
   beforeAll(async () => {
     pg = new PGlite();
-    for (const statement of SCHEMA.split(/;\s*(?:\n|$)/).map((s) => s.trim()).filter(Boolean)) {
-      await db.query(statement);
-    }
-    if (scoped) {
-      await db.query(`CREATE TABLE IF NOT EXISTS hq_hackathons (
-        id int PRIMARY KEY, slug text UNIQUE, name text, start_date date, end_date date,
-        archived_at timestamptz
-      )`);
-      for (const table of ["hq_people", "hq_activity"]) {
-        await db.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS hackathon_id int NOT NULL
-          REFERENCES hq_hackathons (id) ON DELETE CASCADE`);
-      }
-    } else {
-      await db.query(`ALTER TABLE hq_people DROP COLUMN IF EXISTS hackathon_id`);
-      await db.query(`ALTER TABLE hq_activity DROP COLUMN IF EXISTS hackathon_id`);
-    }
+    await applyMigrations(pg);
   });
 
   beforeEach(async () => {
     await db.query(`TRUNCATE hq_people, hq_people_roles, hq_activity, hq_login_limits CASCADE`);
-    if (scoped) {
-      await db.query(`TRUNCATE hq_hackathons CASCADE`);
-      await db.query(`INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
-        VALUES (6, 'colosseum', 'Colosseum', '2026-09-14', '2026-10-12'),
-          (7, 'another', 'Another hackathon', '2026-10-14', '2026-11-12')`);
-    }
+    await db.query(`TRUNCATE hq_hackathons CASCADE`);
+    await db.query(`INSERT INTO hq_hackathons (id, slug, name, start_date, end_date)
+      VALUES (6, 'colosseum', 'Colosseum', '2026-09-14', '2026-10-12'),
+        (7, 'another', 'Another hackathon', '2026-10-14', '2026-11-12')`);
   });
 
   afterAll(async () => { await pg.close(); });
@@ -63,10 +42,25 @@ describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) =
       name: "Test Builder", contact: "@testbuilder", label: "Builder",
       notes: "Built on Solana before: No",
     });
-    if (scoped) expect(person.hackathon_id).toBe(6);
+    expect(person.hackathon_id).toBe(6);
     expect(await db.query(`SELECT message FROM hq_activity`)).toEqual([
       { message: "Test Builder expressed interest in the Colosseum hackathon" },
     ]);
+  });
+
+  it("saves a submission in four queries without probing schema or sweeping retention", async () => {
+    const query = vi.fn(db.query);
+    expect(await saveColosseumInterest({ query }, INPUT, "127.0.0.1")).toEqual({ ok: true });
+    expect(query).toHaveBeenCalledTimes(4);
+  });
+
+  it("preserves an operator's judge role and refuses to use it for public signups", async () => {
+    await db.query(`INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
+      VALUES ('Builder', 'Judging builders', 'green', 'green-fill', true, 42)`);
+    expect((await saveColosseumInterest(db, INPUT, "127.0.0.1")).ok).toBe(false);
+    expect(await db.query("SELECT name FROM hq_people")).toEqual([]);
+    expect(await db.query("SELECT is_judge, sort FROM hq_people_roles WHERE label = 'Builder'"))
+      .toEqual([{ is_judge: true, sort: 42 }]);
   });
 
   it("records WhatsApp contact and experienced Solana builders", async () => {
@@ -134,12 +128,21 @@ describe.each([false, true])("Colosseum People storage (scoped: %s)", (scoped) =
     expect(await saveColosseumInterest(db, INPUT, "127.0.0.1")).toEqual({ ok: true });
   });
 
-  if (scoped) {
-    it.each(["missing", "archived"])("rejects a %s competition instead of picking another", async (state) => {
-      if (state === "missing") await db.query(`DELETE FROM hq_hackathons WHERE id = 6`);
-      else await db.query(`UPDATE hq_hackathons SET archived_at = now() WHERE id = 6`);
-      expect((await saveColosseumInterest(db, INPUT, "127.0.0.1")).ok).toBe(false);
-      expect(await db.query(`SELECT count(*)::int AS total FROM hq_people`)).toEqual([{ total: 0 }]);
-    });
-  }
+  it.each(["missing", "archived"])("files the submission under the next edition when the current one is %s", async (state) => {
+    if (state === "missing") await db.query(`DELETE FROM hq_hackathons WHERE id = 6`);
+    else await db.query(`UPDATE hq_hackathons SET archived_at = now() WHERE id = 6`);
+    expect(await saveColosseumInterest(db, INPUT, "127.0.0.1")).toEqual({ ok: true });
+    expect(await db.query(`SELECT hackathon_id FROM hq_people`)).toEqual([{ hackathon_id: 7 }]);
+  });
+
+  it("files the submission under the current edition, never a hard-coded one", async () => {
+    expect(await saveColosseumInterest(db, INPUT, "127.0.0.1")).toEqual({ ok: true });
+    expect(await db.query(`SELECT hackathon_id FROM hq_people`)).toEqual([{ hackathon_id: 6 }]);
+  });
+
+  it("refuses when there is no available edition at all", async () => {
+    await db.query(`UPDATE hq_hackathons SET archived_at = now()`);
+    expect((await saveColosseumInterest(db, INPUT, "127.0.0.1")).ok).toBe(false);
+    expect(await db.query(`SELECT count(*)::int AS total FROM hq_people`)).toEqual([{ total: 0 }]);
+  });
 });

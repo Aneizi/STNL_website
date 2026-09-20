@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, useTransition } from "react";
+import { useTransition } from "react";
 import { IconChevronDown } from "symbols-react";
 import { showToast } from "@/components/hq/toast";
 import { switchHackathon } from "@/lib/hq/actions/hackathons";
@@ -14,44 +14,40 @@ import type { Hackathon } from "@/lib/hq/types";
  * of every edition. Picking one switches in place — the same page, now
  * scoped to the other hackathon — except a partner detail page, whose
  * partner belongs to the edition just left; that goes back to the board.
+ *
+ * Whether the menu is open belongs to HqChrome, which also owns the account
+ * menu: opening one closes the other, and Escape or a click elsewhere
+ * closes both.
  */
 export function HackathonSwitcher({
   hackathons,
   selectedId,
+  open,
+  onOpenChange,
 }: {
   hackathons: Hackathon[];
   selectedId: number | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [open, setOpen] = useState(false);
   const [pending, startTransition] = useTransition();
   const current = hackathons.find((h) => h.id === selectedId) ?? null;
+  const close = () => onOpenChange(false);
 
-  useEffect(() => {
-    const close = () => setOpen(false);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("click", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("click", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, []);
-
-  const pick = (id: number) => {
-    setOpen(false);
-    if (id === selectedId) return;
+  const pick = (hackathon: Hackathon) => {
+    close();
+    if (hackathon.id === selectedId) return;
     startTransition(async () => {
-      const res = await switchHackathon(id);
+      const res = await switchHackathon(hackathon.id);
       if (!res.ok) {
         showToast(res.error ?? "Could not switch hackathon");
         return;
       }
       if (/^\/hq\/partners\/.+/.test(pathname)) router.push("/hq/partners");
       else router.refresh();
+      showToast(`Now showing ${hackathon.name}`);
     });
   };
 
@@ -61,7 +57,7 @@ export function HackathonSwitcher({
         type="button"
         onClick={(e) => {
           e.stopPropagation();
-          setOpen((o) => !o);
+          onOpenChange(!open);
         }}
         title="Switch hackathon"
         aria-haspopup="menu"
@@ -75,7 +71,7 @@ export function HackathonSwitcher({
           background: "none",
           cursor: "pointer",
           padding: "4px 0",
-          fontSize: 11,
+          fontSize: 13,
           fontWeight: 600,
           textTransform: "uppercase",
           letterSpacing: "0.14em",
@@ -95,20 +91,6 @@ export function HackathonSwitcher({
         >
           {current?.name ?? "Choose a hackathon"}
         </span>
-        {current?.archived ? (
-          <span
-            style={{
-              flex: "none",
-              fontSize: 9,
-              letterSpacing: "0.1em",
-              padding: "2px 5px",
-              boxShadow: "0 0 0 1px var(--sep)",
-              color: "var(--label-3)",
-            }}
-          >
-            Archived
-          </span>
-        ) : null}
         <IconChevronDown
           aria-hidden="true"
           fill="currentColor"
@@ -148,7 +130,7 @@ export function HackathonSwitcher({
             <>
               <div
                 style={{
-                  fontSize: 10,
+                  fontSize: 12,
                   fontWeight: 600,
                   letterSpacing: "0.12em",
                   textTransform: "uppercase",
@@ -172,11 +154,11 @@ export function HackathonSwitcher({
               href="/hq/select"
               role="menuitem"
               className="hq-hover-fill"
-              onClick={() => setOpen(false)}
+              onClick={close}
               style={{
                 display: "block",
                 padding: "8px 10px",
-                fontSize: 12,
+                fontSize: 14,
                 fontWeight: 600,
                 color: "var(--label-2)",
                 textDecoration: "none",
@@ -188,11 +170,11 @@ export function HackathonSwitcher({
               href="/hq/admin"
               role="menuitem"
               className="hq-hover-fill"
-              onClick={() => setOpen(false)}
+              onClick={close}
               style={{
                 display: "block",
                 padding: "8px 10px",
-                fontSize: 12,
+                fontSize: 14,
                 fontWeight: 600,
                 color: "var(--label-2)",
                 textDecoration: "none",
@@ -214,7 +196,7 @@ function MenuEntry({
 }: {
   hackathon: Hackathon;
   active: boolean;
-  onPick: (id: number) => void;
+  onPick: (hackathon: Hackathon) => void;
 }) {
   return (
     <button
@@ -222,7 +204,7 @@ function MenuEntry({
       role="menuitemradio"
       aria-checked={active}
       className="hq-hover-fill"
-      onClick={() => onPick(hackathon.id)}
+      onClick={() => onPick(hackathon)}
       style={{
         display: "block",
         width: "100%",
@@ -237,16 +219,16 @@ function MenuEntry({
     >
       <div
         style={{
-          fontSize: 13,
+          fontSize: 16,
           fontWeight: 600,
           color: active ? "var(--accent)" : "var(--label-1)",
         }}
       >
         {hackathon.name}
       </div>
-      <div style={{ fontSize: 11, color: "var(--label-3)", marginTop: 1 }}>
+      <div style={{ fontSize: 13, color: "var(--label-3)", marginTop: 1 }}>
         {fmtDateRange(hackathon.startDate, hackathon.endDate)}
-        <span style={{ color: "var(--faded)" }}> · #{hackathon.id}</span>
+        <span style={{ color: "var(--faded)" }}> #{hackathon.id}</span>
       </div>
     </button>
   );

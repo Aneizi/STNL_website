@@ -1,8 +1,10 @@
 // Shared shapes between server queries, server actions, and client screens.
 // Dates are ISO strings: DATE columns as "YYYY-MM-DD", timestamps as full ISO.
+import type { SubmissionStatus } from "./colosseum-snapshot";
+import type { PersonRemovalImpact } from "./record-deletion";
 
-export type Channel = { id: string; label: string };
-export type EventType = { id: string; label: string; supportsEndDate: boolean };
+type Channel = { id: string; label: string };
+type EventType = { id: string; label: string; supportsEndDate: boolean };
 export type Role = {
   id: string;
   label: string;
@@ -12,16 +14,16 @@ export type Role = {
   isJudge: boolean;
 };
 export type Stage = { id: string; slug: string; label: string; dropColor: string };
-export type Status = {
+type Status = {
   id: string;
   slug: string;
   label: string;
   color: string;
   countsAsActive: boolean;
 };
-export type Forecast = { id: string; slug: string; label: string; color: string };
+type Forecast = { id: string; slug: string; label: string; color: string };
 export type Gate = { id: string; label: string };
-export type ExchangeItem = { id: string; slug: string; label: string };
+type ExchangeItem = { id: string; slug: string; label: string };
 
 /**
  * One hackathon edition. Every operational record belongs to exactly one, and
@@ -53,13 +55,8 @@ export type Classifiers = {
 
 export type Settings = {
   prospectsReached: number;
-  prospectsTarget: number;
   committedManual: number;
-  committedTarget: number;
-  committedGlide: number;
   activeAtKickoff: number;
-  activeTarget: number;
-  verifiedTarget: number;
   staleDays: number;
   finalistCap: number;
   verifiedOnlyFinalists: boolean;
@@ -81,8 +78,32 @@ export type NoteItem = {
   editedAt?: string | null;
 };
 
-/** Individually editable teammate; the lead lives on the project itself. */
-export type ProjectMember = { id: string; name: string; contact: string };
+/**
+ * Individually editable teammate; the lead lives on the project itself.
+ * `username` is the Colosseum handle of an imported roster row (the Lead
+ * picker on an imported project chooses among these) and null for a
+ * teammate added by hand in HQ.
+ */
+export type ProjectMember = { id: string; name: string; contact: string; username: string | null };
+
+/**
+ * The Colosseum snapshot behind an imported project, as the Projects board
+ * shows it. Null on a project created in HQ that has no Colosseum link yet.
+ */
+type ProjectColosseum = {
+  url: string;
+  imageUrl: string | null;
+  description: string;
+  /** A PROJECT_STAGES value; the board renders its label. */
+  stage: string;
+  category: string | null;
+  submissionStatus: SubmissionStatus;
+  /** The roster username the team chose as its lead, or "" before one is chosen. */
+  leadUsername: string;
+  /** The builder who pasted the link, and the day they did. */
+  importedByName: string;
+  importedAt: string; // "YYYY-MM-DD"
+};
 
 export type Project = {
   id: string;
@@ -90,8 +111,16 @@ export type Project = {
   leadName: string;
   leadContact: string;
   members: ProjectMember[];
+  /** The day the HQ row was created, shown for a project that has no Colosseum link. */
+  createdAt: string; // "YYYY-MM-DD"
+  /** An operator's flag on the project row itself (hq_projects.high_potential). */
+  highPotential: boolean;
+  colosseum: ProjectColosseum | null;
   partnerId: string | null;
   partnerName: string;
+  /** The account holding the project's current Captain assignment, or null for "No Captain". Never a role or a tag — the one source is hq_captain_assignments. */
+  captainUserId: string | null;
+  captainName: string;
   eventSrc: string;
   statusSlug: string;
   forecastSlug: string;
@@ -102,6 +131,9 @@ export type Project = {
   touchedAt: string | null;
   notes: NoteItem[];
 };
+
+/** The operator dashboard needs no roster, contact information or note bodies. */
+export type DashboardProject = Pick<Project, "id" | "name" | "forecastSlug" | "gates" | "lastCheckIn" | "blocker">;
 
 export type Partner = {
   id: string;
@@ -123,30 +155,44 @@ export type PartnerDetail = Partner & {
   teams: Array<{ id: string; name: string; statusSlug: string }>;
 };
 
-export type HqLink = {
-  id: string;
-  title: string;
-  url: string;
-  highlighted: boolean;
-  notes: NoteItem[]; // reuses the existing NoteItem shape
-};
-
 /**
- * Most links that can be highlighted (pinned to the top of the Links list).
- * A constant, not an hq_settings row — promote it only if it ever needs to
- * be operator-editable.
+ * A label on a People card. A role tag is the card's editable role. A
+ * capability tag mirrors an admin-granted account capability (Captain): it is
+ * not editable as a tag, marked protected, and never a way to grant anything.
+ * Captain changes go through the card's Captain control (setPersonCaptain in
+ * lib/hq/actions/people.ts), an explicit action on the linked account.
  */
-export const HIGHLIGHT_CAP = 5;
+export type PersonTag = { kind: "role" | "capability"; label: string; protected: boolean };
+
+/** How a card's linked account signs in, for the Account block. The placeholder address is never in `email`. */
+type PersonAccount = { email: string | null; telegramUsername: string | null };
 
 export type Person = {
   id: string;
   name: string;
   roleId: string;
-  org: string;
+  /**
+   * The one contact the row shows, Telegram first: the linked account's
+   * handle as "@handle", else what the card stores (a hand-entered handle or
+   * email), else the account's login email, else "".
+   */
   contact: string;
-  partnerId: string | null;
-  partnerName: string;
   notes: string;
+  /** The linked public account, or null for a hand-entered card. */
+  builderUserId: string | null;
+  /** The CRM person this card belongs to, or null before one is assigned. */
+  personId: string | null;
+  /** The linked account's login, or null for a hand-entered card. */
+  account: PersonAccount | null;
+  /** Whether the linked account holds an active Captain grant. Read from hq_account_capabilities with the tags, never from a role. */
+  captain: boolean;
+  tags: PersonTag[];
+  /**
+   * What deleting this card takes with it, read before the destructive step
+   * so the confirmation can name real counts (phase 3). Operator-only, like
+   * the rest of this shape; `PublicPersonView` carries none of it.
+   */
+  removal: PersonRemovalImpact;
 };
 
 export type HqEvent = {
@@ -210,10 +256,6 @@ export type DemoProject = {
 };
 
 export type Judge = { id: string; name: string };
-
-export type PartnerOption = { id: string; name: string };
-
-export type EventOption = { id: string; name: string };
 
 export type ActivityItem = {
   id: string;

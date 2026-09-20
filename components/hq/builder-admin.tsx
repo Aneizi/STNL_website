@@ -1,17 +1,37 @@
 "use client";
 
-import { useState, useTransition, type FormEvent, type ReactNode } from "react";
-import {
-  markBuilderProjectPotential, resolveBuilderImportRequest, reviewBuilderHostRequest,
-  reviewBuilderProject, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
-} from "@/lib/hq/actions/builders-admin";
-import type {
-  BuilderAccount, BuilderHostRequest, BuilderImportRequest, BuilderProjectReview, OnboardingConfig,
-} from "@/lib/hq/builder-admin-queries";
+import { useRef, useState, useSyncExternalStore, useTransition, type FormEvent, type ReactNode } from "react";
+import { updateBuilderOnboardingConfig } from "@/lib/hq/actions/builders-admin";
+import { createCaptainInvitation, revokeCaptainInvitation } from "@/lib/hq/actions/captains";
+import type { AccountLogin, AdminCaptainLeaderboardRow, OnboardingConfig } from "@/lib/hq/builder-admin-queries";
+import type { CaptainInvitationListing } from "@/lib/hq/captains";
+import { fmtWithZone } from "@/lib/hq/format";
+import { inviteLink } from "@/lib/hq/member-routes";
 import type { ActionResult } from "@/lib/hq/types";
+import { CopyButton } from "./ui-client";
 import styles from "./builder-admin.module.css";
 
-function ActionForm({ action, children }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode }) {
+/**
+ * How an account signs in, as Admin shows it: the verified login email, or
+ * the Telegram handle for a Telegram-only account. The placeholder address
+ * is never in the data, so it is never shown.
+ */
+export function loginLabel({ email, telegram }: AccountLogin): string {
+  if (email) return email;
+  if (telegram) return telegram.username ? `Telegram: @${telegram.username}` : "Telegram account";
+  return "No login email";
+}
+
+/**
+ * The shared submit-and-report form of the operator Admin and Projects
+ * sections: its outcome line ("Saved." or the action's error) is local
+ * state, so a row keyed by its record id keeps the line through the
+ * revalidatePath round trip. The fields are never reset on success on
+ * purpose: they take their defaultValue from server props (the onboarding
+ * settings, an import request's URL), and a reset would briefly snap the
+ * pre-save value back next to "Saved." before the fresh props arrive.
+ */
+export function ActionForm({ action, children }: { action: (data: FormData) => Promise<ActionResult>; children: ReactNode }) {
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState("");
   const [error, setError] = useState(false);
@@ -47,7 +67,8 @@ function localDateTime(value: string) {
   return date.toISOString().slice(0, 16);
 }
 
-function projectHref(value: string): string | undefined {
+/** A Colosseum project URL as an href, or undefined for anything that is not one (rendered as plain text instead). */
+export function projectHref(value: string): string | undefined {
   try {
     const url = new URL(value);
     if (url.protocol === "https:" && url.hostname === "colosseum.com" && url.pathname.startsWith("/arena/projects/") && !url.username && !url.password) return url.href;
@@ -55,146 +76,203 @@ function projectHref(value: string): string | undefined {
   return undefined;
 }
 
-export function BuilderAdmin({ config, hackathonName, accounts, hostRequests }: {
-  config: OnboardingConfig; hackathonName: string; accounts: BuilderAccount[]; hostRequests: BuilderHostRequest[];
+export function BuilderAdmin({ config, captainInvitations, captainLeaderboard, timezone }: {
+  config: OnboardingConfig; captainInvitations: CaptainInvitationListing[]; captainLeaderboard: AdminCaptainLeaderboardRow[]; timezone: string;
 }) {
   return (
     <>
       <section className={styles.section} aria-labelledby="builder-onboarding-title">
         <h2 id="builder-onboarding-title">Builder onboarding</h2>
-        <p>Settings for {hackathonName}. Colosseum IDs are separate from HQ IDs. Leave project imports off until Colosseum provides access.</p>
         <ActionForm action={(data) => updateBuilderOnboardingConfig({
           externalHackathonId: String(data.get("externalId") ?? "").trim() ? Number(data.get("externalId")) : null,
           externalHackathonSlug: String(data.get("externalSlug") ?? ""),
           projectsOpen: data.has("projectsOpen"),
           projectsAvailableAt: data.get("availableAt") ? new Date(`${data.get("availableAt")}:00Z`).toISOString() : "",
           signupUrl: String(data.get("signupUrl") ?? ""),
-          hostingEnabled: data.has("hostingEnabled"),
         })}>
           <div className={styles.grid}>
-            <label className={styles.field}>Colosseum hackathon ID<input name="externalId" inputMode="numeric" pattern="[0-9]+" defaultValue={config.externalHackathonId ?? ""} /></label>
-            <label className={styles.field}>Colosseum hackathon slug<input name="externalSlug" defaultValue={config.externalHackathonSlug} maxLength={200} spellCheck={false} /></label>
+            <label className={styles.field}>Hackathon ID<input name="externalId" inputMode="numeric" pattern="[0-9]+" defaultValue={config.externalHackathonId ?? ""} /></label>
+            <label className={styles.field}>Slug<input name="externalSlug" defaultValue={config.externalHackathonSlug} maxLength={200} spellCheck={false} /></label>
             <label className={styles.field}>Project access date (UTC)<input name="availableAt" type="datetime-local" defaultValue={localDateTime(config.projectsAvailableAt)} /></label>
-            <label className={styles.field}>Colosseum signup URL<input name="signupUrl" type="url" defaultValue={config.signupUrl} required /></label>
+            <label className={styles.field}>Signup URL<input name="signupUrl" type="url" defaultValue={config.signupUrl} required /></label>
           </div>
           <label className={styles.checkbox}>Enable project imports<input name="projectsOpen" type="checkbox" defaultChecked={config.projectsOpen} /></label>
-          <label className={styles.checkbox}>Allow Members to apply to host events<input name="hostingEnabled" type="checkbox" defaultChecked={config.hostingEnabled} /></label>
-          <div className={styles.actions}><button className={styles.button} type="submit">Save onboarding settings</button></div>
+          <div className={styles.actions}><button className={styles.button} type="submit">Save</button></div>
         </ActionForm>
       </section>
-      <BuilderAccounts accounts={accounts} />
-      <section className={styles.section} aria-labelledby="hosting-requests-title">
-        <h2 id="hosting-requests-title">Event hosting requests</h2>
-        <p>{config.hostingEnabled ? "Members can apply to host an event." : "Applications are disabled. Enable them in onboarding settings when ready."}</p>
-        {hostRequests.length === 0 && <p>No hosting requests yet.</p>}
-        {hostRequests.map((request) => (
-          <article className={styles.row} key={request.id}>
-            <div className={styles.rowHeader}><h3>{request.title}</h3><span className={styles.badge}>{request.status}</span></div>
-            <p>{request.name} ({request.email})</p><p>{request.details}</p>
-            {request.status === "pending" && <ActionForm action={(data) => reviewBuilderHostRequest(request.id, data.get("decision") === "approved" ? "approved" : "declined")}>
-              <div className={styles.actions}>
-                <button className={styles.button} name="decision" value="approved" type="submit">Approve request</button>
-                <button className={styles.secondary} name="decision" value="declined" type="submit">Decline</button>
-              </div>
-            </ActionForm>}
-          </article>
-        ))}
-      </section>
+      <CaptainInvitations invitations={captainInvitations} timezone={timezone} />
+      <CaptainLeaderboard rows={captainLeaderboard} />
     </>
   );
 }
 
-export function BuilderAccounts({ accounts }: { accounts: BuilderAccount[] }) {
+const INVITATION_STATE_LABELS: Record<CaptainInvitationListing["state"], string> = {
+  active: "Active", expired: "Expired", revoked: "Revoked", full: "Full",
+};
+
+/**
+ * The moment this form hydrated on the client, or null on the server and on
+ * the client's own first (hydrating) render. Date.now() is impure: calling
+ * it directly in a component body is against the rules of React (it would
+ * also disagree with the server's render, a hydration mismatch), so the one
+ * read lives inside useSyncExternalStore's getSnapshot, its documented seam
+ * for reading an external, non-React value, cached in a ref so repeated
+ * calls agree with themselves instead of drifting with the clock. No
+ * subscription is needed since this never changes again after mount, hence
+ * the no-op subscribe.
+ */
+function useClientNow(): number | null {
+  const cached = useRef<number | null>(null);
+  return useSyncExternalStore(
+    () => () => {},
+    () => (cached.current ??= Date.now()),
+    () => null,
+  );
+}
+
+/**
+ * Days from now, formatted with its zone, for the create form's expiry
+ * preview. Null on the server and on the client's first render (see
+ * useClientNow), so the first client render still matches the server's,
+ * the same hydration problem localDateTime above solves a different way, by
+ * only ever formatting a fixed UTC value instead of "now".
+ */
+function useExpiryPreview(days: number, timezone: string): string {
+  const now = useClientNow();
+  if (now == null || !Number.isFinite(days) || days <= 0) return "";
+  return fmtWithZone(new Date(now + days * 86_400_000).toISOString(), timezone);
+}
+
+/**
+ * Captain invitation links: admin-generated links that grant the Captain
+ * capability only, never operator access and never a project assignment.
+ *
+ * The create form is not an ActionForm: createCaptainInvitation returns a
+ * distinct { token, invitation } shape (never ActionResult) so the plaintext
+ * link can be returned once, and ActionForm's contract is ActionResult only.
+ * The one-time link is kept in its own `created` state instead of the form's
+ * fields, so resetting the form on success (clearing label / limit / days
+ * for the next invitation) never touches the link still on screen.
+ */
+function CaptainInvitations({ invitations, timezone }: { invitations: CaptainInvitationListing[]; timezone: string }) {
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState("");
+  const [created, setCreated] = useState<{ token: string } | null>(null);
+  const [days, setDays] = useState(7);
+  const preview = useExpiryPreview(days, timezone);
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    setError("");
+    startTransition(async () => {
+      try {
+        const result = await createCaptainInvitation({
+          label: String(data.get("label") ?? "").trim() || undefined,
+          maxRedemptions: Number(data.get("maxRedemptions")),
+          expiresInDays: Number(data.get("validForDays")),
+        });
+        if (!result.ok) { setError(result.error); return; }
+        setCreated({ token: result.token });
+        form.reset();
+        setDays(7);
+      } catch {
+        // requireUser() throws on an expired or lost operator session, the
+        // most likely failure on a long-open Admin tab, and the action
+        // rethrows anything that is not a BuilderError.
+        setError("Could not create the invitation. Try again.");
+      }
+    });
+  }
+
+  const link = created ? `${window.location.origin}${inviteLink(created.token)}` : "";
+
   return (
-    <section className={styles.section} aria-labelledby="builder-accounts-title">
-      <h2 id="builder-accounts-title">HQ accounts</h2>
-      <p>Accounts in this hackathon&apos;s People list. Membership applies across all hackathons and never grants admin access.</p>
-      {accounts.length === 0 && <p>No HQ accounts have joined this hackathon yet.</p>}
-      {accounts.map((account) => (
-        <article className={styles.row} key={account.id}>
-          <h3>{account.name}</h3><p>{account.email}</p>
-          <ActionForm action={(data) => updateBuilderTier(account.id, data.get("tier") === "member" ? "member" : "regular")}>
-            <div className={styles.tier}>
-              <label>Membership<select name="tier" defaultValue={account.tier}><option value="regular">Regular</option><option value="member">Member</option></select></label>
-              <button className={styles.secondary} type="submit">Save membership</button>
-            </div>
-          </ActionForm>
+    <section className={styles.section} aria-labelledby="captain-invitations-title">
+      <h2 id="captain-invitations-title">Captain invitation links</h2>
+      <form onSubmit={submit} aria-busy={pending}>
+        <fieldset disabled={pending} className={styles.fieldset}>
+          <div className={styles.grid}>
+            <label className={styles.field}>Label<input name="label" maxLength={200} placeholder="e.g. Rotterdam meetup" /></label>
+            <label className={styles.field}>Max accounts<input name="maxRedemptions" type="number" inputMode="numeric" min={1} max={500} defaultValue={1} required /></label>
+            <label className={styles.field}>Valid for (days)<input name="validForDays" type="number" inputMode="numeric" min={1} max={365} defaultValue={7} required onChange={(event) => setDays(Number(event.currentTarget.value))} /></label>
+          </div>
+          <div className={`${styles.actions} ${styles.actionsWide}`}>
+            <button className={styles.button} type="submit">Create link</button>
+            <span className={styles.hint}>{preview ? `Expires ${preview}` : "Choose a duration to see the expiry."}</span>
+          </div>
+        </fieldset>
+        {(pending || error) && <div className={`${styles.feedback} ${error ? styles.error : ""}`} role={error ? "alert" : "status"}>{pending ? "Creating…" : error}</div>}
+      </form>
+      {created && (
+        <div className={styles.block} role="status">
+          <p className={styles.lead}>Copy now. This link is not shown again.</p>
+          <p>Invitation code: <strong>{created.token}</strong></p>
+          <div className={styles.linkRow}>
+            <span className={styles.link}>{link}</span>
+            <CopyButton value={link} />
+          </div>
+        </div>
+      )}
+      {invitations.map((invitation) => (
+        <article className={styles.block} key={invitation.id}>
+          <div className={styles.blockHeader}>
+            <h3>{invitation.label || "Untitled invitation"}</h3>
+            <span className={styles.pill}>{INVITATION_STATE_LABELS[invitation.state]}</span>
+          </div>
+          <p>
+            {invitation.usedCount} of {invitation.maxRedemptions} used. Expires {fmtWithZone(invitation.expiresAt, timezone)}.
+            {" "}By {invitation.createdByName ?? "a since-removed operator"}, {invitation.createdAt.slice(0, 10)}
+          </p>
+          {invitation.redeemers.length > 0 && (
+            <ul className={styles.redeemers} aria-label={`${invitation.label || "Untitled invitation"} redeemers`}>
+              {invitation.redeemers.map((redeemer, index) => (
+                <li key={redeemer.userId ?? `deleted-${index}`}>
+                  <span>{redeemer.name ?? "Deleted account"}</span>
+                  <span className={styles.date}>{redeemer.redeemedAt.slice(0, 10)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {invitation.state !== "revoked" && (
+            <ActionForm action={() => revokeCaptainInvitation(invitation.id)}>
+              <div className={styles.actions}><button className={styles.secondary} type="submit">Revoke</button></div>
+            </ActionForm>
+          )}
         </article>
       ))}
     </section>
   );
 }
 
-const STAGES: Record<string, string> = { idea: "Idea", mvp: "Prototype / MVP", beta: "Beta / devnet testing", live: "Live product", revenue: "Revenue-generating", growth: "Scaling / growth" };
-
-export function BuilderProjectReviews({ projects, importRequests }: {
-  projects: BuilderProjectReview[]; importRequests: BuilderImportRequest[];
-}) {
+/**
+ * The Captain leaderboard, edition-scoped: ranked rows with the bar scaled
+ * to the top count, the project names under each name. `rows` is the
+ * admin-only shape getBuilderAdminData builds server-side, keyed by account
+ * id rather than by a display name two Captains may share.
+ */
+function CaptainLeaderboard({ rows }: { rows: AdminCaptainLeaderboardRow[] }) {
+  const top = Math.max(1, rows[0]?.assignedCount ?? 0);
   return (
-    <>
-      <section className={styles.section} aria-labelledby="imported-teams-title">
-        <h2 id="imported-teams-title">Imported teams</h2>
-        <p>Team verification and HQ membership are separate from the submission gates above.</p>
-        {projects.length === 0 && <p>No teams have been imported into this hackathon yet.</p>}
-        {projects.map((project) => (
-          <article className={styles.row} key={`${project.id}-${project.verification}`}>
-            <div className={styles.rowHeader}>
-              <h3>{project.name}</h3>
-              <div className={styles.actions} style={{ marginTop: 0 }}>
-                <span className={styles.badge}>{project.verification === "pending" ? "Awaiting approval" : project.verification}</span>
-                {project.highPotential && <span className={`${styles.badge} ${styles.potential}`}>High potential</span>}
-              </div>
-            </div>
-            <p>{project.description}</p>
-            <p><a href={projectHref(project.projectUrl)} target="_blank" rel="noopener noreferrer">View project on Colosseum</a></p>
-            <p>Country: <strong>{project.country || "Not provided"}</strong><br />Stage: {STAGES[project.stage] ?? project.stage}<br />Lead: {project.leadUsername ? `@${project.leadUsername}` : "Not selected"}</p>
-            <p>Initialized by {project.ownerName} ({project.ownerEmail}).</p>
-            <ul className={styles.roster} aria-label={`${project.name} team members`}>
-              {project.members.map((member, index) => <li key={member.username || `${member.name}-${index}`}>
-                <span>{member.name}{member.username ? ` (@${member.username})` : ""}{member.username === project.leadUsername ? " (lead)" : ""}</span>
-                <span className={styles.badge}>{member.joined ? "Joined HQ" : "Not joined"}</span>
-              </li>)}
-            </ul>
-            {project.members.length === 0 && <p>No Colosseum roster was imported. Review the project before approval.</p>}
-            {project.members.some((member) => member.username) && <ActionForm action={(data) => updateBuilderProjectLead(project.id, String(data.get("lead") ?? ""))}>
-              <div className={styles.tier}>
-                <label>Team lead<select name="lead" defaultValue={project.leadUsername} required>{project.members.filter((member) => member.username).map((member) => <option key={member.username} value={member.username}>{member.name} (@{member.username})</option>)}</select></label>
-                <button className={styles.secondary} type="submit">Save lead</button>
-              </div>
-            </ActionForm>}
-            <p>{project.proofCommentId ? `Verification comment #${project.proofCommentId}, author #${project.proofAuthorId ?? "unknown"}.` : "No matching verification comment is recorded."} <a href={`https://api.colosseum.com/api/project/comments?projectId=${project.externalId}&offset=0`} target="_blank" rel="noopener noreferrer">View Colosseum comments</a></p>
-            <ActionForm action={() => markBuilderProjectPotential(project.id, !project.highPotential)}>
-              <div className={styles.actions}><button className={styles.secondary} type="submit">{project.highPotential ? "Remove high potential flag" : "Mark high potential"}</button></div>
-            </ActionForm>
-            <details className={styles.review}>
-              <summary>{project.verification === "pending" ? "Review team verification" : "Change team verification"}</summary>
-              <ActionForm action={(data) => reviewBuilderProject({ projectId: project.id,
-                decision: data.get("decision") === "verified" ? "verified" : "rejected",
-                reviewedEvidence: data.has("reviewed") as true, note: String(data.get("note") ?? ""),
-              })}>
-                <label className={styles.checkbox}>I checked the Colosseum project, Netherlands registration, owner and listed team.<input name="reviewed" type="checkbox" required /></label>
-                <label className={styles.field}>Review note<textarea name="note" required minLength={12} maxLength={2000} rows={3} placeholder="Record the evidence for your decision." /></label>
-                <div className={styles.actions}>
-                  <button className={styles.button} name="decision" value="verified" type="submit">Approve team</button>
-                  <button className={styles.secondary} name="decision" value="rejected" type="submit">Reject team</button>
-                </div>
-              </ActionForm>
-            </details>
-          </article>
+    <section className={styles.section} aria-labelledby="captain-leaderboard-title">
+      <div className={styles.header}>
+        <h2 id="captain-leaderboard-title">Captain leaderboard</h2>
+        <span className={styles.headerNote}>Active projects held</span>
+      </div>
+      <ol className={styles.leaderboard} aria-label="Captain leaderboard">
+        {rows.map((row) => (
+          <li key={row.captainUserId}>
+            <span className={styles.rank}>{row.rank}</span>
+            <span className={styles.captain}>
+              <span className={styles.captainName}>{row.displayName}</span>
+              <span className={styles.projects}>{row.projectNames.join(", ") || "No projects yet"}</span>
+            </span>
+            <span className={styles.bar}><span className={styles.barFill} style={{ width: `${Math.round((row.assignedCount / top) * 100)}%` }} /></span>
+            <span className={styles.count}>{row.assignedCount}</span>
+          </li>
         ))}
-      </section>
-      <section className={styles.section} aria-labelledby="import-requests-title">
-        <h2 id="import-requests-title">Import requests</h2>
-        <p>Projects that Colosseum could not return. Help the builder complete the import before marking the request resolved.</p>
-        {importRequests.length === 0 && <p>No import requests need attention.</p>}
-        {importRequests.map((request) => <article className={styles.row} key={request.id}>
-          <div className={styles.rowHeader}><h3>{request.name}</h3><span className={styles.badge}>{request.status}</span></div>
-          <p>{request.email}</p><p><a href={projectHref(request.projectUrl)} target="_blank" rel="noopener noreferrer">{request.projectUrl}</a></p><p>{request.note}</p>
-          {request.status === "pending" && <ActionForm action={() => resolveBuilderImportRequest(request.id)}>
-            <div className={styles.actions}><button className={styles.secondary} type="submit">Mark resolved</button></div>
-          </ActionForm>}
-        </article>)}
-      </section>
-    </>
+      </ol>
+    </section>
   );
 }

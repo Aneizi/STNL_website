@@ -49,13 +49,13 @@ export function ActivityDrawer({ onClose }: { onClose: () => void }) {
       >
         <div style={cardTitle}>Activity</div>
         {failed ? (
-          <div style={{ fontSize: 13, color: "var(--red)", marginTop: 10 }}>
+          <div style={{ fontSize: 16, color: "var(--red)", marginTop: 10 }}>
             Couldn&apos;t load activity. Close and reopen to retry.
           </div>
         ) : items === null ? (
-          <div style={{ fontSize: 13, color: "var(--label-3)", marginTop: 10 }}>Loading…</div>
+          <div style={{ fontSize: 16, color: "var(--label-3)", marginTop: 10 }}>Loading…</div>
         ) : items.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--label-3)", marginTop: 10 }}>
+          <div style={{ fontSize: 16, color: "var(--label-3)", marginTop: 10 }}>
             Nothing logged yet.
           </div>
         ) : (
@@ -64,10 +64,10 @@ export function ActivityDrawer({ onClose }: { onClose: () => void }) {
               key={item.id}
               style={{ padding: "10px 0", borderBottom: "1px solid var(--sep)" }}
             >
-              <div style={{ fontSize: 12, color: "var(--label-3)" }}>
+              <div style={{ fontSize: 14, color: "var(--label-3)" }}>
                 {fmtWhen(item.createdAt, timezone)}, {item.user}
               </div>
-              <div style={{ fontSize: 13, marginTop: 2 }}>{item.message}</div>
+              <div style={{ fontSize: 16, marginTop: 2 }}>{item.message}</div>
             </div>
           ))
         )}

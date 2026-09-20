@@ -1,3 +1,4 @@
+-- Frozen input to 0001-legacy-bootstrap. Add new changes in migrations/NNNN-name.sql.
 -- Additive public-account tables for Better Auth 1.7.2.
 -- These are deliberately separate from the operator-only hq_users/hq_sessions.
 CREATE TABLE IF NOT EXISTS hq_auth_user (
@@ -40,6 +41,8 @@ CREATE TABLE IF NOT EXISTS hq_auth_account (
   UNIQUE (issuer, "accountId")
 );
 CREATE INDEX IF NOT EXISTS hq_auth_account_user_idx ON hq_auth_account("userId");
+-- One Telegram account row per HQ user, whatever two in-flight link callbacks do.
+CREATE UNIQUE INDEX IF NOT EXISTS hq_auth_account_telegram_user_idx ON hq_auth_account("userId") WHERE "providerId" = 'telegram';
 
 CREATE TABLE IF NOT EXISTS hq_auth_verification (
   id text PRIMARY KEY,
@@ -56,4 +59,20 @@ CREATE TABLE IF NOT EXISTS hq_auth_rate_limit (
   key text NOT NULL UNIQUE,
   count integer NOT NULL,
   "lastRequest" bigint NOT NULL
+);
+
+-- Verified Telegram identity per public account. One row per account and one
+-- account per Telegram user. provider_subject is the id_token `sub` and equals
+-- hq_auth_account."accountId" for providerId 'telegram'. telegram_user_id is
+-- the numeric Telegram user id (at most 52 significant bits, hence bigint,
+-- exposed as a string at JSON boundaries). Written by the identity plugin's
+-- database hooks after the Better Auth transaction commits.
+CREATE TABLE IF NOT EXISTS hq_auth_telegram_identity (
+  user_id text PRIMARY KEY REFERENCES hq_auth_user(id) ON DELETE CASCADE,
+  provider_subject text NOT NULL UNIQUE,
+  telegram_user_id bigint NOT NULL UNIQUE,
+  username text,
+  photo_url text,
+  linked_at timestamptz NOT NULL DEFAULT now(),
+  last_login_at timestamptz NOT NULL DEFAULT now()
 );

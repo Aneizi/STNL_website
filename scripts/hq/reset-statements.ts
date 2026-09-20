@@ -17,6 +17,64 @@ export const CLEAR_TABLES = [
   "hq_finalists",
   "hq_project_gates",
   "hq_project_notes",
+  // Captain assignment history belongs to the project rows below, the same
+  // way People and notes do: it names who ran a project in an edition, not a
+  // standing grant. The cascade from hq_projects already emptied it before
+  // it was named here (task T4.1).
+  "hq_captain_assignments",
+  // Weekly reporting (phase 5). Every one of these belongs to the edition's
+  // projects, which are cleared below, so they would go by cascade anyway;
+  // naming them keeps the manifest self-documenting. The periods go too,
+  // even though nobody typed them into the dashboard: they are generated
+  // deterministically from the edition's own dates and hq_reporting_config,
+  // which both survive, so the schedule comes back identical on the next
+  // ensureReportingPeriods() — and keeping them while their entries and
+  // outcomes were cleared would leave periods marked closed with nothing
+  // recorded against them.
+  "hq_reporting_entry_revisions",
+  "hq_reporting_outcomes",
+  "hq_reporting_entries",
+  // The pause history belongs with the eligibility row it is the history of:
+  // clearing one and keeping the other would leave a project with recorded
+  // exemptions and nothing that was ever paused.
+  "hq_reporting_pause_intervals",
+  "hq_reporting_eligibility",
+  // Wednesday reminder decisions (phase 8). One row per Captain, edition and
+  // week, and every one of them points at a period of the edition being
+  // emptied: the cascade from hq_reporting_periods below would take them
+  // anyway, and keeping them while the weeks they name are gone would leave
+  // an admin reading a reminder history for weeks that no longer exist. What
+  // the bot actually sent survives in hq_telegram_outgoing, which is KEEP,
+  // below, for the same reason the processed-update ledger is.
+  "hq_reminder_deliveries",
+  // The closing submission reconciliation (phase 10). It belongs to the
+  // submission period and the project it judged, both of which are cleared
+  // here, and it holds no configuration: the evidence can be established
+  // again from Colosseum whenever the project is imported again. Keeping it
+  // would leave reconciliations pointing at weeks and teams that no longer
+  // exist, exactly like the reminder rows above.
+  "hq_submission_reconciliations",
+  "hq_reporting_periods",
+  // Telegram bot chat state (phase 7). Both rows point at a project or a
+  // period of the edition being emptied, both expire on their own within
+  // minutes, and neither is a record of anything: a draft is text somebody
+  // has not saved yet and an action row is what one button in one chat
+  // means. Clearing them costs a person at most a half-written message they
+  // would have lost to the expiry anyway. The processed-update ledger and
+  // the delivery history are KEEP, below, for the opposite reason.
+  "hq_telegram_drafts",
+  "hq_telegram_actions",
+  // Imported Colosseum teams and their invite codes belong to the project
+  // rows below; the cascade from hq_projects already emptied them before they
+  // were named here.
+  "hq_team_invites",
+  "hq_colosseum_updates",
+  "hq_colosseum_update_sync",
+  "hq_project_onboarding",
+  // HQ project ownership is per project, like the onboarding row beside it,
+  // and goes with the projects below whether that ownership came from an
+  // import or from an admin creating the project by hand.
+  "hq_project_ownership",
   "hq_project_members",
   "hq_partner_exchange",
   "hq_partner_contacts",
@@ -36,6 +94,61 @@ export const KEEP_TABLES = [
   "hq_sessions",
   "hq_login_attempts",
   "hq_login_limits",
+  // Public account logins (Better Auth) survive for the same reason operator
+  // logins do: a reset empties the campaign, it never signs anyone out.
+  "hq_auth_user",
+  "hq_auth_session",
+  "hq_auth_account",
+  "hq_auth_verification",
+  "hq_auth_rate_limit",
+  "hq_auth_telegram_identity",
+  // The public account itself and its stable CRM person: the person is the
+  // identity that People cards in every edition point at, so it outlives the
+  // cards the way an operator login outlives the campaign.
+  "hq_builder_profiles",
+  "hq_crm_persons",
+  // Admin-granted account capabilities (Captain) and the append-only audit
+  // trail behind them, identity links and assignment changes. Both are
+  // account-level history, not an edition's CRM, so a reset keeps them the
+  // way it keeps logins and persons (ruling Q10, task T1.2).
+  "hq_account_capabilities",
+  "hq_audit_events",
+  // Captain invitations and who redeemed them: account-level grant history
+  // like hq_account_capabilities above, not an edition's CRM, so a reset
+  // keeps them the same way it keeps the grant itself (task T4.1).
+  "hq_captain_invitations",
+  "hq_captain_invitation_redemptions",
+  // Whether the account agreed to bot messages, and the private chat the bot
+  // talks to them in (phase 7 added the chat id to this row): a standing
+  // decision by the person, not an edition's CRM, so it survives like a
+  // login (task T2.3).
+  "hq_telegram_bot_consent",
+  // Which Telegram updates have already been handled (phase 7). Kept because
+  // it is the only thing standing between a redelivered update id and a
+  // second run of whatever that update asked for: clearing it would reopen a
+  // window the table exists to close. It is a ledger, not an edition's CRM.
+  "hq_telegram_updates",
+  // What the bot sent, tried to send, or could not send, per account. Kept
+  // for the same reason hq_audit_events is: it is account-level delivery
+  // history that phase 8 shows admins, and it never carries an update body.
+  "hq_telegram_outgoing",
+  // Per-edition Colosseum mapping and toggles, typed into Admin: settings,
+  // like hq_settings.
+  "hq_hackathon_onboarding",
+  // The edition's reporting schedule settings (final-period start, official
+  // submission deadline, nudge weekday and time), typed into Admin: settings
+  // again, and the reason clearing hq_reporting_periods above loses nothing
+  // (task T5.1).
+  "hq_reporting_config",
+  // Builder-side records the reset never touched before they were classified
+  // (task T1.1). Kept so that classifying them changes nothing a live reset
+  // does; whether enrollments and requests should be emptied with the
+  // edition's CRM is an open product ruling. hq_project_challenges sat in
+  // this list until phase 3 removed the ownership-proof challenge, and its
+  // table with it.
+  "hq_builder_enrollments",
+  "hq_project_import_requests",
+  "hq_event_host_requests",
   "hq_partner_channels",
   "hq_event_types",
   "hq_people_roles",

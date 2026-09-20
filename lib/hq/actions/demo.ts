@@ -80,7 +80,7 @@ export async function addFinalist(projectId: string): Promise<ActionResult> {
     };
   }
   await activityStmt(user.id, project.hackathonId, `Added finalist ${project.name}`);
-  refreshHq();
+  refreshHq("demo");
   return { ok: true };
 }
 
@@ -98,7 +98,7 @@ export async function removeFinalist(projectId: string): Promise<ActionResult> {
     sql`DELETE FROM hq_finalists WHERE project_id = ${projectId}`,
     activityStmt(user.id, project.hackathonId, `Removed finalist ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("demo");
   return { ok: true };
 }
 
@@ -125,7 +125,7 @@ export async function addAward(input: z.infer<typeof awardSchema>): Promise<Acti
     `,
     activityStmt(user.id, hackathon.id, `Added award ${name}`),
   ]);
-  refreshHq();
+  refreshHq("demo");
   return { ok: true };
 }
 
@@ -141,7 +141,7 @@ export async function removeAward(awardId: string): Promise<ActionResult> {
     sql`DELETE FROM hq_awards WHERE id = ${awardId}`,
     activityStmt(user.id, award.hackathonId, `Removed award ${award.name}`),
   ]);
-  refreshHq();
+  refreshHq("demo");
   return { ok: true };
 }
 
@@ -175,7 +175,7 @@ export async function setAwardWinner(
     return { ok: false, error: "Winners must be current finalists." };
   }
   await activityStmt(user.id, award.hackathonId, `Winner set for ${award.name}`);
-  refreshHq();
+  refreshHq("demo");
   return { ok: true };
 }
 
@@ -232,7 +232,7 @@ export async function addScore(input: z.infer<typeof scoreSchema>): Promise<Acti
   } catch {
     return { ok: false, error: "Judge, finalist, and a score are required." };
   }
-  refreshHq();
+  refreshHq("demo");
   return { ok: true };
 }
 
@@ -248,6 +248,6 @@ export async function clearScores(projectId: string): Promise<ActionResult> {
     sql`DELETE FROM hq_scores WHERE project_id = ${projectId}`,
     activityStmt(user.id, project.hackathonId, `Cleared scores for ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("demo");
   return { ok: true };
 }

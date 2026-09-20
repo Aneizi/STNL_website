@@ -1,23 +1,25 @@
 import "server-only";
+import { cache } from "react";
+import type { BuilderQuery } from "./builder-db";
+import { realEmail } from "./builder-store";
+import { listActiveCapabilitiesForUsers, personTags } from "./capabilities";
 import { CLASSIFIERS_SELECT, toClassifiers } from "./classifiers-sql";
 import { getSql } from "./db";
 import { attributeOutputs, type AttributableProject } from "./event-attribution";
-import { fmtDate, normName, todayInTz } from "./format";
+import { fmtDate } from "./format";
 import type {
   ActivityItem,
   Award,
   Classifiers,
+  DashboardProject,
   DemoProject,
-  EventOption,
   FinalistProject,
   Hackathon,
   HqEvent,
-  HqLink,
   Judge,
   Milestone,
   Partner,
   PartnerDetail,
-  PartnerOption,
   Person,
   Project,
   Role,
@@ -51,37 +53,33 @@ const HACKATHON_SELECT = /* sql */ `
  * Every hackathon, open editions first and newest first within each group —
  * the picker and the switcher both show archived editions after the rest.
  */
-export async function getHackathons(): Promise<Hackathon[]> {
+// React cache deduplicates reads within a server render, never between requests.
+export const getHackathons = cache(async (): Promise<Hackathon[]> => {
   const sql = getSql();
   const rows = await sql.query(
     `${HACKATHON_SELECT}
      ORDER BY (archived_at IS NOT NULL), start_date DESC, created_at DESC`,
   );
   return (rows as Record<string, unknown>[]).map(mapHackathon);
-}
+});
 
-export async function getHackathon(id: number): Promise<Hackathon | null> {
+export const getHackathon = cache(async (id: number): Promise<Hackathon | null> => {
   const sql = getSql();
   const rows = await sql.query(`${HACKATHON_SELECT} WHERE id = $1`, [id]);
   const row = (rows as Record<string, unknown>[])[0];
   return row ? mapHackathon(row) : null;
-}
+});
 
-export async function getClassifiers(hackathonId: number): Promise<Classifiers> {
+export const getClassifiers = cache(async (hackathonId: number): Promise<Classifiers> => {
   const sql = getSql();
   const [row] = await sql.query(CLASSIFIERS_SELECT, [hackathonId]);
   return toClassifiers(row ?? {});
-}
+});
 
 const SETTING_KEYS: Record<string, keyof Settings> = {
   prospects_reached: "prospectsReached",
-  prospects_target: "prospectsTarget",
   committed_manual: "committedManual",
-  committed_target: "committedTarget",
-  committed_glide: "committedGlide",
   active_at_kickoff: "activeAtKickoff",
-  active_target: "activeTarget",
-  verified_target: "verifiedTarget",
   stale_days: "staleDays",
   finalist_cap: "finalistCap",
   verified_only_finalists: "verifiedOnlyFinalists",
@@ -94,13 +92,8 @@ const SETTING_KEYS: Record<string, keyof Settings> = {
 
 const SETTINGS_FALLBACK: Settings = {
   prospectsReached: 0,
-  prospectsTarget: 0,
   committedManual: 0,
-  committedTarget: 0,
-  committedGlide: 0,
   activeAtKickoff: 0,
-  activeTarget: 0,
-  verifiedTarget: 0,
   staleDays: 7,
   finalistCap: 30,
   verifiedOnlyFinalists: false,
@@ -111,7 +104,7 @@ const SETTINGS_FALLBACK: Settings = {
   activeSub: "",
 };
 
-export async function getSettings(hackathonId: number): Promise<Settings> {
+export const getSettings = cache(async (hackathonId: number): Promise<Settings> => {
   const sql = getSql();
   const rows = await sql`SELECT key, value FROM hq_settings WHERE hackathon_id = ${hackathonId}`;
   const settings = { ...SETTINGS_FALLBACK };
@@ -120,19 +113,55 @@ export async function getSettings(hackathonId: number): Promise<Settings> {
     if (prop) (settings as Record<string, unknown>)[prop] = row.value;
   }
   return settings;
+});
+
+/** Dashboard facts only; project details and note history stay out of this read. */
+export async function getDashboardProjects(hackathonId: number): Promise<DashboardProject[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT p.id, p.name, f.slug AS forecast_slug,
+      p.last_check_in::text AS last_check_in, p.blocker,
+      COALESCE(
+        (SELECT array_agg(g.gate_id::text) FROM hq_project_gates g WHERE g.project_id = p.id),
+        '{}'
+      ) AS gates
+    FROM hq_projects p
+    JOIN hq_project_forecasts f ON f.id = p.forecast_id
+    WHERE p.hackathon_id = ${hackathonId}
+    ORDER BY p.created_at DESC
+  `;
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    forecastSlug: row.forecast_slug,
+    lastCheckIn: row.last_check_in,
+    blocker: row.blocker,
+    gates: row.gates ?? [],
+  }));
 }
 
 export async function getProjects(hackathonId: number): Promise<Project[]> {
   const sql = getSql();
+  // The Colosseum snapshot rides along from hq_project_onboarding (one row
+  // per imported project, none for a project created in HQ), with the
+  // importer's name from their profile: the board's Colosseum block shows
+  // who pasted the link and on which day.
   const rows = await sql`
     SELECT
       p.id, p.name, p.lead_name, p.lead_contact,
       p.partner_id, COALESCE(pa.name, '') AS partner_name,
+      ca.captain_user_id, COALESCE(cap.name, '') AS captain_name,
       p.event_src, s.slug AS status_slug, f.slug AS forecast_slug,
-      p.last_check_in::text AS last_check_in, p.blocker,
+      p.last_check_in::text AS last_check_in, p.blocker, p.high_potential,
       COALESCE(u.display_name, '') AS touched_by, p.touched_at::text AS touched_at,
+      p.created_at::date::text AS created_at,
+      o.project_id IS NOT NULL AS imported,
+      o.project_url, o.image_url, o.description, o.stage, o.category, o.submission_status,
+      COALESCE(o.lead_username, '') AS lead_username,
+      COALESCE(owner.name, '') AS imported_by, o.created_at::date::text AS imported_at,
       COALESCE(
-        (SELECT json_agg(json_build_object('id', m.id, 'name', m.name, 'contact', m.contact)
+        (SELECT json_agg(json_build_object(
+            'id', m.id, 'name', m.name, 'contact', m.contact, 'username', m.colosseum_username)
            ORDER BY m.sort, m.id)
          FROM hq_project_members m WHERE m.project_id = p.id),
         '[]'
@@ -159,6 +188,10 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     JOIN hq_project_forecasts f ON f.id = p.forecast_id
     LEFT JOIN hq_partners pa ON pa.id = p.partner_id
     LEFT JOIN hq_users u ON u.id = p.touched_by_user_id
+    LEFT JOIN hq_captain_assignments ca ON ca.project_id = p.id AND ca.unassigned_at IS NULL AND ca.captain_user_id IS NOT NULL
+    LEFT JOIN hq_builder_profiles cap ON cap.id = ca.captain_user_id
+    LEFT JOIN hq_project_onboarding o ON o.project_id = p.id
+    LEFT JOIN hq_builder_profiles owner ON owner.id = o.owner_user_id
     WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
@@ -168,8 +201,25 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     leadName: r.lead_name,
     leadContact: r.lead_contact,
     members: r.members ?? [],
+    createdAt: r.created_at,
+    highPotential: Boolean(r.high_potential),
+    colosseum: r.imported
+      ? {
+          url: r.project_url,
+          imageUrl: r.image_url ?? null,
+          description: r.description ?? "",
+          stage: r.stage,
+          category: r.category ?? null,
+          submissionStatus: r.submission_status ?? "not_checked",
+          leadUsername: r.lead_username,
+          importedByName: r.imported_by,
+          importedAt: r.imported_at,
+        }
+      : null,
     partnerId: r.partner_id,
     partnerName: r.partner_name,
+    captainUserId: r.captain_user_id,
+    captainName: r.captain_name,
     eventSrc: r.event_src,
     statusSlug: r.status_slug,
     forecastSlug: r.forecast_slug,
@@ -267,26 +317,68 @@ export async function getPartnerDetail(
   };
 }
 
+/**
+ * The operator driver, seen as the query handle the capability readers take,
+ * so a People or Admin read stays on the one connection it already uses.
+ */
+export function operatorQuery(): BuilderQuery {
+  const sql = getSql();
+  return { query: async (text, values = []) => ({ rows: (await sql.query(text, values)) as Record<string, unknown>[] }) };
+}
+
 export async function getPeople(hackathonId: number): Promise<Person[]> {
   const sql = getSql();
+  // The linked account's login rides along through the same profile and
+  // Telegram identity join Admin uses (lib/hq/builder-admin-queries.ts), so
+  // the Account block needs no read of its own.
   const rows = await sql`
-    SELECT p.id, p.name, p.role_id, p.org, p.contact, p.partner_id,
-      COALESCE(pa.name, '') AS partner_name, p.notes
+    SELECT p.id, p.name, p.role_id, r.label AS role_label, p.contact, p.notes, p.builder_user_id, p.person_id,
+      b.email AS login_email, t.username AS telegram_username,
+      (SELECT count(*) FROM hq_scores s WHERE s.judge_id = p.id) AS judge_scores,
+      (SELECT count(*) FROM hq_project_members m WHERE p.person_id IS NOT NULL AND m.person_id = p.person_id) AS roster_rows,
+      (SELECT count(*) FROM hq_people q WHERE p.person_id IS NOT NULL AND q.person_id = p.person_id AND q.id <> p.id) AS other_cards,
+      (SELECT count(*) FROM hq_builder_enrollments e WHERE p.builder_user_id IS NOT NULL
+        AND e.user_id = p.builder_user_id AND e.hackathon_id = p.hackathon_id) AS enrollments
     FROM hq_people p
-    LEFT JOIN hq_partners pa ON pa.id = p.partner_id
+    JOIN hq_people_roles r ON r.id = p.role_id
+    LEFT JOIN hq_builder_profiles b ON b.id = p.builder_user_id
+    LEFT JOIN hq_auth_telegram_identity t ON t.user_id = b.id
     WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    roleId: r.role_id,
-    org: r.org,
-    contact: r.contact,
-    partnerId: r.partner_id,
-    partnerName: r.partner_name,
-    notes: r.notes,
-  }));
+  // One batched lookup for every linked account on the page; the Captain tag
+  // and flag are read from active grants and never from a role or a tier.
+  const userIds = rows.map((r) => r.builder_user_id).filter((id): id is string => typeof id === "string");
+  const capabilities = await listActiveCapabilitiesForUsers(userIds, operatorQuery());
+  return rows.map((r) => {
+    const userId = typeof r.builder_user_id === "string" ? r.builder_user_id : null;
+    const held = userId ? (capabilities.get(userId) ?? []) : [];
+    const account = userId
+      ? { email: realEmail(r.login_email), telegramUsername: typeof r.telegram_username === "string" && r.telegram_username ? r.telegram_username : null }
+      : null;
+    const stored = typeof r.contact === "string" ? r.contact : "";
+    return {
+      id: r.id,
+      name: r.name,
+      roleId: r.role_id,
+      // Telegram first, then what the card stores, then the login email.
+      contact: account?.telegramUsername ? `@${account.telegramUsername}` : stored || account?.email || "",
+      notes: r.notes,
+      builderUserId: userId,
+      personId: r.person_id ?? null,
+      account,
+      captain: held.includes("captain"),
+      tags: personTags(String(r.role_label), held),
+      // The counts behind the Delete person confirmation, read with the card
+      // rather than one query per row when the operator opens the control.
+      removal: {
+        cardId: String(r.id), name: String(r.name), hackathonId,
+        personId: r.person_id ?? null, hasAccount: userId !== null,
+        rosterRows: Number(r.roster_rows ?? 0), otherEditionCards: Number(r.other_cards ?? 0),
+        judgeScores: Number(r.judge_scores ?? 0), enrollments: Number(r.enrollments ?? 0),
+      },
+    };
+  });
 }
 
 /**
@@ -299,7 +391,8 @@ export async function getPeople(hackathonId: number): Promise<Person[]> {
 export async function getLumaSyncedAt(): Promise<string | null> {
   const sql = getSql();
   const [row] = await sql`SELECT last_success_at FROM hq_luma_sync WHERE id = true`;
-  const at = row ? Date.parse(String(row.last_success_at)) : NaN;
+  const value = row?.last_success_at;
+  const at = value instanceof Date ? value.getTime() : Date.parse(String(value));
   // The column defaults to the epoch, which means "never synced", not 1970.
   if (!Number.isFinite(at) || at <= 0) return null;
   return new Date(at).toISOString();
@@ -479,67 +572,6 @@ export async function getRoles(): Promise<Role[]> {
   }));
 }
 
-/**
- * Event names for the project "source event" picker, earliest first.
- * Projects store the name (not an id) and are attributed to the first event
- * whose normalized name matches, so the list carries one entry per distinct
- * name — offering the same name twice would pick out the same event anyway.
- */
-export async function getEventOptions(hackathonId: number): Promise<EventOption[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT id, name FROM hq_events WHERE hackathon_id = ${hackathonId} ORDER BY date, created_at
-  `;
-  const seen = new Set<string>();
-  const options: EventOption[] = [];
-  for (const r of rows) {
-    const key = normName(r.name);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    options.push({ id: r.id, name: r.name });
-  }
-  return options;
-}
-
-/** Shared links with their note logs, newest link first. */
-export async function getLinks(hackathonId: number): Promise<HqLink[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT l.id, l.title, l.url, l.highlighted,
-      COALESCE(
-        (SELECT json_agg(json_build_object(
-            'id', n.id,
-            'author', COALESCE(au.display_name, ''),
-            'body', n.body,
-            'createdAt', to_char(n.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
-          ) ORDER BY n.created_at DESC)
-          FROM hq_link_notes n
-          LEFT JOIN hq_users au ON au.id = n.author_user_id
-          WHERE n.link_id = l.id),
-        '[]'
-      ) AS notes
-    FROM hq_links l
-    WHERE l.hackathon_id = ${hackathonId}
-    ORDER BY l.created_at DESC
-  `;
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    url: r.url,
-    highlighted: r.highlighted,
-    notes: r.notes ?? [],
-  }));
-}
-
-/** Id/name pairs for partner dropdowns — no captain contact or metadata. */
-export async function getPartnerOptions(hackathonId: number): Promise<PartnerOption[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT id, name FROM hq_partners WHERE hackathon_id = ${hackathonId} ORDER BY created_at
-  `;
-  return rows.map((r) => ({ id: r.id, name: r.name }));
-}
-
 export async function getActivity(hackathonId: number, limit = 40): Promise<ActivityItem[]> {
   const sql = getSql();
   const rows = await sql`
@@ -576,62 +608,38 @@ export async function searchAll(query: string, hackathonId: number): Promise<Sea
   // Escape LIKE metacharacters so % _ \ in a query match literally (a
   // trailing bare backslash would otherwise make Postgres reject the pattern).
   const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
-  const [projects, partners, people, events] = await Promise.all([
-    sql`
-      SELECT id, name, lead_name FROM hq_projects
-      WHERE hackathon_id = ${hackathonId} AND (name ILIKE ${like} OR lead_name ILIKE ${like})
-      ORDER BY created_at DESC LIMIT 12
-    `,
-    sql`
-      SELECT pa.id, pa.name, c.label AS channel FROM hq_partners pa
-      JOIN hq_partner_channels c ON c.id = pa.channel_id
-      WHERE pa.hackathon_id = ${hackathonId}
-        AND (pa.name ILIKE ${like} OR pa.captain_name ILIKE ${like})
-      ORDER BY pa.created_at DESC LIMIT 12
-    `,
-    sql`
-      SELECT p.id, p.name, r.label AS role, p.org FROM hq_people p
-      JOIN hq_people_roles r ON r.id = p.role_id
-      WHERE p.hackathon_id = ${hackathonId} AND (p.name ILIKE ${like} OR p.org ILIKE ${like})
-      ORDER BY p.created_at DESC LIMIT 12
-    `,
-    sql`
-      SELECT id, name, date::text AS date FROM hq_events
-      WHERE hackathon_id = ${hackathonId} AND name ILIKE ${like}
-      ORDER BY date LIMIT 12
-    `,
-  ]);
-  const results: SearchResult[] = [
-    ...projects.map((r) => ({
-      kind: "Project" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: r.lead_name as string,
-    })),
-    ...partners.map((r) => ({
-      kind: "Partner" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: r.channel as string,
-    })),
-    ...people.map((r) => ({
-      kind: "Person" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: [r.role, r.org].filter(Boolean).join(", "),
-    })),
-    ...events.map((r) => ({
-      kind: "Event" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: fmtDate(r.date as string),
-    })),
-  ];
-  return results.slice(0, 12);
-}
-
-/** Today in the hackathon's timezone — the stamp used by check-ins and touch(). */
-export async function getToday(hackathonId: number): Promise<string> {
-  const settings = await getSettings(hackathonId);
-  return todayInTz(settings.timezone);
+  // Keep the existing category priority and each category's ordering, but
+  // return only the twelve displayed hits across one database round trip.
+  const rows = await sql.query(`
+    SELECT kind, id, label, meta FROM (
+      (SELECT 'Project' AS kind, id, name AS label, lead_name AS meta,
+          0 AS priority, created_at, NULL::date AS event_date
+       FROM hq_projects
+       WHERE hackathon_id = $1 AND (name ILIKE $2 OR lead_name ILIKE $2)
+       ORDER BY created_at DESC LIMIT 12)
+      UNION ALL
+      (SELECT 'Partner', pa.id, pa.name, c.label, 1, pa.created_at, NULL::date
+       FROM hq_partners pa JOIN hq_partner_channels c ON c.id = pa.channel_id
+       WHERE pa.hackathon_id = $1 AND (pa.name ILIKE $2 OR pa.captain_name ILIKE $2)
+       ORDER BY pa.created_at DESC LIMIT 12)
+      UNION ALL
+      (SELECT 'Person', p.id, p.name, r.label, 2, p.created_at, NULL::date
+       FROM hq_people p JOIN hq_people_roles r ON r.id = p.role_id
+       WHERE p.hackathon_id = $1 AND p.name ILIKE $2
+       ORDER BY p.created_at DESC LIMIT 12)
+      UNION ALL
+      (SELECT 'Event', id, name, date::text AS meta, 3, NULL::timestamptz, date
+       FROM hq_events
+       WHERE hackathon_id = $1 AND name ILIKE $2
+       ORDER BY date LIMIT 12)
+    ) hits
+    ORDER BY priority, created_at DESC, event_date
+    LIMIT 12
+  `, [hackathonId, like]);
+  return rows.map((row) => ({
+    kind: row.kind as SearchResult["kind"],
+    id: row.id as string,
+    label: row.label as string,
+    meta: row.kind === "Event" ? fmtDate(row.meta as string) : row.meta as string,
+  }));
 }

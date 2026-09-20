@@ -1,18 +1,53 @@
 .page { min-height:100svh; background:#fbf7f0; color:#16130f; font-family:var(--font-archivo),Arial,sans-serif; font-size:17px; line-height:1.55; }
-.header { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:22px clamp(20px,4vw,48px); border-bottom:1px solid rgba(22,19,15,.15); }
-.page .brand { display:flex; align-items:center; gap:10px; color:inherit; text-decoration:none; font-size:18px; font-weight:700; }
-.brand img { width:28px; height:auto; }
-.nav { display:flex; gap:20px; align-items:center; }
-.page .nav a { color:#57534a; text-decoration:none; font-size:15px; }
-.main { max-width:660px; margin:auto; padding:64px 24px 100px; }
-.wide { max-width:940px; }
+/* The header is 81px at every width (18 + 44 + 18 + the line); the team and
+ * captain pages size their shells against that. The stacking context lets
+ * the account menu float over page content, including an ink aside. */
+.header { display:flex; align-items:center; justify-content:space-between; gap:20px; padding:18px clamp(20px,4vw,48px); border-bottom:1px solid rgba(22,19,15,.15); position:relative; z-index:30; }
+/* `.page` prefixes beat app/hq/hq.css's `.hq a:hover` and `.hq :focus-visible`, which wrap every /hq page. */
+.page .brand { display:flex; align-items:center; gap:10px; min-height:44px; color:inherit; text-decoration:none; font-size:17px; font-weight:700; white-space:nowrap; }
+.page .brand:hover { color:#16130f; text-decoration:none; }
+.brand img { width:28px; height:auto; display:block; }
+.accountMenu { position:relative; display:flex; align-items:center; gap:16px; min-width:0; }
+.reminderPrompt { display:flex; align-items:center; gap:12px; min-height:44px; padding:0; border:0; background:none; color:var(--ink); font:inherit; font-size:14px; font-weight:600; text-align:right; cursor:pointer; }
+.reminderPrompt:hover span { text-decoration:underline; text-underline-offset:4px; }
+.reminderArrow { flex:none; color:var(--accent); }
+.avatar { flex:none; }
+@media (prefers-reduced-motion:no-preference) {
+  .reminderBounce { animation:reminderRock 1.4s ease-in-out 1; }
+}
+@keyframes reminderRock { 0%,100% { transform:translateX(0); } 50% { transform:translateX(8px); } }
+@media (max-width:600px) {
+  .header:has(.reminderPrompt) { gap:12px; }
+  .header:has(.reminderPrompt) .brandName { display:none; }
+  .accountMenu { gap:12px; }
+  .reminderPrompt { max-width:176px; gap:8px; font-size:13px; line-height:1.35; }
+  .reminderArrow { width:60px; }
+}
+.avatar { display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px; border-radius:50%; border:1px solid rgba(22,19,15,.2); background:#f3ede2; color:#16130f; font:inherit; font-size:15px; font-weight:700; cursor:pointer; padding:0; }
+.avatar:hover { border-color:#16130f; }
+.avatar[aria-expanded="true"] { background:#16130f; color:#fbf7f0; border-color:#16130f; }
+.menu { position:absolute; right:0; top:calc(100% + 8px); width:max-content; min-width:200px; max-width:calc(100vw - 40px); background:#fff; box-shadow:0 1px 2px rgba(22,19,15,.08),0 12px 32px rgba(22,19,15,.14); padding:6px; display:flex; flex-direction:column; animation:menuPop .15s ease; }
+@keyframes menuPop { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:none; } }
+.menuName { padding:10px 12px 8px; font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.page .menuItem { display:flex; align-items:center; min-height:44px; padding:0 12px; width:100%; box-sizing:border-box; text-align:left; border:0; background:none; color:#16130f; text-decoration:none; font:inherit; font-size:16px; cursor:pointer; }
+.page .menuItem:hover { background:#f3ede2; color:#16130f; text-decoration:none; }
+.page .menuItem:disabled { opacity:.5; cursor:pointer; }
+.menuError { margin:0; padding:8px 12px; font-size:15px; color:#a52b16; }
+.page .brand:focus-visible,.page .avatar:focus-visible,.page .menuItem:focus-visible,.page .reminderPrompt:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+.page .back { display:inline-block; margin-bottom:28px; color:#57534a; text-decoration:none; font-size:15px; }
+.page .back:hover { color:#16130f; text-decoration:underline; text-underline-offset:4px; }
+.main { max-width:660px; margin:auto; padding:64px 24px 100px; overflow-wrap:anywhere; }
+/* A redesigned page lays itself out below the header: no column, no typography, only the focus ring. */
+.bare { width:100%; }
 .main h1 { font-family:var(--font-instrument-serif),Georgia,serif; font-size:clamp(48px,7vw,68px); line-height:1.02; font-weight:400; letter-spacing:-.02em; margin:0 0 22px; }
-.main h1 em { color:#ee5b23; font-weight:400; }
+.main h1 em,.main h2 em { color:#ee5b23; font-weight:400; }
 .main h2 { font-family:var(--font-instrument-serif),Georgia,serif; font-size:34px; font-weight:400; line-height:1.15; margin:0 0 14px; }
+/* Phase 6's reporting sections are the first member screens deep enough to need a third level: a plain bold line, not a third serif size. */
+.main h3 { font-size:19px; font-weight:600; line-height:1.3; margin:26px 0 10px; }
 .main p { margin:0 0 22px; color:#57534a; }
-.main a:focus-visible,.main button:focus-visible,.nav a:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
+.main a:focus-visible,.main button:focus-visible,.bare a:focus-visible,.bare button:focus-visible { outline:2px solid #ee5b23; outline-offset:4px; }
 .form { display:grid; gap:24px; margin-top:32px; }
-.field { display:grid; gap:9px; }
+.field { display:grid; gap:9px; min-width:0; }
 .field input,.field select,.field textarea { width:100%; min-height:50px; box-sizing:border-box; border:1px solid #b4ac9d; border-radius:6px; padding:12px 14px; color:#16130f; background:transparent; font:inherit; }
 .field input:focus,.field select:focus,.field textarea:focus { outline:2px solid #ee5b23; outline-offset:2px; }
 .field textarea { min-height:110px; resize:vertical; }
@@ -21,29 +56,47 @@
 .page a.button { color:#fbf7f0; text-decoration:none; }
 .secondary { background:transparent; color:#16130f; }
 .secondary:hover { background:#f1e9dc; }
-.button:disabled,.secondary:disabled { opacity:.5; cursor:default; }
+.button:disabled,.secondary:disabled { opacity:.5; cursor:pointer; }
 .textButton { background:none; border:0; text-align:left; padding:10px 0; text-decoration:underline; text-underline-offset:4px; color:#57534a; font:inherit; cursor:pointer; }
+/* The link twin of .textButton; `.page` so hq.css's orange link rules do not win. */
+.page .textLink { display:inline-block; padding:10px 0; text-decoration:underline; text-underline-offset:4px; color:#57534a; font:inherit; }
+.page .textLink:hover { color:#16130f; text-decoration:underline; }
 .choices { display:grid; gap:16px; margin:28px 0; }
 .choice { display:flex; align-items:center; justify-content:space-between; gap:24px; width:100%; text-align:left; padding:26px; border:1px solid rgba(22,19,15,.2); border-radius:8px; background:transparent; color:inherit; font:inherit; cursor:pointer; transition:background .25s ease,border-color .25s ease; }
 .choice:hover { background:#f6efe2; border-color:#ee5b23; }
+/* An onboarding tile that is a link keeps the tile's own colour, not hq.css's link orange. */
+.page a.choice { color:inherit; text-decoration:none; }
+.page a.choice:hover { color:inherit; text-decoration:none; }
 .choice strong { display:block; font-family:var(--font-instrument-serif),Georgia,serif; font-weight:400; font-size:32px; line-height:1.1; margin-bottom:8px; }
 .choice span span { display:block; color:#57534a; }
 .notice { padding:24px; border:1px solid rgba(22,19,15,.18); border-radius:8px; margin:28px 0; background:rgba(238,91,35,.035); }
-.notice p:last-child,.card p:last-child { margin-bottom:0; }
+.notice p:last-child { margin-bottom:0; }
 .notice a,.inlineLink { color:#b74010; text-underline-offset:4px; }
 .error { color:#a52b16!important; margin:0!important; }
 .success { color:#2a604a!important; }
 .code { display:block; padding:20px 8px; margin:16px 0; border-radius:6px; background:#f0e8dc; font-size:32px; letter-spacing:.14em; text-align:center; overflow-wrap:anywhere; }
 .actions { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
-.card { border-top:1px solid rgba(22,19,15,.2); padding:30px 0; }
-.card:first-of-type { margin-top:24px; }
-.row { display:flex; gap:20px; justify-content:space-between; align-items:center; padding:18px 0; border-bottom:1px solid rgba(22,19,15,.12); }
+.row { display:flex; flex-wrap:wrap; gap:12px 20px; justify-content:space-between; align-items:center; padding:18px 0; border-bottom:1px solid rgba(22,19,15,.12); }
 .row small { display:block; font-size:15px; color:#57534a; }
 .row button { min-height:44px; padding:8px 14px; }
 .status { display:inline-block; color:#57534a; border:1px solid #b4ac9d; border-radius:100px; padding:5px 12px; font-size:15px; margin-bottom:18px; }
-.check { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+.check { display:flex; align-items:center; justify-content:space-between; gap:20px; min-height:44px; }
 .check input { flex-shrink:0; width:22px; height:22px; accent-color:#ee5b23; }
 .details { margin-top:30px; }
 .details summary { cursor:pointer; text-decoration:underline; text-underline-offset:4px; padding:10px 0; }
-@media(max-width:540px) { .main{padding:44px 20px 72px}.header{padding:18px 20px}.brand{font-size:16px}.nav{gap:14px}.nav a{font-size:14px}.choice{padding:22px}.row{align-items:flex-start}.row .secondary{font-size:15px}.code{font-size:24px;letter-spacing:.1em} }
-@media(prefers-reduced-motion:reduce) { .button,.secondary,.choice{transition:none} }
+.importHelpFooter { margin-top:28px; text-align:center; }
+.importHelpFooter button { min-height:44px; }
+.importHelpDialog { position:fixed; inset:0; width:min(480px,calc(100% - 48px)); max-height:calc(100dvh - 48px); box-sizing:border-box; margin:auto; padding:28px; overflow:auto; border:1px solid var(--line); border-radius:12px; background:var(--cream); color:var(--ink); font:inherit; box-shadow:0 24px 80px color-mix(in srgb,var(--ink) 20%,transparent); }
+.importHelpDialog::backdrop { background:color-mix(in srgb,var(--ink) 42%,transparent); }
+.importHelpHeader { display:flex; align-items:flex-start; gap:16px; }
+.importHelpHeader h2 { flex:1; margin:0 0 14px; }
+.importHelpClose { display:flex; align-items:center; justify-content:center; flex-shrink:0; width:44px; height:44px; margin:-8px -12px 0 0; padding:0; border:0; border-radius:6px; background:transparent; color:var(--muted); font:inherit; font-size:28px; cursor:pointer; }
+.importHelpClose:hover { background:var(--line); color:var(--ink); }
+.importHelpDialog .form { margin-top:24px; }
+@media(pointer:coarse) { .textButton{min-height:44px} }
+@media(max-width:540px) { .main{padding:44px 20px 72px}.choice{padding:22px}.row{align-items:flex-start}.row .secondary{font-size:15px}.code{font-size:24px;letter-spacing:.1em} }
+@media(prefers-reduced-motion:reduce) { .button,.secondary,.choice{transition:none}.menu{animation:none} }
+/* The inline Colosseum link keeps its own colour and underline, at rest and on hover, against hq.css's `.hq a` rules, which outrank a bare class. */
+.page a.inlineLink,.page a.inlineLink:hover { color:#b74010; text-decoration:underline; text-underline-offset:4px; }
+/* Placeholders in the onboarding fields read as muted ink, not hq.css's faded operator tone. */
+.page .field input::placeholder,.page .field textarea::placeholder { color:#57534a; opacity:1; }

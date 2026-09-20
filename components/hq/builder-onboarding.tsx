@@ -2,95 +2,168 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState, useTransition } from 'react';
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { IconArrowRight } from 'symbols-react';
-import { chooseBuilderPath, previewBuilderProject, beginBuilderVerification, completeBuilderImport, requestBuilderReview, previewBuilderInvite, acceptBuilderInvite, createBuilderInvite, saveBuilderTeam, requestBuilderEvent } from '@/lib/hq/actions/builders';
-import { PROJECT_STAGES, type BuilderHackathon, type BuilderTeam } from '@/lib/hq/builder-types';
-import { fmtDateRange } from '@/lib/hq/hackathon-format';
+import { acceptBuilderInvite, importBuilderTeam, previewBuilderImport, previewBuilderInvite } from '@/lib/hq/actions/builders';
+import { parseJoinCode } from '@/lib/hq/member-routes';
+import { BuilderImportHelp } from './builder-import-help';
 import styles from './builder-shell.module.css';
 
 function Arrow() { return <IconArrowRight width={20} height={20} fill='currentColor' aria-hidden='true'/>; }
 function ErrorText({error}:{error:string}) { return error ? <p role='alert' className={styles.error}>{error}</p> : null; }
-function StageField({value,onChange}:{value:string;onChange:(value:string)=>void}) { return <label className={styles.field}>Where is your project today?<select value={value} onChange={e=>onChange(e.target.value)}>{PROJECT_STAGES.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}</select></label>; }
 
-export function BuilderWelcome({hackathons}:{hackathons:BuilderHackathon[]}) {
-  const router = useRouter();
-  const [selected,setSelected] = useState(hackathons[0]?.id??0);
-  const [pending,start] = useTransition();
-  const [error,setError] = useState('');
-  const choose = (path:'initialize'|'join'|'supporter') => start(async()=>{
-    setError(''); const result = await chooseBuilderPath({hackathonId:selected,path});
-    if (result.ok) router.push(result.data.url); else setError(result.error);
-  });
-  if (!hackathons.length) return <p>There are no open hackathons yet. Your account is ready. Check back soon.</p>;
+/**
+ * The two ways in, as plain links: nothing is written or checked before the
+ * member has chosen, and the Initialize page validates the edition itself.
+ * Without an open edition the Initialize link carries no edition and that
+ * page answers with its own not-found. Not building is just Home.
+ */
+export function BuilderWelcome({hackathonId}:{hackathonId:number|null}) {
   return <>
-    <label className={styles.field}>Your hackathon<select value={selected} onChange={e=>setSelected(Number(e.target.value))}>{hackathons.map(h=><option value={h.id} key={h.id}>{h.name}</option>)}</select></label>
     <div className={styles.choices}>
-      <button className={styles.choice} disabled={pending} onClick={()=>choose('initialize')}><span><strong>Initialize your team</strong><span>Import your project and teammates from Colosseum.</span></span><Arrow/></button>
-      <button className={styles.choice} disabled={pending} onClick={()=>choose('join')}><span><strong>Join a team</strong><span>Use the invite code your team shared with you.</span></span><Arrow/></button>
+      <Link className={styles.choice} href={hackathonId===null?'/hq/initialize':`/hq/initialize?hackathon=${hackathonId}`}><span><strong>Import your team</strong><span>Use your Colosseum project link.</span></span><Arrow/></Link>
+      <Link className={styles.choice} href='/hq/join'><span><strong>Join a team</strong><span>Use the join link a teammate sent you.</span></span><Arrow/></Link>
     </div>
-    <button className={styles.textButton} disabled={pending} onClick={()=>choose('supporter')}>I’m not building this time</button>
-    <ErrorText error={error}/>
+    <Link className={styles.textLink} href='/hq/dashboard'>I’m not building this time</Link>
   </>;
 }
 
-type Preview = {name:string;url:string;country:string|null;members:{username:string;name:string}[]};
-export function BuilderInitialize({hackathon,available}:{hackathon:BuilderHackathon;available:boolean}) {
+type ImportPreview = {name:string;projectUrl:string;members:{username:string;name:string;avatarUrl:string|null}[]};
+type InvitePreview = {team:string;projectUrl:string;code:string;joinedUrl?:string;members:{id:string;username:string;name:string;avatarUrl:string|null}[]};
+
+/** The way onto the roster for someone Colosseum does not list yet: the project itself, then a fresh read of it. */
+function RosterHelp({projectUrl,pending,onRefresh}:{projectUrl:string;pending:boolean;onRefresh:()=>void}) {
+  return <details className={styles.details}>
+    <summary>I’m not listed</summary>
+    <p>Add yourself to the project on Colosseum, then refresh.</p>
+    <div className={styles.actions}>
+      <a className={styles.inlineLink} href={projectUrl} target='_blank' rel='noopener noreferrer'>Open Colosseum</a>
+      <button type='button' className={styles.secondary} disabled={pending} onClick={onRefresh}>{pending?'Refreshing…':'Refresh team'}</button>
+    </div>
+  </details>;
+}
+
+/** The shape every Colosseum project link has; anything else is refused before a request is made. The server parses the link again. */
+const COLOSSEUM_PROJECT_LINK = /colosseum\.com\/arena\/projects\//;
+
+/** Preview the source, then let the importer identify their own teammate. */
+export function BuilderInitialize({hackathonId}:{hackathonId:number}) {
   const router=useRouter();
   const [url,setUrl]=useState('');
-  const [preview,setPreview]=useState<Preview|null>(null);
-  const [username,setUsername]=useState('');
-  const [lead,setLead]=useState('');
-  const [stage,setStage]=useState('idea');
-  const [challenge,setChallenge]=useState<{id:string;code:string}|null>(null);
-  const [note,setNote]=useState('');
+  const [project,setProject]=useState<ImportPreview|null>(null);
+  const identityField=useRef<HTMLSelectElement>(null);
+  useEffect(()=>{if(project)identityField.current?.focus();},[project]);
+  const [selectedUsername,setSelectedUsername]=useState('');
   const [error,setError]=useState('');
   const [pending,start]=useTransition();
-  const lookup=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');const result=await previewBuilderProject({hackathonId:hackathon.id,url});if(result.ok){setPreview(result.data);setLead(result.data.members[0]?.username??'');}else setError(result.error);});};
-  const identify=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');const result=await beginBuilderVerification({hackathonId:hackathon.id,url:preview!.url,username});if(result.ok)setChallenge(result.data);else setError(result.error);});};
-  const finish=(manual:boolean)=>start(async()=>{setError('');const result=await completeBuilderImport({challengeId:challenge!.id,leadUsername:lead,stage,manual});if(result.ok)router.replace(result.data.url);else setError(result.error);});
-  const review=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');const result=await requestBuilderReview({hackathonId:hackathon.id,url,note});if(result.ok)router.replace(result.data.url);else setError(result.error);});};
+  const preview=()=>{
+    if(!COLOSSEUM_PROJECT_LINK.test(url)){setError('That doesn’t look like a Colosseum project link.');return;}
+    start(async()=>{
+      setError('');
+      try {
+        const result=await previewBuilderImport({hackathonId,url});
+        if(result.ok){setProject(result.data);setSelectedUsername('');}
+        else setError(result.error);
+      } catch {setError('Couldn’t check this project. Try again.');}
+    });
+  };
+  const submit=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{
+    if(!project || !selectedUsername) return;
+    setError('');
+    try {
+      const result=await importBuilderTeam({hackathonId,url:project.projectUrl,selectedUsername});
+      if(result.ok)router.replace('/hq/dashboard');
+      else setError(result.error);
+    } catch {setError('Couldn’t import this team. Try again.');}
+  });};
   return <>
-    {!available ? <section className={styles.notice}><h2>Your account is ready.</h2><p>Colosseum project access opens at the start of the hackathon. Come back then to import your team.</p><p>{fmtDateRange(hackathon.startDate,hackathon.endDate)}</p><Link className={styles.inlineLink} href='/hq/dashboard'>Go to my HQ</Link></section> : <p>Your team starts on Colosseum. Paste its project link here to bring it into HQ.</p>}
-    {available && !preview && <form className={styles.form} onSubmit={lookup}><label className={styles.field}>Colosseum project link<input type='url' value={url} onChange={e=>setUrl(e.target.value)} placeholder='https://colosseum.com/arena/projects/explore/…' required maxLength={400}/></label><button className={styles.button} disabled={pending}>{pending?'Loading project…':'Find my project'}<Arrow/></button></form>}
-    {preview && <section className={styles.notice}><h2>{preview.name}</h2><p>{preview.members.map(m=>m.name).join(', ')}</p><p>Registered under <strong>{preview.country||'No country selected'}</strong>.</p>{preview.country?.toLowerCase()!=='netherlands'&&<p className={styles.error}>Choose Netherlands on your Colosseum project before verification.</p>}</section>}
-    {preview && !challenge && <form className={styles.form} onSubmit={identify}><label className={styles.field}>Which teammate are you?<select required value={username} onChange={e=>setUsername(e.target.value)}><option value=''>Choose your Colosseum profile</option>{preview.members.map(m=><option key={m.username} value={m.username}>{m.name} (@{m.username})</option>)}</select></label><button className={styles.button} disabled={pending}>{pending?'Preparing…':'Get verification code'}<Arrow/></button><button type='button' className={styles.textButton} onClick={()=>{setPreview(null);setError('');}}>Use a different project</button></form>}
-    {preview && challenge && <div className={styles.form}>
-      <div><h2>One quick check</h2><p>Post this number as a comment on your Colosseum project, signed in as <strong>@{username}</strong>. The code expires in 30 minutes.</p><output className={styles.code}>{challenge.code}</output><a className={styles.inlineLink} href={preview.url} target='_blank' rel='noopener noreferrer'>Open project to post the code</a></div>
-      <label className={styles.field}>Who’s the lead?<select value={lead} onChange={e=>setLead(e.target.value)}>{preview.members.map(m=><option key={m.username} value={m.username}>{m.name}</option>)}</select></label>
-      <StageField value={stage} onChange={setStage}/>
-      <button className={styles.button} disabled={pending} onClick={()=>finish(false)}>{pending?'Checking…':'I’ve posted the code'}<Arrow/></button>
-      <button className={styles.textButton} disabled={pending} onClick={()=>finish(true)}>Ask Superteam NL to verify me instead</button>
-      <p>With manual review, your dashboard opens with “Awaiting approval”. Team invites become available after approval.</p>
-      <button className={styles.textButton} disabled={pending} onClick={()=>{setChallenge(null);setError('');}}>Get a fresh code</button>
-    </div>}
+    {!project
+      ? <>
+        <p>Use the Colosseum project registered in the Netherlands for Colosseum Crypto World&apos;s Fair.</p>
+        <form className={styles.form} aria-busy={pending} onSubmit={e=>{e.preventDefault();preview();}}>
+          <label className={styles.field}>Colosseum project link<input type='url' value={url} onChange={e=>setUrl(e.target.value)} autoComplete='off' spellCheck={false} placeholder='https://colosseum.com/arena/projects/…' required maxLength={2048} disabled={pending}/></label>
+          <button type='submit' className={styles.button} disabled={pending}>{pending?'Checking…':'Continue'}<Arrow/></button>
+        </form>
+      </>
+      : <>
+        <p><strong>{project.name}</strong></p>
+        <form className={styles.form} aria-busy={pending} onSubmit={submit}>
+          <label className={styles.field}>Which teammate are you?<select ref={identityField} value={selectedUsername} onChange={e=>setSelectedUsername(e.target.value)} required disabled={pending}>
+            <option value='' disabled>Select your name</option>
+            {project.members.map(member=><option key={member.username} value={member.username}>{member.name} (@{member.username})</option>)}
+          </select></label>
+          <button type='submit' className={styles.button} disabled={pending||!selectedUsername}>{pending?'Importing…':'Import team'}<Arrow/></button>
+        </form>
+        <RosterHelp projectUrl={project.projectUrl} pending={pending} onRefresh={preview}/>
+        <button type='button' className={styles.textButton} onClick={()=>{setProject(null);setSelectedUsername('');setError('');}}>Use another project</button>
+      </>}
+    {error && <div className={styles.notice}><p className={styles.error} role='alert'>{error}</p></div>}
+    <BuilderImportHelp hackathonId={hackathonId} url={url} onUrl={setUrl}/>
+  </>;
+}
+
+/** One team link. Each person chooses an available Colosseum teammate. */
+export function BuilderJoin({initialCode=''}:{initialCode?:string}) {
+  const router=useRouter();
+  const [pasted,setPasted]=useState(initialCode);
+  const [memberId,setMemberId]=useState('');
+  const [invite,setInvite]=useState<InvitePreview|null>(null);
+  const identityField=useRef<HTMLSelectElement>(null);
+  useEffect(()=>{if(invite)identityField.current?.focus();},[invite]);
+  const [error,setError]=useState('');
+  const [pending,start]=useTransition();
+  const lookup=useCallback((value:string)=>{
+    if(!value.trim())return;
+    start(async()=>{
+      setError('');
+      try {
+        const result=await previewBuilderInvite(value);
+        if(result.ok){
+          if(result.data.joinedUrl){router.replace(result.data.joinedUrl);return;}
+          setInvite(result.data);setMemberId('');
+        }else setError(result.error);
+      } catch {setError('Couldn’t check this link. Try again.');}
+    });
+  },[router,start]);
+  // A clicked join link opens the teammate selection directly.
+  useEffect(()=>{if(initialCode && parseJoinCode(initialCode))lookup(initialCode);},[initialCode,lookup]);
+  const join=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{
+    if(!invite || !memberId)return;
+    setError('');
+    try {
+      const result=await acceptBuilderInvite({code:invite.code,memberId});
+      if(result.ok){router.replace('/hq/dashboard');return;}
+      setError(result.error);
+      // A teammate may have claimed this name while the form was open.
+      // Keep the original error and selection if this refresh cannot connect.
+      const updated=await previewBuilderInvite(invite.code).catch(()=>null);
+      if(updated?.ok){
+        if(updated.data.joinedUrl){router.replace('/hq/dashboard');return;}
+        setInvite(updated.data);setMemberId('');
+      }
+    } catch {setError('Couldn’t join this team. Try again.');}
+  });};
+  return <>
+    {!invite
+      ? <>
+        <p>Paste your team’s join link.</p>
+        <form className={styles.form} aria-busy={pending} onSubmit={e=>{e.preventDefault();lookup(pasted);}}>
+          <label className={styles.field}>Team join link<input value={pasted} onChange={e=>setPasted(e.target.value)} autoComplete='off' spellCheck={false} required maxLength={2048} placeholder='Paste your team’s link' disabled={pending}/></label>
+          <button type='submit' className={styles.button} disabled={pending}>{pending?'Checking…':'Continue'}<Arrow/></button>
+        </form>
+      </>
+      : <>
+        <p><strong>{invite.team}</strong></p>
+        <form className={styles.form} aria-busy={pending} onSubmit={join}>
+          <label className={styles.field}>Which teammate are you?<select ref={identityField} value={memberId} onChange={e=>setMemberId(e.target.value)} required disabled={pending}>
+            <option value='' disabled>Select your name</option>
+            {invite.members.map(member=><option key={member.id} value={member.id}>{member.name} (@{member.username})</option>)}
+          </select></label>
+          <button type='submit' className={styles.button} disabled={pending||!memberId}>{pending?'Joining…':'Join team'}<Arrow/></button>
+        </form>
+        <RosterHelp projectUrl={invite.projectUrl} pending={pending} onRefresh={()=>lookup(invite.code)}/>
+        <button type='button' className={styles.textButton} onClick={()=>{setInvite(null);setMemberId('');setError('');}}>Use another link</button>
+      </>}
     <ErrorText error={error}/>
-    <details className={styles.details}><summary>Can’t access your Colosseum project?</summary><p>Share its link and what went wrong. We’ll review it in HQ.</p><form className={styles.form} onSubmit={review}><label className={styles.field}>Project link<input type='url' value={url} onChange={e=>setUrl(e.target.value)} required maxLength={400}/></label><label className={styles.field}>How can we help?<textarea value={note} onChange={e=>setNote(e.target.value)} minLength={5} maxLength={1500} required/></label><button className={styles.secondary} disabled={pending}>Request a review</button></form></details>
   </>;
-}
-
-export function BuilderJoin() {
-  const router=useRouter(); const [code,setCode]=useState('');const[confirmed,setConfirmed]=useState(false);
-  const[invite,setInvite]=useState<{name:string;username:string;team:string}|null>(null); const[error,setError]=useState('');const[pending,start]=useTransition();
-  const lookup=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');const result=await previewBuilderInvite(code);if(result.ok)setInvite(result.data);else setError(result.error);});};
-  const join=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');const result=await acceptBuilderInvite({code,confirmed});if(result.ok)router.replace(result.data.url);else setError(result.error);});};
-  return <>{!invite?<form className={styles.form} onSubmit={lookup}><label className={styles.field}>Your invite code<input value={code} onChange={e=>setCode(e.target.value)} autoCapitalize='characters' autoComplete='off' required maxLength={40}/></label><button className={styles.button} disabled={pending}>{pending?'Checking…':'Find my team'}<Arrow/></button></form>:<form className={styles.form} onSubmit={join}><section className={styles.notice}><h2>{invite.team}</h2><p>This invitation is for <strong>{invite.name}</strong>, @{invite.username} on Colosseum.</p></section><label className={styles.check}>That’s me<input type='checkbox' required checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/></label><button className={styles.button} disabled={pending||!confirmed}>{pending?'Joining…':'Join team'}<Arrow/></button><button type='button' className={styles.textButton} onClick={()=>{setInvite(null);setConfirmed(false);setError('');}}>Use another code</button></form>}<ErrorText error={error}/></>;
-}
-
-export function BuilderTeamControls({team,isOwner}:{team:BuilderTeam;isOwner:boolean}) {
-  const router=useRouter();const[stage,setStage]=useState<string>(team.stage);const[lead,setLead]=useState(team.leadUsername);const[error,setError]=useState('');const[message,setMessage]=useState('');const[invite,setInvite]=useState<{name:string;code:string}|null>(null);const[pending,start]=useTransition();
-  const save=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');setMessage('');const result=await saveBuilderTeam({projectId:team.id,stage,leadUsername:lead});if(result.ok){setMessage('Saved.');router.refresh();}else setError(result.error);});};
-  const create=(memberId:string,name:string)=>start(async()=>{setError('');const result=await createBuilderInvite({projectId:team.id,memberId});if(result.ok)setInvite({name,code:result.data.code});else setError(result.error);});
-  return <><section className={styles.card}><h2>Your team</h2>{team.members.map(m=><div className={styles.row} key={m.id}><div>{m.name}{m.username===team.leadUsername?' (lead)':''}<small>@{m.username}</small></div>{m.joined?<span>Joined</span>:isOwner&&team.verification==='verified'?<button className={styles.secondary} disabled={pending} onClick={()=>create(m.id,m.name)}>Invite</button>:<span>Not joined</span>}</div>)}</section>
-    {invite&&<section className={styles.notice} aria-live='polite'><h2>Invite {invite.name}</h2><p>Share this code privately with {invite.name}. It works once and expires in 48 hours.</p><output className={styles.code}>{invite.code}</output><p>They can enter it at <Link className={styles.inlineLink} href='/hq/join'>Join a team</Link>.</p></section>}
-    {isOwner&&team.verification!=='rejected'&&<form className={styles.form} onSubmit={save}><StageField value={stage} onChange={setStage}/><label className={styles.field}>Team lead<select value={lead} onChange={e=>setLead(e.target.value)}>{team.members.map(m=><option key={m.id} value={m.username}>{m.name}</option>)}</select></label><button className={styles.secondary} disabled={pending}>Save changes</button></form>}
-    <ErrorText error={error}/>{message&&<p role='status' className={styles.success}>{message}</p>}
-  </>;
-}
-
-export function BuilderHostApplication({hackathons}:{hackathons:BuilderHackathon[]}) {
-  const router=useRouter();const[id,setId]=useState(hackathons[0]?.id??0);const[title,setTitle]=useState('');const[details,setDetails]=useState('');const[error,setError]=useState('');const[done,setDone]=useState(false);const[pending,start]=useTransition();
-  const submit=(e:React.FormEvent)=>{e.preventDefault();start(async()=>{setError('');const result=await requestBuilderEvent({hackathonId:id,title,details});if(result.ok){setDone(true);router.refresh();}else setError(result.error);});};
-  if(done)return <p role='status'>Your event idea is with Superteam NL. We’ll be in touch.</p>;
-  return <form className={styles.form} onSubmit={submit}><label className={styles.field}>Hackathon<select value={id} onChange={e=>setId(Number(e.target.value))}>{hackathons.map(h=><option key={h.id} value={h.id}>{h.name}</option>)}</select></label><label className={styles.field}>Event name<input value={title} onChange={e=>setTitle(e.target.value)} required minLength={3} maxLength={120}/></label><label className={styles.field}>What would you like to host?<textarea value={details} onChange={e=>setDetails(e.target.value)} required minLength={10} maxLength={3000}/></label><ErrorText error={error}/><button className={styles.button} disabled={pending}>Send your idea<Arrow/></button></form>;
 }

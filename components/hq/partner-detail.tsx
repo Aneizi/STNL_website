@@ -20,7 +20,12 @@ import {
   updatePartnerDetail,
 } from "@/lib/hq/actions/partners";
 import { fmtDate, fmtWhen } from "@/lib/hq/format";
-import type { Classifiers, PartnerDetail as PartnerDetailData } from "@/lib/hq/types";
+import { isTrafficLightStatus } from "@/lib/hq/project-status";
+import type {
+  ActionResult,
+  Classifiers,
+  PartnerDetail as PartnerDetailData,
+} from "@/lib/hq/types";
 
 type Patch =
   | { kind: "stage"; slug: string }
@@ -78,34 +83,49 @@ const STAGE_TONES: Record<string, string> = {
   draft: "label-3",
 };
 
+const SAVE_FAILED = "The change could not be saved. Try again.";
+const DELETE_FAILED = "The partner could not be deleted. Try again.";
+const LOG_FAILED = "The interaction could not be logged. Try again.";
+
+/** The three cards sit in a grid of their own, so none carries the atom's top margin. */
+const panel: React.CSSProperties = { ...card, marginTop: 0 };
+
 /** One labelled row in the header's details grid. */
 const detailRow: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "70px minmax(0,1fr)",
+  gridTemplateColumns: "84px minmax(0,1fr)",
   columnGap: 10,
   alignItems: "center",
 };
 
 const detailLabel: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 13,
   fontWeight: 600,
   textTransform: "uppercase",
   letterSpacing: "0.06em",
   color: "var(--label-3)",
 };
 
-const detailValue: React.CSSProperties = { fontSize: 14, padding: "6px 0" };
+const detailValue: React.CSSProperties = { fontSize: 17, padding: "6px 0" };
 
 /** Edit-mode inputs sit on the page, so they get the card background. */
 const detailField: React.CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
+  minHeight: 44,
   padding: "6px 8px",
   border: "1px solid var(--sep)",
   borderRadius: 0,
   background: "var(--card)",
   color: "var(--label-1)",
-  fontSize: 13,
+  fontSize: 16,
+};
+
+const alertLine: React.CSSProperties = {
+  margin: 0,
+  fontSize: 14,
+  fontWeight: 600,
+  color: "var(--red)",
 };
 
 export function PartnerDetail({
@@ -129,72 +149,97 @@ export function PartnerDetail({
   const armed = useConfirmDelete();
   const [contactDraft, setContactDraft] = useState("");
   const [deleting, setDeleting] = useState(false);
+  // Refusals surface beside the name; the contact log keeps its own line so
+  // the message sits next to the draft it kept.
+  const [error, setError] = useState<string | null>(null);
+  const [logError, setLogError] = useState<string | null>(null);
+
+  const attempt = async (act: () => Promise<ActionResult>): Promise<ActionResult> => {
+    try {
+      return await act();
+    } catch {
+      return { ok: false };
+    }
+  };
 
   const onDelete = () => {
     setDeleting(true);
     startTransition(async () => {
-      const result = await deletePartner(partner.id);
+      const result = await attempt(() => deletePartner(partner.id));
       if (result.ok) {
         router.push("/hq/partners");
-      } else {
-        setDeleting(false);
+        return;
       }
+      setError(result.error ?? DELETE_FAILED);
+      setDeleting(false);
     });
   };
 
-  const mutate = (p: Patch | null, act: () => Promise<unknown>) =>
+  // Optimistic first, then the server; the Saved flash waits for its answer,
+  // and a refusal leaves the typed value in the field.
+  const save = (p: Patch, act: () => Promise<ActionResult>, withFlash = true) =>
     startTransition(async () => {
-      if (p) patch(p);
-      await act();
+      patch(p);
+      const result = await attempt(act);
+      if (!result.ok) {
+        setError(result.error ?? SAVE_FAILED);
+        return;
+      }
+      setError(null);
+      if (withFlash) flash();
     });
 
   const onName = (raw: string) => {
     const value = raw.trim();
     if (!value || value === partner.name) return;
-    mutate({ kind: "name", value }, () =>
+    save({ kind: "name", value }, () =>
       updatePartnerDetail(partner.id, { field: "name", value }),
     );
-    flash();
   };
   const onCaptain = (value: string) => {
     if (value === partner.captainName) return;
-    mutate({ kind: "captain", value }, () =>
+    save({ kind: "captain", value }, () =>
       updatePartnerDetail(partner.id, { field: "captainName", value }),
     );
-    flash();
   };
   const onCaptainContact = (value: string) => {
     if (value === partner.captainContact) return;
-    mutate({ kind: "captainContact", value }, () =>
+    save({ kind: "captainContact", value }, () =>
       updatePartnerDetail(partner.id, { field: "captainContact", value }),
     );
-    flash();
   };
   const onTarget = (raw: string) => {
     const value = Math.max(0, Math.trunc(Number(raw) || 0));
     if (value === partner.target) return;
-    mutate({ kind: "target", value }, () =>
+    save({ kind: "target", value }, () =>
       updatePartnerDetail(partner.id, { field: "target", value }),
     );
-    flash();
   };
   const onChannel = (id: string) => {
-    mutate({ kind: "channel", id }, () =>
+    save({ kind: "channel", id }, () =>
       updatePartnerDetail(partner.id, { field: "channelId", value: id }),
     );
-    flash();
   };
   const onStage = (slug: string) => {
-    mutate({ kind: "stage", slug }, () => setPartnerStage(partner.id, slug));
-    flash();
+    save({ kind: "stage", slug }, () => setPartnerStage(partner.id, slug));
+  };
+  const onExchange = (itemId: string, done: boolean) => {
+    save({ kind: "exchange", itemId, done }, () => togglePartnerExchange(partner.id, itemId, done), false);
   };
   const onAddContact = () => {
-    const body = contactDraft;
+    const body = contactDraft.trim();
     if (!body) return;
-    mutate({ kind: "contact", body, author: userName, createdAt: new Date().toISOString() }, () =>
-      addPartnerContact(partner.id, body),
-    );
     setContactDraft("");
+    startTransition(async () => {
+      patch({ kind: "contact", body, author: userName, createdAt: new Date().toISOString() });
+      const result = await attempt(() => addPartnerContact(partner.id, body));
+      if (result.ok) {
+        setLogError(null);
+        return;
+      }
+      setLogError(result.error ?? LOG_FAILED);
+      setContactDraft((draft) => draft || body);
+    });
   };
 
   const pct =
@@ -203,7 +248,7 @@ export function PartnerDetail({
       : view.attributed > 0
         ? 100
         : 0;
-  const statusBySlug = new Map(classifiers.statuses.map((s) => [s.slug, s]));
+  const statusBySlug = new Map(classifiers.statuses.filter((s) => !isTrafficLightStatus(s.slug)).map((s) => [s.slug, s]));
   const stage = classifiers.stages.find((s) => s.slug === view.stageSlug);
   const channelLabel =
     classifiers.channels.find((c) => c.id === view.channelId)?.label ?? "";
@@ -212,7 +257,7 @@ export function PartnerDetail({
 
   return (
     <div>
-      <Link href="/hq/partners" style={{ color: "var(--accent)", fontSize: 14, padding: 0 }}>
+      <Link href="/hq/partners" style={{ color: "var(--accent)", fontSize: 17, padding: 0 }}>
         &#8249; All partners
       </Link>
       <div
@@ -235,7 +280,7 @@ export function PartnerDetail({
               maxWidth: "100%",
               boxSizing: "border-box",
               fontFamily: "var(--serif)",
-              fontSize: 38,
+              fontSize: 44,
               fontWeight: 400,
               letterSpacing: "-0.01em",
               padding: "2px 8px",
@@ -264,7 +309,7 @@ export function PartnerDetail({
         <span
           style={{
             flex: "none",
-            fontSize: 11,
+            fontSize: 13,
             fontWeight: 600,
             textTransform: "uppercase",
             letterSpacing: "0.08em",
@@ -280,7 +325,7 @@ export function PartnerDetail({
           <span
             style={{
               flex: "none",
-              fontSize: 12,
+              fontSize: 14,
               fontWeight: 600,
               color: "var(--green)",
               opacity: savedPhase === "fading" ? 0 : 1,
@@ -290,7 +335,13 @@ export function PartnerDetail({
             Saved
           </span>
         )}
+        {error ? (
+          <p role="alert" style={{ ...alertLine, flex: "none" }}>
+            {error}
+          </p>
+        ) : null}
         <button
+          type="button"
           className="hq-hover-accent"
           onClick={() => setEditing(!editing)}
           style={{
@@ -299,7 +350,7 @@ export function PartnerDetail({
             cursor: "pointer",
             background: "none",
             color: editing ? "var(--accent)" : "var(--label-3)",
-            fontSize: 12,
+            fontSize: 14,
             fontWeight: 600,
             padding: 2,
             marginLeft: "auto",
@@ -308,6 +359,7 @@ export function PartnerDetail({
           {editing ? "Done" : "Edit"}
         </button>
         <button
+          type="button"
           className="hq-hover-accent"
           onClick={del.onClick}
           disabled={deleting}
@@ -318,7 +370,7 @@ export function PartnerDetail({
             cursor: "pointer",
             background: "none",
             color: del.color,
-            fontSize: 12,
+            fontSize: 14,
             fontWeight: del.fontWeight,
             padding: 2,
             whiteSpace: "nowrap",
@@ -330,7 +382,7 @@ export function PartnerDetail({
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit,minmax(288px,1fr))",
           columnGap: 20,
           rowGap: 8,
           marginTop: 14,
@@ -400,7 +452,7 @@ export function PartnerDetail({
                   flex: 1,
                   minWidth: 0,
                   fontFamily: "var(--mono)",
-                  fontSize: 12,
+                  fontSize: 14,
                 }}
               />
             ) : (
@@ -414,7 +466,7 @@ export function PartnerDetail({
                   padding: "6px 0",
                   color: "var(--label-2)",
                   fontFamily: "var(--mono)",
-                  fontSize: 12,
+                  fontSize: 14,
                 }}
               >
                 {view.captainContact}
@@ -440,20 +492,20 @@ export function PartnerDetail({
           )}
         </div>
       </div>
-      <div style={{ fontSize: 12, color: "var(--label-3)", marginTop: 14 }}>
+      <div style={{ fontSize: 14, color: "var(--label-3)", marginTop: 14 }}>
         Last touched by {view.touchedBy}, {fmtDate(view.touchedAt ?? "")}
         {editing ? ". Changes save as you make them." : "."}
       </div>
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))",
+          gridTemplateColumns: "repeat(auto-fit,minmax(336px,1fr))",
           gap: 12,
           marginTop: 16,
           alignItems: "start",
         }}
       >
-        <div style={card}>
+        <div style={panel}>
           <div style={cardTitle}>Exchange checklist</div>
           {classifiers.exchangeItems.map((x) => {
             const done = view.exchange.includes(x.id);
@@ -465,20 +517,15 @@ export function PartnerDetail({
                   alignItems: "center",
                   gap: 8,
                   padding: "7px 0",
-                  fontSize: 14,
+                  fontSize: 17,
                   cursor: "pointer",
-                  borderBottom: "1px solid var(--sep)",
                 }}
               >
                 <input
                   type="checkbox"
                   checked={done}
-                  onChange={() =>
-                    mutate({ kind: "exchange", itemId: x.id, done: !done }, () =>
-                      togglePartnerExchange(partner.id, x.id, !done),
-                    )
-                  }
-                  style={{ accentColor: "var(--accent)", width: 15, height: 15 }}
+                  onChange={() => onExchange(x.id, !done)}
+                  style={{ accentColor: "var(--accent)", width: 15, height: 15, margin: 0 }}
                 />
                 <span style={{ color: done ? "var(--label-3)" : "var(--label-1)" }}>{x.label}</span>
               </label>
@@ -489,7 +536,7 @@ export function PartnerDetail({
               style={{
                 display: "flex",
                 justifyContent: "space-between",
-                fontSize: 13,
+                fontSize: 16,
                 color: "var(--label-2)",
               }}
             >
@@ -520,29 +567,41 @@ export function PartnerDetail({
             </div>
           </div>
         </div>
-        <div style={card}>
+        <div style={panel}>
           <div style={cardTitle}>Contact log</div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <input
               value={contactDraft}
               onChange={(e) => setContactDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onAddContact();
+              }}
               placeholder="Log an interaction"
               style={{ ...smallInput, flex: 1, minWidth: 0 }}
             />
-            <button onClick={onAddContact} style={{ ...accentBtn, background: "var(--fill-3)" }}>
+            <button
+              type="button"
+              onClick={onAddContact}
+              style={{ ...accentBtn, background: "var(--fill-3)" }}
+            >
               Add
             </button>
           </div>
+          {logError ? (
+            <p role="alert" style={{ ...alertLine, marginTop: 8 }}>
+              {logError}
+            </p>
+          ) : null}
           {view.contacts.map((n) => (
-            <div key={n.id} style={{ padding: "8px 0", borderBottom: "1px solid var(--sep)" }}>
-              <div style={{ fontSize: 12, color: "var(--label-3)" }}>
+            <div key={n.id} style={{ padding: "8px 0" }}>
+              <div style={{ fontSize: 14, color: "var(--label-3)" }}>
                 {fmtWhen(n.createdAt, timezone)}, {n.author}
               </div>
-              <div style={{ fontSize: 13, marginTop: 2 }}>{n.body}</div>
+              <div style={{ fontSize: 16, marginTop: 2 }}>{n.body}</div>
             </div>
           ))}
         </div>
-        <div style={card}>
+        <div style={panel}>
           <div style={cardTitle}>Attributed teams</div>
           {view.teams.map((t) => {
             const status = statusBySlug.get(t.statusSlug);
@@ -554,21 +613,15 @@ export function PartnerDetail({
                   justifyContent: "space-between",
                   alignItems: "baseline",
                   padding: "8px 0",
-                  borderBottom: "1px solid var(--sep)",
                 }}
               >
-                <span style={{ fontSize: 14 }}>{t.name}</span>
+                <span style={{ fontSize: 17 }}>{t.name}</span>
                 {status ? (
                   <Badge label={status.label} color={status.color} bg={`${status.color}-fill`} />
                 ) : null}
               </div>
             );
           })}
-          {view.teams.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--label-3)", marginTop: 10 }}>
-              No projects attributed yet.
-            </div>
-          ) : null}
         </div>
       </div>
     </div>

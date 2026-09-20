@@ -1,25 +1,51 @@
 import type { Metadata } from 'next';
-import Link from 'next/link';
+import { CaptainTile, HackathonTile, MenuGrid, PortalTile } from '@/components/hq/builder-menu';
 import { BuilderShell } from '@/components/hq/builder-shell';
-import { BuilderHostApplication } from '@/components/hq/builder-onboarding';
-import { BuilderSignOut } from '@/components/hq/builder-sign-out';
-import styles from '@/components/hq/builder-shell.module.css';
-import { requireMember } from '@/lib/hq/member-auth';
+import { BuilderCaptainWelcome } from '@/components/hq/builder-captain-welcome';
+import { requireMemberActor } from '@/lib/hq/actor';
+import { builderDatabase } from '@/lib/hq/builder-db';
 import { builderStore } from '@/lib/hq/builder-store';
-import { LINKS } from '@/lib/links';
-export const metadata:Metadata={title:'Your HQ'};
+import { listAssignments } from '@/lib/hq/captains';
+import { projectNeedsAttention } from '@/lib/hq/dashboard-attention';
+import { nowMs } from '@/lib/hq/format';
+import { getTelegramBotUrl } from '@/lib/hq/member-auth-config';
+import { getBotConsent } from '@/lib/hq/telegram-consent';
+import { memberWeekSummaries } from '@/lib/hq/reporting-surface';
+import { weekOfLabel } from '@/lib/hq/reporting-view';
+import styles from './dashboard.module.css';
+export const metadata:Metadata={title:'Home'};
 export const dynamic='force-dynamic';
-export default async function DashboardPage(){
-  const user=await requireMember('/hq/dashboard');
+export default async function DashboardPage({searchParams}:{searchParams:Promise<{welcome?:string|string[]}>}){
+  const actor=await requireMemberActor('/hq/dashboard');
+  const params=await searchParams;
+  // One request instant: the week label and the due mark answer to the same moment.
+  const at=nowMs();
   const store=builderStore();
-  const [teams,dashboard,hackathons]=await Promise.all([store.teams(user.id),store.dashboard(user.id),store.hackathons()]);
-  const hostable=hackathons.filter(h=>h.hostingEnabled&&dashboard.enrollments.some(e=>Number(e.hackathon_id)===h.id));
-  return <BuilderShell back='/hq/welcome'><h1>Your home for <em>building.</em></h1><p>Welcome, {user.name}.</p>
-    {teams.length===0&&<section className={styles.notice}><h2>You’re in.</h2><p>Initialize your team when your project is available on Colosseum, or join with an invite code.</p><Link className={styles.button} href='/hq/welcome'>Find your team</Link></section>}
-    {teams.map(team=><section key={team.id} className={styles.card}><span className={styles.status}>{team.verification==='verified'?'Verified':team.verification==='pending'?'Awaiting approval':'Changes needed'}</span><h2>{team.name}</h2><p>{team.hackathonName}</p><Link href={`/hq/team/${team.id}`} className={styles.button}>Open team</Link></section>)}
-    {dashboard.requests.map(request=><section key={String(request.id)} className={styles.card}><h2>{request.status==='pending'?'Awaiting approval':'Review completed'}</h2><p>Your project access request for {String(request.name)} is {request.status==='pending'?'with Superteam NL.':'resolved.'}</p><a className={styles.inlineLink} href={String(request.project_url)} target='_blank' rel='noopener noreferrer'>View Colosseum project</a></section>)}
-    {teams.length>0&&<p><Link className={styles.inlineLink} href='/hq/welcome'>Take part in another hackathon</Link></p>}
-    {dashboard.tier==='member'&&<section className={styles.card}><h2>Host an event</h2>{hostable.length?<BuilderHostApplication hackathons={hostable}/>:<p>Event applications are not open yet.</p>}{dashboard.events.map(event=><p key={String(event.id)}>{String(event.title)}: {String(event.status)}</p>)}</section>}
-    <section className={styles.card}><h2>Need a hand?</h2><a className={styles.inlineLink} href={LINKS.telegram} target='_blank' rel='noopener noreferrer'>Talk to Superteam NL</a></section><BuilderSignOut/>
+  const captain=actor.capabilities.has('captain');
+  const [teams,ownProjects,hackathonId,consent]=await Promise.all([store.teams(actor.id),store.ownedProjects(actor.id),store.currentHackathonId(),actor.telegram?getBotConsent(actor.id):null]);
+  const projects=[...teams.filter(team=>team.verification==='verified'),...ownProjects];
+  // A builder has one team. Should an account hold more, the current
+  // edition's comes first, then the newest.
+  const team=projects.find(project=>project.hackathonId===hackathonId)??projects[0]??null;
+  // The Captain count is this edition's, the same list the Den shows. Only a
+  // Captain's Home reads it.
+  const [weeks,assignments]=await Promise.all([
+    team?memberWeekSummaries([team],undefined,at):[],
+    captain&&hackathonId!==null?listAssignments(builderDatabase(),{hackathonId,captainUserId:actor.id}):[],
+  ]);
+  const week=weeks[0];
+  const weekLabel=week?.current?weekOfLabel(week.current.periodSequence,week.totalPeriods):null;
+  const firstName=actor.name.trim().split(/\s+/)[0];
+
+  return <BuilderShell bare reminderPrompt={Boolean(getTelegramBotUrl())&&!consent?.messagingEnabled}>
+    {captain&&params.welcome==='captain'&&<BuilderCaptainWelcome botUrl={actor.telegram?getTelegramBotUrl():null}/>}
+    <div className={styles.home}>
+      <h1 className={styles.title}>{firstName?`Where to, ${firstName}?`:'Where to?'}</h1>
+      <MenuGrid>
+        <HackathonTile team={team?{href:`/hq/team/${team.id}`,weekLabel,updateDue:projectNeedsAttention(week,at)}:null}/>
+        <PortalTile/>
+        <CaptainTile captain={captain} teamCount={assignments.length}/>
+      </MenuGrid>
+    </div>
   </BuilderShell>;
 }

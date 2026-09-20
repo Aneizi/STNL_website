@@ -1,11 +1,28 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import type { SearchResult } from "@/lib/hq/types";
 
+/**
+ * Where a hit opens. The query params are the design's navigation side
+ * effects (expand the project, reset the People filters, show the Events
+ * list), handled by each screen.
+ */
+function hrefFor(result: SearchResult): string {
+  switch (result.kind) {
+    case "Project":
+      return `/hq/projects?expand=${encodeURIComponent(result.id)}`;
+    case "Partner":
+      return `/hq/partners/${encodeURIComponent(result.id)}`;
+    case "Person":
+      return "/hq/people?reset=1";
+    case "Event":
+      return "/hq/events?view=list";
+  }
+}
+
 export function SearchModal({ onClose }: { onClose: () => void }) {
-  const router = useRouter();
   const [results, setResults] = useState<SearchResult[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -40,26 +57,6 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
         // Aborted or offline — keep whatever is shown.
       }
     }, 150);
-  };
-
-  const go = (result: SearchResult) => {
-    onClose();
-    // Mirrors the design's navigation side effects (filter resets etc.),
-    // handled by each screen via these query params.
-    switch (result.kind) {
-      case "Project":
-        router.push(`/hq/projects?expand=${result.id}`);
-        break;
-      case "Partner":
-        router.push(`/hq/partners/${result.id}`);
-        break;
-      case "Person":
-        router.push(`/hq/people?reset=1`);
-        break;
-      case "Event":
-        router.push(`/hq/events?view=list`);
-        break;
-    }
   };
 
   return (
@@ -100,7 +97,7 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
             border: "none",
             background: "none",
             color: "var(--label-1)",
-            fontSize: 16,
+            fontSize: 19,
             borderBottom: "1px solid var(--sep)",
             outline: "none",
           }}
@@ -108,10 +105,11 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
         {results.length > 0 ? (
           <div style={{ maxHeight: 320, overflowY: "auto", padding: 6 }}>
             {results.map((result) => (
-              <button
+              <Link
                 key={`${result.kind}-${result.id}`}
+                href={hrefFor(result)}
                 className="hq-hover-fill"
-                onClick={() => go(result)}
+                onClick={onClose}
                 style={{
                   display: "flex",
                   width: "100%",
@@ -122,13 +120,13 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
                   cursor: "pointer",
                   background: "none",
                   padding: "9px 12px",
-                  borderRadius: 0,
                   textAlign: "left",
+                  textDecoration: "none",
                 }}
               >
                 <span
                   style={{
-                    fontSize: 11,
+                    fontSize: 13,
                     fontWeight: 600,
                     color: "var(--label-3)",
                     textTransform: "uppercase",
@@ -139,9 +137,9 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
                 >
                   {result.kind}
                 </span>
-                <span style={{ fontSize: 14, color: "var(--label-1)" }}>{result.label}</span>
-                <span style={{ fontSize: 12, color: "var(--label-3)" }}>{result.meta}</span>
-              </button>
+                <span style={{ fontSize: 17, color: "var(--label-1)" }}>{result.label}</span>
+                <span style={{ fontSize: 14, color: "var(--label-3)" }}>{result.meta}</span>
+              </Link>
             ))}
           </div>
         ) : null}

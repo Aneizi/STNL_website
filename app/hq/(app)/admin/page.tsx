@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Admin } from "@/components/hq/admin";
 import { BuilderAdmin } from "@/components/hq/builder-admin";
-import { getBuilderAdminData } from "@/lib/hq/builder-admin-queries";
+import { ReportingAdmin } from "@/components/hq/reporting-admin";
+import { getBuilderAdminData, getReportingAdminData } from "@/lib/hq/builder-admin-queries";
 import { requireUser } from "@/lib/hq/auth";
 import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
 import {
@@ -18,26 +19,24 @@ export const metadata: Metadata = { title: "Admin" };
 
 export default async function AdminPage() {
   const hackathonId = await requireHackathonId();
-  const [, hackathon, hackathons, settings, milestones, classifiers, onboarding] = await Promise.all([
+  const [, hackathon, hackathons, settings, milestones, classifiers, onboarding, reporting] = await Promise.all([
     requireUser(),
     getHackathon(hackathonId),
     getHackathons(),
+    // Only the campaign timezone is still read from settings here, for the
+    // invitation expiry preview.
     getSettings(hackathonId),
     getMilestones(hackathonId),
     getClassifiers(hackathonId),
     getBuilderAdminData(),
+    getReportingAdminData(),
   ]);
   const current = ensureHackathon(hackathon);
   return (
     <>
-      <Admin
-      current={current}
-      hackathons={hackathons}
-      settings={settings}
-      milestones={milestones}
-      gates={classifiers.gates}
-      />
-      <BuilderAdmin {...onboarding} />
+      <Admin current={current} hackathons={hackathons} milestones={milestones} gates={classifiers.gates} />
+      <BuilderAdmin {...onboarding} timezone={settings.timezone} />
+      <ReportingAdmin data={reporting} />
     </>
   );
 }
