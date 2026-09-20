@@ -18,6 +18,21 @@ Rules for anyone editing these files:
 
 ## Files
 
+### `updates.json`
+
+The public `GET /api/projects/by-slug/{slug}/build-logs?limit=20` history
+endpoint, confirmed on 2026-09-20 from Colosseum's public frontend client and
+an unauthenticated response. It returns `project`, `buildLogs` and an opaque
+`nextCursor`. Each post carries a rich-text `content` document, `excerpt`,
+`links`, author, and millisecond `publishedAt` / `updatedAt` timestamps.
+The fixture values are invented. Its marked video link is a rich-text link
+example, not a claim that a real project's private video was retrieved.
+
+Public project history is distinct from `/api/projects/{id}/weekly-updates`.
+That endpoint returned 401 without Colosseum authentication. HQ imports public
+posts and their hyperlinks only and does not attempt to retrieve private
+weekly submissions or treat source posts as HQ-authored reporting entries.
+
 ### `directories.json`
 
 One page of `GET /api/projects/directories`. The response is a single

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { requireMemberActor } from "../actor";
 import { builderDatabase } from "../builder-db";
+import { readColosseumHistory, type ColosseumHistoryResult } from "../colosseum-updates";
 import { authorizedTeam, TEAM_NOT_AVAILABLE } from "../member-teams";
 import {
   MAX_CONTACT_LENGTH,
@@ -55,6 +56,13 @@ const visibilitySchema = z.enum(["shared", "sensitive"]);
 const contactSchema = z.string().max(MAX_CONTACT_LENGTH + 50);
 /** The page size the member screens read, matching `lib/hq/reporting-surface.ts`'s first page so Load more continues rather than restarts. */
 const RECENT_UPDATES = 10;
+
+export async function loadMemberColosseumUpdates(input: { projectId: string; hackathonId?: number; cursor?: string }): Promise<ColosseumHistoryResult> {
+  const actor = await requireMemberActor();
+  const parsed = z.object({ projectId: uuid, hackathonId: hackathonIdSchema, cursor: z.string().max(200).optional() }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Could not load Colosseum updates." };
+  return { ok: true, page: await readColosseumHistory(actor, parsed.data) };
+}
 
 function refresh() {
   revalidatePath("/hq", "layout");

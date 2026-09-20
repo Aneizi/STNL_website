@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { IconArrowLeft } from "symbols-react";
 import { IconLockFill } from "@/components/hq/icons/IconLockFill";
-import { addReportingUpdate, loadTeamUpdates } from "@/lib/hq/actions/reporting";
+import { addReportingUpdate, loadTeamUpdates, loadMemberColosseumUpdates } from "@/lib/hq/actions/reporting";
+import { ColosseumUpdates } from "./colosseum-updates";
 import type { ReportingEntryView } from "@/lib/hq/reporting";
 import { captainMetaLabel, dueLine, mergeUpdatePages, NOTE_ADDED, PRIVATE_TOOLTIP, telegramContactHref, weekOfLabel } from "@/lib/hq/reporting-view";
 import { ReportingEntryCard } from "./reporting-entry-card";
@@ -310,6 +311,7 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
                 {cursor && <button type="button" className={styles.older} disabled={page.loading} onClick={loadOlder}>Show older notes</button>}
               </section>
             )}
+            <ColosseumUpdates key={team.projectId} projectId={team.projectId} hackathonId={team.hackathonId} timezone={timezone} loadUpdates={loadMemberColosseumUpdates}/>
           </>
         )}
       </div>

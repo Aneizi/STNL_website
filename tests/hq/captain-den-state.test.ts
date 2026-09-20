@@ -4,6 +4,8 @@
 // shows, and what it never does, which is change the team's status.
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// This harness traverses native controls, not nested function components.
+vi.mock("@/components/hq/update-textarea", () => ({ UpdateTextarea: "textarea" }));
 import type { ReportingEntryView } from "@/lib/hq/reporting";
 
 type Element = ReactElement<Record<string, unknown>>;
@@ -15,7 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mocks.refresh }) }));
 vi.mock("symbols-react", () => ({ IconArrowLeft: () => null }));
-vi.mock("@/lib/hq/actions/reporting", () => ({ addReportingUpdate: mocks.add, loadTeamUpdates: mocks.load, editReportingUpdate: vi.fn() }));
+vi.mock("@/lib/hq/actions/reporting", () => ({ addReportingUpdate: mocks.add, loadTeamUpdates: mocks.load, editReportingUpdate: vi.fn(), loadMemberColosseumUpdates: vi.fn() }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useState: (initial: unknown) => mocks.hooks!.state(initial),

@@ -149,3 +149,21 @@ export const errorBodySchema = z.object({
 export type ColosseumProjectBody = z.infer<typeof projectBodySchema>;
 export type ColosseumListing = z.infer<typeof listingSchema>;
 export type ColosseumListingHackathon = z.infer<typeof listingHackathonSchema>;
+
+/** Public project history, observed on 2026-09-20. Weekly submissions use a
+ * separate authenticated endpoint and are not part of this public feed. */
+export const projectUpdatesSchema = z.object({
+  project: z.object({ id: idSchema, slug: slugSchema, hackathonId: idSchema }),
+  buildLogs: z.array(z.object({
+    id: idSchema,
+    projectId: idSchema,
+    author: z.object({ username: usernameSchema, displayName: z.string().max(250) }),
+    content: z.unknown(),
+    excerpt: z.string().max(100_000).nullish(),
+    links: z.array(z.unknown()).max(200).optional(),
+    xUrl: optionalText,
+    publishedAt: z.number().int().nonnegative().max(8_640_000_000_000_000),
+    updatedAt: z.number().int().nonnegative().max(8_640_000_000_000_000),
+  })).max(100),
+  nextCursor: z.string().min(1).max(2_000).nullable(),
+});

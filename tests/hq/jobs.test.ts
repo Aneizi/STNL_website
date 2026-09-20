@@ -9,6 +9,9 @@
 // is an assertion about what the job would do in production.
 import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+// Source syncing has its own database and transport integration suite.
+// Reminder tests must never call Colosseum for their synthetic projects.
+vi.mock("@/lib/hq/colosseum-updates", () => ({ syncDueColosseumUpdates: vi.fn(async () => ({ synced: 0, failed: 0, skipped: 0, stoppedOnBudget: false })) }));
 
 vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn() }));

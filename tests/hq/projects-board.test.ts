@@ -12,7 +12,7 @@ import type { Classifiers, Project, Settings } from "@/lib/hq/types";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {}, refresh() {}, push() {} }) }));
 vi.mock("@/components/hq/toast", () => ({ showToast: vi.fn() }));
-vi.mock("@/lib/hq/actions/reporting-admin", () => ({ loadProjectReportingUpdates: vi.fn() }));
+vi.mock("@/lib/hq/actions/reporting-admin", () => ({ loadProjectReportingUpdates: vi.fn(), loadProjectColosseumUpdates: vi.fn() }));
 vi.mock("@/lib/hq/actions/projects", () => ({
   addProjectMember: vi.fn(), addProjectNote: vi.fn(), createProject: vi.fn(), deleteProject: vi.fn(), editProjectNote: vi.fn(),
   removeProjectMember: vi.fn(), saveProjectBlocker: vi.fn(), setProjectForecast: vi.fn(),

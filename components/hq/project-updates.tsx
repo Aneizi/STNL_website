@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { loadProjectReportingUpdates } from "@/lib/hq/actions/reporting-admin";
+import { loadProjectReportingUpdates, loadProjectColosseumUpdates } from "@/lib/hq/actions/reporting-admin";
+import { ColosseumUpdates } from "./colosseum-updates";
 import type { ReportingEntryPage } from "@/lib/hq/reporting";
 import { entryMetaLabel, mergeUpdatePages } from "@/lib/hq/reporting-view";
 import styles from "./project-updates.module.css";
@@ -41,7 +42,7 @@ export function ProjectUpdates({ projectId, timezone }: { projectId: string; tim
   };
 
   return (
-    <section aria-label="Team and captain updates" className={styles.updates} aria-busy={state.loading}>
+    <><section aria-label="Team and captain updates" className={styles.updates} aria-busy={state.loading}>
       <div className={styles.heading}>
         <h3>Team &amp; captain updates</h3>
         <button type="button" onClick={() => load()} disabled={state.loading}>Refresh updates</button>
@@ -69,5 +70,6 @@ export function ProjectUpdates({ projectId, timezone }: { projectId: string; tim
         <button type="button" onClick={() => load(state.page!.nextCursor!)} disabled={state.loading}>Load older updates</button>
       )}
     </section>
+    <ColosseumUpdates projectId={projectId} timezone={timezone} loadUpdates={loadProjectColosseumUpdates} /></>
   );
 }

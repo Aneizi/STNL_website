@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react';
 import { IconArrowLeft } from 'symbols-react';
 import { createBuilderInvite, saveBuilderTeam } from '@/lib/hq/actions/builders';
-import { addReportingUpdate, loadTeamUpdates, saveTeamContact } from '@/lib/hq/actions/reporting';
+import { addReportingUpdate, loadTeamUpdates, saveTeamContact, loadMemberColosseumUpdates } from '@/lib/hq/actions/reporting';
+import { ColosseumUpdates } from './colosseum-updates';
 import { setBotMessaging } from '@/lib/hq/actions/telegram';
 import { PROJECT_STAGES, type ProjectStage } from '@/lib/hq/builder-types';
 import { SUBMISSION_LABELS, type SubmissionStatus } from '@/lib/hq/colosseum-snapshot';
@@ -454,6 +455,7 @@ export function TeamWorkspace({ project, team, reporting, canEditTeam, canInvite
         <div hidden={view !== 'update'}>
           <UpdateComposer reporting={reporting} completed={completed} nowMs={nowMs} onSaved={record} onOpenLate={() => setLateOpen(true)} lateButtonRef={lateButtonRef}/>
           <EarlierList reporting={reporting} entries={entries} onSaved={record}/>
+          <ColosseumUpdates key={reporting.projectId} projectId={reporting.projectId} hackathonId={reporting.hackathonId} timezone={reporting.timezone} loadUpdates={loadMemberColosseumUpdates}/>
         </div>
         {view === 'settings' && team && <SettingsView reporting={reporting} team={team} onBack={backToUpdate}/>}
         {view === 'contact' && <ContactView reporting={reporting} canEditTeam={canEditTeam && team !== null} hasTelegram={hasTelegram} botAllowed={botAllowed} botUrl={botUrl} onBack={backToUpdate}/>}

@@ -43,6 +43,7 @@ export async function GET(request: Request) {
       reminders: summary.reminders,
       delivery: summary.delivery,
       submissions: summary.submissions,
+      colosseumUpdates: summary.colosseumUpdates,
       purged: summary.purged,
     });
   } catch (error) {

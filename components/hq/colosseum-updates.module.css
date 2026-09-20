@@ -1,0 +1,13 @@
+.history { min-width:0; margin:32px 0 24px; font-size:14px; overflow-wrap:anywhere; }
+.heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.heading h3 { margin:0; font-size:18px; font-weight:600; }
+.history button { min-height:44px; padding:8px 12px; font:inherit; cursor:pointer; color:inherit; background:transparent; border:1px solid var(--sep,#d3cfc5); }
+.history button:disabled { opacity:.5; cursor:default; }
+.history button:focus-visible,.history a:focus-visible { outline:2px solid var(--accent,#ed6335); outline-offset:3px; }
+.update { padding:20px 0; border-bottom:1px solid var(--sep,#d3cfc5); }
+.meta { margin:0 0 8px; color:var(--label-2,#6d695f); }
+.body { margin:0; white-space:pre-wrap; font-size:16px; line-height:1.55; }
+.links { padding-left:20px; margin:12px 0; }
+.links li + li { margin-top:8px; }
+.history a { color:inherit; text-decoration:underline; text-underline-offset:3px; }
+.source { display:inline-flex; align-items:center; min-height:44px; }

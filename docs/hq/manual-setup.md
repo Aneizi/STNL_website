@@ -197,6 +197,23 @@ importable while the directory is closed. Directory availability must be checked
 again when testing; the earlier observation of a closed directory is not a live
 status promise. There is no phase 9 discovery screen to configure.
 
+Public project updates are synchronized separately from the project snapshot.
+After migration, existing imports are picked up automatically by the HQ jobs
+runner, regardless of their import date or reporting enrollment. Each pass
+fetches a bounded batch, commits the upstream cursor with each page, and starts
+a fresh sweep 30 minutes after reaching the end. Failed requests preserve saved
+history and retry after 15 minutes. Opening history in the admin project,
+team workspace or Captain's Den also performs a due sync and continues older
+pages automatically. Archived editions are not fetched.
+
+History retains original publication dates, written content and public links
+(including videos), with one row per Colosseum post id. Repeated syncs update
+source edits without duplicates. These records do not author HQ weekly reports
+or change reporting outcomes. The authenticated Colosseum weekly-submission
+endpoint is separate from public project updates and is not imported. The
+jobs workflow must target the deployment being kept up to date when no one is
+viewing its pages. The repository's scheduled workflow targets production.
+
 ### 2.7 Project fallback image
 
 Already supplied. The local decorative globe is served through Next's size-aware

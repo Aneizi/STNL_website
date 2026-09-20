@@ -1,0 +1,20 @@
+{
+  "project": { "id": 90001, "slug": "tulip-ledger", "hackathonId": 6 },
+  "buildLogs": [
+    {
+      "id": 900101,
+      "projectId": 90001,
+      "author": { "username": "fictional_builder_1", "displayName": "Fictional Builder One" },
+      "content": { "type": "doc", "content": [
+        { "type": "paragraph", "content": [{ "type": "text", "text": "Our first working prototype." }] },
+        { "type": "paragraph", "content": [{ "type": "text", "text": "Watch the demo", "marks": [{ "type": "link", "attrs": { "href": "https://static.narrative-violation.com/fixtures/demo.mp4" } }] }] }
+      ] },
+      "excerpt": "Our first working prototype…",
+      "links": [],
+      "xUrl": null,
+      "publishedAt": 1789380000000,
+      "updatedAt": 1789380000000
+    }
+  ],
+  "nextCursor": null
+}

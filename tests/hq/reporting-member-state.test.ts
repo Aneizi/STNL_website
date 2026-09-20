@@ -4,6 +4,8 @@
 // what the two forms write. The Captains' Den has its own file.
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// This harness traverses native controls, not nested function components.
+vi.mock("@/components/hq/update-textarea", () => ({ UpdateTextarea: "textarea" }));
 import type { ReportingEntryView } from "@/lib/hq/reporting";
 import type { TeamPeriodView } from "@/lib/hq/reporting-surface";
 
@@ -18,7 +20,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: mocks.refresh }) }));
 vi.mock("@/lib/hq/actions/reporting", () => ({
-  addReportingUpdate: mocks.add, editReportingUpdate: mocks.edit, loadTeamUpdates: mocks.load, saveTeamContact: mocks.saveContact,
+  addReportingUpdate: mocks.add, editReportingUpdate: mocks.edit, loadTeamUpdates: mocks.load, saveTeamContact: mocks.saveContact, loadMemberColosseumUpdates: vi.fn(),
 }));
 vi.mock("@/lib/hq/actions/builders", () => ({ createBuilderInvite: mocks.invite, saveBuilderTeam: mocks.saveTeam }));
 vi.mock("@/lib/hq/actions/telegram", () => ({ setBotMessaging: mocks.setBot }));

@@ -5,6 +5,7 @@ import { ColosseumApiError, fetchEditionSubmissionWindow } from "@/lib/colosseum
 import { requireUser } from "../auth";
 import { builderDatabase } from "../builder-db";
 import { builderStore } from "../builder-store";
+import { readColosseumHistory, type ColosseumHistoryResult } from "../colosseum-updates";
 import { BuilderError } from "../builder-types";
 import { requireHackathon } from "../hackathon";
 import {
@@ -46,6 +47,16 @@ const MIN_SUBMISSION_REFRESH_MINUTES = 15;
 export type ProjectUpdatesResult =
   | { ok: true; page: ReportingEntryPage }
   | { ok: false; error: string };
+
+export async function loadProjectColosseumUpdates(input: { projectId: string; hackathonId?: number; cursor?: string }): Promise<ColosseumHistoryResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = z.object({ projectId: z.string().uuid(), cursor: z.string().max(200).optional() }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Could not load Colosseum updates." };
+  return { ok: true, page: await readColosseumHistory(
+    { kind: "operator", id: user.id, displayName: user.displayName }, { ...parsed.data, hackathonId: hackathon.id },
+  ) };
+}
 
 /** Reporting history for an expanded admin project, scoped to the selected edition. */
 export async function loadProjectReportingUpdates(input: {

@@ -68,6 +68,8 @@ export const CLEAR_TABLES = [
   // rows below; the cascade from hq_projects already emptied them before they
   // were named here.
   "hq_team_invites",
+  "hq_colosseum_updates",
+  "hq_colosseum_update_sync",
   "hq_project_onboarding",
   // HQ project ownership is per project, like the onboarding row beside it,
   // and goes with the projects below whether that ownership came from an

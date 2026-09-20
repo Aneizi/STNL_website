@@ -1,5 +1,5 @@
 import {
-  errorBodySchema, idSchema, listingSchema, projectDetailSchema, slugSchema,
+  errorBodySchema, idSchema, listingSchema, projectDetailSchema, projectUpdatesSchema, slugSchema,
   type ColosseumListingHackathon, type ColosseumProjectBody,
 } from "./colosseum-schema";
 
@@ -307,6 +307,88 @@ export async function fetchColosseumProject(
     ? { isComplete: result.data.projectCompletion.isComplete, missingFieldCount: (result.data.projectCompletion.fieldErrors ?? []).length }
     : null;
   return toImportedProject(project, raw, completion);
+}
+
+export type ColosseumUpdate = {
+  externalId: number;
+  authorName: string;
+  body: string;
+  links: string[];
+  sourceUrl: string;
+  publishedAt: string;
+  updatedAt: string;
+};
+
+/** Keep text and safe hyperlinks from Colosseum's rich-text document without
+ * rendering upstream HTML or dropping video URLs embedded in link marks. */
+function updateContent(value: unknown): { body: string; links: string[] } {
+  const links = new Set<string>();
+  const addLink = (value: unknown) => {
+    const link = typeof value === "string" ? safeWebLink(value) : null;
+    if (link) links.add(link);
+  };
+  function visit(value: unknown): string {
+    if (!value || typeof value !== "object") return "";
+    const node = value as Record<string, unknown>;
+    const attrs = node.attrs as Record<string, unknown> | undefined;
+    if (attrs) { addLink(attrs.href); addLink(attrs.src); }
+    if (Array.isArray(node.marks)) node.marks.forEach(visit);
+    addLink(node.url);
+    addLink(node.href);
+    let text = typeof node.text === "string" ? node.text : "";
+    if (Array.isArray(node.content)) text += node.content.map(visit).join("");
+    if (node.type === "hardBreak") text += "\n";
+    if (["paragraph", "heading", "listItem", "codeBlock", "blockquote"].includes(String(node.type))) text += "\n";
+    return text;
+  }
+  const body = visit(value).trim();
+  // Plain pasted links are also common, including updates containing only a video.
+  for (const match of body.matchAll(/https?:\/\/[^\s<>]+/g)) addLink(match[0].replace(/[.,;!?]+$/, ""));
+  return { body, links: [...links] };
+}
+
+/** One cursor page, without a date cutoff: every sweep can recover old posts
+ * and edits, including posts published before the project was imported. */
+export async function fetchColosseumUpdatePage(
+  input: { projectUrl: string; externalId: number; externalHackathonId: number | null; cursor?: string | null },
+  fetcher: ColosseumFetch = fetch,
+): Promise<{ updates: ColosseumUpdate[]; nextCursor: string | null }> {
+  const slug = parseColosseumProjectUrl(input.projectUrl);
+  const url = new URL(`/api/projects/by-slug/${slug}/build-logs`, API_ORIGIN);
+  url.searchParams.set("limit", "20");
+  if (input.cursor) url.searchParams.set("cursor", input.cursor);
+  const parsed = projectUpdatesSchema.safeParse(await readJson(url, fetcher));
+  if (!parsed.success) throw new ColosseumApiError("INVALID_RESPONSE");
+  const { project, buildLogs, nextCursor } = parsed.data;
+  if (project.id !== input.externalId || (input.externalHackathonId !== null && project.hackathonId !== input.externalHackathonId) || project.slug !== slug
+    || buildLogs.some(update => update.projectId !== input.externalId)
+    || new Set(buildLogs.map(update => update.id)).size !== buildLogs.length
+    || (nextCursor !== null && (nextCursor === input.cursor || !buildLogs.length))) {
+    throw new ColosseumApiError("INVALID_RESPONSE");
+  }
+  return {
+    nextCursor,
+    updates: buildLogs.map(update => {
+      const content = updateContent(update.content);
+      const links = new Set(content.links);
+      for (const value of update.links ?? []) {
+        if (typeof value === "string") {
+          const link = safeWebLink(value);
+          if (link) links.add(link);
+        } else {
+          for (const link of updateContent(value).links) links.add(link);
+        }
+      }
+      const xUrl = safeWebLink(update.xUrl);
+      if (xUrl) links.add(xUrl);
+      return {
+        externalId: update.id, authorName: update.author.displayName || update.author.username,
+        body: content.body || update.excerpt || "", links: [...links],
+        sourceUrl: `${colosseumProjectUrl(slug)}/updates/${update.id}`,
+        publishedAt: new Date(update.publishedAt).toISOString(), updatedAt: new Date(update.updatedAt).toISOString(),
+      };
+    }),
+  };
 }
 
 /**

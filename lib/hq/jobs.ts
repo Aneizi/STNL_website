@@ -1,5 +1,6 @@
 import "server-only";
 import type { ColosseumFetch } from "@/lib/colosseum-api";
+import { syncDueColosseumUpdates } from "./colosseum-updates";
 import type { Actor } from "./actor";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { HQ_JOBS_AUDIENCE } from "./github-actions-auth";
@@ -633,6 +634,7 @@ export async function listReminderDeliveries(
 
 export type JobRunSummary = {
   at: string;
+  colosseumUpdates: Awaited<ReturnType<typeof syncDueColosseumUpdates>>;
   closures: { closed: number; periods: ClosedPeriod[] };
   reminders: { due: number; queued: number; skipped: number; alreadyRecorded: number; expired: number; reconciled: number };
   /**
@@ -754,11 +756,15 @@ export async function runDueWork(
   });
 
   const reconciled = await reconcileReminderDeliveries(db);
+  const colosseumUpdates = await syncDueColosseumUpdates(db, {
+    now, deadlineMs, hackathonId: options.hackathonId, fetcher: options.colosseumFetch,
+  });
   const purged = await purgeExpiredBotState(db, now);
   const purgedReminders = await purgeReminderDeliveries(db, now);
 
   return {
     at: new Date(now).toISOString(),
+    colosseumUpdates,
     closures: { closed: closures.closed.length, periods: closures.closed },
     reminders: { due: due.length, queued, skipped, alreadyRecorded, expired, reconciled },
     delivery,

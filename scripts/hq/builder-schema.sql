@@ -1111,3 +1111,30 @@ CREATE TABLE IF NOT EXISTS hq_submission_reconciliations (
 );
 CREATE INDEX IF NOT EXISTS hq_submission_reconciliations_pending_idx ON hq_submission_reconciliations (hackathon_id, updated_at) WHERE state = 'pending';
 CREATE INDEX IF NOT EXISTS hq_submission_reconciliations_project_idx ON hq_submission_reconciliations (project_id);
+
+-- Public Colosseum history is source material, not an HQ-authored weekly
+-- report. Original dates and source ids survive re-imports and repeated syncs.
+-- The cursor is committed with each page so older history can resume after
+-- a timeout. A short lease prevents overlapping readers/jobs fetching twice.
+CREATE TABLE IF NOT EXISTS hq_colosseum_update_sync (
+  project_id uuid PRIMARY KEY REFERENCES hq_project_onboarding(project_id) ON DELETE CASCADE,
+  cursor text,
+  checked_at timestamptz,
+  next_attempt_at timestamptz NOT NULL DEFAULT now(),
+  lease_token uuid,
+  lease_until timestamptz,
+  last_error text
+);
+CREATE TABLE IF NOT EXISTS hq_colosseum_updates (
+  project_id uuid NOT NULL REFERENCES hq_project_onboarding(project_id) ON DELETE CASCADE,
+  external_id bigint NOT NULL,
+  author_name text NOT NULL,
+  body text NOT NULL,
+  links jsonb NOT NULL DEFAULT '[]'::jsonb,
+  source_url text NOT NULL,
+  published_at timestamptz NOT NULL,
+  source_updated_at timestamptz NOT NULL,
+  fetched_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (project_id, external_id)
+);
+CREATE INDEX IF NOT EXISTS hq_colosseum_updates_history_idx ON hq_colosseum_updates (project_id, published_at DESC, external_id DESC);

@@ -131,6 +131,9 @@ async function seedEverything() {
   await run(`INSERT INTO hq_builder_enrollments (user_id, hackathon_id) VALUES ('builder-1', '${hackathon}')`);
   await run(`INSERT INTO hq_project_onboarding (project_id, hackathon_id, external_id, project_url, slug, raw, owner_user_id, lead_username)
              VALUES ('${project}', '${hackathon}', 90001, 'https://colosseum.com/arena/projects/explore/tulip-ledger', 'tulip-ledger', '{}', 'builder-1', 'fictional_builder_1')`);
+  await run(`INSERT INTO hq_colosseum_update_sync(project_id) VALUES('${project}')`);
+  await run(`INSERT INTO hq_colosseum_updates(project_id,external_id,author_name,body,source_url,published_at,source_updated_at)
+             VALUES('${project}',900101,'Fictional Builder One','A prior update','https://colosseum.com/arena/projects/tulip-ledger/updates/900101',now(),now())`);
   const member = await id(`SELECT id FROM hq_project_members LIMIT 1`);
   await run(`INSERT INTO hq_team_invites (project_id, member_id, created_by, token_hash)
              VALUES ('${project}', '${member}', 'builder-1', 'fictional-token-hash')`);
