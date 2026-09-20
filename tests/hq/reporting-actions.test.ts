@@ -44,6 +44,7 @@ import {
 } from "@/lib/hq/actions/reporting";
 import {
   applyReportingSchedule,
+  loadProjectReportingUpdates,
   previewReportingSchedule,
   readColosseumDeadline,
   saveReportingConfiguration,
@@ -154,6 +155,51 @@ beforeEach(async () => {
   await rows(`INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES($1,'worlds-fair','Worlds Fair','2026-09-14','2026-10-12')`, [EDITION]);
   await rows(`INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES($1,'frontier','Frontier','2026-05-04','2026-05-31')`, [OTHER_EDITION]);
   await rows(`INSERT INTO hq_reporting_config(hackathon_id,final_period_start_date) VALUES($1,'2026-10-05')`, [EDITION]);
+});
+
+describe("reading reporting updates in admin project details", () => {
+  beforeEach(async () => {
+    await seedImportedProject(PROJECT, "lead");
+    await enableReporting(db, { projectId: PROJECT, hackathonId: EDITION });
+    await seedAssignedCaptain("captain", PROJECT);
+    asMember(member("captain", ["captain"]));
+  });
+
+  it("reads shared and private captain updates with pagination and keeps revision bodies out", async () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 11; i++) {
+      const saved = await addReportingUpdate({
+        projectId: PROJECT, hackathonId: EDITION, body: `Captain update ${i}`,
+        visibility: i === 0 ? "sensitive" : "shared",
+      });
+      if (!saved.ok) throw new Error(saved.error);
+      ids.push(saved.entry.id);
+    }
+    const first = await loadProjectReportingUpdates({ projectId: PROJECT });
+    expect(first.ok).toBe(true);
+    if (!first.ok) throw new Error(first.error);
+    expect(first.page.entries).toHaveLength(10);
+    expect(first.page.nextCursor).toBeTruthy();
+    const second = await loadProjectReportingUpdates({ projectId: PROJECT, cursor: first.page.nextCursor! });
+    if (!second.ok) throw new Error(second.error);
+    expect(second.page.entries).toHaveLength(1);
+    expect(second.page.nextCursor).toBeNull();
+    const entries = [...first.page.entries, ...second.page.entries];
+    expect(entries.map(entry => entry.id).sort()).toEqual(ids.sort());
+    expect(entries.find(entry => entry.visibility === "sensitive")).toMatchObject({ body: "Captain update 0", authorName: "captain" });
+    expect(entries.every(entry => !("revisions" in entry))).toBe(true);
+  });
+
+  it("does not read updates from another selected edition", async () => {
+    await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: "Private detail", visibility: "sensitive" });
+    mocks.requireHackathon.mockResolvedValue({ id: OTHER_EDITION });
+    expect(await loadProjectReportingUpdates({ projectId: PROJECT })).toEqual({ ok: true, page: { entries: [], nextCursor: null } });
+  });
+
+  it("requires an operator session even when a captain is signed in", async () => {
+    mocks.requireUser.mockRejectedValueOnce(new Error("operator login required"));
+    await expect(loadProjectReportingUpdates({ projectId: PROJECT })).rejects.toThrow("operator login required");
+  });
 });
 
 describe("adding an update from a member surface", () => {

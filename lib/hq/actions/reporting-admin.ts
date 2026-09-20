@@ -10,10 +10,12 @@ import { requireHackathon } from "../hackathon";
 import {
   ensureReportingPeriods,
   previewReportingPeriods,
+  readAuthorizedUpdates,
   readReportingSchedule,
   recordColosseumDeadline,
   writeReportingConfig,
   type ReportingPeriodPlan,
+  type ReportingEntryPage,
 } from "../reporting";
 import { isCalendarDate, zonedDateTimeToUtc } from "../reporting-periods";
 import { isMaterialKey } from "../submission-readiness";
@@ -40,6 +42,31 @@ const LOCAL_DATE_TIME = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?$/;
 const CAMPAIGN_TIMEZONE_FALLBACK = "Europe/Amsterdam";
 /** The floor on automatic submission checks, matching the CHECK constraint on the column. */
 const MIN_SUBMISSION_REFRESH_MINUTES = 15;
+
+export type ProjectUpdatesResult =
+  | { ok: true; page: ReportingEntryPage }
+  | { ok: false; error: string };
+
+/** Reporting history for an expanded admin project, scoped to the selected edition. */
+export async function loadProjectReportingUpdates(input: {
+  projectId: string;
+  cursor?: string;
+}): Promise<ProjectUpdatesResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  const parsed = z.object({ projectId: z.string().uuid(), cursor: z.string().max(200).optional() }).safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Could not load updates for this project." };
+  const db = builderDatabase();
+  // Operators can read every edition through the service; this screen is scoped to one.
+  const { rows } = await db.query("SELECT 1 FROM hq_projects WHERE id=$1::uuid AND hackathon_id=$2", [parsed.data.projectId, hackathon.id]);
+  if (!rows.length) return { ok: true, page: { entries: [], nextCursor: null } };
+  const page = await readAuthorizedUpdates(
+    { kind: "operator", id: user.id, displayName: user.displayName },
+    { ...parsed.data, hackathonId: hackathon.id, limit: 10 },
+    db,
+  );
+  return { ok: true, page };
+}
 
 /**
  * Why HQ could not read the edition's deadline, one sentence per cause. The

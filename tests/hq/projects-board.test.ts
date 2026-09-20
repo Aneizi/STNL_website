@@ -12,6 +12,7 @@ import type { Classifiers, Project, Settings } from "@/lib/hq/types";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {}, refresh() {}, push() {} }) }));
 vi.mock("@/components/hq/toast", () => ({ showToast: vi.fn() }));
+vi.mock("@/lib/hq/actions/reporting-admin", () => ({ loadProjectReportingUpdates: vi.fn() }));
 vi.mock("@/lib/hq/actions/projects", () => ({
   addProjectMember: vi.fn(), addProjectNote: vi.fn(), createProject: vi.fn(), deleteProject: vi.fn(), editProjectNote: vi.fn(),
   removeProjectMember: vi.fn(), saveProjectBlocker: vi.fn(), setProjectForecast: vi.fn(),
@@ -172,6 +173,8 @@ describe("the Projects board", () => {
     expect(html).toMatch(/<option value="c1" selected="">Femke de Jong<\/option>/);
     expect(html).toContain(">No Captain<");
     expect(html).toContain("Last touched by Bram, Sep 16. Changes save as you go.");
+    expect(html).toContain('aria-label="Team and captain updates"');
+    expect(html).toContain("Loading updates…");
     expect(html).toContain('placeholder="Add a note"');
     expect(html).toContain("Sep 16, 17:10, Bram");
     expect(html).toContain("Team demoed canal-side QR payments, looks strong.");

@@ -45,6 +45,7 @@ import type {
 } from "@/lib/hq/types";
 import { projectHref } from "./builder-admin";
 import { BuilderProjectImage } from "./builder-project-image";
+import { ProjectUpdates } from "./project-updates";
 import styles from "./projects.module.css";
 
 type CaptainOption = { id: string; name: string };
@@ -1221,6 +1222,7 @@ export function Projects({
                             </div>
                           </div>
                           <div>
+                            <ProjectUpdates key={p.id} projectId={p.id} timezone={settings.timezone} />
                             <div style={{ ...blockHeading, marginBottom: 10 }}>Timeline</div>
                             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                               <input
