@@ -63,15 +63,15 @@ export default async function CaptainPage() {
   const board = hackathonId === null ? null : await captainReportingBoard(actor, hackathonId, db, at);
   // The teams still needing this week's update first, as the aside lists
   // them and as the first one is selected. The imported detail, where there
-  // is any: one lookup per assigned project, safe here only because every id
+  // is any: one batch, safe here only because every id
   // comes from this Captain's own assignments on the board.
   const cards = [...(board?.cards ?? [])].sort((a, b) => byOutstandingFirst(a.status, b.status));
-  const teams = await Promise.all(cards.map((card) => store.teamById(card.status.projectId)));
+  const teams = await store.teamsByIds(cards.map((card) => card.status.projectId));
 
   return (
     <BuilderShell bare>
       <BuilderCaptainDen
-        teams={cards.map((card, index) => toDenTeam(card, teams[index]))}
+        teams={cards.map((card) => toDenTeam(card, teams.get(card.status.projectId) ?? null))}
         week={board?.week ?? null}
         timezone={board?.timezone ?? "Europe/Amsterdam"}
         contact={board?.captainContact ?? null}

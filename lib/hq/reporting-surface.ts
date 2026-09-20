@@ -250,7 +250,7 @@ export async function memberWeekSummaries(
  * them a Captain wrote something they may not read. What a team's own
  * submission status says about their own week gives nothing away.
  */
-export type SubmissionFocusView = {
+type SubmissionFocusView = {
   projectId: string;
   hackathonId: number;
   /** The submission period itself, whether it is open now or has ended. */
@@ -339,7 +339,7 @@ function toSubmissionFocus(input: {
  * composition over rows, not a decision, which is what lets the team page,
  * the Captain board and the admin panel share it.
  */
-export async function submissionFocusFor(
+async function submissionFocusFor(
   input: { hackathonId: number; projectIds: readonly string[]; atMs: number; timezone?: string; statuses?: readonly ProjectReportingStatus[] },
   db: BuilderQuery = builderDatabase(),
 ): Promise<Map<string, SubmissionFocusView>> {
@@ -396,7 +396,7 @@ export type CaptainReportingCard = {
   submissionFocus: SubmissionFocusView | null;
 };
 
-export type CaptainReportingBoard = {
+type CaptainReportingBoard = {
   hackathonId: number;
   timezone: string;
   cards: CaptainReportingCard[];

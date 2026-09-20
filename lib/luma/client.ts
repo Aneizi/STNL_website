@@ -22,10 +22,10 @@ const PAGE_SIZE = 100;
  */
 const MAX_PAGES = 20;
 
-export type LumaPeriod = "upcoming" | "past";
+type LumaPeriod = "upcoming" | "past";
 
 /** ISR for the public page; "no-store" for the HQ sync. */
-export type LumaCache = { revalidate: number } | "no-store";
+type LumaCache = { revalidate: number } | "no-store";
 
 type LumaGeo = {
   city?: string | null;
@@ -46,7 +46,7 @@ export type LumaEvent = {
   geo_address_info?: LumaGeo | null;
 };
 
-export type LumaHost = {
+type LumaHost = {
   name?: string | null;
 };
 

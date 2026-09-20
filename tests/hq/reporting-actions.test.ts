@@ -45,19 +45,19 @@ import {
 import {
   applyReportingSchedule,
   loadProjectReportingUpdates,
-  previewReportingSchedule,
   readColosseumDeadline,
   saveReportingConfiguration,
 } from "@/lib/hq/actions/reporting-admin";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { assignCaptain } from "@/lib/hq/captains";
-import { readTeamContact } from "@/lib/hq/reporting-contacts";
+import { readTeamContacts } from "@/lib/hq/reporting-contacts";
 import {
   closePeriod,
   editUpdate,
   enableReporting,
   listReportingPeriods,
+  previewReportingPeriods,
   readReportingConfig,
   reportingStatus,
 } from "@/lib/hq/reporting";
@@ -380,18 +380,18 @@ describe("the two contacts", () => {
   it("lets the team lead set the team's contact, and nobody else", async () => {
     asMember(member("lead"));
     expect(await saveTeamContact({ projectId: PROJECT, hackathonId: EDITION, contact: "  @ourteam  " })).toEqual({ ok: true, contact: "@ourteam" });
-    expect(await readTeamContact(db, PROJECT)).toBe("@ourteam");
+    expect((await readTeamContacts(db, [PROJECT])).get(PROJECT) ?? null).toBe("@ourteam");
 
     asMember(member("mate"));
     expect(await saveTeamContact({ projectId: PROJECT, hackathonId: EDITION, contact: "@notme" })).toMatchObject({ ok: false });
-    expect(await readTeamContact(db, PROJECT)).toBe("@ourteam");
+    expect((await readTeamContacts(db, [PROJECT])).get(PROJECT) ?? null).toBe("@ourteam");
   });
 
   it("clears the team contact back to nothing rather than storing an empty line", async () => {
     asMember(member("lead"));
     await saveTeamContact({ projectId: PROJECT, hackathonId: EDITION, contact: "@ourteam" });
     expect(await saveTeamContact({ projectId: PROJECT, hackathonId: EDITION, contact: "   " })).toEqual({ ok: true, contact: null });
-    expect(await readTeamContact(db, PROJECT)).toBeNull();
+    expect((await readTeamContacts(db, [PROJECT])).get(PROJECT) ?? null).toBeNull();
   });
 });
 
@@ -425,14 +425,12 @@ describe("the admin schedule screen", () => {
 
     // The admin moves the hackathon's start a day later.
     await rows("UPDATE hq_hackathons SET start_date='2026-09-15' WHERE id=$1", [EDITION]);
-    const preview = await previewReportingSchedule();
-    expect(preview).toMatchObject({ ok: true });
-    if (!preview.ok) throw new Error("expected the preview to succeed");
+    const preview = await previewReportingPeriods(db, EDITION);
     // Week one holds an update, so it is a conflict rather than a move, and
     // the preview says what the dates would have made it.
-    expect(preview.schedule.plan.conflicts).toHaveLength(1);
-    expect(preview.schedule.plan.conflicts[0]).toMatchObject({ sequence: 1, reason: "has_entries", storedStartDate: "2026-09-14" });
-    expect(preview.schedule.plan.conflicts[0].generatedStartDate).toBe("2026-09-15");
+    expect(preview.conflicts).toHaveLength(1);
+    expect(preview.conflicts[0]).toMatchObject({ sequence: 1, reason: "has_entries", storedStartDate: "2026-09-14" });
+    expect(preview.conflicts[0].generatedStartDate).toBe("2026-09-15");
     // Nothing was written by the preview.
     expect(await listReportingPeriods(db, EDITION)).toEqual(before);
   });

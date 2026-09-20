@@ -1,3 +1,4 @@
+-- Frozen input to 0001-legacy-bootstrap. Add new changes in migrations/NNNN-name.sql.
 -- Additive public-account tables for Better Auth 1.7.2.
 -- These are deliberately separate from the operator-only hq_users/hq_sessions.
 CREATE TABLE IF NOT EXISTS hq_auth_user (

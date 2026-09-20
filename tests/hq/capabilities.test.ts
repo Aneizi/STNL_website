@@ -179,16 +179,14 @@ describe("reading capabilities", () => {
 });
 
 describe("the audit module", () => {
-  it("exposes insert and read only, and no update or delete anywhere", () => {
-    expect(Object.keys(audit).sort()).toEqual(["listAuditEvents", "recordAuditEvent"]);
-    expect(Object.keys(auditSql).sort()).toEqual(["AUDIT_EVENT_KINDS", "AUDIT_SELECT", "insertAuditEventStatement", "listAuditEventsStatement", "toAuditEvent"]);
+  it("exposes append-only writes, and no update or delete anywhere", () => {
+    expect(Object.keys(audit).sort()).toEqual(["recordAuditEvent"]);
+    expect(Object.keys(auditSql).sort()).toEqual(["AUDIT_EVENT_KINDS", "insertAuditEventStatement", "toAuditEvent"]);
     for (const name of [...Object.keys(audit), ...Object.keys(auditSql)]) {
       expect(name).not.toMatch(/update|delete|remove|purge|patch|edit|clear/i);
     }
     const insert = auditSql.insertAuditEventStatement({ kind: "identity.linked", actor: { kind: "system", id: null } });
-    const list = auditSql.listAuditEventsStatement({}, { limit: 10 });
     expect(insert.text).not.toMatch(/\b(UPDATE|DELETE)\b/i);
-    expect(list.text).not.toMatch(/\b(UPDATE|DELETE|INSERT)\b/i);
     expect(AUDIT_EVENT_KINDS).toEqual([
       "capability.granted", "capability.revoked", "identity.linked", "identity.unlinked", "identity.email_changed",
       "bot.consent_changed", "person.linked", "person.match_corrected", "captain.assigned", "captain.unassigned",
@@ -198,7 +196,7 @@ describe("the audit module", () => {
     ]);
   });
 
-  it("lists events newest first, filtered and keyset paged, with metadata round-tripping", async () => {
+  it("round-trips metadata and keeps events after their edition is deleted", async () => {
     await rows("INSERT INTO hq_hackathons(id,slug,name,start_date,end_date) VALUES(7,'edition','Edition','2026-09-14','2026-10-12')");
     const project = "00000000-0000-4000-8000-00000000aaaa";
     const first = await audit.recordAuditEvent(db, { kind: "identity.linked", actor: { kind: "member", id: "acct-a" }, subjectUserId: "acct-a", metadata: { provider: "telegram" } });
@@ -209,18 +207,9 @@ describe("the audit module", () => {
     expect(third).toMatchObject({ actor: { kind: "system", id: null }, metadata: {} });
     expect(Number(third.id)).toBeGreaterThan(Number(first.id));
 
-    const page = await audit.listAuditEvents({}, { limit: 2 });
-    expect(page.events.map((e) => e.id)).toEqual([third.id, second.id]);
-    expect(page.nextCursor).toBe(second.id);
-    const rest = await audit.listAuditEvents({}, { limit: 2, cursor: page.nextCursor });
-    expect(rest.events.map((e) => e.id)).toEqual([first.id]);
-    expect(rest.nextCursor).toBeNull();
-    expect((await audit.listAuditEvents({ subjectUserId: "acct-a", kind: "identity.linked" }, { limit: 10 })).events.map((e) => e.id)).toEqual([first.id]);
-    expect((await audit.listAuditEvents({ hackathonId: 7 }, { limit: 10 })).events.map((e) => e.id)).toEqual([second.id]);
-    expect((await audit.listAuditEvents({ projectId: project }, { limit: 10 })).events.map((e) => e.id)).toEqual([second.id]);
     // Deleting the edition keeps the event; the reference is cleared.
     await rows("DELETE FROM hq_hackathons WHERE id=7");
-    expect((await audit.listAuditEvents({ kind: "captain.assigned" }, { limit: 10 })).events[0]).toMatchObject({ id: second.id, hackathonId: null });
+    expect((await rows("SELECT id::text AS id, hackathon_id FROM hq_audit_events WHERE id=$1::bigint", [second.id]))[0]).toMatchObject({ id: second.id, hackathon_id: null });
   });
 
   it("refuses a note body sized payload only by convention: metadata stays structural", () => {

@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ColosseumFetch, ImportedProject } from "@/lib/colosseum-api";
-import { BuilderStore, type BuilderDatabase } from "@/lib/hq/builder-store";
+import { BuilderStore } from "@/lib/hq/builder-store";
+import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import * as builderModule from "@/lib/hq/builder-store";
 import * as identityModule from "@/lib/hq/identity";
 import type { BuilderIdentity } from "@/lib/hq/builder-types";
@@ -78,6 +79,13 @@ async function importProject(project = PROJECT, owner = OWNER, hackathonId = 41,
   return store.importTeam(owner, { selectedUsername, hackathonId, project, projectUrl: `https://colosseum.com/arena/projects/explore/${project.slug}` });
 }
 
+/** Exercise enrollment through a production caller, not a separate store API. */
+async function importInEdition(user: BuilderIdentity, hackathonId: number, externalId = PROJECT.externalId) {
+  return importProject({ ...PROJECT, externalId,
+    hackathon: { ...PROJECT.hackathon, id: hackathonId === 42 ? 7 : 6 },
+  }, user, hackathonId);
+}
+
 async function invite() {
   const id = await importProject();
   const team = await ownTeam(OWNER.id, id);
@@ -128,7 +136,7 @@ describe("builder accounts and edition-scoped People", () => {
 
   it("creates one Builder card per authenticated account and selected edition", async () => {
     await Promise.all(Array.from({ length: 4 }, () => store.syncAccount(OWNER)));
-    await Promise.all(Array.from({ length: 3 }, () => store.enroll(OWNER, 42, "builder")));
+    await Promise.all(Array.from({ length: 3 }, (_, i) => importInEdition(OWNER, 42, PROJECT.externalId + i)));
     expect(await rows(`SELECT p.hackathon_id,p.name,p.contact,r.label FROM hq_people p
       JOIN hq_people_roles r ON r.id=p.role_id WHERE builder_user_id=$1 ORDER BY hackathon_id`, [OWNER.id]))
       .toEqual([
@@ -140,12 +148,15 @@ describe("builder accounts and edition-scoped People", () => {
   });
 
   it("keeps a supporter's Community role and an operator's card notes after later logins", async () => {
-    await store.enroll(OWNER, 41, "supporter");
+    await db.query(`INSERT INTO hq_people_roles(label,filter_label,color,bg,is_judge,sort)
+      VALUES('Community','Community','accent','accent-fill',false,100) ON CONFLICT(label) DO NOTHING`);
+    await db.query("UPDATE hq_builder_enrollments SET participation='supporter' WHERE user_id=$1", [OWNER.id]);
+    await db.query("UPDATE hq_people SET role_id=(SELECT id FROM hq_people_roles WHERE label='Community') WHERE builder_user_id=$1", [OWNER.id]);
     await db.query("UPDATE hq_people SET notes='Spoke at our event',contact='@owner' WHERE builder_user_id=$1", [OWNER.id]);
     await store.syncAccount({ ...OWNER, name: "Updated account name" });
     expect(await rows(`SELECT r.label,p.notes,p.contact FROM hq_people p JOIN hq_people_roles r ON r.id=p.role_id
       WHERE p.builder_user_id=$1`, [OWNER.id])).toEqual([{ label: "Community", notes: "Spoke at our event", contact: "@owner" }]);
-    await store.enroll(OWNER, 41, "builder");
+    await importInEdition(OWNER, 41);
     expect(await rows(`SELECT r.label FROM hq_people p JOIN hq_people_roles r ON r.id=p.role_id WHERE p.builder_user_id=$1`, [OWNER.id]))
       .toEqual([{ label: "Builder" }]);
   });
@@ -159,23 +170,23 @@ describe("builder accounts and edition-scoped People", () => {
     for (const edition of [41, 42]) {
       await db.query(`INSERT INTO hq_people(hackathon_id,name,role_id,person_id) SELECT $1,'Owner (roster card)',id,$2 FROM hq_people_roles WHERE label='Builder'`, [edition, own]);
     }
-    await expect(store.enroll(OWNER, 41, "builder")).resolves.toBeUndefined();
-    await expect(store.enroll(OWNER, 42, "supporter")).resolves.toBeUndefined();
+    await expect(importInEdition(OWNER, 41)).resolves.toEqual(expect.any(String));
+    await expect(importInEdition(OWNER, 42)).resolves.toEqual(expect.any(String));
     expect(await rows(`SELECT p.hackathon_id,p.person_id,r.label FROM hq_people p JOIN hq_people_roles r ON r.id=p.role_id
       WHERE p.builder_user_id=$1 ORDER BY p.hackathon_id`, [OWNER.id])).toEqual([
       { hackathon_id: 41, person_id: null, label: "Builder" },
-      { hackathon_id: 42, person_id: null, label: "Community" },
+      { hackathon_id: 42, person_id: null, label: "Builder" },
     ]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE person_id=$1", [own])).toEqual([{ n: 2 }]);
     // Once the other card is gone, the next enrolment stamps the account's card as before.
     await db.query("DELETE FROM hq_people WHERE person_id=$1 AND builder_user_id IS NULL AND hackathon_id=41", [own]);
-    await store.enroll(OWNER, 41, "builder");
+    await importInEdition(OWNER, 41, PROJECT.externalId + 1);
     expect(await rows("SELECT person_id FROM hq_people WHERE builder_user_id=$1 AND hackathon_id=41", [OWNER.id])).toEqual([{ person_id: own }]);
   });
 
   it("rejects unavailable editions without leaving a People card or enrollment", async () => {
-    await expect(store.enroll(OWNER, 43, "builder")).rejects.toThrow("available hackathon");
-    await expect(store.enroll(OWNER, 999, "builder")).rejects.toThrow("available hackathon");
+    await expect(importInEdition(OWNER, 43)).rejects.toMatchObject({ reason: "edition_not_configured" });
+    await expect(importInEdition(OWNER, 999)).rejects.toMatchObject({ reason: "edition_not_configured" });
     expect(await rows("SELECT hackathon_id FROM hq_builder_enrollments WHERE user_id=$1", [OWNER.id])).toEqual([{ hackathon_id: 41 }]);
     expect((await store.hackathons()).map(item => item.id)).toEqual([41, 42]);
   });
@@ -206,7 +217,7 @@ describe("accounts without an email, contact email and CRM person identity", () 
 
   it("never writes the placeholder address to a profile, a contact or a People card", async () => {
     await store.syncAccount({ ...TELEGRAM_ONLY, email: PLACEHOLDER });
-    await store.enroll({ ...TELEGRAM_ONLY, email: PLACEHOLDER }, 42, "supporter");
+    await importInEdition({ ...TELEGRAM_ONLY, email: PLACEHOLDER }, 42);
     expect(await rows("SELECT email,contact_email FROM hq_builder_profiles WHERE id=$1", [TELEGRAM_ONLY.id])).toEqual([{ email: null, contact_email: null }]);
     expect(await rows("SELECT contact FROM hq_people WHERE builder_user_id=$1 ORDER BY hackathon_id", [TELEGRAM_ONLY.id])).toEqual([{ contact: "" }, { contact: "" }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_builder_profiles WHERE email ILIKE '%placeholder.invalid' OR contact_email ILIKE '%placeholder.invalid'")).toEqual([{ n: 0 }]);
@@ -228,7 +239,7 @@ describe("accounts without an email, contact email and CRM person identity", () 
 
   it("gives every synced account exactly one person and stamps it on each edition's card", async () => {
     await Promise.all(Array.from({ length: 3 }, () => store.syncAccount(OWNER)));
-    await store.enroll(OWNER, 42, "builder");
+    await importInEdition(OWNER, 42);
     const owner = await person(OWNER.id);
     expect(await rows("SELECT hackathon_id,person_id FROM hq_people WHERE builder_user_id=$1 ORDER BY hackathon_id", [OWNER.id]))
       .toEqual([{ hackathon_id: 41, person_id: owner!.id }, { hackathon_id: 42, person_id: owner!.id }]);
@@ -382,7 +393,7 @@ describe("correcting a person match", () => {
     expect((await events())[0]).toMatchObject({ subject_user_id: "auth-legacy", metadata: expect.objectContaining({ fromPersonId: roster, toPersonId: roster, unlinkedCards: [legacy41.id] }) });
     // The member's next login sync must survive the state this leaves behind:
     // an unstamped card in 41 while the roster card there carries the person.
-    await expect(store.enroll({ id: "auth-legacy", email: null, name: "Legacy Builder" }, 41, "builder")).resolves.toBeUndefined();
+    await expect(importInEdition({ id: "auth-legacy", email: null, name: "Legacy Builder" }, 41)).resolves.toEqual(expect.any(String));
     expect((await card("auth-legacy", 41)).person_id).toBeNull();
     expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41 AND person_id=$1", [roster])).toEqual([{ n: 1 }]);
   });
@@ -530,7 +541,7 @@ describe("self-service import", () => {
     await db.query("UPDATE hq_hackathon_onboarding SET external_hackathon_id=NULL WHERE hackathon_id=41");
     await expect(store.importTeam(OWNER, { selectedUsername: PROJECT.members[0].username, hackathonId: 41, project: PROJECT, projectUrl: PROJECT_URL }))
       .rejects.toMatchObject({ reason: "edition_not_configured" });
-    expect(gateProject(PROJECT, { hackathonId: 41, externalId: null, externalSlug: null, projectsOpen: true, projectsAvailableAt: null }))
+    expect(gateProject(PROJECT, { externalId: null, projectsOpen: true, projectsAvailableAt: null }))
       .toBe("edition_not_configured");
   });
 

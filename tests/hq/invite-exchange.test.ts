@@ -99,8 +99,10 @@ describe("exchangeCaptainInvitationToken", () => {
       const result = await exchangeCaptainInvitationToken(db, { token, ip: "198.51.100.9" });
       if (!result.continuationId) limited += 1;
     }
-    expect(limited).toBeGreaterThan(0);
-    expect(await rows("SELECT count FROM hq_login_limits WHERE key = 'invite-exchange:ip:198.51.100.9'")).toEqual([{ count: 35 }]);
+    expect(limited).toBe(5);
+    // Blocked requests saturate the counter and create no continuation.
+    expect(await rows("SELECT count FROM hq_login_limits WHERE key = 'invite-exchange:ip:198.51.100.9'")).toEqual([{ count: 31 }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_auth_verification")).toEqual([{ n: 30 }]);
     // A different address is unaffected.
     expect((await exchangeCaptainInvitationToken(db, { token, ip: "198.51.100.10" })).continuationId).toBeTruthy();
   });

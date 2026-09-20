@@ -1,33 +1,17 @@
 /**
- * Actor-aware response shapes: the smallest DTO each audience may receive,
- * built by mapping from the row types the queries already return. Pure
- * types and mappers, no queries and no `server-only`, so a test can prove
- * what a member or Captain response carries and, more to the point, what it
- * does not.
- *
- * Operator-only shapes stay in ./types. A member or Captain surface renders
- * these views and nothing wider, so an operator field cannot reach a public
- * page by accident; it is never loaded and then hidden in the browser.
+ * Audience-specific DTOs keep operator data and account identities out of
+ * member responses. Pure mappers; callers authorize before mapping.
  */
 import type { BuilderTeam, BuilderTeamSource, ProjectStage } from "./builder-types";
-import type { Person } from "./types";
 
 /**
- * The assigned Captain as a team may see them: a display name, and the handle
- * they are reached on. `contact` is the username of the Captain's linked
- * Telegram identity ("@username"), which is what their own Captains' Den
- * shows them, with the contact they typed on the earlier form as the fallback
- * (`readCaptainHandle` in lib/hq/reporting-contacts.ts). A login email or a
- * profile address never fills it. Null when there is neither, and the team
- * page then simply does not offer a way to reach them.
+ * Captain name and approved contact: linked Telegram username, then the saved
+ * Captain contact, or null. Never expose a login email or profile address.
  */
-export type TeamCaptainView = { displayName: string; contact: string | null };
+type TeamCaptainView = { displayName: string; contact: string | null };
 
 /**
- * What a team member sees of their own team, and what the account that
- * submitted a still-unverified import sees of its own claim: the fields the
- * team page renders, and nothing from the operator side or from another
- * account's identity.
+ * Member-safe team data, also shown to the submitter of an unverified claim.
  */
 export type MemberTeamView = {
   id: string;
@@ -41,68 +25,16 @@ export type MemberTeamView = {
   stage: ProjectStage;
   lead: { username: string };
   /**
-   * The normalized Colosseum snapshot, the same shape every later view reads
-   * (the plan's phase 3 handoff: "all later views use normalized project
-   * information and a common submission-status service"). It is public
-   * project information from Colosseum, carries no HQ notes and no account
-   * id, and is safe for the team and its Captain alike.
+   * Public Colosseum project data, with no HQ notes or account ids.
    */
   source: BuilderTeamSource;
   /** Colosseum reference entries. The team page lists joined accounts only; no account id is included. */
   roster: { id: string; name: string; username: string; avatarUrl: string | null; joined: boolean }[];
 };
 
-/** What an assigned Captain sees of a team: minimal contact and roster fields, no operator state. */
-export type CaptainAssignmentView = {
-  id: string;
-  name: string;
-  edition: { id: number; name: string };
-  projectUrl: string;
-  stage: ProjectStage;
-  lead: { username: string };
-  source: BuilderTeamSource;
-  roster: { name: string; username: string; avatarUrl: string | null; joined: boolean }[];
-};
-
 /**
- * One row of the Captain leaderboard, which admins and Captains may see
- * (phase 4). Deliberately not a `CapabilityGrant`: that row carries the
- * admin's free-text `reason` for the grant, the `grantedByUserId` and
- * `revokedByUserId` operator ids, the grant id and the timestamps, none of
- * which a Captain may see about another Captain. The account id is left out
- * too, so a name on this page cannot be joined to an account.
- */
-export type CaptainLeaderboardView = {
-  rank: number;
-  displayName: string;
-  assignedCount: number;
-  /**
-   * Whether this row is the viewer's own, for "you" styling. Carries no
-   * account id of its own: `toCaptainLeaderboardView` compares the row's
-   * raw captain id against the viewer's id and keeps only the boolean, so
-   * marking "you" never gives a Captain anything to join another Captain's
-   * row to an account.
-   */
-  isYou: boolean;
-};
-
-/** A person as a public surface may show them: the name and the tag labels, never contact, org, notes or ids. */
-export type PublicPersonView = {
-  name: string;
-  /**
-   * The card's role tag, and the capability tags ("Captain") only on a
-   * surface that asked for them. The permission contract shows Captain names
-   * to Captains and operators alone, so they are left out by default.
-   */
-  tags: string[];
-};
-
-/**
- * Precondition: the viewer was already authorized on the team through
- * `authorizeProjectAction` (or the team came from a query scoped to their
- * account, such as `builderStore().teams(viewer.id)` or their own claim).
- * The mapper does not check membership; it derives `role: "member"` for any
- * viewer who is not the owner.
+ * Caller must authorize the viewer or load the team through an account-scoped
+ * query. This mapper assumes non-owners are members; it does not check access.
  */
 export function toMemberTeamView(team: BuilderTeam, viewer: { id: string }, captain: TeamCaptainView | null = null): MemberTeamView {
   return {
@@ -117,44 +49,4 @@ export function toMemberTeamView(team: BuilderTeam, viewer: { id: string }, capt
     source: team.source,
     roster: team.members.map((member) => ({ id: member.id, name: member.name, username: member.username, avatarUrl: member.avatarUrl, joined: member.joined })),
   };
-}
-
-export function toCaptainAssignmentView(team: BuilderTeam): CaptainAssignmentView {
-  return {
-    id: team.id,
-    name: team.name,
-    edition: { id: team.hackathonId, name: team.hackathonName },
-    projectUrl: team.projectUrl,
-    stage: team.stage,
-    lead: { username: team.leadUsername },
-    source: team.source,
-    roster: team.members.map((member) => ({ name: member.name, username: member.username, avatarUrl: member.avatarUrl, joined: member.joined })),
-  };
-}
-
-/**
- * One leaderboard row. `row.captainUserId` is compared against
- * `viewerUserId` to derive `isYou` and then discarded — it is the only place
- * a raw account id from `countAssignmentsByCaptain` or `listCapabilityGrants`
- * may appear on the way to this view, and it never reaches the returned
- * object. `viewerUserId` is null for a surface with no single viewer to mark
- * (the Admin leaderboard).
- */
-export function toCaptainLeaderboardView(
-  row: { captainUserId: string; displayName: string; assignedCount: number },
-  rank: number,
-  viewerUserId: string | null,
-): CaptainLeaderboardView {
-  return { rank, displayName: row.displayName, assignedCount: row.assignedCount, isYou: viewerUserId !== null && row.captainUserId === viewerUserId };
-}
-
-/**
- * Capability tags are dropped unless the caller opts in, so a surface that
- * forgets to think about its audience gets the safe shape. Pass
- * `{ includeCapabilities: true }` only where the permission contract allows
- * it: a Captain-only or operator page. Nothing else about the card changes.
- */
-export function toPublicPersonView(person: Pick<Person, "name" | "tags">, options: { includeCapabilities?: boolean } = {}): PublicPersonView {
-  const tags = options.includeCapabilities ? person.tags : person.tags.filter((tag) => tag.kind !== "capability");
-  return { name: person.name, tags: tags.map((tag) => tag.label) };
 }

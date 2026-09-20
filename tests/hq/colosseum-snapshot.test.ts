@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { fetchColosseumProject, type ColosseumFetch } from "@/lib/colosseum-api";
 import {
-  DRAFT_SIGNAL_CONFIRMED, groupedMaterials, interpretSubmission, PROJECT_FALLBACK_IMAGE,
+  DRAFT_SIGNAL_CONFIRMED, interpretSubmission, PROJECT_FALLBACK_IMAGE,
   submittedOnTime, SUBMISSION_LABELS, toSnapshotFields,
 } from "@/lib/hq/colosseum-snapshot";
 import detail from "./fixtures/colosseum/detail.json";
@@ -60,26 +60,6 @@ describe("normalizing a Colosseum snapshot", () => {
     expect((await fetchColosseumProject(url("tulip-ledger"), respond(nullImage))).imageUrl).toBeNull();
     const unsafe = { ...detail.submitted, project: { ...detail.submitted.project, image: { url: "javascript:alert(1)" } } };
     expect((await fetchColosseumProject(url("tulip-ledger"), respond(unsafe))).imageUrl).toBeNull();
-  });
-});
-
-describe("grouped submission materials", () => {
-  it("shows a URL pasted into two fields once, naming both", () => {
-    const shared = "https://www.example.com/one-link";
-    expect(groupedMaterials({
-      presentationLink: shared, technicalDemoLink: null, pitchVideoLink: shared, demoVideoLink: null,
-    })).toEqual([{ label: "Presentation / Pitch video", url: shared }]);
-  });
-
-  it("keeps distinct URLs distinct, in a fixed order, and drops the empty ones", () => {
-    expect(groupedMaterials({
-      presentationLink: "https://www.example.com/deck", technicalDemoLink: null,
-      pitchVideoLink: "https://www.example.com/pitch", demoVideoLink: null,
-    })).toEqual([
-      { label: "Presentation", url: "https://www.example.com/deck" },
-      { label: "Pitch video", url: "https://www.example.com/pitch" },
-    ]);
-    expect(groupedMaterials({ presentationLink: null, technicalDemoLink: null, pitchVideoLink: null, demoVideoLink: null })).toEqual([]);
   });
 });
 

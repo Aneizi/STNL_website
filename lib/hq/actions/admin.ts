@@ -31,7 +31,7 @@ export async function addMilestone(
     `,
     activityStmt(user.id, hackathon.id, "Updated campaign settings"),
   ]);
-  refreshHq();
+  refreshHq("milestones");
   return { ok: true };
 }
 
@@ -60,7 +60,7 @@ export async function updateMilestone(
     `,
     activityStmt(user.id, hackathonId, "Updated campaign settings"),
   ]);
-  refreshHq();
+  refreshHq("milestones");
   return { ok: true };
 }
 
@@ -75,6 +75,6 @@ export async function deleteMilestone(milestoneId: string): Promise<ActionResult
     sql`DELETE FROM hq_milestones WHERE id = ${milestoneId}`,
     activityStmt(user.id, hackathonId, "Updated campaign settings"),
   ]);
-  refreshHq();
+  refreshHq("milestones");
   return { ok: true };
 }

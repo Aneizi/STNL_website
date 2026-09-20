@@ -141,7 +141,7 @@ export function dayMonthLabel(isoInstant: string, timezone: string): string {
 }
 
 /** What an entry card's meta line is built from. Structural, so this module needs nothing from the server-only service. */
-export type EntryMetaInput = {
+type EntryMetaInput = {
   periodSequence: number;
   authorName: string;
   authorIsYou: boolean;

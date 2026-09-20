@@ -66,38 +66,17 @@ import {
 } from "./telegram-bot-view";
 
 /**
- * The deterministic STNL Telegram bot (phase 7).
- *
- * It is a menu, not a chat agent. No model reads a message, nothing is
- * summarised, and free text is interpreted in exactly one place: the step
- * where the person was asked to type their update. Everywhere else an input
- * that is not a known command or a known button is answered with the menu.
- *
- * **It owns no rule.** Every write goes through `createUpdate` / `editUpdate`
- * in `lib/hq/reporting.ts`, the same functions the website's Server Actions
- * call, with `source: "telegram"` as the only difference. What completes a
- * week, who may mark a note sensitive, whether an edit is still current and
- * what a late entry does are all decided there, over facts read inside that
- * service's own transaction. There is no second write path and no second
- * permission check.
- *
- * **Nothing is trusted across messages.** A button press carries an opaque id
- * and nothing else; the identity, the messaging permission, the Captain
- * capability, the assignment, the period and the entry version are all read
- * again at the moment of the press. That is what makes a keyboard left in the
- * chat from before a reassignment, a revocation or an unlinking fail safely:
- * it fails on the facts, not on the token.
- *
- * **What comes back is data, never an instruction.** A project name, a team
- * contact and an update body all originate outside HQ or from another person,
- * and every one of them reaches a message through `escapeHtml`.
+ * Deterministic commands and menus; only the requested draft-text step accepts free text.
+ * All reporting rules and writes stay in the shared reporting service. Re-read identity,
+ * consent, capability, assignment, period and version on every press; stored callbacks
+ * grant no permission. Escape all interpolated names, contacts and update bodies.
  */
 
 /** Telegram's inbound shapes, narrowed to the fields this bot reads. Everything else in a payload is ignored. */
-export type TelegramChat = { id: number | string; type?: string };
-export type TelegramUser = { id: number | string; is_bot?: boolean };
-export type TelegramMessage = { message_id?: number; chat?: TelegramChat; from?: TelegramUser; text?: string };
-export type TelegramCallbackQuery = { id: string; from?: TelegramUser; data?: string; message?: TelegramMessage };
+type TelegramChat = { id: number | string; type?: string };
+type TelegramUser = { id: number | string; is_bot?: boolean };
+type TelegramMessage = { message_id?: number; chat?: TelegramChat; from?: TelegramUser; text?: string };
+type TelegramCallbackQuery = { id: string; from?: TelegramUser; data?: string; message?: TelegramMessage };
 export type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
@@ -107,18 +86,10 @@ export type TelegramUpdate = {
 };
 
 /**
- * One message the caller sends straight away.
- *
- * None of these carries news that must survive a failed send, so they are not
- * queued: a menu, a list or a preview that did not arrive is answered by
- * pressing the button again. What the webhook does owe them is honesty about
- * failure, and it gives them that by NOT recording the update as done when a
- * send fails retryably, so Telegram redelivers it and the reply is rebuilt.
- *
- * A callback edits its existing message; a text-entry prompt starts a new
- * message. Long notes are paged, so each reply is still one screen.
+ * Menus/previews are sent directly and can be rebuilt after failure. They may
+ * contain draft text, so they never enter the durable outgoing queue.
  */
-export type BotReply = { chatId: string; text: string; keyboard: Keyboard; newMessage?: boolean };
+type BotReply = { chatId: string; text: string; keyboard: Keyboard; newMessage?: boolean };
 
 /** Page through content in one message, showing save controls after the full preview and audience. */
 async function pagedReplies(
@@ -146,14 +117,11 @@ export type BotOutcome = {
   answer: { callbackQueryId: string; text?: string } | null;
   /** True when something durable was queued, so the caller drains the queue after committing. */
   queued: boolean;
-  /**
-   * A short code for logs and tests. Never a body, never a name, never a
-   * token: the plan's "Redact tokens and update text from routine logs".
-   */
+  /** A log-safe code, never an update body, name or token. */
   outcome: string;
 };
 
-export type BotContext = {
+type BotContext = {
   db?: BuilderDatabase;
   now?: number;
   /** A retry of the same webhook delivery may need to rebuild lost controls. */
@@ -194,15 +162,8 @@ const ACCOUNT_PATH = "/hq/account";
  * ---------------------------------------------------------------------- */
 
 /**
- * Mints the opaque reference behind one button. Every keyboard below is built
- * from these and nothing else.
- *
- * A button that touches a draft must say WHICH draft, and which state of it:
- * `draftId` and `draftRevision` are checked against the live draft before the
- * press does anything, so a keyboard left in the chat from a preview that has
- * since been replaced, rewritten, re-shared or saved is inert rather than
- * dangerous. `draftButton` is the only way to build one, so a caller cannot
- * forget.
+ * Build opaque callbacks. Draft controls must use draftButton so both generation
+ * and revision are bound; a replaced or changed preview cannot act on current text.
  */
 async function button(session: Session, text: string, action: Omit<Parameters<typeof createBotAction>[1], "userId" | "chatId">): Promise<Button> {
   if (isDraftAction(action.kind) && !action.draftId) {
@@ -247,12 +208,7 @@ const toSummary = (card: CaptainReportingCard): ProjectSummary => ({
   missedPeriods: card.status.missedPeriods,
 });
 
-/**
- * The Captain's assignments, read through the same board the website's
- * Captain page uses. One read, not one per project, and no list of its own:
- * the ordering is `byOutstandingFirst`, so the bot and the screen put the
- * same team at the top.
- */
+/** Read the shared Captain board in one batch and use the same outstanding-first order. */
 async function loadBoard(session: Session): Promise<{ hackathonId: number; cards: CaptainReportingCard[] } | null> {
   // The edition the press named, when it named one. `captainReportingBoard`
   // reads only this account's own current assignments in it, so an edition
@@ -298,14 +254,8 @@ async function projectListReply(session: Session, index: number, intent: "open" 
 }
 
 /**
- * One project: the week it is in, where it stands, and the Captain's own
- * notes on it, each of which can be rewritten.
- *
- * The notes come from `readAuthorizedUpdates`, which applies the audience in
- * SQL, so a teammate's update and another author's sensitive note are absent
- * from the rows rather than filtered here. Only entries this actor may edit
- * right now get a button: after a reassignment the same list is empty, which
- * is the author-only rule showing up as "nothing to press".
+ * Read current authorized notes; SQL enforces audience. Offer rewrite only where
+ * the reporting service currently permits editing, never from callback history.
  */
 async function projectReply(session: Session, card: CaptainReportingCard): Promise<BotReply> {
   const summary = toSummary(card);
@@ -327,13 +277,8 @@ async function projectReply(session: Session, card: CaptainReportingCard): Promi
 }
 
 /**
- * The preview, with the audience named before the save and the sensitive
- * toggle only where it is actually allowed.
- *
- * Every button here is bound to this exact draft generation, so the whole
- * keyboard dies the moment the draft changes. That is what makes the
- * sequence "prepare a preview, prepare another, press Save on the first"
- * a refusal rather than a save of the second team's text.
+ * Show audience before save and sensitive controls only when allowed. Every
+ * control binds this exact draft generation/revision and expires when it changes.
  */
 async function previewReplies(session: Session, draft: BotDraft, summary: ProjectSummary, mayUseSensitive: boolean, index = 0): Promise<BotReply[]> {
   const save = await draftButton(session, draft, LABELS.save, { kind: "draft.save", projectId: draft.projectId });
@@ -360,21 +305,15 @@ async function previewReplies(session: Session, draft: BotDraft, summary: Projec
  * ---------------------------------------------------------------------- */
 
 /**
- * Handles one Telegram update.
- *
- * The order of the gates is the plan's own order, and each one is read from
- * the database on this call: connected, then permitted to be messaged, then
- * holding Captain access. A refusal at any of them says what to do about it
- * and exposes no project data at all.
+ * Gate each update on live identity, messaging consent, then Captain access.
+ * A refusal exposes no project data.
  */
 export async function handleTelegramUpdate(update: TelegramUpdate, context: BotContext = {}): Promise<BotOutcome> {
   const db = context.db ?? builderDatabase();
   const now = context.now ?? Date.now();
   const hqOrigin = context.hqOrigin !== undefined ? context.hqOrigin : memberAuthOrigin();
 
-  // A message somebody edited in their client is not an HQ edit. The plan is
-  // explicit: editing happens through the explicit edit flow, with history
-  // and conflict handling. So this is acknowledged and ignored.
+  // Telegram message edits do not bypass HQ's explicit revision/conflict flow.
   if (update.edited_message || update.channel_post) return { ...NOTHING, outcome: "ignored_edit" };
 
   const message = update.message;
@@ -522,12 +461,8 @@ async function handleMessage(session: Session, message: TelegramMessage): Promis
  * ---------------------------------------------------------------------- */
 
 /**
- * One button press.
- *
- * The reference is RESOLVED here and consumed later, inside the transaction
- * that does the writing. Consuming first is what turned a single transient
- * failure into an action the person could never complete: the button was
- * spent, the write never happened, and Telegram's retry found nothing to do.
+ * Resolve the callback now; consume it only inside the saving transaction so
+ * a transient failure does not spend the button without completing its write.
  */
 async function handleCallback(session: Session, callback: TelegramCallbackQuery): Promise<BotOutcome> {
   const resolved = await readBotAction(
@@ -550,13 +485,8 @@ async function handleCallback(session: Session, callback: TelegramCallbackQuery)
 }
 
 /**
- * The draft a button was built from, if it is still the draft that exists.
- *
- * Both halves matter. `draftId` pins the composing session, so a Save from a
- * preview of another team cannot act on the one open now. `draftRevision`
- * pins the state, so two previews of the SAME draft cannot both act: the
- * second render bumped the revision, which makes the first render's whole
- * keyboard, Save and audience toggle alike, inert.
+ * Require both draft generation and revision: old previews cannot target another
+ * team or change/save a newer revision of the same draft.
  */
 async function boundDraft(session: Session, action: BotAction): Promise<BotDraft | null> {
   if (!action.draftId || action.draftRevision == null) return null;
@@ -639,15 +569,8 @@ async function dispatch(session: Session, action: BotAction): Promise<Dispatched
 }
 
 /**
- * The project behind a press, as it stands NOW, plus whether this actor may
- * mark a note on it sensitive.
- *
- * This is the re-check the plan asks for at every read and every mutation,
- * not only at the first menu. It is deliberately built from the Captain board
- * rather than from a project lookup, so a project that left this Captain's
- * assignments is simply absent, and `authorizeProjectAction`'s own
- * `via === "captain"` is what answers the sensitive question, never a
- * capability read.
+ * Use the live Captain board, so reassigned projects are absent. Sensitive access
+ * comes from authorizeProjectAction via captain, never the global capability alone.
  */
 async function projectFor(
   session: Session,
@@ -748,11 +671,8 @@ async function resumeDraft(session: Session, draft: BotDraft, index = 0): Promis
 }
 
 /**
- * The sensitive toggle. The target audience is carried on the action row
- * rather than derived from the current state, so pressing the same button
- * twice sets the same value instead of flipping back, and the press is
- * conditional on the draft generation it was rendered from, so a toggle left
- * over from a different note cannot re-open this one.
+ * Store the requested audience on the action, making repeated presses idempotent.
+ * Bind the draft revision so an old toggle cannot expose a different note.
  */
 async function setDraftVisibility(session: Session, action: BotAction, draft: BotDraft): Promise<Dispatched> {
   const project = await projectFor(session, draft.projectId, draft.hackathonId);
@@ -778,13 +698,8 @@ async function setDraftVisibility(session: Session, action: BotAction, draft: Bo
 }
 
 /**
- * Rewriting one of the Captain's own notes.
- *
- * The entry is re-read through `readAuthorizedUpdates` at the moment of the
- * press, so a note whose project has been reassigned, or whose author has had
- * their capability revoked, is simply not in the result and the press fails
- * as stale. `canEdit` comes from the service's own `entryAudience`, never
- * from the button that was minted before any of that changed.
+ * Re-read through reporting authorization at the press. Revoked/reassigned or
+ * non-editable entries are stale; a previously minted button grants no edit access.
  */
 async function startEdit(session: Session, action: BotAction): Promise<Dispatched> {
   if (session.retry) {
@@ -821,15 +736,8 @@ async function findEntry(session: Session, projectId: string, hackathonId: numbe
 }
 
 /**
- * My notes: everything this account wrote in the current edition, read-only.
- *
- * `readOwnUpdates` is the author-only path the permission contract promises
- * and the one that survives a reassignment: it asks nothing about the
- * project, returns only rows this account authored, and marks every one of
- * them `canEdit: false`. So a reassigned Captain can still read their own
- * sensitive note here and cannot reach anything else of that team's, which is
- * exactly the plan's "without restoring access to a former team's other
- * records".
+ * Read this account's own notes in the scoped edition, including after reassignment.
+ * The author-only service returns read-only rows and restores no other team access.
  */
 async function ownNotes(session: Session, action: BotAction): Promise<Dispatched> {
   const hackathonId = session.hackathonId ?? await builderStore().currentHackathonId();
@@ -855,10 +763,7 @@ async function ownNotes(session: Session, action: BotAction): Promise<Dispatched
       `<b>${escapeHtml(snippet(entry.projectName, 60))}</b>${entry.visibility === "sensitive" ? escapeHtml(" (private)") : ""}`,
       `<blockquote>${escapeHtml(snippet(entry.body, 60))}</blockquote>`,
     );
-    // One button per note, because a snippet is a way to recognise a note and
-    // never a way to read it: without this, everything after the snippet was
-    // unreachable, and for a team the account no longer holds this is the
-    // only route to it at all.
+    // Keep the full author-only note reachable after reassignment, not just its snippet.
     rows.push([await button(session, `${LABELS.read}: ${snippet(entry.body, 26)}`, { kind: "note.open", entryId: entry.id, projectId: entry.projectId })]);
   }
   if (own.nextCursor) {
@@ -872,14 +777,8 @@ async function ownNotes(session: Session, action: BotAction): Promise<Dispatched
 }
 
 /**
- * One of the author's own notes, in full.
- *
- * Read through `readOwnUpdates` again rather than from the button, so the
- * author-only rule is applied now: only rows this account wrote, only while
- * its Captain capability is live, and `canEdit: false` on every one of them
- * whatever the project says. Rewriting is offered only when the project is
- * still this Captain's and the reporting service says the entry is still
- * theirs to change, which is the same decision the project screen makes.
+ * Re-read the full note through current author-only access and live Captain capability.
+ * Offer rewrite only when current project access and entry audience also allow it.
  */
 async function openOwnNote(session: Session, action: BotAction): Promise<Dispatched> {
   const hackathonId = session.hackathonId ?? await builderStore().currentHackathonId();
@@ -931,22 +830,9 @@ async function findOwnNote(
  * ---------------------------------------------------------------------- */
 
 /**
- * The save, which is the only thing in this file that writes to HQ, and which
- * writes through `createUpdate` / `editUpdate` and nothing else.
- *
- * Everything the plan asks to be re-checked on save is re-checked here, and
- * all of it against the database rather than against the draft: the identity
- * (the actor was rebuilt from the Telegram id at the top of this update), the
- * capability and the assignment (`projectFor`), the period (the service
- * resolves it and compares it to the draft's `expectedPeriodId`) and the
- * version (the service compares it under a row lock).
- *
- * The two refusals that carry data get real answers rather than an apology.
- * `period_changed` names the week that is open now and offers to move the
- * text into it; `conflict` shows the version that is saved now beside the
- * text that was typed and offers to save over it. Neither throws away what
- * somebody wrote, which is the case the plan names for HQ and Telegram
- * editing at once.
+ * Save only through createUpdate/editUpdate. Identity, project permission, expected
+ * period and edit version are rechecked; period_changed/conflict preserve the draft
+ * and require explicit review rather than silently moving or overwriting text.
  */
 /** Why a save did not happen, carried out of the transaction so the rollback can precede the reply. */
 class SaveAborted extends Error {
@@ -1058,9 +944,7 @@ async function saveEdit(session: Session, draft: BotDraft, options: { overrideVe
       body: draft.body ?? "",
       visibility: draft.visibility,
       expectedVersion: options.overrideVersion ?? draft.expectedVersion ?? 1,
-      // The preview names the audience in full before the Save button is
-      // pressed, which is the explicit confirmation the plan requires for
-      // moving a sensitive note back to shared.
+      // Saving the preview explicitly confirms its displayed audience, including sharing.
       confirmAudienceChange: true,
     },
     tx,
@@ -1073,13 +957,8 @@ async function saveEdit(session: Session, draft: BotDraft, options: { overrideVe
 }
 
 /**
- * What a refused save says, built after the transaction has rolled back.
- *
- * The rollback is why this can offer a button at all: the draft is back,
- * unchanged and at the same generation, so a follow-up press still binds to
- * it and the person's words are still on the screen above. Neither refusal is
- * collapsed into a generic error, which is the rule phase 3 set for imports
- * and the case the plan names for HQ and Telegram editing at once.
+ * Build refusal replies after rollback restores the draft and its exact generation.
+ * Keep period_changed/conflict distinct, with the saved facts and unsaved text intact.
  */
 async function abortReply(session: Session, draft: BotDraft, detail: SaveAborted["detail"], index = 0): Promise<Dispatched> {
   if (detail.kind === "stale") return staleReply(session, "stale_draft");

@@ -22,13 +22,26 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
-        // A team join link (phase 3) carries a bearer code in its address,
-        // the same shape as the Captain invitation route below: the code is
-        // one segment of the path, so it must not travel in a Referer header
-        // on a navigation away from the page, and the page must not be
-        // indexed. Unlike /hq/invite/<token>, this one is a real page rather
-        // than a redirect-only Route Handler, so it also inherits the /hq
-        // metadata robots signal; the header is belt and braces.
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          ...(process.env.VERCEL === "1"
+            ? [{ key: "Strict-Transport-Security", value: "max-age=31536000" }]
+            : []),
+        ],
+      },
+      {
+        source: "/hq/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          // These directives protect the console without blocking its inline
+          // styles, Next scripts, remote project images, or embedded decks.
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'; base-uri 'self'; object-src 'none'" },
+        ],
+      },
+      {
+        // Bearer URLs override the default policy and must never be indexed.
         source: "/hq/join/:path*",
         headers: [
           { key: "Referrer-Policy", value: "no-referrer" },
@@ -36,13 +49,7 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // The Captain invitation flow (task T4.3): the exchange step's
-        // address carries a bearer token and the continuation page's cookie
-        // is a bearer-adjacent id, so neither may leak into a Referer header
-        // on a navigation away from either route. X-Robots-Tag covers the
-        // token route itself: it is a Route Handler that only ever emits a
-        // redirect, so it carries no <meta>/metadata robots signal of its
-        // own the way the continuation page inherits from app/hq/layout.tsx.
+        // Also covers the redirect-only token route and its continuation.
         source: "/hq/invite/:path*",
         headers: [
           { key: "Referrer-Policy", value: "no-referrer" },

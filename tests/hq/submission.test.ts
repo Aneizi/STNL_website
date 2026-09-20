@@ -47,7 +47,7 @@ import {
 } from "@/lib/hq/reporting";
 import {
   dueSubmissionRefreshes,
-  listSubmissionReconciliations,
+  readSubmissionReconciliations,
   openSubmissionReconciliations,
   readSubmissionSnapshots,
   reconcileSubmissions,
@@ -544,7 +544,7 @@ describe("the reconciliation when the final period closes", () => {
     const fetcher = stubFetch({ alice: detailBody("alice"), bob: detailBody("bob") });
     expect(await reconcileSubmissions(unknownDb, { hackathonId: EDITION, atMs: AFTER_FINAL, fetcher }))
       .toMatchObject({ attempted: 2, resolved: 0, stillPending: 2 });
-    expect((await listSubmissionReconciliations(db, { hackathonId: EDITION })).every((row) => row.state === "pending" && row.lastError === "submission_unknown"))
+    expect((await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).every((row) => row.state === "pending" && row.lastError === "submission_unknown"))
       .toBe(true);
   });
 
@@ -555,7 +555,7 @@ describe("the reconciliation when the final period closes", () => {
     const fetcher = stubFetch({ alice: detailBody("alice", { submittedAt: "2026-10-11T18:00:00Z" }), bob: detailBody("bob") });
     expect(await reconcileSubmissions(db, { hackathonId: EDITION, atMs: AFTER_FINAL, fetcher }))
       .toMatchObject({ corrected: 0 });
-    expect((await listSubmissionReconciliations(db, { hackathonId: EDITION })).find((row) => row.projectId === PROJECT_A))
+    expect((await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).find((row) => row.projectId === PROJECT_A))
       .toMatchObject({ deadline: "2026-10-10T20:00:00.000Z", onTime: false });
   });
 
@@ -563,7 +563,7 @@ describe("the reconciliation when the final period closes", () => {
     await seedProject(BARE_PROJECT, "CRM only");
     await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, operatorId: OPERATOR_ID });
     await closeFinal();
-    const reconciliations = await listSubmissionReconciliations(db, { hackathonId: EDITION });
+    const reconciliations = await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] });
     expect(reconciliations.map((row) => row.projectId).sort()).toEqual([PROJECT_A, PROJECT_B].sort());
     expect(reconciliations.every((row) => row.state === "pending")).toBe(true);
   });
@@ -573,18 +573,18 @@ describe("the reconciliation when the final period closes", () => {
     await closePeriod(db, { periodId: period.id, actor: OPERATOR, atMs: AFTER_FINAL });
     // The closure happened with no reconciliation step: the catch-up run is
     // what has to notice.
-    expect(await listSubmissionReconciliations(db, { hackathonId: EDITION })).toEqual([]);
+    expect(await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).toEqual([]);
     await closeFinal();
-    expect(await listSubmissionReconciliations(db, { hackathonId: EDITION })).toHaveLength(2);
+    expect(await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).toHaveLength(2);
     await closeFinal();
-    expect(await listSubmissionReconciliations(db, { hackathonId: EDITION })).toHaveLength(2);
+    expect(await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).toHaveLength(2);
   });
 
   it("stays pending and claims nothing when Colosseum cannot be reached", async () => {
     await closeFinal();
     const summary = await reconcileSubmissions(db, { hackathonId: EDITION, atMs: AFTER_FINAL, fetcher: brokenFetch });
     expect(summary).toMatchObject({ resolved: 0, stillPending: 2, corrected: 0 });
-    const rowsBack = await listSubmissionReconciliations(db, { hackathonId: EDITION });
+    const rowsBack = await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] });
     for (const row of rowsBack) {
       expect(row.state).toBe("pending");
       // The plan: "do not claim an unverified submission failure".
@@ -623,7 +623,7 @@ describe("the reconciliation when the final period closes", () => {
     expect(audits[0].actor_kind).toBe("system");
 
     // The one that did not submit is resolved and corrected nothing.
-    const bob = (await listSubmissionReconciliations(db, { hackathonId: EDITION })).find((row) => row.projectId === PROJECT_B)!;
+    const bob = (await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).find((row) => row.projectId === PROJECT_B)!;
     expect(bob).toMatchObject({ state: "resolved", submissionStatus: "not_submitted", onTime: null, outcomeCorrected: false });
   });
 
@@ -641,7 +641,7 @@ describe("the reconciliation when the final period closes", () => {
     const summary = await reconcileSubmissions(db, { hackathonId: EDITION, atMs: AFTER_FINAL, fetcher });
     expect(summary).toMatchObject({ resolved: 2, corrected: 0 });
 
-    const alice = (await listSubmissionReconciliations(db, { hackathonId: EDITION })).find((row) => row.projectId === PROJECT_A)!;
+    const alice = (await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).find((row) => row.projectId === PROJECT_A)!;
     expect(alice).toMatchObject({ state: "resolved", submissionStatus: "submitted", onTime: false, outcomeCorrected: false });
     const outcome = (await listPeriodOutcomes(db, period.id)).find((row) => row.projectId === PROJECT_A)!;
     expect(outcome).toMatchObject({ completed: false, correctedCompleted: null });
@@ -671,7 +671,7 @@ describe("the reconciliation when the final period closes", () => {
     });
     const summary = await reconcileSubmissions(db, { hackathonId: EDITION, atMs: AFTER_FINAL + 3_600_000, fetcher });
     expect(summary).toMatchObject({ resolved: 2, stillPending: 0, corrected: 1 });
-    expect((await listSubmissionReconciliations(db, { hackathonId: EDITION })).every((row) => row.state === "resolved")).toBe(true);
+    expect((await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).every((row) => row.state === "resolved")).toBe(true);
     // A second reconciliation pass has nothing left to do and corrects nothing twice.
     expect(await reconcileSubmissions(db, { hackathonId: EDITION, atMs: AFTER_FINAL + 7_200_000, fetcher }))
       .toMatchObject({ attempted: 0, resolved: 0, corrected: 0 });
@@ -682,13 +682,13 @@ describe("the reconciliation when the final period closes", () => {
     await rows(`UPDATE hq_reporting_eligibility SET paused_at='2026-10-01T00:00:00Z' WHERE project_id=$1`, [PROJECT_B]);
     await rows(`INSERT INTO hq_reporting_pause_intervals(project_id,hackathon_id,paused_at) VALUES($1,$2,'2026-10-01T00:00:00Z')`, [PROJECT_B, EDITION]);
     await closeFinal();
-    expect((await listSubmissionReconciliations(db, { hackathonId: EDITION })).map((row) => row.projectId)).toEqual([PROJECT_A]);
+    expect((await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).map((row) => row.projectId)).toEqual([PROJECT_A]);
   });
 
   it("opens nothing for a weekly period, only for the submission one", async () => {
     const weekOne = (await listReportingPeriods(db, EDITION)).find((period) => period.sequence === 1)!;
     expect((await closePeriod(db, { periodId: weekOne.id, actor: OPERATOR, atMs: AFTER_FINAL })).ok).toBe(true);
     expect(await openSubmissionReconciliations(db, { hackathonId: EDITION })).toBe(0);
-    expect(await listSubmissionReconciliations(db, { hackathonId: EDITION })).toEqual([]);
+    expect(await readSubmissionReconciliations(db, { projectIds: [PROJECT_A, PROJECT_B, BARE_PROJECT] })).toEqual([]);
   });
 });

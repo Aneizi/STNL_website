@@ -20,7 +20,7 @@ export type AttributableProject = {
   gates_done: number;
 };
 
-export type Outputs = { q: number; a: number; s: number };
+type Outputs = { q: number; a: number; s: number };
 
 /**
  * Active events claim a name first; archived ones only fill names no active
@@ -28,7 +28,7 @@ export type Outputs = { q: number; a: number; s: number };
  * duplicate, while an archived event that is still the only match keeps the
  * projects attributed to it rather than silently dropping them.
  */
-export function firstEventByName(events: AttributableEvent[]): Map<string, string> {
+function firstEventByName(events: AttributableEvent[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const archivedPass of [false, true]) {
     for (const e of events) {

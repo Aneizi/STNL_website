@@ -1,50 +1,25 @@
 import "server-only";
 
 /**
- * The Telegram Bot API transport, and nothing else.
- *
- * Kept apart from `lib/hq/telegram-bot.ts` (which decides what to say) and
- * `lib/hq/telegram-bot-store.ts` (which remembers it) so that the flow can be
- * tested against a fake sender without a token, a network call or a bot: the
- * plan's "Missing Telegram credentials must not block implementation", and
- * the same shape `lib/hq/member-auth-delivery.ts` uses for Resend.
- *
- * Two rules live here because this is the only module that ever holds the
- * token:
- *
- * 1. **The token is in the URL of every Telegram request** (`/bot<token>/...`,
- *    the API's own scheme). Nothing here logs a URL, and `redactBotUrl` is
- *    exported so that anything which must mention one redacts it first. The
- *    plan: "Do not ship a bot token in a URL that application logging
- *    records."
- * 2. **Telegram's own error text is data, never a message.** It is stored on
- *    the delivery row for an operator and returned to the caller as a code;
- *    it is never shown in a chat and never concatenated into one.
+ * Telegram transport only; message composition and durable state live elsewhere.
+ * Request URLs contain the bot token and must never be logged. Provider errors
+ * are delivery diagnostics for operators, never text to send into a chat.
  */
 
 /** How long a single Telegram call may take before it is abandoned as uncertain. */
 export const TELEGRAM_REQUEST_TIMEOUT_MS = 8_000;
 
 /**
- * Telegram's own cap on a sendMessage text.
- *
- * Splitting belongs to the view, which is the only layer that knows where a
- * message may be cut: this one sees a serialized HTML string and cannot tell
- * an entity from a tag from a sentence. Slicing here used to cut `&amp;` in
- * half, drop a closing `</blockquote>` and take the audience line with it, so
- * the transport now REFUSES an over-length message rather than corrupting it.
- * `packMessages` in ./telegram-bot-view is what makes that unreachable, and
- * a refusal is a permanent, visible failure rather than a silent one.
+ * Refuse oversized HTML instead of slicing tags or entities. The view's
+ * packMessages owns splitting; a transport refusal is a permanent failure.
  */
-export const TELEGRAM_MESSAGE_LIMIT = 4096;
+const TELEGRAM_MESSAGE_LIMIT = 4096;
 
 export type TelegramBotConfig = {
   token: string;
   /**
-   * The value Telegram echoes in `X-Telegram-Bot-Api-Secret-Token` on every
-   * webhook delivery, set once with setWebhook. Required, not optional: an
-   * unauthenticated webhook is an open write endpoint, so a deployment
-   * without this secret serves no webhook at all.
+   * Required X-Telegram-Bot-Api-Secret-Token value. Missing or invalid secrets
+   * disable the webhook rather than leaving an unauthenticated write endpoint.
    */
   webhookSecret: string;
   apiBase: string;
@@ -53,17 +28,8 @@ export type TelegramBotConfig = {
 const DEFAULT_API_BASE = "https://api.telegram.org";
 
 /**
- * The bot's credentials, or null when either is missing or unusable.
- *
- * Both are required together. A token with no webhook secret could still send
- * messages, but the route that receives them would have nothing to
- * authenticate with, so the honest answer for a half-configured deployment is
- * "not configured" rather than a half-open one.
- *
- * The secret is held to Telegram's own allowed alphabet (A-Z, a-z, 0-9, _ and
- * -, 1 to 256 characters) and to a length that is worth having, so a
- * placeholder left in an environment file fails here rather than in a
- * comparison against a header.
+ * Both token and webhook secret are required. Validate the secret's Telegram
+ * alphabet and a 16–256 character length before considering the bot configured.
  */
 export function telegramBotConfig(env: Record<string, string | undefined> = process.env): TelegramBotConfig | null {
   const token = env.TELEGRAM_BOT_TOKEN?.trim();
@@ -75,15 +41,6 @@ export function telegramBotConfig(env: Record<string, string | undefined> = proc
 }
 
 export const isTelegramBotConfigured = (env?: Record<string, string | undefined>): boolean => telegramBotConfig(env) !== null;
-
-/**
- * A Telegram API URL with the bot token replaced. Every diagnostic that
- * mentions a URL passes through this first; there is no code path that logs
- * an unredacted one.
- */
-export function redactBotUrl(url: string): string {
-  return String(url ?? "").replace(/\/bot\d+:[A-Za-z0-9_-]+/g, "/bot<redacted>");
-}
 
 /** Whether a failure is worth trying again. A blocked bot or a bad request is not. */
 export type TelegramSendOutcome =
@@ -135,10 +92,8 @@ async function call(config: TelegramBotConfig, method: string, body: unknown): P
 }
 
 /**
- * HTTP statuses that are worth another attempt. 403 is the blocked bot and
- * 400 a malformed request or a chat that no longer exists: retrying either
- * would spam Telegram for a message that can never be delivered, which is the
- * plan's "Avoid aggressive retries".
+ * Definite permanent refusals: bad requests, credentials, blocked bot or missing
+ * chat. Retrying these cannot deliver the message.
  */
 const PERMANENT_STATUS = new Set([400, 401, 403, 404]);
 

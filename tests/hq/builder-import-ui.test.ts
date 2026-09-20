@@ -14,7 +14,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {}, refresh() 
 vi.mock("@/lib/hq/member-auth", () => ({ requireMember: vi.fn(), currentMember: vi.fn() }));
 vi.mock("@/lib/hq/actions/builders", () => ({
   acceptBuilderInvite: vi.fn(), createBuilderInvite: vi.fn(),
-  importBuilderTeam: vi.fn(), previewBuilderImport: vi.fn(), previewBuilderInvite: vi.fn(), refreshBuilderTeam: vi.fn(),
+  importBuilderTeam: vi.fn(), previewBuilderImport: vi.fn(), previewBuilderInvite: vi.fn(),
   requestBuilderReview: vi.fn(), saveBuilderTeam: vi.fn(),
 }));
 // The icon package ships its source; these checks render markup, not glyphs,

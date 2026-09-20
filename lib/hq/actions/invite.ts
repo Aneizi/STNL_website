@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { refreshHq } from "../revalidation";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { requireMemberActor } from "../actor";
@@ -54,7 +54,7 @@ export async function acceptCaptainInvitationFromContinuation(
   // picks the new grant up immediately, the same revalidation
   // lib/hq/actions/builders.ts does for its own member mutations.
   if (["granted", "already-captain", "already-redeemed"].includes(result.outcome)) {
-    revalidatePath("/hq", "layout");
+    refreshHq("captains");
     // Only a fresh acceptance saves the submitted preference. Retried or old
     // forms must not overwrite a decision the captain later made in Account.
     if (result.outcome === "granted" && formData.get("botMessagingPreference") === "included") {

@@ -39,7 +39,7 @@ export const MAX_WEBHOOK_BODY_BYTES = 64 * 1024;
  * reads the stream and abandons it the moment the byte count is exceeded, so
  * an oversized body is never held in memory whole.
  */
-export async function readBoundedBody(request: Request, limit = MAX_WEBHOOK_BODY_BYTES): Promise<{ ok: true; text: string } | { ok: false; reason: "too_large" | "unreadable" }> {
+async function readBoundedBody(request: Request, limit = MAX_WEBHOOK_BODY_BYTES): Promise<{ ok: true; text: string } | { ok: false; reason: "too_large" | "unreadable" }> {
   const declared = Number(request.headers.get("content-length") ?? "");
   if (Number.isFinite(declared) && declared > limit) return { ok: false, reason: "too_large" };
   const body = request.body;
@@ -104,7 +104,7 @@ const message = z
   })
   .passthrough();
 
-export const telegramUpdateSchema = z
+const telegramUpdateSchema = z
   .object({
     update_id: z.number().int(),
     message: message.optional(),
@@ -117,12 +117,12 @@ export const telegramUpdateSchema = z
   })
   .passthrough();
 
-export type WebhookResult =
+type WebhookResult =
   | { status: 200; body: { ok: true; outcome: string } }
   | { status: 401 | 413 | 400 | 503; body: { ok: false; error: string } }
   | { status: 500 | 502; body: { ok: false; error: string } };
 
-export type WebhookDependencies = {
+type WebhookDependencies = {
   db?: BuilderDatabase;
   config?: TelegramBotConfig | null;
   sender?: TelegramSender;

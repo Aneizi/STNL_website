@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { projectNeedsAttention, type DashboardSubmissionAttention } from "@/lib/hq/dashboard-attention";
+import { projectNeedsAttention } from "@/lib/hq/dashboard-attention";
 import type { MemberWeekSummary } from "@/lib/hq/reporting-surface";
 
 const current: NonNullable<MemberWeekSummary["current"]> = {
@@ -12,7 +12,7 @@ const summary: MemberWeekSummary = {
 };
 const during = Date.parse("2026-09-16T10:00:00Z");
 const complete = { ...summary, current: { ...current, completed: true } };
-const submission: DashboardSubmissionAttention = {
+const submission: NonNullable<MemberWeekSummary["submission"]> = {
   periodId: "week-1", open: true,
   submissionStatus: "not_submitted", deadline: "2026-09-18T12:00:00Z",
 };

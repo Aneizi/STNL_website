@@ -38,7 +38,7 @@ import {
 export { ADD_UPDATE_MESSAGES, AUDIENCE_NOTES, EDIT_UPDATE_MESSAGES } from "./reporting-view";
 
 /** How many projects or notes one menu page holds before it needs Previous and Next. */
-export const PAGE_SIZE = 6;
+const PAGE_SIZE = 6;
 
 /** How much of a note is shown in a list row. A full body needs its own message, not a button label. */
 const SNIPPET = 60;
@@ -80,13 +80,13 @@ export function snippet(body: string, length = SNIPPET): string {
  */
 export const TELEGRAM_TEXT_LIMIT = 4096;
 /** Leave room for the page indicator added to an in-place screen. */
-export const TELEGRAM_SCREEN_LIMIT = 4000;
+const TELEGRAM_SCREEN_LIMIT = 4000;
 
 const OPEN_QUOTE = "<blockquote>";
 const CLOSE_QUOTE = "</blockquote>";
 
 /** A piece of a message: either markup this module wrote, or a body somebody typed and which may be split. */
-export type MessagePart = { fixed: string } | { quote: string };
+type MessagePart = { fixed: string } | { quote: string };
 
 /**
  * Splits a plain string into pieces whose ESCAPED length fits `budget`.
@@ -189,8 +189,8 @@ export function packMessages(parts: readonly MessagePart[], limit = TELEGRAM_TEX
   return messages.length ? messages : [""];
 }
 
-export type CallbackButton = { text: string; callbackId: string };
-export type LinkButton = { text: string; url: string };
+type CallbackButton = { text: string; callbackId: string };
+type LinkButton = { text: string; url: string };
 export type Button = CallbackButton | LinkButton;
 export type Keyboard = Button[][];
 
@@ -206,8 +206,6 @@ export function inlineKeyboard(rows: Keyboard): { inline_keyboard: { text: strin
       .filter((row) => row.length > 0),
   };
 }
-
-export type BotMessage = { text: string; keyboard: Keyboard };
 
 /** The words for each menu action, in one place so a button and the message it leads to agree. */
 export const LABELS = {
@@ -330,7 +328,7 @@ export const audienceLine = (visibility: "shared" | "sensitive", projectName: st
     : `Shared with ${name} members, their captain and Superteam NL admins.`;
 };
 
-export const noteReadOnly = (projectName: string): string =>
+const noteReadOnly = (projectName: string): string =>
   `You can read this note, but you no longer have access to edit updates for ${snippet(projectName, 160)}.`;
 
 /** Project-specific wording for service refusals, without changing the website's copy. */
@@ -425,7 +423,7 @@ export function ownNoteMessages(note: { projectName: string; body: string; visib
   ], note.projectName);
 }
 
-export type ReminderView = {
+type ReminderView = {
   /** The edition's own name, so a Captain working two hackathons can tell which week this is. */
   editionName: string;
   period: { startDate: string; endDate: string };

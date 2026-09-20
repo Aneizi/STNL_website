@@ -20,9 +20,9 @@ export { isPlaceholderEmail, PLACEHOLDER_DOMAIN };
  * change these constants and the spike fixture together.
  */
 export const TELEGRAM_ISSUER = "https://oauth.telegram.org";
-export const TELEGRAM_AUTH_URL = `${TELEGRAM_ISSUER}/auth`;
-export const TELEGRAM_TOKEN_URL = `${TELEGRAM_ISSUER}/token`;
-export const TELEGRAM_JWKS_URL = `${TELEGRAM_ISSUER}/.well-known/jwks.json`;
+const TELEGRAM_AUTH_URL = `${TELEGRAM_ISSUER}/auth`;
+const TELEGRAM_TOKEN_URL = `${TELEGRAM_ISSUER}/token`;
+const TELEGRAM_JWKS_URL = `${TELEGRAM_ISSUER}/.well-known/jwks.json`;
 export const TELEGRAM_PROVIDER_ID = "telegram";
 
 /** `openid` is mandatory; `profile` carries id, name, username and photo. Never `phone`. */
@@ -34,7 +34,7 @@ const ID_TOKEN_MAX_AGE = "10 minutes";
 const PLACEHOLDER_NAMESPACE = "telegram";
 
 /** Parsed Telegram claims for the `openid profile` scopes, with the user id normalized. */
-export type TelegramIdTokenClaims = {
+type TelegramIdTokenClaims = {
   iss: string;
   aud: string | string[];
   sub: string;
@@ -75,7 +75,7 @@ function describeError(error: unknown): string {
  * stored with emailVerified false and is not what makes an HQ account
  * verified; the hq_auth_telegram_identity row is.
  */
-export function telegramPlaceholderEmail(sub: string): string {
+function telegramPlaceholderEmail(sub: string): string {
   return createPlaceholderEmail({ identifier: sub, namespace: PLACEHOLDER_NAMESPACE });
 }
 

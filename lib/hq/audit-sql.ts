@@ -1,19 +1,10 @@
 /**
- * Pure SQL construction for the append-only audit trail (hq_audit_events).
- * No database handle, no network, no `server-only`, so tests can drive these
- * exact statements against a throwaway Postgres. The orchestration that runs
- * them lives in ./audit.
- *
- * There is deliberately no UPDATE and no DELETE here, and ./audit exposes
- * none either: an audit row is written once and then only read.
+ * Pure INSERT construction and mapping for the append-only audit trail.
+ * Execution lives in audit.ts; neither module exposes updates or deletion.
  */
 
 /**
- * The one vocabulary of audit event kinds. Later phases extend this union
- * instead of inventing their own. `captain.assigned`, `captain.unassigned`,
- * `captain.invitation_created`, `captain.invitation_revoked` and
- * `captain.invitation_redeemed` are reserved for phase 4; nothing writes any
- * of them yet (task T4.1 creates the records, T4.2-T4.4 write the events).
+ * Shared vocabulary for persisted audit events.
  */
 export const AUDIT_EVENT_KINDS = [
   "capability.granted",
@@ -29,27 +20,13 @@ export const AUDIT_EVENT_KINDS = [
   "captain.invitation_created",
   "captain.invitation_revoked",
   "captain.invitation_redeemed",
-  // Phase 3. `project.imported` is the first member-actor write of a project
-  // event; the two deletions are operator-only and are the reason an admin
-  // can remove a record without the removal itself disappearing with it.
   "project.imported",
-  // A project an operator created by hand, and the Colosseum snapshot later
-  // attached to that same project. Both added 15 September 2026 for the
-  // plan's Request help fallback: a project that cannot be fetched yet still
-  // needs an owner, and attaching the source afterwards must be visible as
-  // what it is — the same HQ project gaining its external id, never a new
-  // project replacing it.
+  // A source attachment enriches the existing HQ project; it does not replace it.
   "project.created",
   "project.source_attached",
   "project.deleted",
   "person.deleted",
-  // Phase 5. Reporting content itself is never audited — a note body belongs
-  // in protected entry storage, not in a log operators read in bulk — so
-  // these record only the decisions about it: a project entering, leaving or
-  // being paused in reporting, an admin voiding an entry, an admin correcting
-  // a closed period's recorded outcome, and a period being closed (the one
-  // kind written by a `system` actor, since closure is a job rather than
-  // something a person does).
+  // Audit reporting decisions, never entry bodies.
   "reporting.eligibility_changed",
   "reporting.entry_voided",
   "reporting.outcome_corrected",
@@ -64,10 +41,8 @@ export type AuditActorKind = "operator" | "member" | "system";
 export type AuditActor = { kind: AuditActorKind; id: string | null };
 
 /**
- * Small, structural facts about the change: ids, a reason, counts. NEVER a
- * note body, an update body or any other free text a member wrote: those
- * belong in protected entry and revision storage, not in an audit log that
- * operators read in bulk.
+ * Structural ids, reasons and counts only. Member-authored note/update bodies
+ * belong in protected entry and revision storage, never bulk audit logs.
  */
 export type AuditMetadata = Record<string, unknown>;
 
@@ -92,23 +67,9 @@ export type AuditEvent = {
   createdAt: string;
 };
 
-export type AuditEventFilter = {
-  kind?: AuditEventKind;
-  subjectUserId?: string;
-  hackathonId?: number;
-  projectId?: string;
-};
+type Statement = { text: string; values: unknown[] };
 
-export type AuditEventPage = {
-  /** At most this many rows, newest first. */
-  limit: number;
-  /** The `nextCursor` of the previous page: rows older than this id. */
-  cursor?: string | null;
-};
-
-export type Statement = { text: string; values: unknown[] };
-
-export const AUDIT_SELECT =
+const AUDIT_SELECT =
   "id::text AS id, kind, actor_kind, actor_id, subject_user_id, hackathon_id, project_id::text AS project_id, metadata, created_at";
 
 export function insertAuditEventStatement(input: AuditEventInput): Statement {
@@ -124,28 +85,6 @@ export function insertAuditEventStatement(input: AuditEventInput): Statement {
       input.projectId ?? null,
       JSON.stringify(input.metadata ?? {}),
     ],
-  };
-}
-
-/** Newest first, keyset-paged on the id so a page never shifts under a concurrent insert. */
-export function listAuditEventsStatement(filter: AuditEventFilter, page: AuditEventPage): Statement {
-  const where: string[] = [];
-  const values: unknown[] = [];
-  const bind = (value: unknown) => {
-    values.push(value);
-    return `$${values.length}`;
-  };
-  if (filter.kind) where.push(`kind = ${bind(filter.kind)}`);
-  if (filter.subjectUserId) where.push(`subject_user_id = ${bind(filter.subjectUserId)}`);
-  if (filter.hackathonId != null) where.push(`hackathon_id = ${bind(filter.hackathonId)}`);
-  if (filter.projectId) where.push(`project_id = ${bind(filter.projectId)}::uuid`);
-  if (page.cursor) where.push(`id < ${bind(page.cursor)}::bigint`);
-  const limit = Math.max(1, Math.min(500, Math.floor(page.limit)));
-  return {
-    text: `SELECT ${AUDIT_SELECT} FROM hq_audit_events
-           ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-           ORDER BY id DESC LIMIT ${bind(limit)}`,
-    values,
   };
 }
 

@@ -1,11 +1,11 @@
+-- Frozen input to 0001-legacy-bootstrap. Add new changes in migrations/NNNN-name.sql.
 -- Campaign HQ schema. Idempotent: every statement is IF NOT EXISTS.
 -- Classifiers live here as tables (not in code) so the public repo carries
 -- no campaign-specific taxonomy; the values are seeded from the gitignored
 -- scripts/hq/seed-data.json (see scripts/hq/seed.ts).
 --
--- IF NOT EXISTS means an edit to a table below does NOT reach a database
--- that already has that table: changes to existing columns and constraints
--- belong in scripts/hq/upgrades.ts, which runs right after this file.
+-- The frozen upgrades.ts runs after this file when adopting the migration
+-- ledger. Subsequent runs validate checksums and skip these historical inputs.
 --
 -- HQ is hackathon-agnostic: every operational table carries a hackathon_id,
 -- and each hackathon is a separate CRM. Logins, sessions and the generic

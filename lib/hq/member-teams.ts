@@ -62,7 +62,7 @@ export async function authorizedTeam(actor: MemberActor, request: TeamRequest): 
  * decision is the same one (`authorizeProjectAction`, which now reads HQ
  * ownership), and what differs is only what there is to show.
  */
-export type MemberProjectView = {
+type MemberProjectView = {
   id: string;
   name: string;
   edition: { id: number; name: string };

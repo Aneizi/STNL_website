@@ -53,7 +53,7 @@ export type ReminderSkipReason =
   | "period_over"
   | "reminder_missing";
 
-export type OutstandingResult =
+type OutstandingResult =
   | { ok: true; projectNames: string[]; editionName: string; period: { startDate: string; endDate: string } }
   | { ok: false; reason: ReminderSkipReason };
 
@@ -138,7 +138,7 @@ export async function outstandingForCaptain(
   return { ok: true, projectNames, editionName, period: { startDate: period.startDate, endDate: period.endDate } };
 }
 
-export type ReminderDispatchDecision =
+type ReminderDispatchDecision =
   | { ok: true; body: string; projectCount: number }
   | { ok: false; reason: ReminderSkipReason };
 

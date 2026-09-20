@@ -3,21 +3,23 @@
 // imports (queries, chrome, session, operator actions), the way the auth
 // boundary test keeps every page gated; the render checks cover the captain
 // page's gate and the two Connect Telegram hints with the actor stubbed.
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import ts from "typescript";
 import type { MemberActor } from "@/lib/hq/actor";
+import { hasDirective, runtimeImports, sourceFile } from "./helpers/module-source";
 
 const mocks = vi.hoisted(() => ({
-  currentActor: vi.fn(),
+  currentUser: vi.fn(),
   currentMember: vi.fn(),
   requireMemberActor: vi.fn(),
   teams: vi.fn(),
   ownedProjects: vi.fn(),
   currentHackathonId: vi.fn(),
-  teamById: vi.fn(),
+  teamsByIds: vi.fn(),
   leaderboard: vi.fn(),
   listAssignments: vi.fn(),
   captainReportingBoard: vi.fn(),
@@ -34,14 +36,15 @@ vi.mock("next/navigation", () => ({
   usePathname: () => mocks.pathname,
   useRouter: () => ({ replace() {}, refresh() {}, push() {} }),
 }));
-vi.mock("@/lib/hq/actor", () => ({ currentActor: mocks.currentActor, requireMemberActor: mocks.requireMemberActor }));
+vi.mock("@/lib/hq/actor", () => ({ requireMemberActor: mocks.requireMemberActor }));
+vi.mock("@/lib/hq/auth", () => ({ currentUser: mocks.currentUser }));
 vi.mock("@/lib/hq/member-auth", () => ({ currentMember: mocks.currentMember, requireMember: vi.fn() }));
 vi.mock("@/lib/hq/builder-store", () => ({
   builderStore: () => ({
     teams: mocks.teams,
     ownedProjects: mocks.ownedProjects,
     currentHackathonId: mocks.currentHackathonId,
-    teamById: mocks.teamById,
+    teamsByIds: mocks.teamsByIds,
   }),
 }));
 // The captain page's two other reads: a real pool would need DATABASE_URL,
@@ -88,10 +91,8 @@ describe("the member shell imports nothing operator-side", () => {
   const MEMBER_ACTIONS = new Set(["lib/hq/actions/builders", "lib/hq/actions/invite", "lib/hq/actions/reporting", "lib/hq/actions/telegram"]);
 
   /** Every runtime import specifier, resolved to a repo-relative module path; type-only imports are erased and skipped. */
-  function runtimeImports(file: string): string[] {
-    const source = readFileSync(join(ROOT, file), "utf8");
-    const specifiers = [...source.matchAll(/^\s*(?:import|export)\s+(?!type\s)[^'"]*?from\s+['"]([^'"]+)['"]/gm)].map((match) => match[1]);
-    return specifiers.map((specifier) => {
+  function importedPaths(file: string): string[] {
+    return [...runtimeImports(sourceFile(file))].map((specifier) => {
       if (specifier.startsWith("@/")) return specifier.slice(2);
       if (specifier.startsWith(".")) return posix.normalize(posix.join(dirname(file), specifier));
       return specifier;
@@ -106,7 +107,7 @@ describe("the member shell imports nothing operator-side", () => {
 
   for (const file of scanned) {
     it(file, () => {
-      for (const target of runtimeImports(file)) {
+      for (const target of importedPaths(file)) {
         expect(FORBIDDEN.has(target), `${file} imports ${target}`).toBe(false);
         expect(target.startsWith("app/hq/(app)"), `${file} imports ${target}`).toBe(false);
         if (target.startsWith("lib/hq/actions/")) expect(MEMBER_ACTIONS.has(target), `${file} imports the operator action module ${target}`).toBe(true);
@@ -116,16 +117,24 @@ describe("the member shell imports nothing operator-side", () => {
 
   it("keeps the pure route module client-safe: no server-only, no environment, no runtime import of a server module", () => {
     const file = "lib/hq/member-routes.ts";
-    const source = readFileSync(join(ROOT, file), "utf8");
-    expect(source, file).not.toContain("server-only");
-    expect(source, file).not.toContain("process.env");
-    for (const target of runtimeImports(file)) expect(target.startsWith("lib/hq/"), `${file} imports ${target} at runtime`).toBe(false);
+    const source = sourceFile(file);
+    expect(runtimeImports(source), file).not.toContain("server-only");
+    function checkEnvironment(node: ts.Node) {
+      if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+        && ts.isIdentifier(node.expression) && node.expression.text === "process") {
+        const property = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
+        if (ts.isIdentifier(property) || ts.isStringLiteral(property)) expect(property.text, file).not.toBe("env");
+      }
+      ts.forEachChild(node, checkEnvironment);
+    }
+    checkEnvironment(source);
+    for (const target of importedPaths(file)) expect(target.startsWith("lib/hq/"), `${file} imports ${target} at runtime`).toBe(false);
   });
 
   it("keeps the shell a server component that renders the client account menu, and the menu a client component", () => {
-    expect(readFileSync(join(ROOT, "components/hq/builder-account-menu.tsx"), "utf8").startsWith("'use client'")).toBe(true);
-    expect(readFileSync(join(ROOT, "components/hq/builder-shell.tsx"), "utf8")).not.toContain("use client");
-    expect(readFileSync(join(ROOT, "app/hq/(member)/layout.tsx"), "utf8")).not.toContain("use client");
+    expect(hasDirective(sourceFile("components/hq/builder-account-menu.tsx"), "use client")).toBe(true);
+    expect(hasDirective(sourceFile("components/hq/builder-shell.tsx"), "use client")).toBe(false);
+    expect(hasDirective(sourceFile("app/hq/(member)/layout.tsx"), "use client")).toBe(false);
   });
 });
 
@@ -163,7 +172,7 @@ describe("the captain page", () => {
     // that need an assignment override the board.
     mocks.currentHackathonId.mockResolvedValue(41);
     mocks.captainReportingBoard.mockResolvedValue(board());
-    mocks.teamById.mockResolvedValue(null);
+    mocks.teamsByIds.mockResolvedValue(new Map());
     mocks.builderDatabase.mockReturnValue({});
   });
 
@@ -172,7 +181,7 @@ describe("the captain page", () => {
     await expect(CaptainPage()).rejects.toThrow("NOT_FOUND");
     expect(mocks.requireMemberActor).toHaveBeenCalledWith("/hq/captain");
     expect(mocks.captainReportingBoard).not.toHaveBeenCalled();
-    expect(mocks.teamById).not.toHaveBeenCalled();
+    expect(mocks.teamsByIds).not.toHaveBeenCalled();
   });
 
   it("sends a signed-out visitor to sign in with the captain URL as the destination", async () => {
@@ -216,9 +225,9 @@ describe("the captain page", () => {
   it("renders the Captain's own team: the week, the due line, the builders and their tags, the contact link and the note form, and nothing internal", async () => {
     mocks.requireMemberActor.mockResolvedValue(captain());
     mocks.captainReportingBoard.mockResolvedValue(board({ cards: [card], week: { sequence: 1, total: 4 }, captainContact: "@femkedj" }));
-    mocks.teamById.mockResolvedValue(team);
+    mocks.teamsByIds.mockResolvedValue(new Map([[team.id, team]]));
     const html = await render();
-    expect(mocks.teamById).toHaveBeenCalledWith("p1");
+    expect(mocks.teamsByIds).toHaveBeenCalledExactlyOnceWith(["p1"]);
     // The aside.
     expect(html).toContain("Week 1 of 4");
     expect(html).toContain("@femkedj");
@@ -254,7 +263,7 @@ describe("the captain page", () => {
       { id: "e2", projectId: "p1", periodId: "week-1", periodSequence: 1, body: "Team dynamics look healthy.", visibility: "sensitive", source: "hq", version: 1, late: false, edited: false, submittedAt: "2026-09-15T10:00:00.000Z", updatedAt: "2026-09-15T10:00:00.000Z", authorName: "Fictional Captain", authorIsYou: true, canEdit: true, voided: false },
     ];
     mocks.captainReportingBoard.mockResolvedValue(board({ cards: [{ ...card, current: { ...week, completed: true }, entries }], week: { sequence: 1, total: 4 } }));
-    mocks.teamById.mockResolvedValue(team);
+    mocks.teamsByIds.mockResolvedValue(new Map([[team.id, team]]));
     const html = await render();
     expect(html).toContain("Team updated this week. No note needed");
     expect(html).toContain(">Updated</span>");
@@ -463,15 +472,15 @@ describe("the member layout", () => {
     // The header needs no team read: the Home page loads the teams it renders.
     expect(mocks.teams).not.toHaveBeenCalled();
     expect(mocks.ownedProjects).not.toHaveBeenCalled();
-    expect(mocks.currentActor).not.toHaveBeenCalled();
-    expect(readFileSync(join(ROOT, "app/hq/(member)/layout.tsx"), "utf8")).not.toContain("builder-store");
+    expect(mocks.currentUser).not.toHaveBeenCalled();
+    expect([...runtimeImports(sourceFile("app/hq/(member)/layout.tsx"))].some((path) => /(?:^|\/)builder-store(?:\.[jt]sx?)?$/.test(path))).toBe(false);
   });
 
   it("renders no avatar without a member session, even when an operator is signed in", async () => {
     mocks.currentMember.mockResolvedValue(null);
-    mocks.currentActor.mockResolvedValue(null);
+    mocks.currentUser.mockResolvedValue(null);
     expect(await render()).not.toContain("Account menu");
-    mocks.currentActor.mockResolvedValue({ kind: "operator", id: "op", displayName: "Operator" });
+    mocks.currentUser.mockResolvedValue({ kind: "operator", id: "op", displayName: "Operator" });
     const html = await render();
     expect(html).not.toContain("Account menu");
     expect(html).not.toContain("Operator");
@@ -480,11 +489,11 @@ describe("the member layout", () => {
   });
 
   it("keeps the Telegram member's account menu when an admin session is also present", async () => {
-    mocks.currentActor.mockResolvedValue({ kind: "operator", id: "op", displayName: "Operator" });
+    mocks.currentUser.mockResolvedValue({ kind: "operator", id: "op", displayName: "Operator" });
     mocks.currentMember.mockResolvedValue({ id: "telegram-member", name: "Telegram Builder", email: null });
     const html = await render();
     expect(html).toMatch(/aria-label="Account menu"[^>]*>TB<\/button>/);
     expect(html).not.toContain("Operator");
-    expect(mocks.currentActor).not.toHaveBeenCalled();
+    expect(mocks.currentUser).not.toHaveBeenCalled();
   });
 });

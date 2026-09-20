@@ -1,7 +1,7 @@
 "use server";
 
 import { headers } from "next/headers";
-import { revalidatePath } from "next/cache";
+import { refreshHq } from "../revalidation";
 import { requireMemberActor } from "../actor";
 import { currentMemberSession, getAuth } from "../member-auth";
 import { getMemberAuthAvailability } from "../member-auth-config";
@@ -22,14 +22,14 @@ import { isPlaceholderEmail, TELEGRAM_PROVIDER_ID } from "../telegram-provider";
 // Every gate names the account page: it is where a member who has to sign in
 // again comes back to.
 
-export type TelegramConfirmationCode = "SESSION_NOT_FRESH" | "TELEGRAM_UNAVAILABLE" | "TELEGRAM_ALREADY_CONNECTED" | "TELEGRAM_NOT_CONNECTED" | "LAST_LOGIN_METHOD";
-export type TelegramLinkConfirmation = { ok: true } | { ok: false; code: TelegramConfirmationCode };
+type TelegramConfirmationCode = "SESSION_NOT_FRESH" | "TELEGRAM_UNAVAILABLE" | "TELEGRAM_ALREADY_CONNECTED" | "TELEGRAM_NOT_CONNECTED" | "LAST_LOGIN_METHOD";
+type TelegramLinkConfirmation = { ok: true } | { ok: false; code: TelegramConfirmationCode };
 /** `accountId` is the Better Auth account row to pass to unlinkAccount(); it is not a Telegram id. */
-export type TelegramUnlinkConfirmation = { ok: true; accountId: string } | { ok: false; code: TelegramConfirmationCode };
-export type EmailChangeConfirmationCode = "SESSION_NOT_FRESH" | "EMAIL_UNAVAILABLE" | "INVALID_EMAIL" | "EMAIL_UNCHANGED";
+type TelegramUnlinkConfirmation = { ok: true; accountId: string } | { ok: false; code: TelegramConfirmationCode };
+type EmailChangeConfirmationCode = "SESSION_NOT_FRESH" | "EMAIL_UNAVAILABLE" | "INVALID_EMAIL" | "EMAIL_UNCHANGED";
 /** `newEmail` is the normalized address the intent was recorded for; the client sends exactly that to the endpoints. */
-export type EmailChangeConfirmation = { ok: true; newEmail: string } | { ok: false; code: EmailChangeConfirmationCode };
-export type BotMessagingResult = { ok: true; enabled: boolean } | { ok: false; code: "TELEGRAM_NOT_CONNECTED" };
+type EmailChangeConfirmation = { ok: true; newEmail: string } | { ok: false; code: EmailChangeConfirmationCode };
+type BotMessagingResult = { ok: true; enabled: boolean } | { ok: false; code: "TELEGRAM_NOT_CONNECTED" };
 
 /** Shape only; the endpoints validate again and refuse anything they cannot mail. */
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -102,7 +102,7 @@ export async function setBotMessaging(enabled: boolean): Promise<BotMessagingRes
   const actor = await requireMemberActor("/hq/account");
   try {
     const consent = await setBotConsent(actor, enabled === true);
-    revalidatePath("/hq/dashboard");
+    refreshHq("dashboard");
     return { ok: true, enabled: consent.messagingEnabled };
   } catch (error) {
     if (error instanceof TelegramNotConnectedError) return { ok: false, code: "TELEGRAM_NOT_CONNECTED" };

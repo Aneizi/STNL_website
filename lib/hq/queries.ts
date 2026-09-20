@@ -1,17 +1,18 @@
 import "server-only";
+import { cache } from "react";
 import type { BuilderQuery } from "./builder-db";
 import { realEmail } from "./builder-store";
 import { listActiveCapabilitiesForUsers, personTags } from "./capabilities";
 import { CLASSIFIERS_SELECT, toClassifiers } from "./classifiers-sql";
 import { getSql } from "./db";
 import { attributeOutputs, type AttributableProject } from "./event-attribution";
-import { fmtDate, normName } from "./format";
+import { fmtDate } from "./format";
 import type {
   ActivityItem,
   Award,
   Classifiers,
+  DashboardProject,
   DemoProject,
-  EventOption,
   FinalistProject,
   Hackathon,
   HqEvent,
@@ -52,27 +53,28 @@ const HACKATHON_SELECT = /* sql */ `
  * Every hackathon, open editions first and newest first within each group —
  * the picker and the switcher both show archived editions after the rest.
  */
-export async function getHackathons(): Promise<Hackathon[]> {
+// React cache deduplicates reads within a server render, never between requests.
+export const getHackathons = cache(async (): Promise<Hackathon[]> => {
   const sql = getSql();
   const rows = await sql.query(
     `${HACKATHON_SELECT}
      ORDER BY (archived_at IS NOT NULL), start_date DESC, created_at DESC`,
   );
   return (rows as Record<string, unknown>[]).map(mapHackathon);
-}
+});
 
-export async function getHackathon(id: number): Promise<Hackathon | null> {
+export const getHackathon = cache(async (id: number): Promise<Hackathon | null> => {
   const sql = getSql();
   const rows = await sql.query(`${HACKATHON_SELECT} WHERE id = $1`, [id]);
   const row = (rows as Record<string, unknown>[])[0];
   return row ? mapHackathon(row) : null;
-}
+});
 
-export async function getClassifiers(hackathonId: number): Promise<Classifiers> {
+export const getClassifiers = cache(async (hackathonId: number): Promise<Classifiers> => {
   const sql = getSql();
   const [row] = await sql.query(CLASSIFIERS_SELECT, [hackathonId]);
   return toClassifiers(row ?? {});
-}
+});
 
 const SETTING_KEYS: Record<string, keyof Settings> = {
   prospects_reached: "prospectsReached",
@@ -102,7 +104,7 @@ const SETTINGS_FALLBACK: Settings = {
   activeSub: "",
 };
 
-export async function getSettings(hackathonId: number): Promise<Settings> {
+export const getSettings = cache(async (hackathonId: number): Promise<Settings> => {
   const sql = getSql();
   const rows = await sql`SELECT key, value FROM hq_settings WHERE hackathon_id = ${hackathonId}`;
   const settings = { ...SETTINGS_FALLBACK };
@@ -111,6 +113,31 @@ export async function getSettings(hackathonId: number): Promise<Settings> {
     if (prop) (settings as Record<string, unknown>)[prop] = row.value;
   }
   return settings;
+});
+
+/** Dashboard facts only; project details and note history stay out of this read. */
+export async function getDashboardProjects(hackathonId: number): Promise<DashboardProject[]> {
+  const sql = getSql();
+  const rows = await sql`
+    SELECT p.id, p.name, f.slug AS forecast_slug,
+      p.last_check_in::text AS last_check_in, p.blocker,
+      COALESCE(
+        (SELECT array_agg(g.gate_id::text) FROM hq_project_gates g WHERE g.project_id = p.id),
+        '{}'
+      ) AS gates
+    FROM hq_projects p
+    JOIN hq_project_forecasts f ON f.id = p.forecast_id
+    WHERE p.hackathon_id = ${hackathonId}
+    ORDER BY p.created_at DESC
+  `;
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    forecastSlug: row.forecast_slug,
+    lastCheckIn: row.last_check_in,
+    blocker: row.blocker,
+    gates: row.gates ?? [],
+  }));
 }
 
 export async function getProjects(hackathonId: number): Promise<Project[]> {
@@ -364,7 +391,8 @@ export async function getPeople(hackathonId: number): Promise<Person[]> {
 export async function getLumaSyncedAt(): Promise<string | null> {
   const sql = getSql();
   const [row] = await sql`SELECT last_success_at FROM hq_luma_sync WHERE id = true`;
-  const at = row ? Date.parse(String(row.last_success_at)) : NaN;
+  const value = row?.last_success_at;
+  const at = value instanceof Date ? value.getTime() : Date.parse(String(value));
   // The column defaults to the epoch, which means "never synced", not 1970.
   if (!Number.isFinite(at) || at <= 0) return null;
   return new Date(at).toISOString();
@@ -544,28 +572,6 @@ export async function getRoles(): Promise<Role[]> {
   }));
 }
 
-/**
- * Event names for the project "source event" picker, earliest first.
- * Projects store the name (not an id) and are attributed to the first event
- * whose normalized name matches, so the list carries one entry per distinct
- * name — offering the same name twice would pick out the same event anyway.
- */
-export async function getEventOptions(hackathonId: number): Promise<EventOption[]> {
-  const sql = getSql();
-  const rows = await sql`
-    SELECT id, name FROM hq_events WHERE hackathon_id = ${hackathonId} ORDER BY date, created_at
-  `;
-  const seen = new Set<string>();
-  const options: EventOption[] = [];
-  for (const r of rows) {
-    const key = normName(r.name);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    options.push({ id: r.id, name: r.name });
-  }
-  return options;
-}
-
 export async function getActivity(hackathonId: number, limit = 40): Promise<ActivityItem[]> {
   const sql = getSql();
   const rows = await sql`
@@ -602,56 +608,38 @@ export async function searchAll(query: string, hackathonId: number): Promise<Sea
   // Escape LIKE metacharacters so % _ \ in a query match literally (a
   // trailing bare backslash would otherwise make Postgres reject the pattern).
   const like = `%${q.replace(/[\\%_]/g, "\\$&")}%`;
-  const [projects, partners, people, events] = await Promise.all([
-    sql`
-      SELECT id, name, lead_name FROM hq_projects
-      WHERE hackathon_id = ${hackathonId} AND (name ILIKE ${like} OR lead_name ILIKE ${like})
-      ORDER BY created_at DESC LIMIT 12
-    `,
-    sql`
-      SELECT pa.id, pa.name, c.label AS channel FROM hq_partners pa
-      JOIN hq_partner_channels c ON c.id = pa.channel_id
-      WHERE pa.hackathon_id = ${hackathonId}
-        AND (pa.name ILIKE ${like} OR pa.captain_name ILIKE ${like})
-      ORDER BY pa.created_at DESC LIMIT 12
-    `,
-    sql`
-      SELECT p.id, p.name, r.label AS role FROM hq_people p
-      JOIN hq_people_roles r ON r.id = p.role_id
-      WHERE p.hackathon_id = ${hackathonId} AND p.name ILIKE ${like}
-      ORDER BY p.created_at DESC LIMIT 12
-    `,
-    sql`
-      SELECT id, name, date::text AS date FROM hq_events
-      WHERE hackathon_id = ${hackathonId} AND name ILIKE ${like}
-      ORDER BY date LIMIT 12
-    `,
-  ]);
-  const results: SearchResult[] = [
-    ...projects.map((r) => ({
-      kind: "Project" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: r.lead_name as string,
-    })),
-    ...partners.map((r) => ({
-      kind: "Partner" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: r.channel as string,
-    })),
-    ...people.map((r) => ({
-      kind: "Person" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: r.role as string,
-    })),
-    ...events.map((r) => ({
-      kind: "Event" as const,
-      id: r.id as string,
-      label: r.name as string,
-      meta: fmtDate(r.date as string),
-    })),
-  ];
-  return results.slice(0, 12);
+  // Keep the existing category priority and each category's ordering, but
+  // return only the twelve displayed hits across one database round trip.
+  const rows = await sql.query(`
+    SELECT kind, id, label, meta FROM (
+      (SELECT 'Project' AS kind, id, name AS label, lead_name AS meta,
+          0 AS priority, created_at, NULL::date AS event_date
+       FROM hq_projects
+       WHERE hackathon_id = $1 AND (name ILIKE $2 OR lead_name ILIKE $2)
+       ORDER BY created_at DESC LIMIT 12)
+      UNION ALL
+      (SELECT 'Partner', pa.id, pa.name, c.label, 1, pa.created_at, NULL::date
+       FROM hq_partners pa JOIN hq_partner_channels c ON c.id = pa.channel_id
+       WHERE pa.hackathon_id = $1 AND (pa.name ILIKE $2 OR pa.captain_name ILIKE $2)
+       ORDER BY pa.created_at DESC LIMIT 12)
+      UNION ALL
+      (SELECT 'Person', p.id, p.name, r.label, 2, p.created_at, NULL::date
+       FROM hq_people p JOIN hq_people_roles r ON r.id = p.role_id
+       WHERE p.hackathon_id = $1 AND p.name ILIKE $2
+       ORDER BY p.created_at DESC LIMIT 12)
+      UNION ALL
+      (SELECT 'Event', id, name, date::text AS meta, 3, NULL::timestamptz, date
+       FROM hq_events
+       WHERE hackathon_id = $1 AND name ILIKE $2
+       ORDER BY date LIMIT 12)
+    ) hits
+    ORDER BY priority, created_at DESC, event_date
+    LIMIT 12
+  `, [hackathonId, like]);
+  return rows.map((row) => ({
+    kind: row.kind as SearchResult["kind"],
+    id: row.id as string,
+    label: row.label as string,
+    meta: row.kind === "Event" ? fmtDate(row.meta as string) : row.meta as string,
+  }));
 }

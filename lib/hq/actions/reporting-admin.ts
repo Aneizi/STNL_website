@@ -10,7 +10,6 @@ import { BuilderError } from "../builder-types";
 import { requireHackathon } from "../hackathon";
 import {
   ensureReportingPeriods,
-  previewReportingPeriods,
   readAuthorizedUpdates,
   readReportingSchedule,
   recordColosseumDeadline,
@@ -23,18 +22,8 @@ import { isMaterialKey } from "../submission-readiness";
 import type { ActionResult } from "../types";
 import { refreshHq } from "./util";
 
-/**
- * The admin side of weekly reporting: the schedule and the reporting
- * settings behind the Admin page.
- *
- * Operator gated, so this module must stay clear of the public member auth
- * graph (`tests/hq/operator-imports.test.ts`). That is why phase 6 split the
- * session-free half of ./authz into ./authz-decisions: `lib/hq/reporting.ts`
- * reaches neither ./actor nor ./member-auth, so the one reporting service
- * can be called from here as well as from the member actions, rather than
- * being copied for operators. The gate is the same `requireUser()` every
- * other operator action uses.
- */
+// Operator reporting actions must stay outside the public member auth graph;
+// tests/hq/operator-imports.test.ts checks this dependency boundary.
 
 const isoDate = z.string().refine(isCalendarDate);
 /** What a `datetime-local` field submits: a wall clock with no offset. The seconds a browser may append are ignored. */
@@ -44,7 +33,7 @@ const CAMPAIGN_TIMEZONE_FALLBACK = "Europe/Amsterdam";
 /** The floor on automatic submission checks, matching the CHECK constraint on the column. */
 const MIN_SUBMISSION_REFRESH_MINUTES = 15;
 
-export type ProjectUpdatesResult =
+type ProjectUpdatesResult =
   | { ok: true; page: ReportingEntryPage }
   | { ok: false; error: string };
 
@@ -101,19 +90,6 @@ export type ReportingScheduleView = {
   plan: ReportingPeriodPlan;
 };
 
-/**
- * What reconciling the stored periods with the edition's current dates would
- * do, with nothing written: the plan's "show affected periods before an admin
- * changes a live schedule". A period that already holds an update or a
- * recorded week, or that has been closed, comes back as a conflict rather
- * than being moved, and the screen shows those before Apply is offered.
- */
-export async function previewReportingSchedule(): Promise<{ ok: true; schedule: ReportingScheduleView } | { ok: false; error: string }> {
-  await requireUser();
-  const hackathon = await requireHackathon();
-  const plan = await previewReportingPeriods(builderDatabase(), hackathon.id);
-  return { ok: true, schedule: { hackathonId: hackathon.id, plan } };
-}
 
 /**
  * Writes the previewed change.
@@ -138,7 +114,7 @@ export async function applyReportingSchedule(): Promise<{ ok: true; schedule: Re
     if (error instanceof BuilderError) return { ok: false, error: error.message };
     throw error;
   }
-  refreshHq();
+  refreshHq("reporting");
   return { ok: true, schedule: { hackathonId: hackathon.id, plan } };
 }
 
@@ -219,7 +195,7 @@ export async function saveReportingConfiguration(input: {
     ...(keys(parsed.data.optionalMaterials) !== undefined ? { optionalMaterials: keys(parsed.data.optionalMaterials) } : {}),
     ...(refresh !== undefined ? { submissionRefreshMinutes: refresh ? refresh : null } : {}),
   });
-  refreshHq();
+  refreshHq("reporting");
   return { ok: true };
 }
 
@@ -252,14 +228,14 @@ export async function readColosseumDeadline(): Promise<{ ok: true; deadline: str
       deadline: window?.submissionEnd ?? null,
       checkedAt,
     });
-    refreshHq();
+    refreshHq("reporting");
     if (!window) return { ok: false, error: "Colosseum does not list that edition, so it has no submission deadline to read." };
     if (!window.submissionEnd) return { ok: false, error: "Colosseum lists that edition but has not published a submission deadline for it yet." };
     return { ok: true, deadline: config.officialSubmissionDeadline };
   } catch (error) {
     if (error instanceof ColosseumApiError) {
       await recordColosseumDeadline(builderDatabase(), { hackathonId: hackathon.id, deadline: null, checkedAt });
-      refreshHq();
+      refreshHq("reporting");
       return { ok: false, error: DEADLINE_READ_MESSAGES[error.code] };
     }
     throw error;

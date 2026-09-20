@@ -11,9 +11,9 @@ import {
   useTransition,
   type CSSProperties,
 } from "react";
-import { IconBubbleAndPencil } from "@/components/hq/icons/IconBubbleAndPencil";
+import { IconBubbleAndPencil } from "@/components/hq/icons";
 import { showToast } from "@/components/hq/toast";
-import { FormField, input, pageTitle, primaryBtn } from "@/components/hq/ui";
+import { FormField, card, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
 import { updateBuilderProjectLead } from "@/lib/hq/actions/builders-admin";
 import { assignProjectCaptain, unassignProjectCaptain } from "@/lib/hq/actions/captains";
@@ -604,11 +604,7 @@ export function Projects({
         <div
           className="hq-fade-in"
           style={{
-            background: "var(--card)",
-            borderRadius: 0,
-            boxShadow: "var(--shadow-1)",
-            padding: 24,
-            marginTop: 28,
+            ...card,
             display: "flex",
             gap: 10,
             flexWrap: "wrap",

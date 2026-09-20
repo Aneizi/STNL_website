@@ -3,98 +3,24 @@ import { recordAuditEvent } from "./audit";
 import { atomically, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 
 /**
- * Admin deletion of a team and of a person (owner requirement, 14 September
- * 2026). Operator-only; the gate and the edition scoping live in the calling
- * Server Actions (`lib/hq/actions/projects.ts` and
- * `lib/hq/actions/people.ts`), which resolve the record through `inHackathon`
- * before calling anything here.
+ * Operator actions authorize and scope records before calling these services.
+ * Deletion, audit and activity writes share one transaction; impact counts are
+ * reread inside it rather than trusting the confirmation screen.
  *
- * Three rules the plan sets, and how each is met:
+ * Project-owned imports, ownership, roster, invites, gates, notes, finalists,
+ * scores, assignments, reporting rows and submission reconciliations cascade.
+ * Awards lose their winner; import requests lose their project link. Edition
+ * periods and Captain reminder history survive.
  *
- * 1. **"The confirmation states what else is removed or detached."** The
- *    counts come from `teamRemovalImpact` / `personRemovalImpact`, read
- *    before the destructive step for the confirmation and again inside the
- *    deleting transaction for the audit event, so the trail records what was
- *    actually removed rather than what the screen last showed.
- * 2. **"Deleting a person must not delete the HQ account behind them."** A
- *    People card is CRM, an `hq_builder_profiles` row is a login. Nothing
- *    here touches `hq_builder_profiles`, and `deletePersonRecord` says so in
- *    its result (`accountKept`).
- * 3. **"One transaction, and every dependent row either removed or explicitly
- *    detached."** Both functions run in one `BuilderDatabase.transaction`,
- *    with the audit event written inside it.
+ * Transient Telegram drafts/actions have no project foreign key. Every use
+ * reauthorizes the live project, and expired state is purged separately.
  *
- * WHAT POINTS AT THESE RECORDS, checked before the statements below were
- * written rather than assumed from the foreign keys:
- *
- * - at `hq_projects`: `hq_project_onboarding`, `hq_project_members`,
- *   `hq_project_gates`, `hq_project_notes`, `hq_finalists` (and through it
- *   `hq_scores` and `hq_awards.winner_project_id`), and phase 4's
- *   `hq_captain_assignments` — every one CASCADE except the award winner,
- *   which is SET NULL. `hq_team_invites` cascades from the onboarding row.
- *   Phase 5's reporting tables were added after this list was first written
- *   and are included here now: `hq_reporting_eligibility`,
- *   `hq_reporting_pause_intervals` (its pause history),
- *   `hq_reporting_entries` (and through it `hq_reporting_entry_revisions`)
- *   and `hq_reporting_outcomes`, every one CASCADE. `hq_project_ownership`
- *   (HQ ownership, 15 September 2026) cascades the same way, and
- *   `hq_project_import_requests.project_id` is SET NULL so a help request
- *   survives the project it became. Cascading is right for
- *   all four: a team's updates, its revision history, whether it was in
- *   reporting at all and what each week recorded are statements ABOUT that
- *   team, and none of them means anything once the team is gone — unlike an
- *   award, which outlives its winner. `hq_reporting_periods` is deliberately
- *   NOT touched: the periods belong to the edition, not to any one project,
- *   and the other teams still report against them.
- *   Phase 7 (the Telegram bot) added four tables and DELIBERATELY pointed
- *   none of them here. `hq_telegram_drafts` and `hq_telegram_actions` carry a
- *   `project_id`, but as a plain uuid with no foreign key, the same shape
- *   `hq_reporting_entries.author_id` uses: both are transient chat state with
- *   an expiry of minutes to a day, every read of either re-authorizes against
- *   the live project so a row pointing at a deleted one grants exactly
- *   nothing, and `purgeExpiredBotState` removes them on its own. Naming them
- *   here would put somebody's half-typed message into a confirmation that is
- *   supposed to be about the team's records. `hq_telegram_updates` and
- *   `hq_telegram_outgoing` never reference a project at all.
- *   Phase 10 (the final submission period) added
- *   `hq_submission_reconciliations`, which DOES point here: it names a
- *   project and a period, and it cascades from both. That is right for the
- *   same reason the reporting rows are: a reconciliation is a statement about
- *   one team's submission, and it means nothing once the team is gone. It is
- *   not counted in the confirmation, because what it holds is evidence about
- *   the recorded week beside it rather than anything a person wrote; the week
- *   itself is already counted.
- *   Phase 8 (the reminder and closure jobs) added `hq_reminder_deliveries`
- *   and deliberately pointed it at none of the three. It references the Captain's
- *   account, the edition and the reporting period, and it counts the teams a
- *   reminder named without naming them: a reminder is a statement about a
- *   Captain's week, not about any one team, and a deleted team's name must
- *   not outlive the team inside a history table. Deleting a team therefore
- *   leaves the reminder record intact and correct (its count describes what
- *   was outstanding on the day), and the confirmation stays about the team's
- *   own records.
- * - at `hq_people`: `hq_scores.judge_id` (CASCADE).
- * - at `hq_crm_persons`: `hq_people.person_id` and
- *   `hq_project_members.person_id` (both SET NULL — detachment, not
- *   cascade), and `hq_crm_persons.builder_user_id`, which is the link to the
- *   account and disappears with the person row, never with the account.
- *
- * **Nothing points at a person or a CRM person from the reporting tables or
- * from the reminder deliveries**,
- * which is why `deletePersonRecord` needed no change for phase 5 and is
- * stated here rather than left to be rediscovered. An entry's author is
- * `author_kind`/`author_id` with no foreign key — the same shape
- * `hq_audit_events.actor_kind`/`actor_id` uses, and for the same reason: the
- * author may be a public account or an operator, and the row must outlive
- * both. Even if it were a foreign key it would change nothing here, because
- * deleting a People card never deletes the `hq_builder_profiles` account
- * behind it (rule 2 above), so the account an entry names is still there
- * afterwards. A person's updates therefore survive their People card, which
- * is correct: the card is an edition's CRM entry, the updates are a team's
- * record of its own weeks.
+ * Deleting a People card removes its judge scores and enrollment, never its
+ * login account. The last card also removes the CRM person and detaches roster
+ * references with SET NULL. Reporting authorship survives CRM deletion.
  */
 
-export type TeamRemovalImpact = {
+type TeamRemovalImpact = {
   projectId: string;
   name: string;
   hackathonId: number;
@@ -111,7 +37,7 @@ export type TeamRemovalImpact = {
   gates: number;
   finalist: boolean;
   judgeScores: number;
-  /** Whether the project is in weekly reporting at all (phase 5). */
+  /** Whether the project is enrolled in weekly reporting. */
   reportingEnrolled: boolean;
   /** Reporting entries that go with it, voided ones included: the whole record, not only what a team could still see. */
   reportingEntries: number;
@@ -160,14 +86,8 @@ export async function teamRemovalImpact(db: BuilderQuery, projectId: string): Pr
 }
 
 /**
- * Deletes a project and everything that belongs to it, in one transaction.
- *
- * The dependent rows go by cascade, which is deliberate here rather than
- * incidental: each of them is meaningless without the project (a roster of a
- * team that does not exist, a join link into it, who captained it, its notes
- * and gates). The one relationship that is NOT a cascade is
- * `hq_awards.winner_project_id`, which is SET NULL: an award outlives the
- * project that won it, and the operator is told the award loses its winner.
+ * Delete the project and its dependent records atomically. Awards survive with
+ * their winner cleared (SET NULL).
  */
 export async function deleteTeamRecord(
   db: BuilderDatabase | BuilderQuery,
@@ -182,11 +102,7 @@ export async function deleteTeamRecord(
       kind: "project.deleted",
       actor: { kind: "operator", id: input.operatorId },
       hackathonId: impact.hackathonId,
-      // The project id is recorded as metadata, not as the event's own
-      // project_id: hq_audit_events.project_id has no foreign key, but a
-      // reader joining it to hq_projects would find nothing, and an audit row
-      // that looks like it points at a live project is worse than one that
-      // plainly records an id that is gone.
+      // Keep the deleted id in metadata rather than suggesting a live project link.
       metadata: {
         projectId: impact.projectId, name: impact.name, imported: impact.imported,
         rosterRows: impact.rosterRows, joinLinks: impact.joinLinksTotal,
@@ -219,7 +135,7 @@ export type PersonRemovalImpact = {
   enrollments: number;
 };
 
-export async function personRemovalImpact(db: BuilderQuery, cardId: string): Promise<PersonRemovalImpact | null> {
+async function personRemovalImpact(db: BuilderQuery, cardId: string): Promise<PersonRemovalImpact | null> {
   const { rows } = await db.query(
     `SELECT p.id::text AS id, p.name, p.hackathon_id, p.person_id::text AS person_id, p.builder_user_id,
        (SELECT count(*) FROM hq_scores s WHERE s.judge_id = p.id) AS judge_scores,
@@ -240,7 +156,7 @@ export async function personRemovalImpact(db: BuilderQuery, cardId: string): Pro
   };
 }
 
-export type PersonRemoval = PersonRemovalImpact & {
+type PersonRemoval = PersonRemovalImpact & {
   /** Always true: an account is a login, a person is a CRM identity, and this never touches the former. */
   accountKept: true;
   /** True when this was the person's last People card, so the CRM person itself was removed and its roster rows detached. */
@@ -248,16 +164,9 @@ export type PersonRemoval = PersonRemovalImpact & {
 };
 
 /**
- * Deletes a People card, and with it the CRM person when this was that
- * person's last card anywhere.
- *
- * The account behind the card is deliberately untouched: the person can sign
- * in tomorrow and `ensurePersonForAccount` will give them a fresh CRM person,
- * which is the correct outcome for "this card should not be here", and the
- * only outcome that does not turn a CRM clean-up into an account deletion.
- * Roster rows are detached (`person_id` becomes NULL through the foreign
- * key's SET NULL), never deleted: a roster row is the imported team's record
- * of who was on it, not HQ's record of a person.
+ * Delete the People card and, if it was the last card, its CRM person.
+ * Keep the login account and detach roster references rather than deleting
+ * imported roster records. A later sign-in may recreate the CRM identity.
  */
 export async function deletePersonRecord(
   db: BuilderDatabase | BuilderQuery,

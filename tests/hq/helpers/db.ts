@@ -1,20 +1,13 @@
-// Shared PGlite bootstrap for tests that must follow the real migration path.
-//
-// scripts/hq/migrate.ts applies schema.sql, then applyUpgrades(), then
-// member-auth-schema.sql, then builder-schema.sql, splitting each file on the
-// statement terminator and running one statement per call over the Neon HTTP
-// driver. This helper does exactly the same against PGlite, so a construct
-// the HTTP driver cannot run (a `DO $$` block, a `;` inside a comment or
-// string literal, two statements on one line) fails here before it fails in
-// production. Tests that call pg.exec() bypass the splitter and would not
-// catch those.
+// Application tests use the production migration runner against in-memory
+// Postgres. Legacy upgrade tests can still exercise the original replay path.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import type { BuilderDatabase, BuilderQuery } from "@/lib/hq/builder-db";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
+import { loadMigrations, runMigrations, type MigrationConnection } from "@/scripts/hq/migrations";
 
-/** The exact splitter from scripts/hq/migrate.ts. Keep the regex identical. */
+/** The historical splitter, retained for legacy migration fixtures only. */
 export function splitStatements(text: string): string[] {
   return text
     .split(/;\s*(?:\n|$)/)
@@ -34,14 +27,26 @@ export async function applySqlFile(pg: PGlite, name: string): Promise<number> {
   return statements.length;
 }
 
-/** The full migration in scripts/hq/migrate.ts order. Safe to run twice. */
-export async function applyMigrations(pg: PGlite): Promise<void> {
+/** Replays the pre-ledger upgrade path for historical compatibility tests. */
+export async function applyLegacyMigrations(pg: PGlite): Promise<void> {
   await applySqlFile(pg, "schema.sql");
   await applyUpgrades({
     query: async (text) => (await pg.query(text)).rows as Record<string, unknown>[],
   });
   await applySqlFile(pg, "member-auth-schema.sql");
   await applySqlFile(pg, "builder-schema.sql");
+}
+
+export function pgliteMigrationConnection(pg: PGlite): MigrationConnection {
+  return {
+    query: async (text, values) => ({ rows: (await pg.query(text, values)).rows as Record<string, unknown>[] }),
+    execute: (text) => pg.exec(text),
+  };
+}
+
+/** The same checksummed, transactional migration path as npm run hq:migrate. */
+export async function applyMigrations(pg: PGlite): Promise<void> {
+  await runMigrations(pgliteMigrationConnection(pg), loadMigrations());
 }
 
 /** A fresh in-process Postgres with the whole migration applied. */

@@ -14,46 +14,10 @@ import {
 import { materialLinks, type SubmissionMaterialLinks } from "./submission-readiness";
 
 /**
- * The final period's service (contracts.md's "Final submission" row,
- * implemented in phase 10): the submission snapshot each authorized surface
- * reads, the bounded server-side refresh, and the reconciliation that runs
- * when the submission period closes.
- *
- * Four rules the plan sets, and where each one lives.
- *
- * 1. **"Checklist readiness does not set Submitted. A confirmed official
- *    submission signal does."** Nothing here writes `submission_status`.
- *    `interpretSubmission` in ./colosseum-snapshot is still its only writer,
- *    reached through `refreshColosseumTeam`, and this module only ever reads
- *    the column back. A checklist is computed in ./submission-readiness,
- *    which is pure and cannot reach a database at all.
- * 2. **"Use bounded server-side refreshes during the final period if
- *    configured; do not poll Colosseum from every browser tab."**
- *    `dueSubmissionRefreshes` answers "which snapshots are stale RIGHT NOW",
- *    from stored configuration, the same shape phase 8's `dueReminders` uses;
- *    `refreshDueSubmissions` takes a bounded batch of them. It runs only when
- *    an admin has set an interval, and only while a submission period is
- *    open.
- * 3. **"At final closure, reconcile submission evidence where available. If
- *    the API is unavailable, preserve Not checked/stale information and flag
- *    reconciliation as pending internally; do not claim an unverified
- *    submission failure."** A closed submission period gets one
- *    `hq_submission_reconciliations` row per accountable imported project,
- *    `pending` until evidence arrives. A failed read increments `attempts`
- *    and records HQ's own error code; it never writes a status, and it never
- *    resolves.
- * 4. **"Historical corrections based on delayed authoritative evidence are
- *    audited. A submission made after the deadline remains late and does not
- *    erase an on-time failure."** Evidence of an ON-TIME submission for a
- *    week recorded as missed goes through `correctOutcome`, which writes the
- *    correction beside the original with a mandatory reason and an audit
- *    event. Evidence of a LATE submission is recorded and corrects nothing.
- *
- * It is reached from the operator Server Actions through ./jobs, so it must
- * stay clear of the public member auth graph (`tests/hq/operator-imports.test.ts`).
- * That is why the authorization for a member-facing read is done by the
- * CALLER (./reporting-surface, which already holds the decision) and not here:
- * everything below takes ids it has been given and answers about them.
+ * Server-side submission refresh and reconciliation. Callers authorize reads;
+ * this module stays session-free for operator jobs. Only authoritative source
+ * evidence sets submission status. Outages leave reconciliation pending, and
+ * delayed on-time evidence corrects history through the audited outcome service.
  */
 
 /** The reason recorded on an audited correction, so the audit trail says what the evidence was. */
@@ -61,15 +25,10 @@ const CORRECTION_REASON = (submittedAt: string) =>
   `Colosseum confirmed an on-time submission at ${submittedAt}, after this period closed.`;
 
 /** How many stale snapshots one scheduled pass refreshes. Small on purpose: each one is an outbound request. */
-export const SUBMISSION_REFRESH_BATCH = 5;
+const SUBMISSION_REFRESH_BATCH = 5;
 /** How many pending reconciliations one pass attempts, for the same reason. */
-export const RECONCILE_BATCH = 5;
-/**
- * How long a pass may spend on Colosseum before it stops and leaves the rest
- * for the next one. The job endpoint declares `maxDuration = 60` and shares it
- * with the reminder drain, so the submission half takes a slice rather than
- * the whole budget.
- */
+const RECONCILE_BATCH = 5;
+/** Share the job endpoint's time budget with reminders; leave unfinished work for the next pass. */
 const SOURCE_BUDGET_MS = 12_000;
 // One Colosseum read times out after six seconds. Leave time to record its
 // result before beginning another request or returning to the job runner.
@@ -198,38 +157,13 @@ export async function readSubmissionReconciliations(
   return rows.map(toReconciliation);
 }
 
-/** The edition's reconciliations, newest first. Operator gated by its caller; this is a read, not a decision. */
-export async function listSubmissionReconciliations(
-  db: BuilderQuery,
-  input: { hackathonId: number; limit?: number },
-): Promise<SubmissionReconciliation[]> {
-  const limit = Math.max(1, Math.min(200, Math.floor(input.limit ?? 100)));
-  const { rows } = await db.query(
-    `SELECT ${RECONCILE_COLUMNS} FROM hq_submission_reconciliations WHERE hackathon_id = $1 ORDER BY updated_at DESC LIMIT $2`,
-    [input.hackathonId, limit],
-  );
-  return rows.map(toReconciliation);
-}
-
-export type DueSubmissionRefresh = {
+type DueSubmissionRefresh = {
   projectId: string;
   hackathonId: number;
   projectUrl: string;
 };
 
-/**
- * Which imported projects' snapshots are stale enough to re-read, at this
- * instant, in editions whose submission period is open and whose admin has
- * set a refresh interval.
- *
- * Every clause is a decision the plan states. The interval comes from stored
- * configuration, so nothing runs on a deployment that has not asked for it.
- * The period must be the submission one and must be open, because this is the
- * final period's help and not a background poller. The project must be in
- * reporting and not paused, for the same reason a paused project gets no
- * reminder. And the order puts the projects with no confirmed submission
- * first, because those are the ones an answer would change something for.
- */
+/** Refresh only configured, open submission periods; prioritize projects without a confirmed submission. */
 export async function dueSubmissionRefreshes(
   db: BuilderQuery,
   input: { atMs?: number; hackathonId?: number; limit?: number } = {},
@@ -266,15 +200,7 @@ export async function dueSubmissionRefreshes(
 
 export type SubmissionRefreshSummary = { attempted: number; refreshed: number; failed: number; stoppedOnBudget: boolean };
 
-/**
- * Re-reads a bounded batch of stale snapshots.
- *
- * `refreshColosseumTeam` is phase 3's, untouched: it writes the snapshot and
- * the submission status on success and records the failure without changing
- * either on error, which is precisely "store verification timestamps and
- * retain last-known results on failure". Nothing is added here but the choice
- * of which projects and how many.
- */
+/** Refresh a bounded batch; source failures retain the last successful snapshot. */
 export async function refreshDueSubmissions(
   db: BuilderQuery,
   input: { atMs?: number; hackathonId?: number; limit?: number; fetcher?: ColosseumFetch; deadlineMs?: number } = {},
@@ -302,23 +228,9 @@ export async function refreshDueSubmissions(
 }
 
 /**
- * Opens one reconciliation per accountable imported project of every
- * submission period that has closed and has none yet. Idempotent, and a
- * catch-up rather than a step of the closure.
- *
- * It reads the CLOSED PERIOD'S OWN OUTCOMES rather than a status computed
- * now, which is what makes it a catch-up: the rows are there whoever closed
- * the period and whenever, so a pass that died between closing a week and
- * opening its reconciliations is repaired by the next one instead of leaving
- * a closed final period with nothing tracking its unverified submissions
- * forever.
- *
- * Only imported projects. A project an admin created in the CRM has no
- * Colosseum source at all, so there is no evidence that could ever arrive for
- * it and a pending row would be a question nobody can answer. Only
- * accountable ones, for the same reason a paused project has no missed week:
- * the reconciliation exists to correct a recorded outcome, and an exempt
- * project has none to correct.
+ * Open missing reconciliations from closed outcomes so a later job repairs
+ * interrupted closure runs. Exempt and CRM-only projects have no evidence to
+ * reconcile and receive no pending row.
  */
 export async function openSubmissionReconciliations(
   db: BuilderDatabase | BuilderQuery,
@@ -354,25 +266,9 @@ export type ReconcileSummary = {
 };
 
 /**
- * Attempts the pending reconciliations, oldest first, in a bounded batch.
- *
- * The honest cases, spelled out because getting any of them wrong would
- * manufacture history:
- *
- * - **The source cannot be reached.** `attempts` goes up, HQ's own error code
- *   is recorded, the row stays `pending` and NOTHING is written about the
- *   submission. An outage is not evidence of a failure to submit.
- * - **Colosseum answers, on time.** The evidence is recorded with the
- *   deadline it was judged against. If the closed week was recorded as
- *   missed, `correctOutcome` writes the correction beside the original with
- *   its reason and an audit event, and `outcome_corrected` stops a re-run
- *   doing it twice. The discovery being late changes nothing: the submitted
- *   timestamp and the deadline are what decide it.
- * - **Colosseum answers, after the deadline.** The evidence is recorded,
- *   `on_time` is false, and the missed week stands. A late submission does
- *   not erase an on-time failure.
- * - **Colosseum answers, nothing submitted.** Recorded, resolved, nothing
- *   corrected. The week already says what it says.
+ * Outages stay pending. Authoritative on-time submissions can correct a missed
+ * week once; late or absent submissions resolve without changing its outcome.
+ * Judge evidence against the deadline stored at closure, not today's settings.
  */
 export async function reconcileSubmissions(
   db: BuilderDatabase,
@@ -473,16 +369,7 @@ export async function reconcileSubmissions(
   return summary;
 }
 
-/**
- * Corrects a closed week that recorded a miss, when the evidence says the
- * team submitted on time after all.
- *
- * `correctOutcome` refuses an outcome that already reads the way it is being
- * asked for (`unchanged`), which is exactly what should happen for a week the
- * closure already completed, so there is no separate check here for it. A
- * week with no recorded outcome at all (`not_found`) is also not an error:
- * the project was not accountable for it.
- */
+/** An already-complete outcome or an exempt project needs no correction; neither is an error. */
 async function correctOnTimeSubmission(
   db: BuilderDatabase,
   input: { actor: Actor; periodId: string; projectId: string; submittedAt: string | null },

@@ -46,8 +46,3 @@ export function slugify(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 60);
 }
-
-/** Whether the hackathon is running today ("YYYY-MM-DD" strings compare as dates). */
-export function isLive(h: { startDate: string; endDate: string }, todayIso: string): boolean {
-  return h.startDate <= todayIso && todayIso <= h.endDate;
-}

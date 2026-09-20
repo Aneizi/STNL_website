@@ -33,7 +33,7 @@ export type OnboardingConfig = {
 };
 
 /** A linked Telegram identity as Admin shows it. `username` is null when Telegram reports none. */
-export type TelegramLogin = { username: string | null };
+type TelegramLogin = { username: string | null };
 
 /**
  * How an account signs in, for display. `email` is the verified login
@@ -229,14 +229,14 @@ export async function getReportingAdminData(): Promise<ReportingAdminData> {
 }
 
 /** How reachable a Captain is, for the Projects board's own Captain line. */
-export type CaptainReach = {
+type CaptainReach = {
   contact: string | null;
   telegram: boolean;
   /** Telegram connected AND messaging agreed to. The bot cannot message an account that only did the first. */
   botMessaging: boolean;
 };
 
-export type ProjectReportingBoard = {
+type ProjectReportingBoard = {
   /** One row per project in weekly reporting, keyed by project id in the map below. */
   statuses: ProjectReportingStatus[];
   /** Reach details for the Captains currently assigned in this edition, keyed by account id. */

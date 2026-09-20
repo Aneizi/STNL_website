@@ -1,3 +1,4 @@
+-- Frozen input to 0001-legacy-bootstrap. Add new changes in migrations/NNNN-name.sql.
 -- Additive public HQ onboarding tables. Apply after schema.sql and upgrades.ts.
 -- Public identities never reference hq_users, the operator authentication table.
 --
@@ -336,41 +337,43 @@ DROP TABLE IF EXISTS hq_project_challenges;
 ALTER TABLE hq_project_members ADD COLUMN IF NOT EXISTS avatar_url text;
 
 -- Backfill the normalized fields from the snapshot each row already holds,
--- matched by the row's own raw payload rather than by name. Every statement
--- is guarded on the column still being NULL, so each one matches nothing on a
--- fresh database, nothing on a re-run, and never overwrites a later refresh.
+-- matched by the row's own raw payload rather than by name. source_status
+-- arrived with these normalized columns: older rows receive 'never', while
+-- current imports/refreshes write 'ok' (or 'error' after a failed refresh).
+-- Only legacy 'never' rows need this backfill. NULL/empty values on checked
+-- rows may be deliberate parser results and must survive ledger adoption.
 -- Raw source URLs remain untrusted. Never restore a rejected scheme,
 -- credential-bearing URL or control character into the normalized fields.
-UPDATE hq_project_onboarding SET category = raw->'project'->>'category' WHERE category IS NULL AND raw->'project'->>'category' IS NOT NULL;
-UPDATE hq_project_onboarding SET twitter_handle = raw->'project'->>'twitterHandle' WHERE twitter_handle IS NULL AND raw->'project'->>'twitterHandle' IS NOT NULL;
-UPDATE hq_project_onboarding SET website = raw->'project'->>'website' WHERE website IS NULL
+UPDATE hq_project_onboarding SET category = raw->'project'->>'category' WHERE source_status = 'never' AND category IS NULL AND raw->'project'->>'category' IS NOT NULL;
+UPDATE hq_project_onboarding SET twitter_handle = raw->'project'->>'twitterHandle' WHERE source_status = 'never' AND twitter_handle IS NULL AND raw->'project'->>'twitterHandle' IS NOT NULL;
+UPDATE hq_project_onboarding SET website = raw->'project'->>'website' WHERE source_status = 'never' AND website IS NULL
   AND (raw->'project'->>'website') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'website')) = 0;
-UPDATE hq_project_onboarding SET repo_link = raw->'project'->>'repoLink' WHERE repo_link IS NULL
+UPDATE hq_project_onboarding SET repo_link = raw->'project'->>'repoLink' WHERE source_status = 'never' AND repo_link IS NULL
   AND (raw->'project'->>'repoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'repoLink')) = 0;
-UPDATE hq_project_onboarding SET presentation_link = raw->'project'->>'presentationLink' WHERE presentation_link IS NULL
+UPDATE hq_project_onboarding SET presentation_link = raw->'project'->>'presentationLink' WHERE source_status = 'never' AND presentation_link IS NULL
   AND (raw->'project'->>'presentationLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'presentationLink')) = 0;
-UPDATE hq_project_onboarding SET technical_demo_link = raw->'project'->>'technicalDemoLink' WHERE technical_demo_link IS NULL
+UPDATE hq_project_onboarding SET technical_demo_link = raw->'project'->>'technicalDemoLink' WHERE source_status = 'never' AND technical_demo_link IS NULL
   AND (raw->'project'->>'technicalDemoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'technicalDemoLink')) = 0;
-UPDATE hq_project_onboarding SET pitch_video_link = raw->'project'->>'pitchVideoLink' WHERE pitch_video_link IS NULL
+UPDATE hq_project_onboarding SET pitch_video_link = raw->'project'->>'pitchVideoLink' WHERE source_status = 'never' AND pitch_video_link IS NULL
   AND (raw->'project'->>'pitchVideoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'pitchVideoLink')) = 0;
-UPDATE hq_project_onboarding SET demo_video_link = raw->'project'->>'demoVideoLink' WHERE demo_video_link IS NULL
+UPDATE hq_project_onboarding SET demo_video_link = raw->'project'->>'demoVideoLink' WHERE source_status = 'never' AND demo_video_link IS NULL
   AND (raw->'project'->>'demoVideoLink') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->>'demoVideoLink')) = 0;
-UPDATE hq_project_onboarding SET image_url = raw->'project'->'image'->>'url' WHERE image_url IS NULL
+UPDATE hq_project_onboarding SET image_url = raw->'project'->'image'->>'url' WHERE source_status = 'never' AND image_url IS NULL
   AND (raw->'project'->'image'->>'url') ~* '^https?://[^/@[:space:][:cntrl:]]+([/?#][^[:space:][:cntrl:]]*)?$' AND position(chr(92) in (raw->'project'->'image'->>'url')) = 0;
 UPDATE hq_project_onboarding SET external_hackathon_id = (raw->'project'->'hackathon'->>'id')::int
-WHERE external_hackathon_id IS NULL
+WHERE source_status = 'never' AND external_hackathon_id IS NULL
   AND CASE WHEN (raw->'project'->'hackathon'->>'id') ~ '^[0-9]{1,10}$'
     THEN (raw->'project'->'hackathon'->>'id')::bigint BETWEEN 1 AND 2147483647 ELSE false END;
 -- The current public response supplies hackathonId directly on project.
 UPDATE hq_project_onboarding SET external_hackathon_id = (raw->'project'->>'hackathonId')::int
-WHERE external_hackathon_id IS NULL
+WHERE source_status = 'never' AND external_hackathon_id IS NULL
   AND CASE WHEN (raw->'project'->>'hackathonId') ~ '^[0-9]{1,10}$'
     THEN (raw->'project'->>'hackathonId')::bigint BETWEEN 1 AND 2147483647 ELSE false END;
-UPDATE hq_project_onboarding SET external_hackathon_slug = raw->'project'->'hackathon'->>'slug' WHERE external_hackathon_slug IS NULL AND raw->'project'->'hackathon'->>'slug' IS NOT NULL;
-UPDATE hq_project_onboarding SET external_hackathon_name = raw->'project'->'hackathon'->>'name' WHERE external_hackathon_name IS NULL AND raw->'project'->'hackathon'->>'name' IS NOT NULL;
+UPDATE hq_project_onboarding SET external_hackathon_slug = raw->'project'->'hackathon'->>'slug' WHERE source_status = 'never' AND external_hackathon_slug IS NULL AND raw->'project'->'hackathon'->>'slug' IS NOT NULL;
+UPDATE hq_project_onboarding SET external_hackathon_name = raw->'project'->'hackathon'->>'name' WHERE source_status = 'never' AND external_hackathon_name IS NULL AND raw->'project'->'hackathon'->>'name' IS NOT NULL;
 UPDATE hq_project_onboarding SET tracks = ARRAY(SELECT jsonb_array_elements_text(
   CASE WHEN jsonb_typeof(raw->'project'->'tracks') = 'array' THEN raw->'project'->'tracks' ELSE '[]'::jsonb END))
-WHERE tracks = '{}' AND jsonb_typeof(raw->'project'->'tracks') = 'array';
+WHERE source_status = 'never' AND tracks = '{}' AND jsonb_typeof(raw->'project'->'tracks') = 'array';
 -- The raw snapshot is proof the source was read successfully once, at import
 -- time. submission_status is deliberately NOT backfilled: no phase 3 status
 -- check has run for these rows, and "Not checked" is the honest answer until

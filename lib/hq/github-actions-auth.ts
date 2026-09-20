@@ -35,7 +35,7 @@ const REPOSITORY_OWNER_ID = "278071737";
 const MAIN_REF = "refs/heads/main";
 
 /** One scheduled job: the audience its token is minted for, and the only workflow file allowed to mint it. */
-export type ScheduledJob = { audience: string; workflow: string };
+type ScheduledJob = { audience: string; workflow: string };
 
 export const LUMA_SYNC_JOB: ScheduledJob = { audience: LUMA_SYNC_AUDIENCE, workflow: "sync-luma.yml" };
 export const HQ_JOBS_JOB: ScheduledJob = { audience: HQ_JOBS_AUDIENCE, workflow: "hq-jobs.yml" };
@@ -62,7 +62,7 @@ export function isTrustedJobClaims(payload: JWTPayload, job: ScheduledJob): bool
  * workflow check then refuses a token minted with the right audience by the
  * wrong workflow file.
  */
-export async function isTrustedJobRequest(request: Request, job: ScheduledJob): Promise<boolean> {
+async function isTrustedJobRequest(request: Request, job: ScheduledJob): Promise<boolean> {
   const header = request.headers.get("authorization");
   const match = /^Bearer ([^ ]+)$/.exec(header ?? "");
   if (!match) return false;
@@ -78,9 +78,6 @@ export async function isTrustedJobRequest(request: Request, job: ScheduledJob): 
     return false;
   }
 }
-
-/** The Luma mirror sync, unchanged in behaviour: the same audience, the same workflow, the same answers. */
-export const isTrustedLumaSyncClaims = (payload: JWTPayload): boolean => isTrustedJobClaims(payload, LUMA_SYNC_JOB);
 export const isTrustedLumaSyncRequest = (request: Request): Promise<boolean> => isTrustedJobRequest(request, LUMA_SYNC_JOB);
 
 /** Phase 8's reminders, closures and retention sweep. Its own audience and its own workflow file. */

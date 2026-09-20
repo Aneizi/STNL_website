@@ -27,7 +27,7 @@ import { isPlaceholderEmail, readTelegramClaims, TELEGRAM_PROVIDER_ID, telegramP
 export const RECENT_SESSION_MS = 15 * 60 * 1000;
 
 /** How long a confirmed link or unlink stays usable before the member has to confirm again. */
-export const TELEGRAM_INTENT_MS = 10 * 60 * 1000;
+const TELEGRAM_INTENT_MS = 10 * 60 * 1000;
 
 /**
  * Endpoints that take an address from the body and would mail it, look it
@@ -74,9 +74,9 @@ type AccountRow = { providerId?: string | null; userId?: string | null; accountI
 type Logger = { error: (message: string, ...args: unknown[]) => void; warn: (message: string, ...args: unknown[]) => void };
 type InternalAdapter = GenericEndpointContext["context"]["internalAdapter"];
 /** The slice of Better Auth's internal adapter the confirmation intent needs. */
-export type TelegramIntentStore = Pick<InternalAdapter, "createVerificationValue" | "deleteVerificationByIdentifier" | "consumeVerificationValue">;
+type TelegramIntentStore = Pick<InternalAdapter, "createVerificationValue" | "deleteVerificationByIdentifier" | "consumeVerificationValue">;
 /** The three confirmed changes to the ways of signing in; `change-email` is bound to the address it was confirmed for. */
-export type TelegramIntent = "link" | "unlink" | "change-email";
+type TelegramIntent = "link" | "unlink" | "change-email";
 
 const isTelegram = (account: AccountRow | null | undefined): account is AccountRow & { userId: string } =>
   Boolean(account && account.providerId === TELEGRAM_PROVIDER_ID && typeof account.userId === "string");
@@ -278,7 +278,7 @@ function databaseHooks(): DatabaseHooks {
   };
 }
 
-export type HqTelegramIdentityOptions = {
+type HqTelegramIdentityOptions = {
   /** Client credentials from BotFather; null keeps every guard active but registers no provider. */
   provider: TelegramProviderEnv | null;
 };

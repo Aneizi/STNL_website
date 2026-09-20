@@ -6,7 +6,7 @@ import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware, isAPIError } from "better-auth/api";
 import { customSession, emailOTP } from "better-auth/plugins";
 import { nextCookies } from "better-auth/next-js";
-import { Pool } from "pg";
+import { getPool } from "./db";
 import { Resend } from "resend";
 import { getMemberAuthAvailability, memberAuthOrigin, memberAuthUsesSecureCookies, safeMemberNext } from "./member-auth-config";
 import { recordAuditEvent } from "./audit";
@@ -80,13 +80,7 @@ function createMemberAuth() {
     baseURL,
     secret: process.env.BETTER_AUTH_SECRET,
     trustedOrigins: [baseURL],
-    database: new Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 5,
-      idleTimeoutMillis: 20_000,
-      connectionTimeoutMillis: 10_000,
-      allowExitOnIdle: true,
-    }),
+    database: getPool(),
     user: {
       modelName: "hq_auth_user",
       // A placeholder address may only ever come from an OAuth identity without an email.

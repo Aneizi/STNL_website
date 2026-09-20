@@ -10,22 +10,7 @@ import {
   type ReportingSchedule,
 } from "./reporting-periods";
 
-/**
- * The edition's reporting schedule as it is stored, and which projects are in
- * reporting at all. Split out of ./reporting so that `lib/hq/builder-store.ts`
- * can enrol a team inside the import's own transaction: ./reporting reaches
- * the entry rules, those reach `./actor` and through it `./member-auth`, and
- * `./member-auth` imports the store — the same cycle `./authz-sql` and
- * `./placeholder-email` were extracted to avoid. Nothing here imports the
- * authorization modules at all, and `./actor` is a type-only import, erased
- * at compile time. (Phase 6 narrowed the authorization end of that chain too,
- * splitting the session-free decisions into `./authz-decisions`; this file
- * stays as it is, because an enrolment needs no decision.)
- *
- * Everything in this file is re-exported unchanged from ./reporting, which
- * stays the one module a caller looks in (contracts.md's "Reporting
- * service"). The split is a module-graph decision, not a second service.
- */
+/** Session-free schedule and enrolment operations; imports reuse their transaction to enrol teams atomically. */
 
 /** The campaign timezone when an edition has no `timezone` setting of its own; matches SETTINGS_FALLBACK in ./queries. */
 const DEFAULT_TIMEZONE = "Europe/Amsterdam";
@@ -57,19 +42,8 @@ const toTimeOfDay = (value: unknown): string => String(value).slice(0, 5);
 
 
 /**
- * The edition's reporting schedule, assembled from the records that already
- * own each part rather than from a copy of its own: the window from
- * `hq_hackathons.start_date`/`end_date` (what an admin sets for the edition),
- * the timezone from `hq_settings` (the campaign timezone every other
- * time-of-day read uses), and the final-period start plus nudge settings from
- * `hq_reporting_config`. Nothing here comes from Colosseum: Colosseum's own
- * `projectSubmissionEndDate` is a separate, external deadline, stored beside
- * this as `official_submission_deadline` when it differs, and it never moves
- * HQ's reporting window.
- *
- * Null for an edition that does not exist. An edition with no reporting
- * configuration row still has a schedule: a purely weekly one over its own
- * dates, with the column defaults for the nudge.
+ * HQ dates and timezone define the reporting window. Colosseum's separate
+ * submission deadline never moves it. Missing configuration defaults to weekly.
  */
 export async function readReportingSchedule(db: BuilderQuery, hackathonId: number): Promise<ReportingSchedule | null> {
   const { rows } = await db.query(
@@ -92,29 +66,14 @@ export async function readReportingSchedule(db: BuilderQuery, hackathonId: numbe
   };
 }
 
-/**
- * The edition's stored reporting configuration, as an admin edits it.
- *
- * `readReportingSchedule` above merges these values with the edition's own
- * dates and timezone, which is what the generator runs on; this is the raw
- * row, because a settings form must show what is stored and not what was
- * defaulted, and because `officialSubmissionDeadline` is not part of the
- * schedule at all (it is Colosseum's own cutoff, phase 10's input, and it
- * never moves HQ's window). An edition with no row reads back as the column
- * defaults with `stored: false`.
- */
+/** Read stored settings without merging the schedule; missing rows return defaults with stored: false. */
 export type ReportingConfig = {
   hackathonId: number;
   /** The local day the submission-focus period starts on, or null for a purely weekly schedule. */
   finalPeriodStartDate: string | null;
   /** Colosseum's own deadline when an admin has recorded one. Never read from Colosseum here. */
   officialSubmissionDeadline: string | null;
-  /**
-   * Where that deadline came from: an admin typed it, or HQ read it from the
-   * edition's own listing envelope. Null when there is no deadline at all.
-   * Provenance rather than decoration: an admin about to overwrite a value
-   * needs to know whether they are overwriting Colosseum's own answer.
-   */
+  /** Preserve whether the deadline came from an admin or Colosseum. */
   officialDeadlineSource: "admin" | "colosseum" | null;
   /** When the deadline was last read from Colosseum, whatever the outcome of that read. */
   officialDeadlineCheckedAt: string | null;
@@ -162,16 +121,7 @@ export async function readReportingConfig(db: BuilderQuery, hackathonId: number)
   return toConfig(hackathonId, rows[0]);
 }
 
-/**
- * Saves the edition's reporting configuration and returns it as stored.
- *
- * Deliberately does not regenerate the periods: changing the final-period
- * start changes the schedule, and the plan requires an admin to see which
- * stored weeks a change would move before it happens. The screen saves here,
- * reads `previewReportingPeriods`, and only then applies. Nothing validates
- * the window here either, because the window is the edition's own dates and
- * belongs to the hackathon record.
- */
+/** Save configuration separately from applying period changes, so existing reporting history can be protected. */
 export async function writeReportingConfig(
   db: BuilderDatabase | BuilderQuery,
   input: {
@@ -223,16 +173,7 @@ export async function writeReportingConfig(
   });
 }
 
-/**
- * Records the deadline HQ read from Colosseum's own listing envelope.
- *
- * Separate from `writeReportingConfig` because it is a different act: the
- * settings form saves what an admin typed, this stores what the source said
- * and stamps the read. `checkedAt` is written whatever the answer, so a
- * successful read that found no deadline is distinguishable from never having
- * looked, and a null `deadline` leaves any admin-entered value alone rather
- * than erasing it on an edition that has not published its window yet.
- */
+/** Stamp successful source reads even without a deadline; a missing source deadline must not erase an admin value. */
 export async function recordColosseumDeadline(
   db: BuilderDatabase | BuilderQuery,
   input: { hackathonId: number; deadline: string | null; checkedAt: string },
@@ -274,12 +215,7 @@ export const toPeriod = (row: Record<string, unknown>): ReportingPeriod => ({
   closedAt: row.closed_at == null ? null : toIso(row.closed_at),
 });
 
-/**
- * The period row's columns, optionally qualified by a table alias. A join
- * that brings `hq_hackathons` or `hq_projects` alongside makes `id`,
- * `start_date` and `end_date` ambiguous, so phase 8's job queries pass their
- * alias rather than restating the list with a prefix.
- */
+/** Qualify period columns when joins would make their names ambiguous. */
 export const periodColumns = (alias = ""): string => {
   const p = alias ? `${alias}.` : "";
   return `${p}id::text AS id, ${p}hackathon_id, ${p}sequence, ${p}mode, ${p}start_date, ${p}end_date, ${p}starts_at, ${p}ends_at, ${p}nudge_at, ${p}closed_at`;
@@ -298,12 +234,7 @@ export async function currentReportingPeriod(db: BuilderQuery, hackathonId: numb
   return periodForInstant(await listReportingPeriods(db, hackathonId), atMs);
 }
 
-/**
- * Why a stored period could not be moved to match the regenerated schedule.
- * `has_entries` and `has_outcomes`: people have already reported against it,
- * so relabelling it would silently move their week. `closed`: its outcomes
- * are history.
- */
+/** Entries, outcomes, and closed periods protect historical weeks from being moved or removed. */
 export type ReportingPeriodConflictReason = "has_entries" | "has_outcomes" | "closed";
 
 export type ReportingPeriodConflict = {
@@ -319,12 +250,7 @@ export type ReportingPeriodConflict = {
   outcomes: number;
 };
 
-/**
- * Why the schedule a change would leave behind is not one a campaign can run
- * on. `gap` is a day inside the campaign that belongs to no period at all,
- * `overlap` a day that belongs to two, and `missing_sequence` a hole in the
- * numbering. Each names the pair of weeks it falls between.
- */
+/** Invalid schedule boundaries, identified by the affected pair of weeks. */
 export type ReportingScheduleProblem = {
   kind: "gap" | "overlap" | "missing_sequence";
   /** The earlier of the two weeks, or 0 when the numbering itself is wrong from the start. */
@@ -342,12 +268,7 @@ export type ReportingPeriodPlan = {
   removed: number;
   /** Stored periods the change would have moved or dropped but must not. Show these to an admin before a live schedule change. */
   conflicts: ReportingPeriodConflict[];
-  /**
-   * True when nothing is written (or, in the preview, would be written)
-   * because the result would not be a continuous schedule. `added`,
-   * `updated` and `removed` still describe what was proposed, so an admin
-   * sees the change that was refused rather than three zeros.
-   */
+  /** A refused change still reports proposed counts so the admin can inspect what was blocked. */
   blocked: boolean;
   /** Why it was refused. Empty whenever `blocked` is false. */
   problems: ReportingScheduleProblem[];
@@ -366,12 +287,7 @@ async function storedPeriods(db: BuilderQuery, hackathonId: number): Promise<Sto
   return rows.map((row) => ({ ...toPeriod(row), entries: Number(row.entries ?? 0), outcomes: Number(row.outcomes ?? 0) }));
 }
 
-/**
- * The protection the conflict check makes, as a SQL predicate on the period
- * row being written: nothing has been reported against it. Used in the UPDATE
- * and DELETE themselves so the guarantee is the statement's, not only the
- * arithmetic's.
- */
+/** Recheck protection inside UPDATE/DELETE, not only in the earlier reconciliation calculation. */
 const UNREPORTED_PERIOD =
   "NOT EXISTS (SELECT 1 FROM hq_reporting_entries e WHERE e.period_id = hq_reporting_periods.id)"
   + " AND NOT EXISTS (SELECT 1 FROM hq_reporting_outcomes o WHERE o.period_id = hq_reporting_periods.id)";
@@ -397,13 +313,7 @@ const conflictOf = (stored: StoredPeriod, reason: ReportingPeriodConflictReason,
   entries: stored.entries, outcomes: stored.outcomes,
 });
 
-/**
- * What reconciling the stored periods with the current schedule would do.
- * A period is matched to a generated one by `sequence`, never by its dates:
- * that is what makes the generator's determinism worth having, and what stops
- * a one-day shift in the campaign window from being read as "every period was
- * deleted and four new ones created".
- */
+/** Match by stable sequence; shifting dates must not replace every period's identity. */
 function planPeriods(stored: StoredPeriod[], generated: GeneratedPeriod[]) {
   const bySequence = new Map(generated.map((period) => [period.sequence, period]));
   const add = generated.filter((period) => !stored.some((row) => row.sequence === period.sequence));
@@ -425,13 +335,7 @@ function planPeriods(stored: StoredPeriod[], generated: GeneratedPeriod[]) {
   return { add, update, remove, conflicts };
 }
 
-/**
- * The windows the plan would leave stored, in sequence order: a protected
- * period keeps its own dates, a movable one takes the generated ones, a
- * removed one is gone and an added one is new. This is what gets validated,
- * because "every individual change is safe" is not the same statement as
- * "the schedule that results is a schedule".
- */
+/** Validate the complete resulting schedule, including protected periods that retain their old dates. */
 type ProjectedPeriod = { sequence: number; startDate: string; endDate: string; startsAt: string; endsAt: string };
 
 function projectSchedule(stored: StoredPeriod[], plan: ReturnType<typeof planPeriods>): ProjectedPeriod[] {
@@ -450,18 +354,9 @@ function projectSchedule(stored: StoredPeriod[], plan: ReturnType<typeof planPer
 }
 
 /**
- * Whether a set of periods is still one continuous campaign: numbered 1..n
- * with no hole, and with each week's exclusive end exactly the next week's
- * start, so every day of the campaign belongs to exactly one week.
- *
- * Reconciliation matches a stored period to a generated one by `sequence` and
- * decides each one on its own. That is right for deciding what may move, and
- * not enough for deciding what may be written: a protected week keeping its
- * old dates while the week after it moves leaves a day that belongs to no
- * week (or, moving the other way, a day that belongs to two). Nothing
- * downstream has an answer for such a day — `periodForInstant` returns null
- * for the first and the earlier period for the second — so the whole change
- * is refused rather than half applied.
+ * Reject the entire change if retained and regenerated periods would leave
+ * gaps, overlaps, or missing sequence numbers. Individually safe edits can
+ * still produce an invalid combined schedule.
  */
 function scheduleProblems(periods: ProjectedPeriod[]): ReportingScheduleProblem[] {
   const problems: ReportingScheduleProblem[] = [];
@@ -511,16 +406,7 @@ export async function previewReportingPeriods(db: BuilderQuery, hackathonId: num
   };
 }
 
-/**
- * Brings the edition's stored periods in line with its schedule, in one
- * transaction, and returns them.
- *
- * Idempotent: a second call with an unchanged schedule writes nothing. A
- * period that already holds an entry or an outcome, or that has been closed,
- * is never moved or removed — it is returned as a conflict instead, so an
- * admin sees which weeks a date edit would have relabelled rather than
- * discovering it afterwards in the history.
- */
+/** Reconcile atomically and idempotently; reported or closed periods remain untouched and surface as conflicts. */
 export async function ensureReportingPeriods(db: BuilderDatabase | BuilderQuery, hackathonId: number): Promise<ReportingPeriodPlan> {
   return atomically(db, async (tx) => {
     // The first statement, before anything is read or decided: every one of
@@ -596,12 +482,7 @@ export async function ensureReportingPeriods(db: BuilderDatabase | BuilderQuery,
  * project itself, so a caller never has to look up an onboarding row that may
  * not exist just to label the row it is about to show.
  */
-/**
- * One pause a project has been through, open (`resumedAt: null`) while it is
- * the current one. Kept because `paused_at` alone answers only "right now":
- * resuming clears it, and every week the exemption covered would otherwise
- * become an accountable, missing week the moment the pause ended.
- */
+/** Pause history prevents resuming from retroactively turning exempt weeks into missed updates. */
 export type ReportingPause = { pausedAt: string; resumedAt: string | null };
 
 export type ReportingEligibility = {
@@ -674,24 +555,9 @@ export type ReportingEligibilityResult =
   | { ok: false; reason: "not_found" };
 
 /**
- * Puts a project into reporting: on a successful self-service import (no
- * `operatorId`, and no audit event, because the import's own
- * `project.imported` event in the same transaction already records it), or
- * when an admin explicitly enables an existing manually tracked project
- * (`operatorId` names them and the change is audited). The operator id is the
- * whole difference, which is why there is no `Actor` parameter here: an actor
- * would be the operator that id already names, and taking one would pull
- * `./actor` — and through it the member auth graph — into a module the store
- * imports.
- *
- * Idempotent, and it never moves an existing `eligible_from`: re-enabling a
- * project that was already in reporting must not erase the weeks it was
- * already accountable for. Resuming a paused project clears the pause and
- * leaves the original start alone, for the same reason.
- *
- * Entering reporting is also what makes the edition's schedule exist ("store
- * period identities once reporting begins"), so the first team in an edition
- * brings its periods with it.
+ * Preserve the original eligible_from when enabling or resuming reporting.
+ * Imports audit enrolment through project.imported; explicit operator changes
+ * get their own event. The first enrolment also materializes the schedule.
  */
 export async function enableReporting(
   db: BuilderDatabase | BuilderQuery,
@@ -727,13 +593,7 @@ export async function enableReporting(
   });
 }
 
-/**
- * Pauses or resumes a project's future reporting. A pause never removes a
- * closed outcome: the plan's "Admins can pause future reporting without
- * deleting past outcomes" is met by the pause being a state on the
- * eligibility row that `reportingStatus` and `closePeriod` read, and by
- * neither of them ever rewriting a period that is already closed.
- */
+/** Pause future accountability without deleting or rewriting closed outcomes. */
 export async function pauseReporting(
   db: BuilderDatabase | BuilderQuery,
   input: { projectId: string; hackathonId: number; paused: boolean; operatorId: string; reason?: string },

@@ -1,3 +1,5 @@
+import type { ProjectSourceFields, SubmissionStatus } from "./colosseum-snapshot";
+
 export const PROJECT_STAGES = [
   { value: 'idea', label: 'Idea' },
   { value: 'mvp', label: 'Prototype / MVP' },
@@ -10,24 +12,12 @@ export type ProjectStage = (typeof PROJECT_STAGES)[number]['value'];
 /** A failure whose message is safe to show the member or operator who caused it. */
 export class BuilderError extends Error {}
 
-/**
- * The country a project must be registered under on Colosseum for HQ to
- * import it. Compared case- and whitespace-insensitively because the value
- * is whatever the builder picked on Colosseum, not an HQ enum; the string
- * itself is the plan's, `project.country === "Netherlands"`.
- */
+/** Match the configured country spelling case- and whitespace-insensitively. */
 export const NETHERLANDS = 'Netherlands';
 export const isNetherlands = (country: string | null | undefined): boolean =>
   typeof country === 'string' && country.trim().toLowerCase() === NETHERLANDS.toLowerCase();
 
-/**
- * Why an import was refused by HQ itself, as opposed to by Colosseum. Every
- * one of these is a distinct, actionable outcome with its own wording: the
- * plan forbids collapsing any of them into a shared generic failure. The
- * transport and lookup failures (a malformed link, a 404, a timeout, a 429,
- * an unreadable body) keep their own `ColosseumErrorCode` and are mapped in
- * ./project-import.ts.
- */
+/** HQ import gates; upstream/transport failures are mapped separately in project-import.ts. */
 export type ImportRefusal =
   | 'edition_not_configured'
   | 'imports_closed'
@@ -51,12 +41,7 @@ export class ImportRefusedError extends BuilderError {
   }
 }
 
-/**
- * Why a join link cannot be used. Four separate outcomes, and **not one of
- * these messages names the team, its members or who created the link**: a
- * link is a bearer token, so someone holding a stale or guessed one must
- * learn nothing about the team behind it.
- */
+/** Bearer-link failures reveal no team, member or inviter identity. */
 export type JoinLinkRefusal = 'invalid' | 'expired' | 'used' | 'other_edition';
 
 export const JOIN_LINK_MESSAGES: Record<JoinLinkRefusal, string> = {
@@ -74,17 +59,9 @@ export type JoinProject = {
 };
 
 export type JoinLinkLookup = { ok: true; data: JoinProject } | { ok: false; reason: JoinLinkRefusal };
-/**
- * The signed-in public account as the store writes it: the stable account id,
- * the verified login email (null for a Telegram-only account or an unverified
- * address; the internal placeholder never appears here) and the display name.
- */
+/** Verified login identity; Telegram-only or unverified email is null, never a placeholder. */
 export type BuilderIdentity = { id: string; email: string | null; name: string };
-/**
- * The stored public account. `contactEmail` is the optional, self-declared
- * address on the profile: read from hq_builder_profiles.contact_email, never
- * derived from the login address, and never written by an account sync.
- */
+/** Self-declared contact email is separate from login and never changed by account sync. */
 export type BuilderUser = BuilderIdentity & { contactEmail: string | null };
 export type BuilderHackathon = {
   id: number; name: string; startDate: string; endDate: string;
@@ -93,27 +70,11 @@ export type BuilderHackathon = {
   signupUrl: string;
 };
 /**
- * The normalized Colosseum snapshot stored beside a team, as every surface
- * reads it. Submission and readiness are separate: `submissionStatus` comes
- * from `lib/hq/colosseum-snapshot.ts#interpretSubmission` and nothing else,
- * and `completion` is the readiness diagnostic that must never drive it.
- * `sourceStatus`/`sourceCheckedAt` are freshness, not truth about the
- * project: a failed check keeps the last known submission status.
+ * Stored source fields shared by member surfaces. Submission is separate from readiness;
+ * failed source checks retain the last known state and record only freshness/error metadata.
  */
-export type BuilderTeamSource = {
-  category: string | null;
-  tracks: string[];
-  /** Source-labelled: a handle found on the Colosseum project, not necessarily the project's own account. */
-  twitterHandle: string | null;
-  website: string | null;
-  repoLink: string | null;
-  presentationLink: string | null;
-  technicalDemoLink: string | null;
-  pitchVideoLink: string | null;
-  demoVideoLink: string | null;
-  imageUrl: string | null;
-  submissionStatus: 'not_checked' | 'submitted' | 'not_submitted';
-  submittedAt: string | null;
+export type BuilderTeamSource = ProjectSourceFields & {
+  submissionStatus: SubmissionStatus;
   completion: { isComplete: boolean; missingCount: number } | null;
   sourceStatus: 'never' | 'ok' | 'error';
   /** When the source was last read successfully. A failed check leaves it alone. */

@@ -13,7 +13,7 @@ import { getTelegramIdentity } from "./identity";
  * (the identity plugin calls `revokeBotConsent` from its unlink hook).
  * Nothing reads this row to deliver a message before phase 7.
  */
-export type BotConsent = {
+type BotConsent = {
   userId: string;
   /** The Telegram user id the consent was given for, as a string like everywhere else. */
   telegramUserId: string;

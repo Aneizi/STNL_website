@@ -5,9 +5,9 @@ import { nowMs, todayInTz, todayLabel } from "@/lib/hq/format";
 import { ensureHackathon, requireHackathonId } from "@/lib/hq/hackathon";
 import {
   getClassifiers,
+  getDashboardProjects,
   getHackathon,
   getMilestones,
-  getProjects,
   getSettings,
 } from "@/lib/hq/queries";
 
@@ -21,7 +21,7 @@ export default async function DashboardPage() {
     requireUser(),
     getHackathon(hackathonId),
     getSettings(hackathonId),
-    getProjects(hackathonId),
+    getDashboardProjects(hackathonId),
     getMilestones(hackathonId),
     getClassifiers(hackathonId),
   ]);

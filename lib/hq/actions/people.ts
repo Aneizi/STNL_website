@@ -54,7 +54,7 @@ export async function createPerson(input: z.infer<typeof createSchema>): Promise
     `,
     activityStmt(user.id, hackathon.id, `Added ${name} to people`),
   ]);
-  refreshHq();
+  refreshHq("people");
   return { ok: true };
 }
 
@@ -83,24 +83,16 @@ export async function updatePerson(
   const { name, hackathonId } = person;
 
   const data = parsed.data;
-  let update;
-  switch (data.field) {
-    case "name": {
-      const trimmed = data.value.trim();
-      if (!trimmed) return { ok: false };
-      update = sql`UPDATE hq_people SET name = ${trimmed} WHERE id = ${personId}`;
-      break;
-    }
-    case "roleId":
-      update = sql`UPDATE hq_people SET role_id = ${data.value} WHERE id = ${personId}`;
-      break;
-    case "notes":
-      update = sql`UPDATE hq_people SET notes = ${data.value} WHERE id = ${personId}`;
-      break;
-  }
+  const value = data.field === "name" ? data.value.trim() : data.value;
+  if (data.field === "name" && !value) return { ok: false };
+  const update = {
+    name: sql`UPDATE hq_people SET name = ${value} WHERE id = ${personId}`,
+    roleId: sql`UPDATE hq_people SET role_id = ${value} WHERE id = ${personId}`,
+    notes: sql`UPDATE hq_people SET notes = ${value} WHERE id = ${personId}`,
+  }[data.field];
 
   await sql.transaction([update, activityStmt(user.id, hackathonId, `Updated ${name}`)]);
-  refreshHq();
+  refreshHq("people");
   return { ok: true };
 }
 
@@ -158,7 +150,7 @@ export async function correctPersonMatch(input: z.infer<typeof correctionSchema>
     if (error instanceof BuilderError) return { ok: false, error: error.message };
     throw error;
   }
-  refreshHq();
+  refreshHq("people");
   return { ok: true };
 }
 
@@ -183,6 +175,6 @@ export async function deletePerson(input: z.infer<typeof deletePersonSchema>): P
     cardId: parsed.data.personId, hackathonId: hackathon.id, operatorId: user.id,
   });
   if (!removed) return { ok: false, error: "Person not found." };
-  refreshHq();
+  refreshHq("people");
   return { ok: true };
 }

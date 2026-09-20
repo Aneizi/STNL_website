@@ -6,13 +6,7 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   {
-    // eslint-config-next's own rule (typescript.js) is 'warn' with no
-    // options, so a leading underscore on an otherwise-required parameter
-    // (a useActionState previous-state argument, a Server Action's unused
-    // formData) still warns unless it is followed by a used one. This keeps
-    // the underscore convention already in use across the repo (e.g.
-    // lib/hq/actions/auth.ts's login(_prev, formData)) from being purely
-    // cosmetic.
+    // Required action parameters may be intentionally unused.
     rules: {
       "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_" }],
     },
@@ -24,8 +18,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
-    // Exported HTML prototypes and their bundled runtime are design references.
-    "docs/plans/design_handoff_colosseum_hq/design/**",
+    "setup/**",
+    "output/**",
+    "docs/plans/**",
+    "public/deck/**",
   ]),
 ]);
 

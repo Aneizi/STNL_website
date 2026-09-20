@@ -1,12 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach,describe,expect,it,vi } from "vitest";
 import {
-  assertProjectHackathon,
-  ColosseumApiError,
-  colosseumProjectUrl,
-  fetchColosseumProject,
-  fetchEditionSubmissionWindow,
-  parseColosseumProjectUrl,
-  type ColosseumFetch,
+colosseumProjectUrl,
+fetchColosseumProject,
+fetchEditionSubmissionWindow,
+parseColosseumProjectUrl,
+type ColosseumFetch
 } from "../lib/colosseum-api";
 import detail from "./hq/fixtures/colosseum/detail.json";
 import errors from "./hq/fixtures/colosseum/errors.json";
@@ -32,10 +30,6 @@ function mockFetch(responses: Response[]) {
     if (!response) throw new Error("Unexpected fetch");
     return response;
   });
-}
-
-async function project() {
-  return fetchColosseumProject(projectUrl, mockFetch([json(detail.submitted)]));
 }
 
 afterEach(() => vi.useRealTimers());
@@ -148,13 +142,6 @@ describe("project adapter", () => {
   ])("rejects inconsistent identity/schema %j", async (overrides) => {
     await expect(fetchColosseumProject(projectUrl, mockFetch([json(projectResponse(overrides))])))
       .rejects.toMatchObject({ code: "INVALID_RESPONSE" });
-  });
-
-  it("requires the correct hackathon ID and slug", async () => {
-    const item = await project();
-    expect(() => assertProjectHackathon(item, { externalId: 6, slug: "frontier" })).not.toThrow();
-    expect(() => assertProjectHackathon(item, { externalId: 6, slug: "worldsfair" })).toThrow(ColosseumApiError);
-    expect(() => assertProjectHackathon(item, { externalId: 7, slug: "frontier" })).toThrow(ColosseumApiError);
   });
 
   // Phase 3: every one of these is its own outcome. A 4xx that is not a 404

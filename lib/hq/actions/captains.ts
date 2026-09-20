@@ -44,7 +44,7 @@ const createSchema = z.object({
  * nowhere else. A distinct type rather than a bent ActionResult so a caller
  * cannot mistake the two shapes.
  */
-export type CreateCaptainInvitationResult = { ok: true; token: string; invitation: CaptainInvitationListing } | { ok: false; error: string };
+type CreateCaptainInvitationResult = { ok: true; token: string; invitation: CaptainInvitationListing } | { ok: false; error: string };
 
 /** Creates a Captain invitation and returns its link once. Copy it now — refreshing Admin never shows it again. */
 export async function createCaptainInvitation(input: { label?: string; maxRedemptions: number; expiresInDays: number }): Promise<CreateCaptainInvitationResult> {
@@ -58,7 +58,7 @@ export async function createCaptainInvitation(input: { label?: string; maxRedemp
       maxRedemptions: parsed.data.maxRedemptions,
       expiresInDays: parsed.data.expiresInDays,
     });
-    refreshHq();
+    refreshHq("captains");
     return { ok: true, token: created.token, invitation: created.invitation };
   } catch (error) {
     if (error instanceof BuilderError) return { ok: false, error: error.message };
@@ -80,7 +80,7 @@ export async function revokeCaptainInvitation(invitationId: string): Promise<Act
     if (error instanceof BuilderError) return { ok: false, error: error.message };
     throw error;
   }
-  refreshHq();
+  refreshHq("captains");
   return { ok: true };
 }
 
@@ -92,7 +92,7 @@ export async function revokeCaptainInvitation(invitationId: string): Promise<Act
 // failed. Everything else (which conflict source, an orphaned-row defensive
 // case) collapses into one operator-facing message here, once, instead of a
 // switch the client would otherwise have to repeat at every call site.
-export type AssignCaptainActionResult =
+type AssignCaptainActionResult =
   | { outcome: "assigned" }
   | { outcome: "needs_review"; unresolved: Array<{ memberId: string; name: string; username: string | null }> }
   | { outcome: "error"; error: string };
@@ -161,7 +161,7 @@ export async function assignProjectCaptain(input: z.infer<typeof assignSchema>):
       reason: parsed.data.reason,
       acknowledgedUnresolvedIds: parsed.data.acknowledgedUnresolvedIds,
     });
-    if (result.outcome === "assigned") refreshHq();
+    if (result.outcome === "assigned") refreshHq("captains");
     return toAssignActionResult(result);
   } catch (error) {
     if (error instanceof BuilderError) return { outcome: "error", error: error.message };
@@ -183,7 +183,7 @@ export async function unassignProjectCaptain(projectId: string): Promise<ActionR
     // "not_assigned" is also ok: true (idempotent, nothing to remove), but
     // nothing changed, so — unlike a real "unassigned" — there is nothing
     // for a page to re-render.
-    if (result.outcome === "unassigned") refreshHq();
+    if (result.outcome === "unassigned") refreshHq("captains");
   } catch (error) {
     if (error instanceof BuilderError) return { ok: false, error: error.message };
     throw error;

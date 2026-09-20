@@ -1,7 +1,5 @@
 import type { MemberWeekSummary } from "./reporting-surface";
 
-export type DashboardSubmissionAttention = NonNullable<MemberWeekSummary["submission"]>;
-
 /** A Home indicator means there is a current requirement the member can complete. */
 export function projectNeedsAttention(
   summary: MemberWeekSummary | null | undefined,

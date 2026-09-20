@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from 'next/cache';
+import { refreshHq } from '../revalidation';
 import { z } from 'zod';
 import { ColosseumApiError, colosseumProjectUrl, parseColosseumProjectUrl } from '@/lib/colosseum-api';
 import { requireMemberActor } from '../actor';
@@ -10,16 +10,11 @@ import { getTelegramIdentity } from '../identity';
 import { authorizedTeam, TEAM_NOT_AVAILABLE } from '../member-teams';
 import { BuilderError, builderStore } from '../builder-store';
 import { JOIN_LINK_MESSAGES, PROJECT_STAGES, type BuilderResult, type JoinLinkRefusal } from '../builder-types';
-import { importColosseumTeam, inviteRetry, previewColosseumTeam, previewTeamInvitation, refreshColosseumTeam, type ImportFailureReason } from '../project-import';
+import { importColosseumTeam, inviteRetry, previewColosseumTeam, previewTeamInvitation, type ImportFailureReason } from '../project-import';
 import { parseJoinCode } from '../member-routes';
 
-// Actions that take a team id from the client go through the central
-// authorization helper (lib/hq/member-teams.ts over lib/hq/authz.ts) before
-// any read or write: the edition the member asked under travels in the body
-// and is checked against the project, and every denial is the same
-// TEAM_NOT_AVAILABLE result, so a foreign, other-edition or unknown id
-// reveals nothing. The store's own ownership predicates still run inside the
-// write transaction as the last line of defence, not as the decision.
+// Team actions authorize before access and return TEAM_NOT_AVAILABLE for
+// every denial; the store also enforces ownership inside its transaction.
 
 const uuid = z.string().uuid();
 const hackathonIdSchema = z.number().int().positive();
@@ -28,7 +23,6 @@ const stageSchema = z.enum(PROJECT_STAGES.map(s => s.value));
 const joinInputSchema = z.string().trim().min(1).max(2048);
 const fail = (error: unknown): {ok:false;error:string} => ({ ok:false, error: error instanceof BuilderError || error instanceof ColosseumApiError
   ? error.message : error instanceof z.ZodError ? 'Check the details and try again.' : 'We could not save this. Please try again.' });
-function refresh() { revalidatePath('/hq', 'layout'); }
 
 /** Validate the project before asking the member to choose their Colosseum profile. */
 export async function previewBuilderImport(input:{hackathonId:number;url:string}): Promise<
@@ -55,31 +49,11 @@ export async function importBuilderTeam(input: {hackathonId:number;url:string;se
     await builderStore().rateLimit(user.id,'import',15);
     const outcome = await importColosseumTeam(user, parsed);
     if (!outcome.ok) return {ok:false,error:outcome.message,reason:outcome.reason,retry:inviteRetry(outcome.reason)};
-    refresh();
+    refreshHq("builders");
     return {ok:true,data:{url:`/hq/team/${outcome.projectId}`}};
   } catch (error) { return fail(error); }
 }
 
-/**
- * A fresh Colosseum snapshot and submission check for a team the caller is
- * already a member of. Rate limited, idempotent, and separate from importing:
- * it never creates a team and never changes who belongs to one.
- */
-export async function refreshBuilderTeam(input: {projectId:string;hackathonId:number}): Promise<
-  BuilderResult<{submission:string}> | {ok:false;error:string;reason:ImportFailureReason;retry:boolean}
-> {
-  const actor = await requireMemberActor();
-  try {
-    const value = z.object({projectId:uuid,hackathonId:hackathonIdSchema}).parse(input);
-    const team = await authorizedTeam(actor,{projectId:value.projectId,hackathonId:value.hackathonId,action:'read'});
-    if (!team) throw new BuilderError(TEAM_NOT_AVAILABLE);
-    await builderStore().rateLimit(actor.id,'source',10);
-    const outcome = await refreshColosseumTeam({projectId:team.id,hackathonId:team.hackathonId,projectUrl:team.projectUrl});
-    refresh();
-    if (!outcome.ok) return {ok:false, error: outcome.message, reason: outcome.reason, retry: inviteRetry(outcome.reason)};
-    return {ok:true,data:{submission:outcome.submission}};
-  } catch (error) { return fail(error); }
-}
 
 export async function requestBuilderReview(input:{hackathonId:number;url:string;telegramUsername?:string}): Promise<BuilderResult<{url:string}> | {ok:false;error:string;field:'telegramUsername'}> {
   const user = await requireMember();
@@ -99,7 +73,7 @@ export async function requestBuilderReview(input:{hackathonId:number;url:string;
     const store = builderStore();
     await store.rateLimit(user.id,'review',5);
     await store.requestReview(user,parsed.hackathonId,colosseumProjectUrl(slug),note);
-    refresh();
+    refreshHq("builders");
     return {ok:true,data:{url:'/hq/dashboard'}};
   } catch (error) { return fail(error); }
 }
@@ -152,7 +126,7 @@ export async function acceptBuilderInvite(input:{code:string;memberId:string}): 
     const invite = await previewTeamInvitation(code);
     if (!invite.ok) throw new BuilderError(invite.message);
     const id = await store.redeemInvite(user,code,memberId);
-    refresh();
+    refreshHq("builders");
     return {ok:true,data:{url:`/hq/team/${id}`}};
   } catch (error) { return fail(error); }
 }
@@ -164,7 +138,7 @@ export async function saveBuilderTeam(input:{projectId:string;hackathonId:number
     // Choosing the lead is a membership change: the verified team lead's alone.
     if (!(await authorizedTeam(actor,{projectId:value.projectId,hackathonId:value.hackathonId,action:'membership.change'}))) throw new BuilderError(TEAM_NOT_AVAILABLE);
     await builderStore().updateTeam(actor.id,value.projectId,value.stage,value.leadUsername);
-    refresh();
+    refreshHq("builders");
     return {ok:true,data:{saved:true}};
   } catch (error) { return fail(error); }
 }

@@ -140,6 +140,15 @@ afterAll(async () => {
 });
 
 describe("/hq/captain against the real database", () => {
+  it("loads imported detail for all assigned projects in one query", async () => {
+    const observedQuery = vi.fn(db.query);
+    mocks.builderDatabase.mockReturnValue({ ...db, query: observedQuery });
+    await render(me());
+    const teamReads = observedQuery.mock.calls.filter(([sql]) => sql.includes("AS members") && sql.includes("FROM hq_project_onboarding o"));
+    expect(teamReads).toHaveLength(1);
+    expect(teamReads[0][1]).toEqual([[PROJECT_MINE, PROJECT_MINE_BARE]]);
+  });
+
   it("renders the Den for a Captain: their teams in the aside, the outstanding one selected with its week, builders, contact and Colosseum link", async () => {
     // The typed contact of the old form: still read as the fallback while no Telegram username is linked.
     await rows("UPDATE hq_builder_profiles SET captain_contact='@my_handle' WHERE id='me'");

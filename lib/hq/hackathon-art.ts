@@ -6,7 +6,7 @@
  * it), so this is the one place a hackathon is named in code — and only to
  * find its pictures, never its data.
  */
-export type HackathonArt = {
+type HackathonArt = {
   /** Background painting, 3:1. */
   background: string;
   /** Transparent wordmark, laid over the background. */

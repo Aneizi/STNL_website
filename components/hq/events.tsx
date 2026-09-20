@@ -9,7 +9,7 @@ import {
   type ChangeEvent,
   type CSSProperties,
 } from "react";
-import { FormField, LumaMark, input, pageTitle } from "@/components/hq/ui";
+import { FormField, LumaMark, card, input, pageTitle } from "@/components/hq/ui";
 import { useConfirmDelete } from "@/components/hq/ui-client";
 import {
   archiveEvent,
@@ -471,11 +471,7 @@ export function Events(props: {
         <div
           className="hq-fade-in"
           style={{
-            background: "var(--card)",
-            borderRadius: 0,
-            boxShadow: "var(--shadow-1)",
-            padding: 24,
-            marginTop: 28,
+            ...card,
             display: "flex",
             gap: 10,
             flexWrap: "wrap",

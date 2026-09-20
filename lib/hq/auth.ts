@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { getSql } from "./db";
 import { readSession } from "./session";
 
-export type HqUser = {
+type HqUser = {
   id: string;
   username: string;
   displayName: string;

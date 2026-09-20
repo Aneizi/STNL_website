@@ -3,11 +3,11 @@
 // idempotence and "no resurrection on replay" rules hold, revocation stops
 // only future redemption, and a redemption's capability grant and audit
 // event commit or roll back together with its redemption row.
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync,readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { PGlite } from "@electric-sql/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn(), randomInt: vi.fn() }));
@@ -21,14 +21,13 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  acceptCaptainInvitation, assignCaptain, clearCaptainAssignments, countAssignmentsByCaptain, countAssignmentsForCaptain,
-  countAssignmentsForUsers, createCaptainInvitation, currentCaptainOfProject, leaderboard, listAssignments, listCaptainInvitations,
-  readCaptainInvitationByToken, revokeCaptainInvitation, unassignCaptain,
+acceptCaptainInvitation,assignCaptain,clearCaptainAssignments,countAssignmentsByCaptain,createCaptainInvitation,currentCaptainOfProject,listAssignments,listCaptainInvitations,
+readCaptainInvitationByToken,revokeCaptainInvitation,unassignCaptain
 } from "@/lib/hq/captains";
 import { loadTeamMembership } from "@/lib/hq/authz-sql";
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
-import { grantCapability, revokeCapability } from "@/lib/hq/capabilities";
-import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
+import { grantCapability,revokeCapability } from "@/lib/hq/capabilities";
+import { createMigratedDatabase,pgliteBuilderDatabase } from "./helpers/db";
 
 const OPERATOR = "00000000-0000-4000-8000-000000000001";
 const SECOND_OPERATOR = "00000000-0000-4000-8000-000000000002";
@@ -821,7 +820,9 @@ describe("the membership-acceptance lock order (lib/hq/builder-store.ts)", () =>
     // Captain to conflict with. The guard is the unique key, not a lock.
     const source = readFileSync(join(process.cwd(), "lib/hq/builder-store.ts"), "utf8");
     const importTeam = source.slice(source.indexOf("async importTeam"), source.indexOf("async refreshTeam"));
-    expect(importTeam).toMatch(/ON CONFLICT \(hackathon_id, external_id\) DO NOTHING RETURNING project_id/);
+    expect(importTeam).toMatch(/await insertSnapshot\(db,/);
+    const insertSnapshot = source.slice(source.indexOf("async function insertSnapshot"), source.indexOf("async function createProject"));
+    expect(insertSnapshot).toMatch(/ON CONFLICT \(hackathon_id, external_id\) DO NOTHING RETURNING project_id/);
     expect(importTeam).toMatch(/already_imported/);
     expect(importTeam).not.toMatch(/hq_captain_assignments/);
     // And nothing anywhere in the store re-points an existing onboarding
@@ -866,8 +867,8 @@ describe("unassignCaptain", () => {
   });
 });
 
-describe("clearCaptainAssignments and countAssignmentsForCaptain", () => {
-  it("clears every current assignment across every edition, auditing each individually, and counting the same set beforehand", async () => {
+describe("clearCaptainAssignments", () => {
+  it("clears every current assignment across every edition, auditing each individually", async () => {
     await seedCaptain("cap-multi");
     const p1 = "00000000-0000-4000-8000-000000001016";
     const p2 = "00000000-0000-4000-8000-000000001017";
@@ -876,33 +877,15 @@ describe("clearCaptainAssignments and countAssignmentsForCaptain", () => {
     await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "cap-multi" });
     await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p2, hackathonId: EDITION_B, captainUserId: "cap-multi" });
 
-    const preflight = await countAssignmentsForCaptain(db, "cap-multi");
-    expect(preflight.map((a) => a.projectId).sort()).toEqual([p1, p2].sort());
-    expect(preflight.every((a) => a.projectName)).toBe(true);
-
     const cleared = await clearCaptainAssignments(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, captainUserId: "cap-multi", reason: "Revoked" });
     expect(cleared.map((c) => c.projectId).sort()).toEqual([p1, p2].sort());
     expect(await currentAssignments()).toEqual([]);
-    expect(await countAssignmentsForCaptain(db, "cap-multi")).toEqual([]);
     const clearEvents = (await events()).filter((e) => e.kind === "captain.unassigned");
     expect(clearEvents).toHaveLength(2);
     expect(clearEvents.every((e) => e.subject_user_id === "cap-multi")).toBe(true);
 
     // Idempotent: nothing left to clear a second time.
     expect(await clearCaptainAssignments(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, captainUserId: "cap-multi" })).toEqual([]);
-  });
-
-  it("counts current assignments for many accounts in one indexed query, 0 for none", async () => {
-    await seedCaptain("cap-batch-1");
-    await seedCaptain("cap-batch-2");
-    const p1 = "00000000-0000-4000-8000-000000001018";
-    await seedProject(p1);
-    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "cap-batch-1" });
-    const queries: string[] = [];
-    const counting = { query: (text: string, values?: unknown[]) => { queries.push(text); return db.query(text, values); } };
-    const counts = await countAssignmentsForUsers(counting, ["cap-batch-1", "cap-batch-2", "cap-batch-1", "ghost"]);
-    expect([...counts.entries()]).toEqual([["cap-batch-1", 1], ["cap-batch-2", 0], ["ghost", 0]]);
-    expect(queries).toHaveLength(1);
   });
 
   it("revoking a grant and clearing its assignments are one transaction: forcing the clear's own audit write to fail leaves the grant active and the assignment live", async () => {
@@ -1023,85 +1006,6 @@ describe("countAssignmentsByCaptain", () => {
     );
     await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-count-inactive" });
     expect(await countAssignmentsByCaptain(db, EDITION_A)).toEqual([]);
-  });
-});
-
-describe("leaderboard", () => {
-  it("carries only rank, display name, assigned count and the isYou marker — no id, project name or link", async () => {
-    await seedCaptain("cap-lb-shape");
-    const project = "00000000-0000-4000-8000-000000001031";
-    await seedProject(project, EDITION_A, "Shape Project");
-    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-lb-shape" });
-
-    const board = await leaderboard(db, EDITION_A);
-    expect(board).toEqual([{ rank: 1, displayName: "cap-lb-shape", assignedCount: 1, isYou: false }]);
-    expect(Object.keys(board[0]).sort()).toEqual(["assignedCount", "displayName", "isYou", "rank"]);
-    expect(JSON.stringify(board)).not.toContain(project);
-    expect(JSON.stringify(board)).not.toMatch(/https?:\/\//);
-  });
-
-  it("orders by assigned count descending, then display name ascending for ties, with a zero-assignment Captain falling to the bottom on its own — no second rule needed", async () => {
-    await seedCaptain("Zed");
-    await seedCaptain("Amy A");
-    await seedCaptain("Amy B");
-    const p1 = "00000000-0000-4000-8000-000000001032";
-    const p2 = "00000000-0000-4000-8000-000000001033";
-    await seedProject(p1, EDITION_A, "One");
-    await seedProject(p2, EDITION_A, "Two");
-    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p1, hackathonId: EDITION_A, captainUserId: "Amy A" });
-    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: p2, hackathonId: EDITION_A, captainUserId: "Amy B" });
-
-    expect(await leaderboard(db, EDITION_A)).toEqual([
-      { rank: 1, displayName: "Amy A", assignedCount: 1, isYou: false },
-      { rank: 2, displayName: "Amy B", assignedCount: 1, isYou: false },
-      { rank: 3, displayName: "Zed", assignedCount: 0, isYou: false },
-    ]);
-  });
-
-  it("does not count an ended assignment or another edition's assignment", async () => {
-    await seedCaptain("cap-lb-ended");
-    const ended = "00000000-0000-4000-8000-000000001034";
-    await seedProject(ended, EDITION_A, "Ended Project");
-    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: ended, hackathonId: EDITION_A, captainUserId: "cap-lb-ended" });
-    await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: ended, hackathonId: EDITION_A });
-
-    await seedCaptain("cap-lb-other-edition");
-    const otherEdition = "00000000-0000-4000-8000-000000001035";
-    await seedProject(otherEdition, EDITION_B, "Other Edition Project");
-    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: otherEdition, hackathonId: EDITION_B, captainUserId: "cap-lb-other-edition" });
-
-    const board = await leaderboard(db, EDITION_A);
-    expect(board.map((row) => row.displayName).sort()).toEqual(["cap-lb-ended", "cap-lb-other-edition"]);
-    expect(board.every((row) => row.assignedCount === 0)).toBe(true);
-  });
-
-  it("drops a revoked Captain entirely, even one whose live assignment row a bare revokeCapability call (without clearCaptainAssignments) left standing", async () => {
-    await seedCaptain("cap-lb-revoked");
-    const project = "00000000-0000-4000-8000-000000001037";
-    await seedProject(project, EDITION_A, "Still Live");
-    await assignCaptain(db, { actorOperatorId: OPERATOR, projectId: project, hackathonId: EDITION_A, captainUserId: "cap-lb-revoked" });
-    await revokeCapability(db, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "cap-lb-revoked", capability: "captain", reason: "test" });
-
-    // The stray row really is still live — this proves the merge drops it, not that the state cannot occur.
-    expect(await currentAssignments()).toEqual([{ project_id: project, captain_user_id: "cap-lb-revoked" }]);
-    expect((await leaderboard(db, EDITION_A)).map((row) => row.displayName)).not.toContain("cap-lb-revoked");
-  });
-
-  it("includes an eligible Captain with no current assignment", async () => {
-    await seedCaptain("cap-lb-zero");
-    expect(await leaderboard(db, EDITION_A)).toEqual([{ rank: 1, displayName: "cap-lb-zero", assignedCount: 0, isYou: false }]);
-  });
-
-  it("marks only the viewer's own row, and marks none when there is no viewer", async () => {
-    await seedCaptain("cap-lb-me");
-    await seedCaptain("cap-lb-other");
-
-    const mine = await leaderboard(db, EDITION_A, "cap-lb-me");
-    expect(mine.find((row) => row.displayName === "cap-lb-me")?.isYou).toBe(true);
-    expect(mine.find((row) => row.displayName === "cap-lb-other")?.isYou).toBe(false);
-
-    expect((await leaderboard(db, EDITION_A)).every((row) => row.isYou === false)).toBe(true);
-    expect((await leaderboard(db, EDITION_A, null)).every((row) => row.isYou === false)).toBe(true);
   });
 });
 

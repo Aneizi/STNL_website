@@ -12,7 +12,6 @@ import {
   LUMA_SYNC_JOB,
   isTrustedHqJobsRequest,
   isTrustedJobClaims,
-  isTrustedLumaSyncClaims,
   isTrustedLumaSyncRequest,
 } from "@/lib/hq/github-actions-auth";
 
@@ -35,12 +34,12 @@ describe("scheduled Luma sync identity", () => {
   });
 
   it("accepts the exact scheduled workflow on main", () => {
-    expect(isTrustedLumaSyncClaims(validClaims)).toBe(true);
+    expect(isTrustedJobClaims(validClaims, LUMA_SYNC_JOB)).toBe(true);
   });
 
   it("accepts a manual dispatch of the same workflow", () => {
     expect(
-      isTrustedLumaSyncClaims({ ...validClaims, event_name: "workflow_dispatch" }),
+      isTrustedJobClaims({ ...validClaims, event_name: "workflow_dispatch" }, LUMA_SYNC_JOB),
     ).toBe(true);
   });
 
@@ -59,7 +58,7 @@ describe("scheduled Luma sync identity", () => {
     ["a self-hosted runner", { runner_environment: "self-hosted" }],
     ["a pull request", { event_name: "pull_request" }],
   ])("rejects %s", (_label, changes) => {
-    expect(isTrustedLumaSyncClaims({ ...validClaims, ...changes })).toBe(false);
+    expect(isTrustedJobClaims({ ...validClaims, ...changes }, LUMA_SYNC_JOB)).toBe(false);
   });
 });
 

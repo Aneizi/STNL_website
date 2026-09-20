@@ -2,6 +2,7 @@ import "server-only";
 import type { BuilderQuery } from "./builder-db";
 import { readCaptainInvitationByToken } from "./captains";
 import { newInviteContinuationId, recordInviteContinuation } from "./invite-continuation";
+import { hitRateLimit } from "./rate-limit";
 
 /**
  * Step 1 of the Captain invitation flow: exchanging a bearer token in the
@@ -11,8 +12,6 @@ import { newInviteContinuationId, recordInviteContinuation } from "./invite-cont
  * exchange logic is testable against PGlite without any Next.js request or
  * cookie machinery, the way every other builder-side service in this repo is.
  */
-
-const IP_RATE_LIMIT_WINDOW_MINUTES = 15;
 
 /**
  * Limits guesses of the six-character invitation codes before looking one
@@ -28,21 +27,10 @@ const IP_RATE_LIMIT_WINDOW_MINUTES = 15;
 const IP_MAX_EXCHANGES = 30;
 
 async function withinExchangeRateLimit(db: BuilderQuery, ip: string): Promise<boolean> {
-  const key = `invite-exchange:ip:${ip}`;
-  await db.query(`DELETE FROM hq_login_limits WHERE key LIKE 'invite-exchange:ip:%' AND window_start < now() - interval '1 day'`);
-  const { rows } = await db.query(
-    `INSERT INTO hq_login_limits AS l (key, count, window_start)
-     VALUES ($1, 1, now())
-     ON CONFLICT (key) DO UPDATE SET
-       count = CASE WHEN l.window_start < now() - interval '${IP_RATE_LIMIT_WINDOW_MINUTES} minutes' THEN 1 ELSE l.count + 1 END,
-       window_start = CASE WHEN l.window_start < now() - interval '${IP_RATE_LIMIT_WINDOW_MINUTES} minutes' THEN now() ELSE l.window_start END
-     RETURNING count`,
-    [key],
-  );
-  return Number(rows[0].count) <= IP_MAX_EXCHANGES;
+  return (await hitRateLimit(db, `invite-exchange:ip:${ip}`, { max: IP_MAX_EXCHANGES })).allowed;
 }
 
-export type InviteExchangeResult = { continuationId: string | null };
+type InviteExchangeResult = { continuationId: string | null };
 
 /**
  * Turns a bearer token into a continuation. A pure read of the invitation

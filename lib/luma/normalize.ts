@@ -37,7 +37,7 @@ export type NormalizedLumaEvent = {
   live: boolean;
 };
 
-export function tagName(tag: unknown): string {
+function tagName(tag: unknown): string {
   if (typeof tag === "string") return tag;
   if (tag && typeof tag === "object") {
     const t = tag as { name?: unknown; slug?: unknown };
@@ -48,7 +48,7 @@ export function tagName(tag: unknown): string {
 }
 
 /** Calendar date (YYYY-MM-DD) of an instant in a given timezone. */
-export function dateKey(date: Date, timeZone: string): string {
+function dateKey(date: Date, timeZone: string): string {
   return new Intl.DateTimeFormat("en-CA", {
     year: "numeric",
     month: "2-digit",

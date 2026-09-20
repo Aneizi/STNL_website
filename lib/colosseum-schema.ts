@@ -54,7 +54,7 @@ const projectHackathonSchema = z.object({
  * are `nullish` rather than required: "Missing optional fields must not make a
  * project unimportable".
  */
-export const projectBodySchema = z.object({
+const projectBodySchema = z.object({
   id: idSchema,
   hackathonId: idSchema,
   slug: slugSchema,
@@ -90,7 +90,7 @@ export const projectBodySchema = z.object({
  * non-empty, so nothing here may assume the elements are strings — `unknown`
  * is deliberate and the normalizer keeps only the count.
  */
-export const projectCompletionSchema = z.object({
+const projectCompletionSchema = z.object({
   isComplete: z.boolean(),
   fieldErrors: z.array(z.unknown()).max(200).nullish(),
 });
@@ -107,7 +107,7 @@ export const projectDetailSchema = z.object({
  * submission window appears; `projectSubmissionEndDate` is the deadline a
  * submission time is compared against.
  */
-export const listingHackathonSchema = z.object({
+const listingHackathonSchema = z.object({
   id: idSchema,
   name: z.string().min(1).max(250),
   slug: slugSchema.nullish(),
@@ -147,7 +147,6 @@ export const errorBodySchema = z.object({
 });
 
 export type ColosseumProjectBody = z.infer<typeof projectBodySchema>;
-export type ColosseumListing = z.infer<typeof listingSchema>;
 export type ColosseumListingHackathon = z.infer<typeof listingHackathonSchema>;
 
 /** Public project history, observed on 2026-09-20. Weekly submissions use a

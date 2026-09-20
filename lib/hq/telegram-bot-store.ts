@@ -7,77 +7,43 @@ import { TELEGRAM_REQUEST_TIMEOUT_MS, type TelegramSender } from "./telegram-bot
 import { activeTelegramIdentitySql } from "./telegram-identity-sql";
 
 /**
- * The Telegram bot's durable state: processed updates, callback references,
- * drafts, the outgoing queue and the chat binding.
- *
- * Every one of these is state the plan requires to survive the request that
- * created it. A serverless deployment has no memory between invocations, so
- * an in-process map would deduplicate nothing, expire nothing and lose every
- * draft between two messages; "Use durable state, not process memory" is the
- * plan's own phrasing and this module is where it is met.
- *
- * Nothing here decides anything. It stores no permission, applies no
- * authorization and holds no copy of a reporting rule: the flow re-reads the
- * account, the capability, the assignment, the period and the version from
- * the real services on every single read and every single write, and these
- * rows only ever say what was being talked about, never what is allowed.
- *
- * The tables and the reasoning behind each column are documented in
- * `scripts/hq/builder-schema.sql`.
+ * Durable receipts, callbacks, drafts, outbox and chat bindings survive serverless
+ * invocations. Stored context grants no access: each operation rechecks live identity,
+ * consent, capabilities and project permissions. The outbox also rechecks at dispatch.
  */
 
 /** A draft lives long enough to write an update and no longer. */
 export const DRAFT_TTL_MS = 30 * 60_000;
 /** A navigation button stays pressable for a day, because an inline keyboard stays in the chat history. */
-export const ACTION_TTL_MS = 24 * 60 * 60_000;
+const ACTION_TTL_MS = 24 * 60 * 60_000;
 /** A button that writes expires with the draft it belongs to. */
-export const WRITE_ACTION_TTL_MS = DRAFT_TTL_MS;
+const WRITE_ACTION_TTL_MS = DRAFT_TTL_MS;
 /** How long a processed update id and a finished delivery are kept before `purgeExpiredBotState` removes them. */
-export const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60_000;
-export const DELIVERY_RETENTION_MS = 90 * 24 * 60 * 60_000;
+const RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60_000;
+const DELIVERY_RETENTION_MS = 90 * 24 * 60 * 60_000;
 /** How long one invocation may hold an update before another may take it over. Longer than the route's own maxDuration. */
 export const UPDATE_LEASE_MS = 90_000;
 /** How many times one Telegram update may be attempted before it is left for an operator. */
 export const MAX_UPDATE_ATTEMPTS = 5;
 /** How long a drain may hold a queued message before another drain may take it over. */
-export const SEND_CLAIM_MS = 60_000;
+const SEND_CLAIM_MS = 60_000;
 
 const toIso = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-export const isUuid = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
+const isUuid = (value: unknown): value is string => typeof value === "string" && UUID.test(value);
 
 /* -------------------------------------------------------------------------
  * Webhook receipts
  * ---------------------------------------------------------------------- */
 
-export type UpdateClaim =
+type UpdateClaim =
   | { accepted: true; attempts: number }
   | { accepted: false; reason: "already_done" | "in_progress" | "exhausted" };
 
 /**
- * Takes a lease on one Telegram update, or says why it will not.
- *
- * Telegram retries any delivery it did not get a 200 for, so the same
- * `update_id` arrives again after a timeout, a deploy or a cold start. Three
- * different situations hide behind that one id, and treating them alike is
- * how an interrupted save became a silent loss:
- *
- * - **Finished** (`state = 'done'`): the work is behind us. Answer 200 and do
- *   nothing. This is the only terminal state.
- * - **In flight** (`state = 'processing'` with a live lease): another
- *   invocation has it. The webhook answers 503 so Telegram can retry if the
- *   first invocation fails, without starting a second handler now.
- * - **Interrupted** (`state = 'failed'`, or `'processing'` with an expired
- *   lease): the previous attempt died. **Re-claim it.** Refusing here is what
- *   turned one transient database error into an update that was never saved
- *   and could never be retried.
- *
- * Re-claiming is only safe because the handler's writes are atomic: the
- * callback consumption, the draft claim, the reporting write and the durable
- * confirmation all commit in one transaction, so an interrupted attempt left
- * nothing behind to repeat. `attempts` is the stop: past
- * `MAX_UPDATE_ATTEMPTS` the row is `exhausted` and an operator can see it,
- * rather than a retry loop.
+ * Lease an update: done is terminal; a live processing lease is busy; failed or
+ * expired processing can be reclaimed up to MAX_UPDATE_ATTEMPTS. Retrying is safe
+ * because action consumption, draft claim, entry and confirmation commit together.
  */
 export async function claimTelegramUpdate(db: BuilderQuery, updateId: number, now = Date.now()): Promise<UpdateClaim> {
   const at = new Date(now).toISOString();
@@ -111,12 +77,8 @@ export async function claimTelegramUpdate(db: BuilderQuery, updateId: number, no
 }
 
 /**
- * Records how the claimed update ended.
- *
- * `done` is terminal and releases nothing else. `failed` releases the lease
- * so Telegram's next delivery of the same id can pick the work up again,
- * which is the whole point: the handler's writes are atomic, so there is
- * nothing half-finished for that retry to duplicate.
+ * Finish only the claimed attempt. Done is terminal; failure releases its lease
+ * for a retry whose atomic writes cannot leave a half-completed save.
  */
 export async function finishTelegramUpdate(db: BuilderQuery, updateId: number, state: "done" | "failed", error?: string, attempt?: number): Promise<void> {
   await db.query(
@@ -134,23 +96,12 @@ export async function finishTelegramUpdate(db: BuilderQuery, updateId: number, s
  * The chat binding
  * ---------------------------------------------------------------------- */
 
-export type BotChat = { userId: string; chatId: string; messagingEnabled: boolean };
+type BotChat = { userId: string; chatId: string; messagingEnabled: boolean };
 
 /**
- * Remembers which private chat this account talks to the bot in.
- *
- * Written on every inbound message, because a chat id can change (a person
- * deletes the chat and starts again) and because the consent row may have
- * been created from `/hq/account` before the chat existed. It writes the chat
- * and nothing else: `messaging_enabled` stays exactly as the person left it,
- * so opening the chat is never mistaken for agreeing to be messaged.
- *
- * It also records WHICH verified Telegram identity opened the chat, and
- * brings `telegram_user_id` up to date with it. The `DO UPDATE` used to set
- * the chat alone, so a relinked account kept the previous account's Telegram
- * id on the row and nothing could tell the two apart; `deliverableBotChat`
- * and `deliverable()` compare the binding against the identity verified NOW,
- * so a chat only ever receives messages for the account that opened it.
+ * Bind the private chat to the verified Telegram identity that opened it.
+ * Opening a chat never enables messaging consent. Updating the identity binding
+ * prevents a relinked account from inheriting the previous identity's destination.
  */
 export async function bindBotChat(db: BuilderQuery, input: { userId: string; telegramUserId: string; chatId: string }): Promise<void> {
   await db.query(
@@ -166,13 +117,8 @@ export async function bindBotChat(db: BuilderQuery, input: { userId: string; tel
 }
 
 /**
- * The chat to deliver into, or null when there is none, messaging is off, or
- * the chat on file was opened by a Telegram account that is no longer the one
- * connected to this HQ account.
- *
- * The join is the whole point: a chat id alone says where a message would go,
- * never whose chat it is. Phase 8's reminder and `deliverable()` below both
- * read through this rule.
+ * Return a consented chat only when its bound identity is still connected.
+ * A chat id identifies a destination, not who currently owns it.
  */
 export async function deliverableBotChat(db: BuilderQuery, userId: string): Promise<BotChat | null> {
   const { rows } = await db.query(
@@ -217,15 +163,9 @@ export type BotActionKind =
   | "consent.enable";
 
 /**
- * The kinds that write to HQ, and which are therefore consumed exactly once,
- * INSIDE the transaction that does the writing. A double tap, a forwarded
- * keyboard and a Telegram redelivery all find the row consumed; an attempt
- * that dies before its commit leaves it unconsumed, so the retry works.
- *
- * `consent.enable` is deliberately not here. `setBotConsent` is idempotent by
- * construction (asking for the state the account is already in writes nothing
- * and records nothing), so claiming it would buy nothing and would have to
- * open a second transaction inside the first.
+ * Write actions are consumed inside the writing transaction so retries and double
+ * taps cannot repeat a committed change. consent.enable is separately idempotent
+ * and must not open a nested transaction just to consume a callback.
  */
 const WRITE_KINDS: ReadonlySet<BotActionKind> = new Set(["draft.save", "draft.save_into_current", "draft.save_over"]);
 
@@ -258,7 +198,7 @@ export type BotAction = {
   hackathonId: number | null;
 };
 
-export type NewBotAction = {
+type NewBotAction = {
   userId: string;
   chatId: string;
   kind: BotActionKind;
@@ -298,11 +238,7 @@ const ACTION_COLUMNS =
   "id::text AS id, user_id, chat_id::text AS chat_id, kind, project_id::text AS project_id, period_id::text AS period_id, " +
   "entry_id::text AS entry_id, expected_version, page, cursor, visibility, single_use, draft_id::text AS draft_id, draft_revision, hackathon_id";
 
-/**
- * Mints one opaque button reference, bound to the account and chat it was
- * built for. The id is what travels in `callback_data`; the meaning never
- * leaves the server.
- */
+/** Mint an account/chat-bound opaque callback id; its meaning stays server-side. */
 export async function createBotAction(db: BuilderQuery, input: NewBotAction, now = Date.now()): Promise<BotAction> {
   const singleUse = isWriteAction(input.kind);
   const bound = isDraftAction(input.kind);
@@ -329,29 +265,15 @@ export async function createBotAction(db: BuilderQuery, input: NewBotAction, now
   return toAction(rows[0]);
 }
 
-export type ActionRead =
+type ActionRead =
   | { ok: true; action: BotAction }
   | { ok: false; reason: "not_found" | "expired" | "already_used" | "wrong_chat" };
 
 /**
- * Resolves a pressed button. Reads only: nothing here is consumed.
- *
- * Every guard the plan names is checked against the stored row rather than
- * against the payload: the id has to exist, it has to belong to THIS account,
- * it has to have been minted for THIS chat, it has to still be within its
- * expiry, and a single-use row has to be unconsumed.
- *
- * Consuming is deliberately NOT done here. A button that writes is consumed
- * by `consumeBotAction` inside the same transaction as the write it
- * authorises, so an attempt that dies before that commit leaves the button
- * usable and Telegram's retry works. Consuming first is what turned one
- * transient failure into an action the person could never complete.
- *
- * What this does not do is authorize anything. A resolved action says only
- * which button was pressed; the flow still re-reads the identity, the
- * capability, the assignment, the draft generation, the period and the entry
- * version before it writes, which is what makes a stale button after a
- * reassignment or a revocation fail on the facts rather than on the token.
+ * Resolve only an unexpired, unconsumed callback for this account and chat.
+ * This grants no permission and consumes nothing: the flow rechecks identity,
+ * capability, assignment, draft generation, period and version; the writing
+ * transaction consumes the action so a rolled-back save can be retried.
  */
 export async function readBotAction(
   db: BuilderQuery,
@@ -373,12 +295,8 @@ export async function readBotAction(
 }
 
 /**
- * Consumes a single-use button, inside the caller's transaction.
- *
- * Returns false when it was already consumed, which is how a double tap and a
- * redelivered press both come back without a second write. Because this
- * commits with the write it authorises, an interrupted attempt rolls it back
- * together with everything else and the retry finds the button intact.
+ * Consume inside the writing transaction. A duplicate returns false; rollback
+ * restores the callback together with the failed save.
  */
 export async function consumeBotAction(tx: BuilderQuery, input: { id: string; userId: string; updateId: number }): Promise<boolean> {
   if (!isUuid(input.id)) return false;
@@ -442,16 +360,11 @@ export async function readBotDraft(db: BuilderQuery, input: { userId: string; ch
 }
 
 /** The fields a caller supplies. `id` and `revision` are the store's to hand out. */
-export type NewBotDraft = Omit<BotDraft, "id" | "revision" | "expiresAt"> & { expiresAt?: string };
+type NewBotDraft = Omit<BotDraft, "id" | "revision" | "expiresAt"> & { expiresAt?: string };
 
 /**
- * Starts a new composing session, replacing whatever was in this chat.
- *
- * A NEW `id`, which is what makes every button rendered from the previous
- * draft dead rather than merely old: pressing Save on a preview from the team
- * you were writing about a minute ago must not save the team you are writing
- * about now. Those buttons are deleted here as well, so the keyboard in the
- * chat cannot even be resolved.
+ * Replace the chat draft with a new generation and retire its old callbacks,
+ * so an earlier preview cannot save the newly composed team's text.
  */
 export async function startBotDraft(db: BuilderQuery, draft: NewBotDraft, now = Date.now()): Promise<BotDraft> {
   await db.query("DELETE FROM hq_telegram_actions WHERE user_id = $1 AND chat_id = $2::bigint AND draft_id IS NOT NULL", [draft.userId, draft.chatId]);
@@ -475,21 +388,12 @@ export async function startBotDraft(db: BuilderQuery, draft: NewBotDraft, now = 
   return toDraft(rows[0]);
 }
 
-export type DraftUpdate = Partial<Pick<BotDraft, "step" | "periodId" | "entryId" | "expectedVersion" | "visibility" | "body">>;
+type DraftUpdate = Partial<Pick<BotDraft, "step" | "periodId" | "entryId" | "expectedVersion" | "visibility" | "body">>;
 
 /**
- * Advances the draft this account has in this chat, keeping its `id` and
- * bumping its `revision`.
- *
- * The bump is the point. Every button that touches a draft records the
- * revision it was rendered from, so the moment the draft changes, every
- * keyboard already in the chat stops applying to it. That is what stops an
- * old Share button from re-opening a different team's sensitive note, and
- * what stops two previews of one draft from both saving.
- *
- * Conditional on `expectedRevision`, so two presses racing to change the same
- * draft cannot both win. Returns null when the draft is gone, has expired, or
- * has already moved on.
+ * Keep the draft id and conditionally advance expectedRevision. Old keyboards
+ * become stale, including audience toggles; competing changes cannot both win.
+ * Return null if the draft is gone, expired or already advanced.
  */
 export async function advanceBotDraft(
   db: BuilderQuery,
@@ -525,29 +429,16 @@ export async function advanceBotDraft(
   return rows.length ? toDraft(rows[0]) : null;
 }
 
-/**
- * Takes the draft out of the chat, and with it every button that was minted
- * for it. Unconditional: used by Cancel, by /cancel and after a completed
- * save, where the caller has already established which draft it means.
- */
+/** Clear the identified draft and its callbacks after cancel or completed save. */
 export async function clearBotDraft(db: BuilderQuery, input: { userId: string; chatId: string }): Promise<void> {
   await db.query("DELETE FROM hq_telegram_actions WHERE user_id = $1 AND chat_id = $2::bigint AND draft_id IS NOT NULL", [input.userId, input.chatId]);
   await db.query("DELETE FROM hq_telegram_drafts WHERE user_id = $1 AND chat_id = $2::bigint", [input.userId, input.chatId]);
 }
 
 /**
- * Claims one draft generation for a save, by deleting it.
- *
- * This is the logical-save claim, and it runs INSIDE the transaction that
- * writes the reporting entry. Exactly one caller can delete a given
- * `(id, revision)` pair, so two buttons that both refer to the same logical
- * update, minted from two renders of the same draft, produce one entry
- * between them however they race. If the transaction rolls back, the draft
- * comes back with it, which is what lets a refused save keep the person's
- * text on screen.
- *
- * Returns null when the draft is gone, expired, or has moved on since the
- * button was rendered.
+ * Delete one exact draft id/revision inside the saving transaction. Competing
+ * buttons produce one entry; rollback restores the text. Gone, expired or changed
+ * drafts return null.
  */
 export async function claimBotDraft(
   tx: BuilderQuery,
@@ -569,26 +460,11 @@ export async function claimBotDraft(
  * ---------------------------------------------------------------------- */
 
 /**
- * Queues a message that must not be lost.
- *
- * Enqueued INSIDE the caller's transaction, which is the whole point: the
- * save confirmation commits with the entry or does not exist, so there is no
- * state in which an update was written and nothing was ever going to say so,
- * and no state in which a confirmation outlives a rolled back save.
- *
- * `dedupeKey` makes the delivery at most once per event even though the queue
- * is drained at least once: a second enqueue of the same key writes nothing
- * and returns null. Phase 8's reminder uses the same mechanism keyed on
- * Captain, edition, period and type.
- *
- * `userId`, `projectId` and `hackathonId` are not decoration. They are what
- * `flushBotMessages` re-checks immediately before it sends, so a message
- * queued while somebody was a Captain with messaging on is not delivered
- * after they turned messaging off, unlinked Telegram, moved to another chat
- * or lost the assignment it names.
- *
- * NO UPDATE BODY IS EVER PASSED HERE. Previews repeat what somebody typed and
- * are sent directly instead, so a sensitive note never reaches this table.
+ * Enqueue inside the saving transaction: confirmation and entry commit together.
+ * A dedupe key prevents duplicate queue records, not duplicate uncertain sends.
+ * Recipient/project fields support live dispatch checks after unlink, consent
+ * withdrawal, chat change or reassignment. Never enqueue update bodies; previews
+ * are sent directly so sensitive text cannot enter the outbox.
  */
 export async function enqueueBotMessage(
   db: BuilderQuery,
@@ -642,15 +518,8 @@ type ClaimedMessage = {
 type DeliveryDecision = { ok: true; body?: string } | { ok: false; reason: string };
 
 /**
- * Whether this row may still be delivered, decided from the state that exists
- * NOW rather than from the state that existed when it was queued.
- *
- * A queued message is not a licence. Between the enqueue and the drain the
- * person can turn bot messages off, disconnect Telegram (which revokes
- * messaging in the same operation), start a fresh chat with the bot, or lose
- * the assignment the message is about. All four have to stop the send, and
- * the last one is why phase 8's reminder can reuse this untouched: a
- * reassigned project must not appear in a message.
+ * Revalidate immediately before sending. Queue-time identity, consent, chat and
+ * assignment may have changed; any revoked relationship must stop delivery.
  */
 async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: number): Promise<DeliveryDecision> {
   // Account deletion nulls the history row's foreign key. It revokes the
@@ -669,19 +538,12 @@ async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: numb
   // A relink or a fresh chat gives a new chat id. The old row must not be
   // delivered into a chat the person has moved on from.
   if (rows[0].chat_id == null || String(rows[0].chat_id) !== message.chatId) return { ok: false, reason: "chat_changed" };
-  // And the chat must be one the identity connected NOW actually opened.
-  // Matching the chat id alone says where a message would go, never whose
-  // chat it is: disconnecting Telegram and connecting a different account
-  // left the previous account's chat on the row, and a queued message went
-  // to the previous account's private chat.
+  // The connected identity must have opened this chat; relinking cannot inherit it.
   if (rows[0].bound_to == null || String(rows[0].bound_to) !== String(rows[0].telegram_user_id)) {
     return { ok: false, reason: "chat_not_bound" };
   }
 
-  // A reminder names several projects, so the single-project check below has
-  // nothing to check. It is re-decided and REBUILT instead, against the state
-  // that exists at this instant, by the module that owns that decision. This
-  // runs for every consumer of the queue, the webhook's drain included.
+  // Multi-project reminders rebuild from current state in every drain, including webhooks.
   if (message.kind === REMINDER_KIND) {
     const decision = await reminderDispatchDecision(db, { outgoingId: message.id, atMs });
     return decision.ok ? { ok: true, body: decision.body } : { ok: false, reason: decision.reason };
@@ -694,25 +556,11 @@ async function deliverable(db: BuilderQuery, message: ClaimedMessage, atMs: numb
 }
 
 /**
- * Drains the queue, and records what Telegram said.
- *
- * Called after the webhook's own transaction has committed, so a send failure
- * can never roll back a saved update.
- *
- * Each row is claimed immediately before its send, with an owner and expiry,
- * and only that owner may complete it. Concurrent drains divide the queue
- * instead of both sending the same row, and a worker that dies mid-send
- * releases its rows when the claim expires rather than stranding them. What
- * this does not promise is exactly-once delivery: a claim that expires after
- * Telegram accepted the message is a genuine unknown, and the honest answer
- * is that it may be delivered twice, not that it cannot be.
- *
- * A timeout is recorded as a retry with `code: "timeout"` and NOT as a
- * failure: delivery is unknown in that case, and the plan is explicit that an
- * uncertain delivery must not be presented as a guaranteed one. Permanent
- * refusals, a blocked bot above all, stop immediately rather than being
- * retried into a rate limit, and Telegram's own `retry_after` is respected
- * rather than discarded.
+ * Drain after the save commits so delivery failure cannot roll back an entry.
+ * Claim each row with owner/expiry and fence completion to that owner. Expired
+ * claims recover, but an unanswered accepted send can be delivered twice.
+ * Record timeouts as uncertain retries, honor retry_after, and stop permanent
+ * refusals such as a blocked bot.
  */
 export async function flushBotMessages(
   db: BuilderQuery,
@@ -768,10 +616,7 @@ export async function flushBotMessages(
       projectId: row.project_id == null ? null : String(row.project_id),
       hackathonId: row.hackathon_id == null ? null : Number(row.hackathon_id),
     };
-    // A FRESH reading of the clock per message, not the one the caller took
-    // when the pass began: a pass that closes periods, prepares reminders and
-    // then sends up to two hundred messages, each with its own timeout, can
-    // be minutes older by the time it reaches this row.
+    // Read the clock per message; earlier sends may have consumed significant time.
     const dispatchAt = options.now ?? Date.now();
     const decision = await deliverable(db, message, dispatchAt);
     if (!decision.ok) {
@@ -846,22 +691,14 @@ export async function flushBotMessages(
 export type PurgeResult = { drafts: number; actions: number; receipts: number; deliveries: number };
 
 /**
- * Removes bot state that has done its job. Safe to run repeatedly and from
- * anywhere; phase 8's scheduled job is what will call it on a timer.
- *
- * The drafts go first, because they are the only rows here that hold text
- * somebody wrote. Delivery rows are kept far longer than receipts, because
- * they are the record an admin reads when a Captain says they were never
- * reminded, and they carry no update text by construction.
+ * Purge expired chat state and retained completed history. Drafts hold user text
+ * and expire early; delivery records hold no update text and remain for inspection.
  */
 export async function purgeExpiredBotState(db: BuilderQuery = builderDatabase(), now = Date.now()): Promise<PurgeResult> {
   const at = new Date(now).toISOString();
   const drafts = await db.query("DELETE FROM hq_telegram_drafts WHERE expires_at <= $1::timestamptz RETURNING user_id", [at]);
   const actions = await db.query("DELETE FROM hq_telegram_actions WHERE expires_at <= $1::timestamptz RETURNING id", [at]);
-  // Only receipts that are actually finished. A row still in 'processing'
-  // under a live lease, or one recorded as 'failed' and waiting for
-  // Telegram's next delivery, is work in progress; sweeping it would let the
-  // retry run as if the update had never been seen.
+  // Keep unfinished receipts: deleting them would erase retry/deduplication state.
   const receipts = await db.query(
     "DELETE FROM hq_telegram_updates WHERE state = 'done' AND received_at <= $1::timestamptz RETURNING update_id",
     [new Date(now - RECEIPT_RETENTION_MS).toISOString()],

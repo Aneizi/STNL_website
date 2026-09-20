@@ -1,34 +1,9 @@
 /**
- * Reporting periods, derived rather than stored twice.
- *
- * The campaign's own record is the input: `hq_hackathons.start_date` and
- * `end_date` are local dates, and the timezone is the campaign's
- * (`hq_settings.timezone`, Europe/Amsterdam for this edition). This module
- * turns those into the weekly windows the plan's Phase 5 table names, plus
- * the one submission-focus window an explicit final-period start merges the
- * remaining weeks into.
- *
- * Three rules the plan sets, and how each is met:
- *
- * 1. **"Make period ends exclusive internally, while displaying inclusive
- *    local dates."** Every period carries both: `startDate`/`endDate` are the
- *    inclusive local dates a screen prints, `startsAt`/`endsAt` are UTC
- *    instants with an exclusive end. `endsAt` of one period is exactly
- *    `startsAt` of the next, so no instant belongs to two periods and none
- *    falls between them.
- * 2. **"There is no fifth period beginning 12 October."** The last period's
- *    exclusive end is local midnight on the day *after* `end_date`, so the
- *    campaign's final day is inside the final period rather than the first
- *    day of a new one.
- * 3. **"Generate periods from database configuration, including an explicit
- *    final-period start/merge setting, rather than hardcoding these dates
- *    into components."** Nothing here knows 2026: the dates, the timezone,
- *    the final-period start and the nudge weekday and time all arrive as
- *    configuration.
- *
- * Pure, with no `server-only` and no database handle, following the
- * `lib/hq/luma-sync-sql.ts` pattern: the period table in the plan can then be
- * asserted literally in a test, including its UTC instants.
+ * Pure generation of reporting windows from campaign dates and timezone.
+ * Displayed dates are inclusive; UTC intervals are [startsAt, endsAt), with
+ * adjacent periods sharing a boundary. The final end is local midnight after
+ * the campaign's last day. An explicit final-period start merges the remaining
+ * weeks; dates and nudge settings always come from configuration.
  */
 
 export type ReportingPeriodMode = "weekly" | "submission";
@@ -41,10 +16,8 @@ export type ReportingSchedule = {
   /** The campaign timezone (`hq_settings.timezone`), an IANA name. */
   timezone: string;
   /**
-   * The local day the submission-focus period starts on, or null for a purely
-   * weekly schedule. Every weekly period that would begin on or after it is
-   * merged into one period running to `endDate`; a weekly period it
-   * interrupts mid-week is truncated the day before it.
+   * The submission period's first local day, or null for weekly reporting.
+   * Merge remaining weeks through endDate; truncate an interrupted week.
    */
   finalPeriodStartDate: string | null;
   /** ISO weekday of the mid-period nudge, 1 Monday to 7 Sunday. */
@@ -95,11 +68,8 @@ function isoWeekday(iso: string): number {
 }
 
 /**
- * How far the zone is ahead of UTC at a given instant, in milliseconds.
- * `formatToParts` in the target zone gives that instant's local wall clock;
- * reading it back as if it were UTC and subtracting the instant is the
- * offset. `hourCycle: "h23"` rather than `hour12: false`, because the latter
- * renders local midnight as hour 24 in some ICU builds.
+ * Zone offset in milliseconds, derived from the local wall clock.
+ * Use h23 because some ICU builds render midnight as hour 24 with hour12:false.
  */
 function zoneOffsetMs(instant: Date, timezone: string): number {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -111,15 +81,9 @@ function zoneOffsetMs(instant: Date, timezone: string): number {
 }
 
 /**
- * The UTC instant of a local date and time in a zone.
- *
- * The offset depends on the instant, and the instant is what is being solved
- * for, so this guesses with the offset at the naive reading and then corrects
- * once with the offset at the guess. One correction is enough for every real
- * zone: the second guess is already within the same offset as the answer
- * except inside the one-hour gap a spring-forward creates, where no such
- * local time exists at all and the result lands on the instant the clock
- * jumped to.
+ * Resolve local date/time to UTC using the offset at the naive UTC reading,
+ * then one correction at the resulting guess. Spring-forward gaps follow that
+ * offset calculation rather than being rejected as nonexistent local times.
  */
 export function zonedDateTimeToUtc(date: string, time: string, timezone: string): Date {
   if (!isCalendarDate(date)) throw new RangeError(`Not an ISO date: ${date}`);
@@ -132,15 +96,8 @@ export function zonedDateTimeToUtc(date: string, time: string, timezone: string)
 }
 
 /**
- * The inverse of `zonedDateTimeToUtc`: an instant as the wall clock reads in
- * a zone, "YYYY-MM-DDTHH:MM" — the value a `datetime-local` input takes and
- * shows.
- *
- * A stored `timestamptz` sliced to sixteen characters is UTC, not the
- * campaign's clock, so a deadline saved as 23:59 in Amsterdam reads back as
- * 21:59 and would be saved again two hours earlier on the next edit. The
- * round trip only closes when both halves name the same zone, which is why
- * this exists beside the function that goes the other way.
+ * Format an instant as YYYY-MM-DDTHH:MM in the campaign timezone for a
+ * datetime-local input. Slicing UTC text would shift the next saved deadline.
  */
 export function utcToZonedDateTime(instant: Date | string | number, timezone: string): string {
   const at = instant instanceof Date ? instant : new Date(instant);
@@ -157,10 +114,8 @@ export function utcToZonedDateTime(instant: Date | string | number, timezone: st
 const localMidnight = (date: string, timezone: string) => zonedDateTimeToUtc(date, "00:00", timezone);
 
 /**
- * The inclusive local dates of every period, before they are turned into
- * instants: consecutive seven-day windows from the campaign's first day,
- * with the merge rule applied. Split out so the merge is one readable
- * decision rather than a condition inside the instant arithmetic.
+ * Consecutive seven-day local ranges, shortened by the campaign end or
+ * the configured submission-period merge boundary.
  */
 function periodDateRanges(schedule: ReportingSchedule): { mode: ReportingPeriodMode; startDate: string; endDate: string }[] {
   const { startDate, endDate } = schedule;
@@ -194,10 +149,8 @@ function periodDateRanges(schedule: ReportingSchedule): { mode: ReportingPeriodM
 }
 
 /**
- * The campaign's periods, in order. Every returned period is stable under
- * repeated calls with the same schedule: that is what lets a stored period
- * row be matched to a generated one by `sequence` and compared field by
- * field before a live schedule is changed.
+ * Generate stable, ordered periods so stored rows can be compared by sequence
+ * before applying a schedule change.
  */
 export function generateReportingPeriods(schedule: ReportingSchedule): GeneratedPeriod[] {
   const { timezone } = schedule;
@@ -218,10 +171,8 @@ export function generateReportingPeriods(schedule: ReportingSchedule): Generated
 }
 
 /**
- * The first configured nudge weekday on or after the period's first day, at
- * the configured local time, or null when that day falls outside the period.
- * A nudge nobody could still act on inside its own period is not a nudge, so
- * it is left unset rather than pushed into the neighbouring week.
+ * The first configured nudge weekday/time within the period, or null.
+ * Never move an out-of-range nudge into another period.
  */
 function nudgeInstant(range: { startDate: string; endDate: string }, schedule: ReportingSchedule): string | null {
   const weekday = Math.trunc(schedule.nudgeWeekday);
@@ -234,9 +185,7 @@ function nudgeInstant(range: { startDate: string; endDate: string }, schedule: R
 }
 
 /**
- * The period an instant falls in, or null outside the campaign. The start is
- * inclusive and the end exclusive, so a save at a boundary belongs to the
- * period that is opening, never to the one that just closed.
+ * Find the interval [startsAt, endsAt); a boundary save belongs to the new period.
  */
 export function periodForInstant<T extends { startsAt: string; endsAt: string }>(periods: readonly T[], instantMs: number): T | null {
   return periods.find((period) => Date.parse(period.startsAt) <= instantMs && instantMs < Date.parse(period.endsAt)) ?? null;

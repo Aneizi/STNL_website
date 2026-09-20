@@ -19,7 +19,7 @@ export type ColosseumHistoryPage = {
   syncingOlder: boolean;
   syncFailed: boolean;
 };
-export type ColosseumHistoryInput = { projectId: string; hackathonId: number; cursor?: string };
+type ColosseumHistoryInput = { projectId: string; hackathonId: number; cursor?: string };
 export type ColosseumHistoryResult = { ok: true; page: ColosseumHistoryPage } | { ok: false; error: string };
 const emptyPage = (): ColosseumHistoryPage => ({ linked: false, updates: [], nextCursor: null, syncingOlder: false, syncFailed: false });
 

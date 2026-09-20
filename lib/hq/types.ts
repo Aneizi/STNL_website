@@ -3,8 +3,8 @@
 import type { SubmissionStatus } from "./colosseum-snapshot";
 import type { PersonRemovalImpact } from "./record-deletion";
 
-export type Channel = { id: string; label: string };
-export type EventType = { id: string; label: string; supportsEndDate: boolean };
+type Channel = { id: string; label: string };
+type EventType = { id: string; label: string; supportsEndDate: boolean };
 export type Role = {
   id: string;
   label: string;
@@ -14,16 +14,16 @@ export type Role = {
   isJudge: boolean;
 };
 export type Stage = { id: string; slug: string; label: string; dropColor: string };
-export type Status = {
+type Status = {
   id: string;
   slug: string;
   label: string;
   color: string;
   countsAsActive: boolean;
 };
-export type Forecast = { id: string; slug: string; label: string; color: string };
+type Forecast = { id: string; slug: string; label: string; color: string };
 export type Gate = { id: string; label: string };
-export type ExchangeItem = { id: string; slug: string; label: string };
+type ExchangeItem = { id: string; slug: string; label: string };
 
 /**
  * One hackathon edition. Every operational record belongs to exactly one, and
@@ -90,7 +90,7 @@ export type ProjectMember = { id: string; name: string; contact: string; usernam
  * The Colosseum snapshot behind an imported project, as the Projects board
  * shows it. Null on a project created in HQ that has no Colosseum link yet.
  */
-export type ProjectColosseum = {
+type ProjectColosseum = {
   url: string;
   imageUrl: string | null;
   description: string;
@@ -132,6 +132,9 @@ export type Project = {
   notes: NoteItem[];
 };
 
+/** The operator dashboard needs no roster, contact information or note bodies. */
+export type DashboardProject = Pick<Project, "id" | "name" | "forecastSlug" | "gates" | "lastCheckIn" | "blocker">;
+
 export type Partner = {
   id: string;
   name: string;
@@ -162,7 +165,7 @@ export type PartnerDetail = Partner & {
 export type PersonTag = { kind: "role" | "capability"; label: string; protected: boolean };
 
 /** How a card's linked account signs in, for the Account block. The placeholder address is never in `email`. */
-export type PersonAccount = { email: string | null; telegramUsername: string | null };
+type PersonAccount = { email: string | null; telegramUsername: string | null };
 
 export type Person = {
   id: string;
@@ -253,8 +256,6 @@ export type DemoProject = {
 };
 
 export type Judge = { id: string; name: string };
-
-export type EventOption = { id: string; name: string };
 
 export type ActivityItem = {
   id: string;

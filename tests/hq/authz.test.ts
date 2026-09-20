@@ -25,7 +25,7 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 vi.mock("@/lib/hq/auth", () => ({ currentUser: mocks.currentUser, requireUser: mocks.requireUser }));
 vi.mock("@/lib/hq/member-auth", () => ({ currentMember: mocks.currentMember, requireMember: mocks.requireMember }));
 
-import { currentActor, requireMemberActor, requireOperatorActor, type Actor } from "@/lib/hq/actor";
+import { requireMemberActor, type Actor } from "@/lib/hq/actor";
 import {
   assertHackathonMatches,
   authorizeProjectAction,
@@ -35,7 +35,6 @@ import {
   getActorCapabilities,
   isAssignedCaptain,
   isTeamMember,
-  requireOperator,
   type AuthzLoaders,
   type Entry,
   type ProjectAction,
@@ -466,16 +465,8 @@ describe("assignCaptain feeding real rows into authorizeProjectAction (task T4.4
 });
 
 describe("the actor", () => {
-  const OPERATOR_USER = { id: OPERATOR_ID, username: "operator", displayName: "Operator", mustChangePassword: false };
   const MEMBER_USER = { id: "cap", email: null, name: "Captain" };
   const redirect = (path: string) => { throw new Error(`REDIRECT:${path}`); };
-
-  it("resolves the operator session first when both sessions are present, without consulting the member session", async () => {
-    mocks.currentUser.mockResolvedValue(OPERATOR_USER);
-    mocks.currentMember.mockResolvedValue(MEMBER_USER);
-    expect(await currentActor()).toEqual({ kind: "operator", id: OPERATOR_ID, displayName: "Operator" });
-    expect(mocks.currentMember).not.toHaveBeenCalled();
-  });
 
   it("builds the member actor from the member session with current grants and the Telegram identity as a string", async () => {
     await grant("cap");
@@ -483,38 +474,15 @@ describe("the actor", () => {
     await rows(`INSERT INTO hq_auth_account(id,issuer,"accountId","providerId","userId") VALUES('cap-telegram','https://oauth.telegram.org','cap-subject','telegram','cap')`);
     await rows("INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES('cap','cap-subject',9007199254740993,'cap_handle')");
     mocks.currentUser.mockResolvedValue(null);
-    mocks.currentMember.mockResolvedValue(MEMBER_USER);
-    expect(await currentActor()).toEqual({
+    mocks.requireMember.mockResolvedValue(MEMBER_USER);
+    expect(await requireMemberActor()).toEqual({
       kind: "member", id: "cap", name: "Captain", email: null, capabilities: new Set(["captain"]), telegram: { userId: "9007199254740993" },
     });
     await revoke("cap");
-    const later = await currentActor();
+    const later = await requireMemberActor();
     expect(later?.kind === "member" && later.capabilities).toEqual(new Set());
-    mocks.currentMember.mockResolvedValue({ id: "plain", email: "plain@example.test", name: "Plain" });
-    expect(await currentActor()).toEqual({ kind: "member", id: "plain", name: "Plain", email: "plain@example.test", capabilities: new Set(), telegram: null });
-  });
-
-  it("is null without a session, and an operator who must change their password is not an operator actor", async () => {
-    mocks.currentUser.mockResolvedValue(null);
-    mocks.currentMember.mockResolvedValue(null);
-    expect(await currentActor()).toBeNull();
-    mocks.currentUser.mockResolvedValue({ ...OPERATOR_USER, mustChangePassword: true });
-    expect(await currentActor()).toBeNull();
-    mocks.currentMember.mockResolvedValue({ id: "plain", email: "plain@example.test", name: "Plain" });
-    expect((await currentActor())?.kind).toBe("member");
-  });
-
-  it("requireOperatorActor and requireOperator wrap requireUser and never admit a member session", async () => {
-    mocks.requireUser.mockResolvedValue(OPERATOR_USER);
-    expect(await requireOperatorActor()).toEqual({ kind: "operator", id: OPERATOR_ID, displayName: "Operator" });
-    expect(await requireOperator()).toEqual({ kind: "operator", id: OPERATOR_ID, displayName: "Operator" });
-    mocks.requireUser.mockImplementation(async () => redirect("/hq/admin/login"));
-    mocks.currentMember.mockResolvedValue(MEMBER_USER);
-    mocks.requireMember.mockResolvedValue(MEMBER_USER);
-    await expect(requireOperatorActor()).rejects.toThrow("REDIRECT:/hq/admin/login");
-    await expect(requireOperator()).rejects.toThrow("REDIRECT:/hq/admin/login");
-    expect(mocks.currentMember).not.toHaveBeenCalled();
-    expect(mocks.requireMember).not.toHaveBeenCalled();
+    mocks.requireMember.mockResolvedValue({ id: "plain", email: "plain@example.test", name: "Plain" });
+    expect(await requireMemberActor()).toEqual({ kind: "member", id: "plain", name: "Plain", email: "plain@example.test", capabilities: new Set(), telegram: null });
   });
 
   it("requireMemberActor redirects like requireMember and passes the destination through", async () => {
@@ -530,8 +498,5 @@ describe("the actor", () => {
       const source = readFileSync(join(process.cwd(), file), "utf8");
       expect(source, file).not.toMatch(/formData|FormData|searchParams|cookies\(|headers\(|next\/headers/);
     }
-    expect(currentActor.length).toBe(0);
-    expect(requireOperatorActor.length).toBe(0);
-    expect(requireOperator.length).toBe(0);
   });
 });

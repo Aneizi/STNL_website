@@ -50,13 +50,10 @@ export async function createEvent(input: z.infer<typeof createSchema>): Promise<
     `,
     activityStmt(user.id, hackathon.id, `Added event ${name}`),
   ]);
-  refreshHq();
+  refreshHq("events");
   return { ok: true };
 }
 
-// Attendance and leads are editable here even though the original mock's
-// numbers only came from seed data — a clean-start database needs a write
-// path for them (user-approved deviation).
 const eventField = z.discriminatedUnion("field", [
   z.object({ field: z.literal("name"), value: z.string().min(1).max(200) }),
   z.object({ field: z.literal("date"), value: isoDate }),
@@ -83,39 +80,20 @@ export async function updateEvent(
   if (!event) return { ok: false, error: "Event not found." };
 
   const data = parsed.data;
-  let update;
-  switch (data.field) {
-    case "name": {
-      const trimmed = data.value.trim();
-      if (!trimmed) return { ok: false };
-      update = sql`UPDATE hq_events SET name = ${trimmed} WHERE id = ${eventId}`;
-      break;
-    }
-    case "date":
-      update = sql`UPDATE hq_events SET date = ${data.value} WHERE id = ${eventId}`;
-      break;
-    case "endDate":
-      update = sql`UPDATE hq_events SET end_date = ${data.value} WHERE id = ${eventId}`;
-      break;
-    case "typeId":
-      update = sql`UPDATE hq_events SET type_id = ${data.value} WHERE id = ${eventId}`;
-      break;
-    case "venue":
-      update = sql`UPDATE hq_events SET venue = ${data.value} WHERE id = ${eventId}`;
-      break;
-    case "cohost":
-      update = sql`UPDATE hq_events SET cohost = ${data.value} WHERE id = ${eventId}`;
-      break;
-    case "spend":
-      update = sql`UPDATE hq_events SET spend = ${data.value} WHERE id = ${eventId}`;
-      break;
-    case "attendance":
-      update = sql`UPDATE hq_events SET attendance = ${data.value} WHERE id = ${eventId}`;
-      break;
-    case "leads":
-      update = sql`UPDATE hq_events SET leads = ${data.value} WHERE id = ${eventId}`;
-      break;
-  }
+  const value = data.field === "name" ? data.value.trim() : data.value;
+  if (data.field === "name" && !value) return { ok: false };
+  // Statements are lazy; only the validated field's update enters the batch.
+  const update = {
+    name: sql`UPDATE hq_events SET name = ${value} WHERE id = ${eventId}`,
+    date: sql`UPDATE hq_events SET date = ${value} WHERE id = ${eventId}`,
+    endDate: sql`UPDATE hq_events SET end_date = ${value} WHERE id = ${eventId}`,
+    typeId: sql`UPDATE hq_events SET type_id = ${value} WHERE id = ${eventId}`,
+    venue: sql`UPDATE hq_events SET venue = ${value} WHERE id = ${eventId}`,
+    cohost: sql`UPDATE hq_events SET cohost = ${value} WHERE id = ${eventId}`,
+    spend: sql`UPDATE hq_events SET spend = ${value} WHERE id = ${eventId}`,
+    attendance: sql`UPDATE hq_events SET attendance = ${value} WHERE id = ${eventId}`,
+    leads: sql`UPDATE hq_events SET leads = ${value} WHERE id = ${eventId}`,
+  }[data.field];
 
   // Editing a Luma-backed field pins it, so later syncs stop overwriting it.
   // The statement guards itself on luma_id, so external events are unaffected
@@ -134,7 +112,7 @@ export async function updateEvent(
   }
 
   await sql.transaction(statements);
-  refreshHq();
+  refreshHq("events");
   return { ok: true };
 }
 
@@ -162,7 +140,7 @@ export async function unpinEventField(
     `,
     activityStmt(user.id, event.hackathonId, `Reset ${field} to Luma for ${event.name}`),
   ]);
-  refreshHq();
+  refreshHq("events");
   return { ok: true };
 }
 
@@ -209,7 +187,7 @@ async function setArchived(
       `${archived ? "Archived" : "Unarchived"} event ${event.name}`,
     ),
   ]);
-  refreshHq();
+  refreshHq("events");
   return { ok: true };
 }
 
@@ -234,7 +212,7 @@ export async function deleteEvent(eventId: string): Promise<ActionResult> {
     sql`DELETE FROM hq_events WHERE id = ${eventId} AND luma_id IS NULL`,
     activityStmt(user.id, event.hackathonId, `Deleted event ${event.name}`),
   ]);
-  refreshHq();
+  refreshHq("events");
   return { ok: true };
 }
 
@@ -248,6 +226,6 @@ export async function syncLuma(): Promise<ActionResult> {
   await requireUser();
   const result = await syncLumaEvents({ force: true });
   if (!result.ok) return { ok: false, error: `Luma sync failed: ${result.error}` };
-  refreshHq();
+  refreshHq("events");
   return { ok: true };
 }

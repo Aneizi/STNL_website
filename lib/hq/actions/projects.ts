@@ -5,17 +5,12 @@ import { requireUser } from "../auth";
 import { builderDatabase } from "../builder-db";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
-import { isTrafficLightStatus } from "../project-status";
 import { deleteTeamRecord } from "../record-deletion";
 import type { ActionResult } from "../types";
 import { activityStmt, hqToday, inHackathon, refreshHq } from "./util";
 
-// Every action that takes a record id resolves it through inHackathon():
-// the record must exist and belong to the edition the operator is working
-// in (the hq_hackathon cookie names that edition and authorizes nothing on
-// its own), and a missing record and one from another edition answer the
-// same way, so neither a form field nor a swapped cookie can reach a record
-// outside the selected edition.
+// Missing records and records outside the selected edition return the same
+// refusal. The hackathon cookie selects scope; it does not authorize access.
 
 const id = z.string().uuid();
 const text = (max: number) => z.string().max(max);
@@ -69,7 +64,7 @@ export async function createProject(input: z.infer<typeof createSchema>): Promis
     `,
     activityStmt(user.id, hackathon.id, `Added project ${name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -109,43 +104,23 @@ export async function updateProjectDetail(
   `;
 
   const data = parsed.data;
-  let update;
-  let message: string;
-  switch (data.field) {
-    case "name": {
-      const trimmed = data.value.trim();
-      if (!trimmed) return { ok: false };
-      update = sql`UPDATE hq_projects SET name = ${trimmed} WHERE id = ${projectId}`;
-      message = `Renamed project to ${trimmed}`;
-      break;
-    }
-    case "leadName":
-      update = sql`UPDATE hq_projects SET lead_name = ${data.value} WHERE id = ${projectId}`;
-      message = `Updated ${name}`;
-      break;
-    case "leadContact":
-      update = sql`UPDATE hq_projects SET lead_contact = ${data.value} WHERE id = ${projectId}`;
-      message = `Updated ${name}`;
-      break;
-    case "eventSrc":
-      update = sql`UPDATE hq_projects SET event_src = ${data.value} WHERE id = ${projectId}`;
-      message = `Updated ${name}`;
-      break;
-    case "partnerId":
-      // Only a partner of the same hackathon can be attached; any other id
-      // clears the attribution rather than crossing editions.
-      update = sql`
-        UPDATE hq_projects
-        SET partner_id = (SELECT id FROM hq_partners
-                          WHERE id = ${data.value}::uuid AND hackathon_id = ${hackathonId})
-        WHERE id = ${projectId}
-      `;
-      message = `Updated ${name}`;
-      break;
-  }
+  const value = data.field === "name" ? data.value.trim() : data.value;
+  if (data.field === "name" && !value) return { ok: false };
+  // Statements are lazy; only the validated field's update enters the batch.
+  const update = {
+    name: sql`UPDATE hq_projects SET name = ${value} WHERE id = ${projectId}`,
+    leadName: sql`UPDATE hq_projects SET lead_name = ${value} WHERE id = ${projectId}`,
+    leadContact: sql`UPDATE hq_projects SET lead_contact = ${value} WHERE id = ${projectId}`,
+    eventSrc: sql`UPDATE hq_projects SET event_src = ${value} WHERE id = ${projectId}`,
+    // A partner from another edition clears attribution rather than crossing editions.
+    partnerId: sql`UPDATE hq_projects SET partner_id = (
+      SELECT id FROM hq_partners WHERE id = ${value}::uuid AND hackathon_id = ${hackathonId}
+    ) WHERE id = ${projectId}`,
+  }[data.field];
+  const message = data.field === "name" ? `Renamed project to ${value}` : `Updated ${name}`;
 
   await sql.transaction([update, touch, activityStmt(user.id, hackathonId, message)]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -200,7 +175,7 @@ export async function addProjectMember(
     `,
     activityStmt(user.id, project.hackathonId, `Updated team on ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -239,7 +214,7 @@ export async function updateProjectMember(
     `,
     activityStmt(user.id, member.hackathonId, `Updated team on ${member.projectName}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -261,46 +236,10 @@ export async function removeProjectMember(memberId: string): Promise<ActionResul
     `,
     activityStmt(user.id, member.hackathonId, `Updated team on ${member.projectName}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
-/**
- * Status change. In Monday-review mode the design persists the pick and
- * touches the project but does NOT log activity; the Log button does that.
- */
-export async function setProjectStatus(
-  projectId: string,
-  statusSlug: string,
-  opts?: { review?: boolean },
-): Promise<ActionResult> {
-  const user = await requireUser();
-  const selected = await requireHackathon();
-  if (!id.safeParse(projectId).success) return { ok: false };
-  const project = inHackathon(await getProject(projectId), selected.id);
-  if (!project) return { ok: false };
-
-  const sql = getSql();
-  const today = await hqToday(project.hackathonId);
-  const statusRows = await sql`SELECT id FROM hq_project_statuses WHERE slug = ${statusSlug}`;
-  if (!statusRows[0]) return { ok: false };
-
-  const statements = [
-    sql`
-      UPDATE hq_projects
-      SET status_id = ${statusRows[0].id}, touched_by_user_id = ${user.id}, touched_at = ${today}
-      WHERE id = ${projectId}
-    `,
-  ];
-  if (!opts?.review) {
-    statements.push(
-      activityStmt(user.id, project.hackathonId, `Set ${project.name} to ${statusSlug}`),
-    );
-  }
-  await sql.transaction(statements);
-  refreshHq();
-  return { ok: true };
-}
 
 export async function setProjectForecast(
   projectId: string,
@@ -329,7 +268,7 @@ export async function setProjectForecast(
       `Moved ${project.name} to ${forecastSlug.replace("_", " ")}`,
     ),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -370,16 +309,11 @@ export async function toggleProjectGate(
       `${done ? "Checked" : "Unchecked"} gate on ${project.name}`,
     ),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
-/**
- * The operator's own "high potential" flag, on the project row itself so it
- * works for a project created in HQ as well as an imported one. The board
- * renders it as the HP badge beside the name and the toggle in the
- * Colosseum block.
- */
+/** Operator-owned flag, independent of the imported Colosseum snapshot. */
 export async function setProjectHighPotential(
   projectId: string,
   highPotential: boolean,
@@ -404,7 +338,7 @@ export async function setProjectHighPotential(
       highPotential ? `Marked ${project.name} high potential` : `Removed high potential from ${project.name}`,
     ),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -430,7 +364,7 @@ export async function saveProjectBlocker(
     `,
     activityStmt(user.id, project.hackathonId, `Updated blocker on ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -456,29 +390,18 @@ export async function addProjectNote(projectId: string, body: string): Promise<A
     `,
     activityStmt(user.id, project.hackathonId, `Note on ${project.name}`),
   ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
-/**
- * Deletes a project and everything hanging off it. Gates, notes, members and
- * the finalist row cascade in the schema; an award won by that finalist has
- * its winner cleared rather than being deleted. Two-step confirmed in the UI,
- * so there is no soft-delete to undo it from.
- *
- * The statement itself lives in `lib/hq/record-deletion.ts` (deleteTeamRecord):
- * one transaction, every dependent row removed or explicitly detached, and a
- * `project.deleted` audit event naming what went. This is the only delete
- * path for a project, imported or not, so nothing can strand a Captain
- * assignment or a reporting entry by taking a second route.
- */
+/** All team deletion goes through the shared, scoped and audited transaction. */
 export async function deleteProject(projectId: string): Promise<ActionResult> {
   const user = await requireUser();
   const selected = await requireHackathon();
   if (!id.safeParse(projectId).success) return { ok: false };
   const removed = await deleteTeamRecord(builderDatabase(), { projectId, hackathonId: selected.id, operatorId: user.id });
   if (!removed) return { ok: false, error: "Project not found." };
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }
 
@@ -520,67 +443,6 @@ export async function editProjectNote(noteId: string, body: string): Promise<Act
     `,
     activityStmt(user.id, note.hackathonId, `Edited note on ${note.name}`),
   ]);
-  refreshHq();
-  return { ok: true };
-}
-
-/**
- * The Log button in Monday review: stamps today's check-in, saves the
- * blocker draft (when provided), and appends the review note.
- */
-export async function logMondayReview(
-  projectId: string,
-  blocker: string | undefined,
-): Promise<ActionResult> {
-  const user = await requireUser();
-  const selected = await requireHackathon();
-  if (!id.safeParse(projectId).success) return { ok: false };
-  if (blocker !== undefined && !text(500).safeParse(blocker).success) return { ok: false };
-
-  const sql = getSql();
-  const rows = await sql`
-    SELECT p.name, p.blocker, p.hackathon_id, s.slug AS status_slug
-    FROM hq_projects p
-    JOIN hq_project_statuses s ON s.id = p.status_id
-    WHERE p.id = ${projectId}
-  `;
-  const project = inHackathon(
-    rows[0]
-      ? { name: String(rows[0].name), blocker: rows[0].blocker as string | null, hackathonId: Number(rows[0].hackathon_id), statusSlug: String(rows[0].status_slug) }
-      : null,
-    selected.id,
-  );
-  if (!project) return { ok: false };
-
-  const finalBlocker = blocker !== undefined ? blocker : project.blocker;
-  const reviewStatus = isTrafficLightStatus(project.statusSlug) ? "" : `${project.statusSlug}, `;
-  const noteBody = `Monday review: ${reviewStatus}${finalBlocker ? `blocker: ${finalBlocker}` : "no blocker"}`;
-
-  const today = await hqToday(project.hackathonId);
-  // Only rewrite the blocker column when the reviewer actually typed one —
-  // the read-back value could race a save from another operator.
-  const updateStmt =
-    blocker !== undefined
-      ? sql`
-          UPDATE hq_projects
-          SET blocker = ${blocker}, last_check_in = ${today},
-              touched_by_user_id = ${user.id}, touched_at = ${today}
-          WHERE id = ${projectId}
-        `
-      : sql`
-          UPDATE hq_projects
-          SET last_check_in = ${today},
-              touched_by_user_id = ${user.id}, touched_at = ${today}
-          WHERE id = ${projectId}
-        `;
-  await sql.transaction([
-    updateStmt,
-    sql`
-      INSERT INTO hq_project_notes (project_id, author_user_id, body)
-      VALUES (${projectId}, ${user.id}, ${noteBody})
-    `,
-    activityStmt(user.id, project.hackathonId, `Monday review logged for ${project.name}`),
-  ]);
-  refreshHq();
+  refreshHq("projects");
   return { ok: true };
 }

@@ -15,7 +15,7 @@ export { isPlaceholderEmail } from "./placeholder-email";
  * Telegram user id is a bigint in PostgreSQL and a string here, so it never
  * passes through a JavaScript number at a JSON boundary.
  */
-export type TelegramIdentity = {
+type TelegramIdentity = {
   userId: string;
   telegramUserId: string;
   providerSubject: string;
@@ -108,7 +108,7 @@ export async function isVerifiedAccount(user: StoredAccount): Promise<boolean> {
   return hasTelegramIdentity(user.id);
 }
 
-export type LoginMethods = {
+type LoginMethods = {
   /** The stored login address; null when it is the internal placeholder, so it is never shown or mailed. */
   email: { address: string; verified: boolean } | null;
   telegram: TelegramIdentity | null;

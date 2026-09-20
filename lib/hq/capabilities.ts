@@ -23,7 +23,7 @@ import type { PersonTag } from "./types";
  * Reads take no cache: a revocation is visible on the next call.
  */
 
-export const CAPABILITIES = ["captain"] as const;
+const CAPABILITIES = ["captain"] as const;
 export type Capability = (typeof CAPABILITIES)[number];
 
 /** How People shows a capability: a locked tag with this label. */
@@ -47,7 +47,7 @@ export type CapabilityGrant = {
   reason: string | null;
 };
 
-export type CapabilityChange = {
+type CapabilityChange = {
   /**
    * Who is making the change, as the audit event records it. From
    * `requireUser()`, `currentMember()` or a verified job token, never from a

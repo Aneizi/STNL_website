@@ -1,10 +1,8 @@
 "use client";
 
-import Image from "next/image";
-import { useActionState, useState, type FormEvent } from "react";
 import { changePassword } from "@/lib/hq/actions/auth";
-import type { ActionResult } from "@/lib/hq/types";
-import { authCard, authField, authLabel, authSubmit } from "./ui";
+import { AuthForm, useAuthForm } from "./auth-form";
+import { authField, authLabel, authSubmit } from "./ui";
 
 // The same two refusals lib/hq/actions/auth.ts gives a JS-off submit, so a
 // person reads one message whichever side caught it.
@@ -20,88 +18,54 @@ export function changePasswordPrecheck(data: FormData): string | null {
 }
 
 export function ChangePasswordForm({ displayName }: { displayName: string }) {
-  const [state, formAction, pending] = useActionState<ActionResult | null, FormData>(
-    changePassword,
-    null,
-  );
-  const [localError, setLocalError] = useState<string | null>(null);
-  // The pre-check's message wins, and the action's clears while a new
-  // attempt is in flight, the way the design empties it on submit.
-  const error = localError ?? (pending ? null : state?.error);
-
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    const problem = changePasswordPrecheck(new FormData(event.currentTarget));
-    if (problem) event.preventDefault();
-    setLocalError(problem);
-  };
+  const { formAction, pending, error, submit } = useAuthForm(changePassword, changePasswordPrecheck);
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 24,
-        boxSizing: "border-box",
-      }}
-    >
-      <form action={formAction} onSubmit={submit} className="hq-fade-in-page" style={authCard}>
-        <div style={{ display: "flex", justifyContent: "center" }}>
-          <Image
-            src="/landing/st-orange.png"
-            alt=""
-            width={2154}
-            height={2116}
-            sizes="28px"
-            style={{ width: 28, height: "auto", display: "block" }}
-          />
-        </div>
-        <div
-          style={{
-            fontFamily: "var(--serif)",
-            fontSize: 36,
-            lineHeight: 1.05,
-            marginTop: 18,
-            textAlign: "center",
-          }}
-        >
-          Welcome, <em style={{ color: "var(--accent)" }}>{displayName}</em>
-        </div>
-        <div
-          style={{
-            fontSize: 16,
-            color: "var(--label-2)",
-            marginTop: 10,
-            textAlign: "center",
-          }}
-        >
-          Your temporary password needs replacing. Choose a new one to continue.
-        </div>
-        <label htmlFor="new-password" style={{ ...authLabel, display: "block", margin: "18px 0 8px" }}>New password</label>
-        <input
-          id="new-password"
-          name="password"
-          type="password"
-          placeholder="At least 12 characters"
-          autoComplete="new-password"
-          style={authField}
-        />
-        <label htmlFor="confirm-password" style={{ ...authLabel, display: "block", margin: "16px 0 8px" }}>Confirm password</label>
-        <input
-          id="confirm-password"
-          name="confirm"
-          type="password"
-          autoComplete="new-password"
-          style={authField}
-        />
-        {error ? (
-          <div role="alert" style={{ fontSize: 14, color: "var(--red)", marginTop: 10 }}>{error}</div>
-        ) : null}
-        <button type="submit" disabled={pending} style={pending ? { ...authSubmit, opacity: 0.5 } : authSubmit}>
-          {pending ? "Saving…" : "Set new password"}
-        </button>
-      </form>
-    </div>
+    <AuthForm action={formAction} onSubmit={submit}>
+      <div
+        style={{
+          fontFamily: "var(--serif)",
+          fontSize: 36,
+          lineHeight: 1.05,
+          marginTop: 18,
+          textAlign: "center",
+        }}
+      >
+        Welcome, <em style={{ color: "var(--accent)" }}>{displayName}</em>
+      </div>
+      <div
+        style={{
+          fontSize: 16,
+          color: "var(--label-2)",
+          marginTop: 10,
+          textAlign: "center",
+        }}
+      >
+        Your temporary password needs replacing. Choose a new one to continue.
+      </div>
+      <label htmlFor="new-password" style={{ ...authLabel, display: "block", margin: "18px 0 8px" }}>New password</label>
+      <input
+        id="new-password"
+        name="password"
+        type="password"
+        placeholder="At least 12 characters"
+        autoComplete="new-password"
+        style={authField}
+      />
+      <label htmlFor="confirm-password" style={{ ...authLabel, display: "block", margin: "16px 0 8px" }}>Confirm password</label>
+      <input
+        id="confirm-password"
+        name="confirm"
+        type="password"
+        autoComplete="new-password"
+        style={authField}
+      />
+      {error ? (
+        <div role="alert" style={{ fontSize: 14, color: "var(--red)", marginTop: 10 }}>{error}</div>
+      ) : null}
+      <button type="submit" disabled={pending} style={pending ? { ...authSubmit, opacity: 0.5 } : authSubmit}>
+        {pending ? "Saving…" : "Set new password"}
+      </button>
+    </AuthForm>
   );
 }

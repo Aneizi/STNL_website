@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { refreshHq } from "@/lib/hq/revalidation";
 import { cookies, headers } from "next/headers";
 import {
   COLOSSEUM_INTEREST_COOKIE, COLOSSEUM_INTEREST_COOKIE_VALUE,
@@ -36,7 +36,7 @@ export async function submitInterest(
     );
     if (!result.ok) return result;
 
-    revalidatePath("/hq", "layout");
+    refreshHq("interest");
     cookieStore.set(COLOSSEUM_INTEREST_COOKIE, COLOSSEUM_INTEREST_COOKIE_VALUE, {
       httpOnly: true,
       sameSite: "lax",

@@ -52,7 +52,7 @@ export async function createPartner(input: z.infer<typeof createSchema>): Promis
     activityStmt(user.id, hackathon.id, `Added partner ${name}`),
   ];
   await sql.transaction(statements);
-  refreshHq();
+  refreshHq("partners");
   return { ok: true };
 }
 
@@ -79,7 +79,7 @@ export async function setPartnerStage(
     `,
     activityStmt(user.id, partner.hackathonId, `${partner.name} moved to ${stageSlug}`),
   ]);
-  refreshHq();
+  refreshHq("partners");
   return { ok: true };
 }
 
@@ -106,38 +106,28 @@ export async function updatePartnerDetail(
 
   const sql = getSql();
   const data = parsed.data;
-  let update;
-  let message: string;
-  switch (data.field) {
-    case "name": {
-      const trimmed = data.value.trim();
-      if (!trimmed) return { ok: false };
-      update = sql`UPDATE hq_partners SET name = ${trimmed} WHERE id = ${partnerId}`;
-      message = `Renamed partner to ${trimmed}`;
-      break;
-    }
-    case "channelId": {
-      const channelRows = await sql`
-        SELECT label FROM hq_partner_channels WHERE id = ${data.value}
-      `;
-      if (!channelRows[0]) return { ok: false };
-      update = sql`UPDATE hq_partners SET channel_id = ${data.value} WHERE id = ${partnerId}`;
-      message = `${name} channel set to ${channelRows[0].label}`;
-      break;
-    }
-    case "captainName":
-      update = sql`UPDATE hq_partners SET captain_name = ${data.value} WHERE id = ${partnerId}`;
-      message = `Captain updated on ${name}`;
-      break;
-    case "captainContact":
-      update = sql`UPDATE hq_partners SET captain_contact = ${data.value} WHERE id = ${partnerId}`;
-      message = `Captain contact updated on ${name}`;
-      break;
-    case "target":
-      update = sql`UPDATE hq_partners SET target = ${data.value} WHERE id = ${partnerId}`;
-      message = `Target updated on ${name}`;
-      break;
+  const value = data.field === "name" ? data.value.trim() : data.value;
+  if (data.field === "name" && !value) return { ok: false };
+  let channelLabel = "";
+  if (data.field === "channelId") {
+    const [channel] = await sql`SELECT label FROM hq_partner_channels WHERE id = ${value}`;
+    if (!channel) return { ok: false };
+    channelLabel = channel.label;
   }
+  const update = {
+    name: sql`UPDATE hq_partners SET name = ${value} WHERE id = ${partnerId}`,
+    channelId: sql`UPDATE hq_partners SET channel_id = ${value} WHERE id = ${partnerId}`,
+    captainName: sql`UPDATE hq_partners SET captain_name = ${value} WHERE id = ${partnerId}`,
+    captainContact: sql`UPDATE hq_partners SET captain_contact = ${value} WHERE id = ${partnerId}`,
+    target: sql`UPDATE hq_partners SET target = ${value} WHERE id = ${partnerId}`,
+  }[data.field];
+  const message = {
+    name: `Renamed partner to ${value}`,
+    channelId: `${name} channel set to ${channelLabel}`,
+    captainName: `Captain updated on ${name}`,
+    captainContact: `Captain contact updated on ${name}`,
+    target: `Target updated on ${name}`,
+  }[data.field];
 
   const today = await hqToday(hackathonId);
   await sql.transaction([
@@ -148,7 +138,7 @@ export async function updatePartnerDetail(
     `,
     activityStmt(user.id, hackathonId, message),
   ]);
-  refreshHq();
+  refreshHq("partners");
   return { ok: true };
 }
 
@@ -180,7 +170,7 @@ export async function togglePartnerExchange(
     `,
     activityStmt(user.id, partner.hackathonId, `Exchange item updated on ${partner.name}`),
   ]);
-  refreshHq();
+  refreshHq("partners");
   return { ok: true };
 }
 
@@ -200,7 +190,7 @@ export async function deletePartner(partnerId: string): Promise<ActionResult> {
     sql`DELETE FROM hq_partners WHERE id = ${partnerId}`,
     activityStmt(user.id, partner.hackathonId, `Deleted partner ${partner.name}`),
   ]);
-  refreshHq();
+  refreshHq("partners");
   return { ok: true };
 }
 
@@ -225,6 +215,6 @@ export async function addPartnerContact(partnerId: string, body: string): Promis
     `,
     activityStmt(user.id, partner.hackathonId, `Contact logged with ${partner.name}`),
   ]);
-  refreshHq();
+  refreshHq("partners");
   return { ok: true };
 }

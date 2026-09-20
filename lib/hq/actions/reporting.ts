@@ -1,6 +1,6 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { refreshHq } from "../revalidation";
 import { z } from "zod";
 import { requireMemberActor } from "../actor";
 import { builderDatabase } from "../builder-db";
@@ -64,11 +64,8 @@ export async function loadMemberColosseumUpdates(input: { projectId: string; hac
   return { ok: true, page: await readColosseumHistory(actor, parsed.data) };
 }
 
-function refresh() {
-  revalidatePath("/hq", "layout");
-}
 
-export type AddUpdateInput = {
+type AddUpdateInput = {
   projectId: string;
   hackathonId: number;
   body: string;
@@ -79,7 +76,7 @@ export type AddUpdateInput = {
   periodId?: string;
 };
 
-export type AddUpdateResult =
+type AddUpdateResult =
   | { ok: true; entry: ReportingEntryView; completesPeriod: boolean }
   | { ok: false; reason: "period_changed"; error: string; currentPeriod: ReportingPeriod | null }
   | { ok: false; reason: Exclude<keyof typeof ADD_UPDATE_MESSAGES, "period_changed">; error: string };
@@ -101,7 +98,7 @@ export async function addReportingUpdate(input: AddUpdateInput): Promise<AddUpda
 
   const result = await createUpdate(actor, { ...parsed.data, source: "hq" });
   if (result.ok) {
-    refresh();
+    refreshHq("reporting");
     return { ok: true, entry: result.entry, completesPeriod: result.completesPeriod };
   }
   if (result.reason === "period_changed") {
@@ -110,7 +107,7 @@ export async function addReportingUpdate(input: AddUpdateInput): Promise<AddUpda
   return { ok: false, reason: result.reason, error: ADD_UPDATE_MESSAGES[result.reason] };
 }
 
-export type EditUpdateActionInput = {
+type EditUpdateActionInput = {
   entryId: string;
   body?: string;
   visibility?: "shared" | "sensitive";
@@ -119,7 +116,7 @@ export type EditUpdateActionInput = {
   confirmAudienceChange?: boolean;
 };
 
-export type EditUpdateActionResult =
+type EditUpdateActionResult =
   | { ok: true; entry: ReportingEntryView; changed: boolean }
   | { ok: false; reason: "conflict"; error: string; current: ReportingEntryView | null }
   | { ok: false; reason: Exclude<keyof typeof EDIT_UPDATE_MESSAGES, "conflict">; error: string };
@@ -140,7 +137,7 @@ export async function editReportingUpdate(input: EditUpdateActionInput): Promise
 
   const result = await editUpdate(actor, parsed.data);
   if (result.ok) {
-    refresh();
+    refreshHq("reporting");
     return { ok: true, entry: result.entry, changed: result.changed };
   }
   if (result.reason === "conflict") {
@@ -150,7 +147,7 @@ export async function editReportingUpdate(input: EditUpdateActionInput): Promise
 }
 
 /** A page of updates, as the two member screens ask for the next one. */
-export type UpdatePageResult = { entries: ReportingEntryView[]; nextCursor: string | null };
+type UpdatePageResult = { entries: ReportingEntryView[]; nextCursor: string | null };
 
 /**
  * The next page of one project's updates, or one week of them.
@@ -177,7 +174,7 @@ export async function loadTeamUpdates(input: {
   return readAuthorizedUpdates(actor, { ...parsed.data, limit: RECENT_UPDATES });
 }
 
-export type ContactResult = { ok: true; contact: string | null } | { ok: false; error: string };
+type ContactResult = { ok: true; contact: string | null } | { ok: false; error: string };
 
 /**
  * The team's preferred contact, set by the team lead. `membership.change` is
@@ -194,6 +191,6 @@ export async function saveTeamContact(input: { projectId: string; hackathonId: n
   const contact = normalizeContact(parsed.data.contact);
   const written = await writeTeamContact(builderDatabase(), team.id, contact);
   if (!written) return { ok: false, error: TEAM_NOT_AVAILABLE };
-  refresh();
+  refreshHq("reporting");
   return { ok: true, contact };
 }

@@ -43,7 +43,7 @@ export const INVITE_CONTINUATION_COOKIE = "hq_invite_continuation";
 /** Where the continuation cookie is sent: the whole /hq/invite/ subtree, never wider than the flow that needs it. */
 const INVITE_CONTINUATION_COOKIE_PATH = "/hq/invite";
 
-export type InviteContinuation = {
+type InviteContinuation = {
   invitationId: string;
   /**
    * A best-effort snapshot of readCaptainInvitationByToken at exchange time,
@@ -56,7 +56,7 @@ export type InviteContinuation = {
   full: boolean;
 };
 
-export type InviteContinuationCookieOptions = {
+type InviteContinuationCookieOptions = {
   httpOnly: true;
   secure: boolean;
   sameSite: "lax";

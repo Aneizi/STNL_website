@@ -38,7 +38,7 @@ import { refreshHq } from "./util";
  * action that only reads, because an exported Server Action nothing calls is
  * a live endpoint with no user (contracts.md, standing rule 1).
  */
-export type ReportingJobsView = {
+type ReportingJobsView = {
   /** Whether this deployment has a Telegram bot at all. False means reminders are prepared and nothing is delivered. */
   botConfigured: boolean;
   deliveries: ReminderDeliveryView[];
@@ -68,7 +68,7 @@ export async function runReportingJobsNow(): Promise<RunJobsResult> {
     };
   }
   const deliveries = await listReminderDeliveries(builderDatabase(), { hackathonId: hackathon.id });
-  refreshHq();
+  refreshHq("reporting");
   return { ok: true, summary, view: { botConfigured: isTelegramBotConfigured(), deliveries } };
 }
 
@@ -111,7 +111,7 @@ export async function resendCaptainReminder(input: z.infer<typeof resendSchema>)
       await reconcileReminderDeliveries(db);
     }
     const [delivery] = await listReminderDeliveries(db, { hackathonId: hackathon.id, deliveryId: parsed.data.deliveryId });
-    refreshHq();
+    refreshHq("reporting");
     if (!delivery) return { ok: false, error: "This reminder is no longer available. Reload to see the latest history." };
     return { ok: true, delivery };
   } catch (error) {

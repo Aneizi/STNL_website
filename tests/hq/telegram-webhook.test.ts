@@ -5,7 +5,7 @@
 // payload, durable deduplication of Telegram's retries, and an acknowledgement
 // that happens only after the update has been durably accepted.
 import type { PGlite } from "@electric-sql/pglite";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll,beforeAll,beforeEach,describe,expect,it,vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 const mocks = vi.hoisted(() => ({ builderDatabase: vi.fn() }));
@@ -15,14 +15,14 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
-import { redactBotUrl, telegramBotConfig, type TelegramBotConfig, type TelegramSender } from "@/lib/hq/telegram-bot-api";
+import { telegramBotConfig,type TelegramBotConfig,type TelegramSender } from "@/lib/hq/telegram-bot-api";
 import {
-  handleTelegramWebhookRequest,
-  MAX_WEBHOOK_BODY_BYTES,
-  SECRET_HEADER,
-  secretMatches,
+handleTelegramWebhookRequest,
+MAX_WEBHOOK_BODY_BYTES,
+SECRET_HEADER,
+secretMatches,
 } from "@/lib/hq/telegram-webhook";
-import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
+import { createMigratedDatabase,pgliteBuilderDatabase } from "./helpers/db";
 
 const SECRET = "a-fictional-webhook-secret-value";
 const CONFIG: TelegramBotConfig = { token: "1234567890:AAfictional-token-value-for-tests", webhookSecret: SECRET, apiBase: "https://api.telegram.invalid" };
@@ -85,12 +85,6 @@ describe("credentials", () => {
     expect(telegramBotConfig({ TELEGRAM_BOT_TOKEN: "not-a-token", TELEGRAM_WEBHOOK_SECRET: SECRET })).toBeNull();
     expect(telegramBotConfig({ TELEGRAM_BOT_TOKEN: CONFIG.token, TELEGRAM_WEBHOOK_SECRET: "short" })).toBeNull();
     expect(telegramBotConfig({ TELEGRAM_BOT_TOKEN: CONFIG.token, TELEGRAM_WEBHOOK_SECRET: SECRET })).toMatchObject({ token: CONFIG.token, webhookSecret: SECRET });
-  });
-
-  it("never lets a bot token reach a logged URL", () => {
-    const url = `https://api.telegram.org/bot${CONFIG.token}/sendMessage`;
-    expect(redactBotUrl(url)).toBe("https://api.telegram.org/bot<redacted>/sendMessage");
-    expect(redactBotUrl(url)).not.toContain(CONFIG.token);
   });
 
   it("compares the secret without leaking its length through an early exit", () => {

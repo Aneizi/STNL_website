@@ -5,7 +5,8 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "../auth";
-import { getSql } from "../db";
+import { getDatabase, getSql } from "../db";
+import { hitRateLimit, releaseRateLimit } from "../rate-limit";
 import { createSession, destroySession } from "../session";
 import type { ActionResult } from "../types";
 
@@ -24,25 +25,6 @@ let dummyHash: string | null = null;
 function getDummyHash(): string {
   if (!dummyHash) dummyHash = bcrypt.hashSync("hq-timing-pad", 12);
   return dummyHash;
-}
-
-// Atomic fixed-window counter bump: one upserted row per key, updated in
-// place, so a source that stays blocked only ever rewrites its own row —
-// the table cannot grow however hard the endpoint is hammered. Concurrent
-// bursts serialize on the row lock and are counted exactly.
-async function bumpLimit(key: string): Promise<number> {
-  const sql = getSql();
-  const [row] = await sql`
-    INSERT INTO hq_login_limits AS l (key, count, window_start)
-    VALUES (${key}, 1, now())
-    ON CONFLICT (key) DO UPDATE SET
-      count = CASE WHEN l.window_start < now() - interval '15 minutes'
-        THEN 1 ELSE l.count + 1 END,
-      window_start = CASE WHEN l.window_start < now() - interval '15 minutes'
-        THEN now() ELSE l.window_start END
-    RETURNING count
-  `;
-  return Number(row.count);
 }
 
 const loginSchema = z.object({
@@ -82,10 +64,11 @@ export async function login(
 
   // Both caps are checked before any bcrypt work or append-only write —
   // a blocked request costs one counter update and nothing else.
-  if ((await bumpLimit(`ip:${ip}`)) > IP_MAX_ATTEMPTS) {
+  const db = getDatabase();
+  if (!(await hitRateLimit(db, `ip:${ip}`, { max: IP_MAX_ATTEMPTS })).allowed) {
     return { ok: false, error: THROTTLE_ERROR, username: parsed.data.username };
   }
-  if ((await bumpLimit(`user:${username}@${ip}`)) > USER_IP_MAX_ATTEMPTS) {
+  if (!(await hitRateLimit(db, `user:${username}@${ip}`, { max: USER_IP_MAX_ATTEMPTS })).allowed) {
     return { ok: false, error: THROTTLE_ERROR, username: parsed.data.username };
   }
 
@@ -99,14 +82,11 @@ export async function login(
     ? await bcrypt.compare(parsed.data.password, user.password_hash)
     : (await bcrypt.compare(parsed.data.password, getDummyHash()), false);
 
-  // Audit trail — written only for requests that passed the limiter, with
-  // retention enforced on the same path (both deletes are index/PK-backed).
+  // Record only requests that passed the limiter; jobs enforce retention.
   await sql`
     INSERT INTO hq_login_attempts (username, ip, success)
     VALUES (${username}, ${ip}, ${valid})
   `;
-  await sql`DELETE FROM hq_login_attempts WHERE created_at < now() - interval '1 day'`;
-  await sql`DELETE FROM hq_login_limits WHERE window_start < now() - interval '1 day'`;
 
   if (!user || !valid) {
     return { ok: false, error: GENERIC_ERROR, username: parsed.data.username };
@@ -116,11 +96,8 @@ export async function login(
   // burst can't slip past the caps; a success gives its credit back, leaving
   // the windows counting failures only. Otherwise a whole team behind one
   // office address could exhaust the shared budget just by signing in.
-  await sql`DELETE FROM hq_login_limits WHERE key = ${`user:${username}@${ip}`}`;
-  await sql`
-    UPDATE hq_login_limits SET count = greatest(count - 1, 0)
-    WHERE key = ${`ip:${ip}`}
-  `;
+  await releaseRateLimit(db, `user:${username}@${ip}`, true);
+  await releaseRateLimit(db, `ip:${ip}`);
   await sql`
     DELETE FROM hq_sessions
     WHERE expires_at < now() OR last_seen_at < now() - interval '24 hours'

@@ -56,33 +56,10 @@ export async function updateBuilderOnboardingConfig(input: z.infer<typeof config
     ) SELECT hackathon_id FROM changed
   `;
   if (!rows.length) return { ok: false, error: "This hackathon already has imported teams. Its Colosseum mapping cannot be changed." };
-  refreshHq();
+  refreshHq("builders");
   return { ok: true };
 }
 
-export async function updateBuilderTier(builderId: string, tier: "regular" | "member"): Promise<ActionResult> {
-  const user = await requireUser();
-  const hackathon = await requireHackathon();
-  if (!z.string().min(1).max(200).safeParse(builderId).success || !z.enum(["regular", "member"]).safeParse(tier).success) {
-    return { ok: false, error: "Choose Regular or Member." };
-  }
-  const sql = getSql();
-  // Tier belongs to the account globally. The selected CRM limits which accounts can be managed here.
-  const rows = await sql`
-    WITH changed AS (
-      UPDATE hq_builder_profiles b SET tier = ${tier}
-      WHERE b.id = ${builderId} AND EXISTS (SELECT 1 FROM hq_people p
-        WHERE p.builder_user_id = b.id AND p.hackathon_id = ${hackathon.id})
-      RETURNING b.id
-    ), logged AS (
-      INSERT INTO hq_activity (hackathon_id, user_id, message)
-      SELECT ${hackathon.id}, ${user.id}::uuid, ${`Updated builder membership to ${tier}`} FROM changed
-    ) SELECT id FROM changed
-  `;
-  if (!rows.length) return { ok: false, error: "Account not found in this hackathon." };
-  refreshHq();
-  return { ok: true };
-}
 
 /**
  * The lead of an imported project is one of its Colosseum roster rows, so
@@ -112,7 +89,7 @@ export async function updateBuilderProjectLead(projectId: string, username: stri
     ) SELECT project_id FROM changed
   `;
   if (!rows.length) return { ok: false, error: "Choose a listed Colosseum teammate in this hackathon." };
-  refreshHq();
+  refreshHq("builders");
   return { ok: true };
 }
 
@@ -131,7 +108,7 @@ export async function resolveBuilderImportRequest(requestId: string): Promise<Ac
     ) SELECT id FROM changed
   `;
   if (!rows.length) return { ok: false, error: "Request not found in this hackathon." };
-  refreshHq();
+  refreshHq("builders");
   return { ok: true };
 }
 
@@ -164,7 +141,7 @@ export async function createProjectFromImportRequest(input: { requestId: string;
   } catch (error) {
     return { ok: false, error: error instanceof BuilderError ? error.message : "Could not create this project." };
   }
-  refreshHq();
+  refreshHq("builders");
   return { ok: true };
 }
 
@@ -185,6 +162,6 @@ export async function attachColosseumProject(input: { projectId: string; url: st
     projectId: parsed.data.projectId, hackathonId: hackathon.id, url: parsed.data.url, operatorId: user.id,
   });
   if (!outcome.ok) return { ok: false, error: outcome.message };
-  refreshHq();
+  refreshHq("builders");
   return { ok: true };
 }

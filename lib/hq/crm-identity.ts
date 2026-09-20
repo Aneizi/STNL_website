@@ -168,7 +168,7 @@ export async function linkPersonToAccount(db: BuilderQuery | BuilderDatabase, in
   });
 }
 
-export type PersonMatchCorrection = {
+type PersonMatchCorrection = {
   /** False when the person already had exactly this link: nothing was written and no event recorded. */
   changed: boolean;
   personId: string;

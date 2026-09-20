@@ -4,7 +4,7 @@
 // from the style atoms because server components (dashboard) import those,
 // and a module reachable from a Server Component may not import React hooks.
 import { useEffect, useRef, useState } from "react";
-import { IconDocumentOnClipboardFill } from "./icons/IconDocumentOnClipboardFill";
+import { IconDocumentOnClipboardFill } from "./icons";
 
 /**
  * "Saved" flash beside a heading — the only confirmation for controls that

@@ -13,21 +13,9 @@ import { builderDatabase, type BuilderQuery } from "./builder-db";
 import { listActiveCapabilities, type Capability } from "./capabilities";
 
 /**
- * The authorization decisions themselves, with no session read of their own.
- *
- * Split out of ./authz for the same reason ./reporting-enrolment was split
- * out of ./reporting: a module-graph decision, not a second service.
- * ./authz keeps `requireOperator()`, the one function here that needed a
- * session, and that one import (`./actor`) reaches `./member-auth`, so a
- * module importing ./authz drags the whole public member auth graph behind
- * it. The reporting service needs these decisions and nothing else, and its
- * operator Server Actions must stay clear of that graph
- * (tests/hq/operator-imports.test.ts), so the decisions live here and
- * ./authz re-exports every one of them unchanged. A caller still looks in
- * ./authz; only ./reporting imports this file directly.
- *
- * `Actor` is a type-only import, erased at compile time. Nothing here reads
- * a session, a cookie or a request: an actor arrives already validated.
+ * Session-free authorization, also exported through ./authz. Actor identities
+ * arrive already validated. Keep Actor type-only so operator services cannot
+ * transitively load member authentication, Better Auth, or mail.
  */
 
 export type { CurrentAssignment, Entry, EntryVisibility, ProjectEdition, TeamMembership } from "./authz-sql";

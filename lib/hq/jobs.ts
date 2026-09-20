@@ -34,54 +34,21 @@ import {
 } from "./telegram-bot-store";
 import { inlineKeyboard, openHqButton, reminderMessage, LABELS, type Keyboard } from "./telegram-bot-view";
 import { activeTelegramIdentitySql } from "./telegram-identity-sql";
+import { purgeExpiredLoginState } from "./rate-limit";
 
 /**
- * The job runner (contracts.md's "Job runner" row): due Wednesday reminders,
- * period closure and the bounded retention sweep, all decided from database
- * periods and the campaign timezone rather than from a browser, a client
- * timer or one exact cron invocation.
- *
- * The shape follows from three sentences in the plan.
- *
- * 1. **"Do not rely on a Captain opening a page, a client timer or one exact
- *    cron invocation."** Nothing here is scheduled by a clock it keeps
- *    itself. `dueReminders` asks what the stored periods say is due AT AN
- *    INSTANT, and a period's `nudge_at` is a window (`nudge_at <= now <
- *    ends_at`), not a moment: a run that never happened on Wednesday at noon
- *    catches up on Wednesday at half past four, and a run that happens every
- *    fifteen minutes finds nothing due for the rest of the week. That is what
- *    "a missed job can catch up during the open period" means, and it is also
- *    why `hq_reminder_deliveries` exists: the catch-up is only safe because
- *    the decision is recorded exactly once.
- * 2. **"Recheck assignment and reporting status immediately before sending.
- *    If all projects have updated since the job was queued, cancel the
- *    message. It must not contain a reassigned project."** Nothing found in
- *    the scan is trusted by `prepareReminder`: it re-reads the capability,
- *    the assignments and `reportingStatus` inside the transaction that
- *    queues the message, and builds the body from that read alone. The scan
- *    only decides who is worth looking at.
- * 3. **"Treat a Telegram timeout with unknown delivery as uncertain rather
- *    than guaranteeing exactly-once delivery."** Delivery itself is phase
- *    7's, untouched: `enqueueBotMessage` writes the message inside this
- *    module's transaction, `flushBotMessages` claims it, re-validates the
- *    recipient and records what Telegram said, and this module only copies
- *    that answer onto the reminder row so an admin can read it.
- *
- * What this module never does: decide who may read what (every read goes
- * through the reporting service and the phase 1 decisions), write an update,
- * or put a note body, a note count or the word for a restricted audience into
- * a notification.
- *
- * It is imported by an operator Server Action (`lib/hq/actions/jobs.ts`), so
- * it must stay clear of the public member auth graph; `tests/hq/operator-imports.test.ts`
- * is the scan that holds it there.
+ * Due work follows stored period windows, so a missed invocation can catch up.
+ * Preparation and dispatch re-read access and outstanding work; the scan grants nothing.
+ * Delivery uses the shared outbox and preserves timeout uncertainty. Notifications contain
+ * no note text, note counts or private-audience signals. Keep this operator-importable
+ * module free of member-session dependencies.
  */
 
 /** The one reminder type there is today. An open vocabulary on the row, pinned here, where the only writer reads it. */
 export const REMINDER_TYPE_WEEKLY = "weekly_nudge";
 
 /** How long a resolved reminder record is kept. Reporting outcomes and audit history are separate and are not swept. */
-export const REMINDER_RETENTION_MS = 180 * 24 * 60 * 60_000;
+const REMINDER_RETENTION_MS = 180 * 24 * 60 * 60_000;
 
 /** How many queued messages one drain takes at a time. */
 const FLUSH_BATCH = 25;
@@ -97,7 +64,7 @@ export type { ReminderSkipReason };
 export { REMINDER_KIND };
 
 /** A reminder the stored schedule says is due for one Captain in one edition. */
-export type DueReminder = {
+type DueReminder = {
   captainUserId: string;
   hackathonId: number;
   reminderType: string;
@@ -107,21 +74,9 @@ export type DueReminder = {
 };
 
 /**
- * Which reminders the stored periods say are due at `atMs`.
- *
- * The filter is the plan's own list, and each clause is here rather than in
- * `prepareReminder` because it is what makes the scan cheap: an open period
- * past its nudge instant, in an edition nobody archived, for a Captain who
- * currently holds at least one assigned project that is in reporting, was in
- * reporting before this week ended, and is not paused. "No qualifying update
- * yet" is deliberately NOT here: a Captain whose teams have all updated still
- * gets a recorded decision, because "we looked and there was nothing to send"
- * is exactly what an admin needs to see, and computing completion belongs to
- * the reporting service rather than to a join.
- *
- * A reminder already recorded for the same Captain, edition, period and type
- * is not offered again, so a pass every quarter of an hour finds nothing for
- * the rest of the week.
+ * Scan open nudge windows in unarchived editions, excluding already recorded reminders.
+ * Completion is deliberately checked later: a Captain with no outstanding teams still
+ * needs a recorded skipped decision, and completion belongs to the reporting service.
  */
 export async function dueReminders(
   db: BuilderQuery,
@@ -165,7 +120,7 @@ export async function dueReminders(
   });
 }
 
-export type PrepareReminderResult =
+type PrepareReminderResult =
   | { ok: true; state: "queued"; deliveryId: string; outgoingId: string; projects: number }
   | { ok: true; state: "skipped"; deliveryId: string; reason: ReminderSkipReason }
   | { ok: false; reason: "already_recorded" | "not_due" };
@@ -194,31 +149,10 @@ async function botReachFailure(tx: BuilderQuery, userId: string): Promise<Remind
 }
 
 /**
- * Builds and queues one Captain's reminder for one reporting period, or
- * records why it was not sent. The whole thing is ONE transaction, which is
- * what makes every claim below true at the same instant.
- *
- * The first statement is the duplicate guard, and it is a real one rather
- * than a check followed by a write: the insert is `ON CONFLICT DO NOTHING
- * RETURNING`, so two passes running over each other both attempt it, the
- * second blocks on the unique index until the first commits, and then finds
- * no row to return. Nothing after that point runs twice, message included.
- *
- * Everything the scan found is then read again, because the plan requires it
- * and because the gap between the two is exactly where a reassignment, a
- * revoked capability, a withdrawn consent or an update that has just arrived
- * lives:
- *
- * - the Captain capability, because a revocation clears assignments and must
- *   not leave a message describing teams behind it;
- * - the current assignments, so a project that moved to another Captain
- *   cannot appear in this message;
- * - `reportingStatus` for exactly those projects, so a team that updated an
- *   hour ago is not named, and a Captain with nothing outstanding gets no
- *   message at all;
- * - the chat, the consent and the Telegram identity, so an unreachable
- *   Captain is a recorded skip rather than a queued message nobody can
- *   receive.
+ * Reminder insertion, current-state checks and enqueue share one transaction.
+ * The unique Captain/edition/period/type insert is the duplicate guard. Re-read the
+ * capability, assignments, reporting state, identity, consent and bound chat before
+ * queuing; preserve a skipped reason when nothing is deliverable.
  */
 type PrepareReminderInput = {
   captainUserId: string;
@@ -261,12 +195,7 @@ async function prepareReminderAttempt(
     const open = period.nudgeAt != null && Date.parse(period.nudgeAt) <= atMs && atMs < Date.parse(period.endsAt);
     if (!open || period.closedAt || periodRows[0].archived_at != null) return { ok: false, reason: "not_due" } as const;
 
-    // `created_at` is written from the JOB'S clock, not the database's. It is
-    // the left-hand side of the staleness comparison in
-    // the retention sweep, whose right-hand side is the job's clock too, so
-    // writing `now()` here would compare two different readings and make the
-    // answer depend on how far apart the application server and the database
-    // happen to be.
+    // Use the job's clock for both creation and retention comparisons.
     const { rows: claimed } = retry ? await tx.query(
       `UPDATE hq_reminder_deliveries SET state='queued', reason=NULL, provider_message_id=NULL,
          attempts=0, last_error=NULL, next_attempt_at=NULL, resolved_at=NULL, updated_at=$2::timestamptz
@@ -304,14 +233,7 @@ async function prepareReminderAttempt(
     const chat = await deliverableBotChat(tx, input.captainUserId);
     if (!chat) return skip(await botReachFailure(tx, input.captainUserId));
 
-    // One callback button that re-enters the bot's own compose list, and the
-    // HQ link beside it: the plan's "links/actions to update in the bot or
-    // HQ". The button is an opaque reference bound to this account and chat
-    // like every other one, so pressing it runs the bot's three gates again
-    // rather than trusting the message it came from.
-    // Bound to the edition this reminder is about, so a Captain working two
-    // hackathons is not silently shown the default edition's teams when they
-    // press it.
+    // The account/chat-bound callback retains this reminder's edition and rechecks access.
     const action = await createBotAction(
       tx,
       { userId: input.captainUserId, chatId: chat.chatId, kind: "compose.page", page: 0, hackathonId: input.hackathonId, expiresAt: period.endsAt },
@@ -351,7 +273,7 @@ async function prepareReminderAttempt(
   });
 }
 
-export type RetryReminderResult = PrepareReminderResult | { ok: false; reason: "not_found" | "not_retryable" | "changed" };
+type RetryReminderResult = PrepareReminderResult | { ok: false; reason: "not_found" | "not_retryable" | "changed" };
 
 /**
  * Operator-requested resend of an unsuccessful reminder. The action supplies
@@ -398,21 +320,9 @@ export async function retryReminder(
 }
 
 /**
- * Resolves a queued reminder whose week is over, without waiting for somebody
- * to try to send it.
- *
- * This is NOT the correctness check. `deliverable()` re-decides and rebuilds
- * every reminder immediately before every attempt, so a message whose week
- * has ended is refused there whichever consumer of the queue reaches it. What
- * this adds is the answer for a reminder nobody tries to send at all: a
- * deployment with no bot configured never drains the queue, and a row sitting
- * at "waiting to send" for a week that ended is a worse thing for an admin to
- * read than "not sent, the week ended".
- *
- * There used to be a time-to-live here as well. It is gone on purpose: now
- * that the body is rebuilt at dispatch, age no longer makes a reminder wrong,
- * and dropping a three-hour-old one would discard a message that is still
- * accurate and still wanted.
+ * Resolve ended reminders even when no worker drains the queue. Dispatch still
+ * rechecks every attempt. No age TTL: a rebuilt reminder remains valid while its
+ * period is open and its current-state checks pass.
  */
 export async function expireEndedReminders(db: BuilderQuery, atMs: number = Date.now()): Promise<number> {
   const { rows } = await db.query(
@@ -430,13 +340,8 @@ export async function expireEndedReminders(db: BuilderQuery, atMs: number = Date
 }
 
 /**
- * Copies what happened to the queued message onto the reminder record.
- *
- * The delivery rules stay entirely in ./telegram-bot-store: this is one
- * statement that reads the answer, so there is no second retry policy, no
- * second idea of what "sent" means, and nothing to keep in step. It only
- * touches reminders still recorded `queued`, so a resolved record is never
- * rewritten by a later pass.
+ * Copy outbox results only onto queued reminders; resolved history is not rewritten.
+ * Delivery/retry policy remains in telegram-bot-store.
  */
 export async function reconcileReminderDeliveries(db: BuilderQuery): Promise<number> {
   const { rows } = await db.query(
@@ -466,7 +371,7 @@ export async function reconcileReminderDeliveries(db: BuilderQuery): Promise<num
 }
 
 /** Removes resolved reminder records past their retention, and only for weeks that are closed. */
-export async function purgeReminderDeliveries(db: BuilderQuery, atMs: number = Date.now()): Promise<number> {
+async function purgeReminderDeliveries(db: BuilderQuery, atMs: number = Date.now()): Promise<number> {
   const { rows } = await db.query(
     `DELETE FROM hq_reminder_deliveries d
      USING hq_reporting_periods p
@@ -477,7 +382,7 @@ export async function purgeReminderDeliveries(db: BuilderQuery, atMs: number = D
   return rows.length;
 }
 
-export type ClosedPeriod = {
+type ClosedPeriod = {
   periodId: string;
   hackathonId: number;
   sequence: number;
@@ -486,14 +391,8 @@ export type ClosedPeriod = {
 };
 
 /**
- * Closes every reporting period whose exclusive end has passed and which is
- * not closed yet, oldest first.
- *
- * `closePeriod` already does the work and is already idempotent, so this is
- * only the "which ones" half. Archived editions are included on purpose:
- * archiving stops reminders, but a week that ended is history either way and
- * recording it late is the plan's "failure to update is recorded
- * historically", not a notification.
+ * Close elapsed periods oldest first through the idempotent reporting service.
+ * Include archived editions: archiving stops reminders, not historical closure.
  */
 export async function closeDuePeriods(
   db: BuilderDatabase | BuilderQuery,
@@ -524,13 +423,8 @@ export async function closeDuePeriods(
     if (!result.ok || result.alreadyClosed) continue;
     closed.push({ periodId: period.id, hackathonId: period.hackathonId, sequence: period.sequence, completed: result.completed, missed: result.missed });
   }
-  // Phase 10: every closed SUBMISSION period owes one reconciliation per
-  // accountable imported project, so that evidence arriving later has
-  // somewhere to land. Deliberately AFTER the loop and over the stored
-  // outcomes rather than inside it: closing and opening are separate
-  // statements, and a pass that died between them would otherwise leave a
-  // closed final period with nothing tracking its unverified submissions
-  // forever. Written as a catch-up, it repairs itself on the next pass.
+  // Catch up from stored outcomes, not this loop's results: interruption between
+  // closure and reconciliation creation must repair itself on the next pass.
   const reconciliationsOpened = await openSubmissionReconciliations(db, {
     ...(input.hackathonId != null ? { hackathonId: input.hackathonId } : {}),
   });
@@ -561,13 +455,8 @@ export type ReminderDeliveryView = {
   /** When the queue will try again, or null when it is not waiting on one. */
   nextAttemptAt: string | null;
   /**
-   * The last attempt ended without an answer: a timeout or a network failure,
-   * where Telegram may or may not have accepted the message.
-   *
-   * Kept separate from `state` on purpose and preserved through exhaustion.
-   * "Could not be sent" is a claim, and it is the wrong claim for a message
-   * that may well have arrived; an admin deciding whether to chase a Captain
-   * needs to know which of the two they are looking at.
+   * Delivery may have succeeded without an answer. Keep uncertainty separate from
+   * state and preserve it after attempts are exhausted.
    */
   deliveryUncertain: boolean;
   createdAt: string;
@@ -644,30 +533,17 @@ export type JobRunSummary = {
    */
   delivery: FlushResult | null;
   /**
-   * Phase 10's final-period work: the bounded staleness refresh (null unless
-   * an admin configured an interval and a submission period is open) and the
-   * closing reconciliation. Both talk to Colosseum, so both are bounded by a
-   * batch AND by a time budget, and both are safe to run at any frequency.
+   * Configured source refresh and closing reconciliation, both bounded by batch
+   * and time budgets because they call Colosseum.
    */
   submissions: { refreshed: SubmissionRefreshSummary; reconciled: ReconcileSummary; reconciliationsOpened: number };
   purged: PurgeResult & { reminders: number };
 };
 
 /**
- * One pass of the due work: close the weeks that ended, decide this week's
- * reminders, drop the stale ones, drain the queue, record what Telegram said
- * and sweep expired state.
- *
- * Safe to run at any frequency and safe to run twice at once. Closure is
- * idempotent, a reminder is recorded at most once per Captain, edition,
- * period and type, and the queue is claimed before it is sent. Running it
- * more often makes reminders punctual; running it rarely makes them late but
- * never wrong, which is the trade the plan asks for in "do not rely on ... one
- * exact cron invocation".
- *
- * Closure runs first so that a week which has just ended is closed before the
- * reminder scan looks at it, which is the cheapest way to be sure no reminder
- * is built for a period that is already history.
+ * Run closure before reminder preparation, then delivery, source work and retention.
+ * Closures and reminder decisions are idempotent; claimed queue rows tolerate overlapping
+ * passes. Stages commit separately, so failures may leave valid partial progress.
  */
 export async function runDueWork(
   options: {
@@ -677,7 +553,7 @@ export async function runDueWork(
     now?: number;
     hqOrigin?: string | null;
     hackathonId?: number;
-    /** The Colosseum transport for phase 10's submission work. Omit to use the runtime's own `fetch`. */
+    /** Submission transport; defaults to the runtime fetch. */
     colosseumFetch?: ColosseumFetch;
   } = {},
 ): Promise<JobRunSummary> {
@@ -761,6 +637,7 @@ export async function runDueWork(
   });
   const purged = await purgeExpiredBotState(db, now);
   const purgedReminders = await purgeReminderDeliveries(db, now);
+  if (Date.now() < deadlineMs) await purgeExpiredLoginState(db, now);
 
   return {
     at: new Date(now).toISOString(),

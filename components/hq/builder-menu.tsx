@@ -8,8 +8,7 @@
 import Link from 'next/link';
 import { useEffect, useRef } from 'react';
 import { CAPTAIN_PATH } from '@/lib/hq/member-routes';
-import { IconLockFill } from './icons/IconLockFill';
-import { IconLockOpenFill } from './icons/IconLockOpenFill';
+import { IconLockFill, IconLockOpenFill } from './icons';
 import styles from './builder-menu.module.css';
 
 /** The hackathon's name, as every member screen writes it. */

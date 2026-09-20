@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { fmtDateRange, isLive, slugify } from "@/lib/hq/hackathon-format";
+import { describe,expect,it } from "vitest";
+import { fmtDateRange,slugify } from "@/lib/hq/hackathon-format";
 
 describe("fmtDateRange", () => {
   it("names the year once when both dates share it", () => {
@@ -34,17 +34,5 @@ describe("slugify", () => {
 
   it("is empty when nothing survives", () => {
     expect(slugify("’’")).toBe("");
-  });
-});
-
-describe("isLive", () => {
-  const h = { startDate: "2026-09-14", endDate: "2026-10-12" };
-  it("is true on the first and last day", () => {
-    expect(isLive(h, "2026-09-14")).toBe(true);
-    expect(isLive(h, "2026-10-12")).toBe(true);
-  });
-  it("is false either side", () => {
-    expect(isLive(h, "2026-09-13")).toBe(false);
-    expect(isLive(h, "2026-10-13")).toBe(false);
   });
 });

@@ -1,17 +1,20 @@
-// Upgrades for databases created before the demo-day integrity constraints
-// and, later, before HQ became hackathon-agnostic. Fresh databases get the
-// final shape straight from schema.sql; every step here checks state first
-// (or uses IF EXISTS both ways), so re-runs — including re-runs after a
-// mid-upgrade crash — are no-ops.
-//
-// Split from migrate.ts so tests can drive it against a throwaway Postgres:
-// it only needs `query(text) => rows`, which both the Neon driver and a
-// test harness satisfy.
-import { ensureBuilderRole } from "../../lib/hq/builder-role";
+// Frozen input to 0001-legacy-bootstrap, preserving upgrades from supported
+// pre-ledger databases. New changes belong in migrations/NNNN-name.sql.
+// The migration runner executes this once, atomically, and checksums it on
+// later runs. Legacy compatibility tests also exercise the original replay.
 
 export type SqlRunner = {
   query: (text: string) => Promise<Record<string, unknown>[]>;
 };
+
+// Frozen with the legacy bootstrap; runtime role helpers may evolve independently.
+async function ensureBuilderRole(sql: SqlRunner): Promise<void> {
+  await sql.query(`
+    INSERT INTO hq_people_roles (label, filter_label, color, bg, is_judge, sort)
+    VALUES ('Builder', 'Builders', 'accent', 'accent-fill', false, 100)
+    ON CONFLICT (label) DO NOTHING
+  `);
+}
 
 /**
  * The edition every pre-hackathon database is carrying without saying so.
@@ -65,16 +68,13 @@ export async function applyUpgrades(sql: SqlRunner) {
 
   // "Other" lets operators capture roles outside the fixed taxonomy. The
   // People form stores the clarification in the person's existing notes.
+  // Existing classifier settings belong to operators, including on the
+  // first adoption of the migration ledger.
   await sql.query(`
     INSERT INTO hq_people_roles
       (label, filter_label, color, bg, is_judge, sort)
     VALUES ('Other', 'Other', 'label-2', 'fill-4', false, 4)
-    ON CONFLICT (label) DO UPDATE SET
-      filter_label = EXCLUDED.filter_label,
-      color = EXCLUDED.color,
-      bg = EXCLUDED.bg,
-      is_judge = EXCLUDED.is_judge,
-      sort = EXCLUDED.sort
+    ON CONFLICT (label) DO NOTHING
   `);
 
   // "Rejected" closes out partner conversations that fell through, so they
@@ -83,24 +83,23 @@ export async function applyUpgrades(sql: SqlRunner) {
   await sql.query(`
     INSERT INTO hq_partner_stages (slug, label, drop_color, sort)
     VALUES ('rejected', 'Rejected', '#c03b2d', 4)
-    ON CONFLICT (slug) DO UPDATE SET
-      label = EXCLUDED.label,
-      drop_color = EXCLUDED.drop_color,
-      sort = EXCLUDED.sort
+    ON CONFLICT (slug) DO NOTHING
   `);
 
   // The "mailing" exchange item outgrew mailing lists — the exchange it
-  // tracks is any communication with the partner's community.
+  // tracks is any communication with the partner's community. Only rename
+  // the original seed label; leave operator-defined wording untouched.
   await sql.query(`
     UPDATE hq_exchange_items SET label = 'Communicated with community members'
-    WHERE slug = 'mailing'
+    WHERE slug = 'mailing' AND label = 'Mailing sent to their list'
   `);
 
   // The "call" stage rarely means an actual call — what it marks is that the
   // partner replied. The slug stays, so existing partners keep their stage.
+  // As above, custom labels are not historical seed values to upgrade.
   await sql.query(`
     UPDATE hq_partner_stages SET label = 'Replied'
-    WHERE slug = 'call'
+    WHERE slug = 'call' AND label = 'Called'
   `);
 
   // The submission gates were reworded and reordered to follow the run a team

@@ -24,7 +24,7 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  resolveBuilderImportRequest, updateBuilderOnboardingConfig, updateBuilderProjectLead, updateBuilderTier,
+  resolveBuilderImportRequest, updateBuilderOnboardingConfig, updateBuilderProjectLead,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import {
@@ -36,11 +36,11 @@ import { correctPersonMatch, createPerson, deletePerson, setPersonCaptain, updat
 import { getBuilderAdminData, getImportRequests } from "@/lib/hq/builder-admin-queries";
 import type { BuilderQuery } from "@/lib/hq/builder-db";
 import { grantCapability } from "@/lib/hq/capabilities";
-import { countAssignmentsForCaptain, createCaptainInvitation as createCaptainInvitationRecord } from "@/lib/hq/captains";
+import { createCaptainInvitation as createCaptainInvitationRecord } from "@/lib/hq/captains";
 import { getPeople, getProjects } from "@/lib/hq/queries";
 import {
-  addProjectMember, addProjectNote, deleteProject, editProjectNote, logMondayReview, removeProjectMember, saveProjectBlocker,
-  setProjectForecast, setProjectHighPotential, setProjectStatus, toggleProjectGate, updateProjectDetail, updateProjectMember,
+  addProjectMember, addProjectNote, deleteProject, editProjectNote, removeProjectMember, saveProjectBlocker,
+  setProjectForecast, setProjectHighPotential, toggleProjectGate, updateProjectDetail, updateProjectMember,
 } from "@/lib/hq/actions/projects";
 import { BuilderAdmin } from "@/components/hq/builder-admin";
 import { ImportRequests } from "@/components/hq/import-requests";
@@ -140,7 +140,6 @@ afterAll(async () => { await pg.close(); });
 describe("builder administration authorization and scoping", () => {
   it.each([
     ["configuration", () => updateBuilderOnboardingConfig(config)],
-    ["membership", () => updateBuilderTier("selected", "member")],
     ["deleting a project", () => deleteProject(PROJECT)],
     ["deleting a person", () => deletePerson({ personId: PERSON_CARD, confirmed: true })],
     ["high potential", () => setProjectHighPotential(PROJECT, true)],
@@ -195,15 +194,6 @@ describe("builder administration authorization and scoping", () => {
     expect((await getProjects(11)).find((project) => project.id === BARE_PROJECT)).toMatchObject({
       colosseum: null, highPotential: false, members: [{ name: "Typed in", contact: "@typed", username: null }],
     });
-  });
-
-  it("scopes membership management but saves the tier globally", async () => {
-    expect(await updateBuilderTier("other", "member")).toMatchObject({ ok: false });
-    expect(await updateBuilderTier("selected", "member")).toEqual({ ok: true });
-    expect(await rows("SELECT id,tier FROM hq_builder_profiles ORDER BY id")).toEqual([
-      { id: "other", tier: "regular" }, { id: "selected", tier: "member" },
-    ]);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_users")).toEqual([{ n: 1 }]);
   });
 
   it("deletes a team with everything attached to it, in the selected hackathon only, and audits what went", async () => {
@@ -283,12 +273,10 @@ describe("builder administration authorization and scoping", () => {
     const [card] = await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='other'");
     const [gate] = await rows("INSERT INTO hq_submission_gates(hackathon_id,label) VALUES(12,'Deck ready') RETURNING id::text AS id");
     const attempts: Array<[string, (id: string) => Promise<unknown>]> = [
-      ["status", (id) => setProjectStatus(id, "active")],
       ["forecast", (id) => setProjectForecast(id, "likely")],
       ["gate", (id) => toggleProjectGate(id, String(gate.id), true)],
       ["blocker", (id) => saveProjectBlocker(id, "Blocked")],
       ["note", (id) => addProjectNote(id, "A note")],
-      ["monday review", (id) => logMondayReview(id, "Still blocked")],
       ["delete", (id) => deleteProject(id)],
       ["detail", (id) => updateProjectDetail(id, { field: "leadContact", value: "@wrong" })],
       ["teammate", (id) => addProjectMember(id, "New teammate", "")],
@@ -313,10 +301,10 @@ describe("builder administration authorization and scoping", () => {
     expect(mocks.refreshHq).not.toHaveBeenCalled();
     // The cookie names the edition the operator works in and authorizes nothing: once the other edition is selected the same ids answer, and the first edition's do not.
     mocks.requireHackathon.mockResolvedValue({ id: 12, name: "Other competition" });
-    expect(await setProjectStatus(OTHER_PROJECT, "active")).toEqual({ ok: true });
+    expect(await setProjectForecast(OTHER_PROJECT, "likely")).toEqual({ ok: true });
     expect(await editProjectNote(String(note.id), "Edited")).toEqual({ ok: true });
     expect(await updatePerson(String(card.id), { field: "notes", value: "Real note" })).toEqual({ ok: true });
-    expect(await setProjectStatus(PROJECT, "active")).toEqual({ ok: false });
+    expect(await setProjectForecast(PROJECT, "likely")).toEqual({ ok: false });
     expect(await updatePerson((await rows("SELECT id::text AS id FROM hq_people WHERE builder_user_id='selected'"))[0].id as string, { field: "notes", value: "Forged" })).toMatchObject({ ok: false });
     expect(await rows("SELECT hackathon_id FROM hq_activity ORDER BY created_at")).toEqual([{ hackathon_id: 12 }, { hackathon_id: 12 }, { hackathon_id: 12 }]);
   });
@@ -477,7 +465,7 @@ describe("People tags, Captain grants and person-match correction", () => {
     const card = await selectedCard();
     expect(await updatePerson(card, { field: "roleId", value: roleId })).toEqual({ ok: true });
     expect(await createPerson({ name: "Liaison Two", roleId, telegram: "", email: "" })).toEqual({ ok: true });
-    expect(await updateBuilderTier("selected", "member")).toEqual({ ok: true });
+    await rows("UPDATE hq_builder_profiles SET tier='member' WHERE id='selected'");
     expect(await grants()).toEqual([]);
     expect(await events()).toEqual([]);
     const people = (await getPeople(11)).sort((a, b) => a.name.localeCompare(b.name));
@@ -715,7 +703,8 @@ describe("Captain assignment in Admin (task T4.4)", () => {
     expect(before.captainLeaderboard).toEqual([
       { rank: 1, captainUserId: "selected", displayName: "Selected Builder", assignedCount: 1, projectNames: ["Bare project"] },
     ]);
-    expect(await countAssignmentsForCaptain(builderDb, "selected")).toEqual([{ projectId: BARE_PROJECT, projectName: "Bare project", hackathonId: 11 }]);
+    expect(await rows("SELECT project_id FROM hq_captain_assignments WHERE captain_user_id='selected' AND unassigned_at IS NULL"))
+      .toEqual([{ project_id: BARE_PROJECT }]);
 
     expect(await revokeCaptainCapability("selected", "Stepped down")).toEqual({ ok: true });
     const after = await getBuilderAdminData();

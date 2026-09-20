@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   setCookie: vi.fn(),
 }));
 
+vi.mock("server-only", () => ({}));
 vi.mock("next/cache", () => ({ revalidatePath: mocks.revalidate }));
 vi.mock("next/headers", () => ({ headers: mocks.headers, cookies: mocks.cookies }));
 vi.mock("@/lib/hq/db", () => ({ getSql: mocks.getSql }));
@@ -98,7 +99,7 @@ describe("public interest action", () => {
     expect(mocks.save).toHaveBeenCalledWith(
       expect.any(Object), expect.objectContaining({ path, contact: "@zoebuilds" }), "127.0.0.1",
     );
-    expect(mocks.revalidate).toHaveBeenCalledWith("/hq", "layout");
+    expect(mocks.revalidate.mock.calls).toEqual([["/hq"], ["/hq/people"]]);
     expect(mocks.setCookie).toHaveBeenCalledExactlyOnceWith(
       COLOSSEUM_INTEREST_COOKIE,
       COLOSSEUM_INTEREST_COOKIE_VALUE,

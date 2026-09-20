@@ -10,21 +10,15 @@
 //   materials clearly. Do not mark an item complete merely because an
 //   unrelated URL exists."
 // - "Checklist readiness does not set Submitted."
-import { describe, expect, it } from "vitest";
+import { describe,expect,it } from "vitest";
 
 import {
-  checklistSummary,
-  isMaterialKey,
-  MATERIAL_KEYS,
-  MATERIAL_LABELS,
-  materialLinks,
-  materialRequirements,
-  REQUIREMENT_LABELS,
-  SUBMISSION_COPY,
-  SUBMISSION_STATE_COPY,
-  sourceFreshnessLine,
-  submissionChecklist,
-  submissionDeadlineLabel,
+isMaterialKey,
+MATERIAL_KEYS,
+MATERIAL_LABELS,
+materialLinks,
+materialRequirements,
+REQUIREMENT_LABELS,submissionChecklist
 } from "@/lib/hq/submission-readiness";
 
 const EMPTY = {
@@ -90,82 +84,5 @@ describe("the checklist", () => {
       submissionChecklist({ links: materialLinks(links), requirements: requirements() }).map((item) => item.key);
     expect(order(EMPTY)).toEqual([...MATERIAL_KEYS]);
     expect(order({ ...EMPTY, website: "https://example.test" })).toEqual([...MATERIAL_KEYS]);
-  });
-});
-
-describe("the summary a screen reads off the checklist", () => {
-  const items = (links: Parameters<typeof materialLinks>[0], required: string[], optional: string[] = []) =>
-    submissionChecklist({ links: materialLinks(links), requirements: requirements(required, optional) });
-
-  it("counts only what this edition requires, and keeps the unknown ones apart", () => {
-    const summary = checklistSummary(items(
-      { ...EMPTY, presentationLink: "https://example.test/deck" },
-      ["presentation", "pitchVideo"],
-      ["website"],
-    ));
-    expect(summary).toMatchObject({
-      requiredTotal: 2,
-      requiredPresent: 1,
-      missingRequired: [MATERIAL_LABELS.pitchVideo],
-      missingOptional: [MATERIAL_LABELS.website],
-      requiredComplete: false,
-      requirementsUnknown: false,
-    });
-    expect(summary.unknownMissing).toContain(MATERIAL_LABELS.repo);
-  });
-
-  it("says every material is required and present only when every required one really is", () => {
-    const complete = checklistSummary(items(
-      { ...EMPTY, presentationLink: "https://example.test/deck", pitchVideoLink: "https://example.test/pitch" },
-      ["presentation", "pitchVideo"],
-    ));
-    expect(complete.requiredComplete).toBe(true);
-    // And a complete checklist is still not a submission: nothing in this
-    // module says Submitted, which only `interpretSubmission` ever writes.
-    expect(Object.keys(complete)).not.toContain("submitted");
-  });
-
-  it("does not call an edition with no requirements complete", () => {
-    const none = checklistSummary(items({ ...EMPTY, repoLink: "https://example.test/code" }, []));
-    expect(none).toMatchObject({ requiredTotal: 0, requiredComplete: false, requirementsUnknown: true });
-  });
-});
-
-describe("the deadline a submission is judged against", () => {
-  it("names the edition's official deadline in the campaign's own clock, not the server's", () => {
-    // 2026-10-12T21:59Z is 23:59 in Amsterdam, which is what an admin typed.
-    expect(submissionDeadlineLabel("2026-10-12T21:59:00.000Z", "Europe/Amsterdam", "2026-10-12"))
-      .toBe("Monday 12 October at 23:59");
-    expect(submissionDeadlineLabel("2026-10-12T21:59:00.000Z", "UTC", "2026-10-12"))
-      .toBe("Monday 12 October at 21:59");
-  });
-
-  it("falls back to the period's own last day when the edition has recorded no deadline", () => {
-    expect(submissionDeadlineLabel(null, "Europe/Amsterdam", "2026-10-12")).toBe("The end of Monday 12 October");
-    expect(submissionDeadlineLabel("not a date", "Europe/Amsterdam", "2026-10-12")).toBe("The end of Monday 12 October");
-  });
-});
-
-describe("how fresh the reading is", () => {
-  it("says when the source was last read, and says so when the last attempt failed", () => {
-    expect(sourceFreshnessLine({ sourceStatus: "never", sourceCheckedAt: null })).toBe(SUBMISSION_COPY.neverChecked);
-    expect(sourceFreshnessLine({ sourceStatus: "ok", sourceCheckedAt: "2026-10-06T09:00:00.000Z" }))
-      .toBe("Last read from Colosseum on 2026-10-06.");
-    // A failed check keeps the previous known reading and says it is the
-    // previous one, rather than turning a green badge red.
-    expect(sourceFreshnessLine({ sourceStatus: "error", sourceCheckedAt: "2026-10-06T09:00:00.000Z" }))
-      .toContain(SUBMISSION_COPY.staleAfterFailure);
-  });
-});
-
-describe("the three submission states", () => {
-  it("has a different, non-accusing sentence for each, including the one that claims nothing", () => {
-    const lines = Object.values(SUBMISSION_STATE_COPY);
-    expect(new Set(lines).size).toBe(3);
-    expect(SUBMISSION_STATE_COPY.not_checked).toBe("We have not been able to read your submission status yet.");
-  });
-
-  it("says plainly that a full checklist is not a submission", () => {
-    expect(SUBMISSION_COPY.readinessNotSubmission).toMatch(/not the same as submitting/);
   });
 });

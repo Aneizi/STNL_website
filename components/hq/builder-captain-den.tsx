@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { IconArrowLeft } from "symbols-react";
-import { IconLockFill } from "@/components/hq/icons/IconLockFill";
+import { IconLockFill } from "@/components/hq/icons";
 import { addReportingUpdate, loadTeamUpdates, loadMemberColosseumUpdates } from "@/lib/hq/actions/reporting";
 import { ColosseumUpdates } from "./colosseum-updates";
 import type { ReportingEntryView } from "@/lib/hq/reporting";

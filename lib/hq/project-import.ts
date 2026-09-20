@@ -1,33 +1,15 @@
 import "server-only";
-import { ColosseumApiError, colosseumProjectUrl, fetchColosseumProject, type ColosseumErrorCode, type ColosseumFetch } from "@/lib/colosseum-api";
-import { builderStore } from "./builder-store";
+import { ColosseumApiError, colosseumProjectUrl, fetchColosseumProject, type ColosseumErrorCode, type ColosseumFetch, type ImportedProject } from "@/lib/colosseum-api";
+import { builderStore, type BuilderStore } from "./builder-store";
 import {
   BuilderError, ImportRefusedError, isNetherlands, JOIN_LINK_MESSAGES,
-  type BuilderIdentity, type ImportRefusal, type JoinProject, type JoinLinkRefusal,
+  type BuilderHackathon, type BuilderIdentity, type ImportRefusal, type JoinProject, type JoinLinkRefusal,
 } from "./builder-types";
 
 /**
- * Self-service team import, and the one place its failure taxonomy lives.
- *
- * Owner change of 14 September 2026 (`docs/plans/2026-09-13-hq-captains-and-colosseum.md`,
- * section 2 "Team import and joining" and phase 3 "The import gate, joining
- * and error reporting"): an import is accepted when, and only when, the
- * fetched project is a Netherlands project AND its `hackathonId` equals the
- * external edition id an admin configured in `hq_hackathon_onboarding`. There
- * is no ownership proof, no pending state and no approval queue. Before the
- * import completes, the authenticated importer selects their own roster
- * entry; that membership is committed with the new project.
- *
- * Neither gate value is ever hard coded. The country string is the plan's own
- * (`lib/hq/builder-types.ts#NETHERLANDS`); the external edition id is
- * operator data, read at runtime, never seeded.
- *
- * **Every failure has its own outcome.** The plan is explicit that "no failure
- * collapses into a generic 'could not import'", so `ImportOutcome` below
- * carries one `reason` per case and the screen answers each differently — in
- * particular "already imported" routes the person to help rather than to a
- * retry, and the transport failures invite a retry rather than implying the
- * project does not exist.
+ * A verified account claims a roster entry from a Dutch project in the configured edition.
+ * There is no external ownership proof or approval queue. Keep distinct refusal messages;
+ * upstream error text remains diagnostic data and never reaches the member-facing response.
  */
 
 /** Everything an import can be refused for. `ok` is the only success. */
@@ -42,45 +24,24 @@ export type ImportFailureReason =
   | "source_error"
   | "unavailable";
 
-export type ImportOutcome =
+type ImportOutcome =
   | { ok: true; projectId: string }
   | { ok: false; reason: ImportFailureReason; message: string };
 
-export type ImportPreviewOutcome =
+type ImportPreviewOutcome =
   | { ok: true; project: { name: string; projectUrl: string; members: { username: string; name: string; avatarUrl: string | null }[] } }
   | { ok: false; reason: ImportFailureReason; message: string };
 
 /** Preview carries source references only. No team, person or membership is created. */
 export async function previewColosseumTeam(input: { hackathonId: number; url: string }, fetcher: ColosseumFetch = fetch): Promise<ImportPreviewOutcome> {
-  const store = builderStore();
-  const edition = await store.hackathon(input.hackathonId);
-  if (edition.externalId == null) return refusal('edition_not_configured');
-  if (!edition.projectsOpen || (edition.projectsAvailableAt && Date.parse(edition.projectsAvailableAt) > Date.now())) return refusal('imports_closed');
-  try {
-    const project = await fetchColosseumProject(input.url, fetcher);
-    const refused = gateProject(project, { ...edition, hackathonId: edition.id });
-    if (refused) return refusal(refused);
-    if (await store.importedProject(input.hackathonId, project.externalId)) return refusal('already_imported');
-    return { ok: true, project: { name: project.name, projectUrl: colosseumProjectUrl(project.slug),
-      members: project.members.map(member => ({ username: member.username, name: member.displayName, avatarUrl: member.avatarUrl })) } };
-  } catch (error) {
-    if (error instanceof ColosseumApiError) return { ok: false, ...importFailureFor(error) };
-    throw error;
-  }
+  const result = await importCandidate(builderStore(), input, fetcher);
+  if (!result.ok) return result;
+  const { project } = result;
+  return { ok: true, project: { name: project.name, projectUrl: colosseumProjectUrl(project.slug),
+    members: project.members.map(member => ({ username: member.username, name: member.displayName, avatarUrl: member.avatarUrl })) } };
 }
 
-/**
- * One Colosseum transport/lookup failure, mapped to its own outcome. This is
- * the seam that used to collapse: the adapter now distinguishes a 404, a
- * timeout, an unreachable host, a 429, an unreadable body and a 4xx whose
- * body carries Colosseum's own `code`/`message`, and each keeps its own
- * reason and its own wording here.
- *
- * The external `message` is deliberately NOT forwarded to the browser: it is
- * upstream text HQ does not control, and the plan forbids rendering it as
- * markup. It is stored on the project's snapshot for operators instead
- * (`source_error_message`), where the error belongs to a project.
- */
+/** Keep each source failure distinct without forwarding upstream error text. */
 const API_REASONS: Record<ColosseumErrorCode, ImportFailureReason> = {
   INVALID_URL: "invalid_url",
   NOT_FOUND: "not_found",
@@ -90,9 +51,7 @@ const API_REASONS: Record<ColosseumErrorCode, ImportFailureReason> = {
   INVALID_RESPONSE: "unreadable",
   SOURCE_REJECTED: "source_error",
   UNAVAILABLE: "unavailable",
-  // The self-service gate answers a wrong edition itself, with its own
-  // message; this mapping exists so the union is total, not because
-  // assertProjectHackathon is on the import path.
+  // Self-service applies its own edition gate; retain the adapter's distinct outcome.
   WRONG_HACKATHON: "wrong_edition",
 };
 
@@ -100,23 +59,14 @@ export function importFailureFor(error: ColosseumApiError): { reason: ImportFail
   return { reason: API_REASONS[error.code], message: error.message };
 }
 
-/**
- * Whether the person should be invited to try again, as opposed to told
- * something about their project or their link. Drives the retry affordance,
- * never the wording.
- */
+/** Drives the retry affordance without changing the failure message. */
 export function inviteRetry(reason: ImportFailureReason): boolean {
   return ["rate_limited", "timed_out", "unreachable", "unreadable", "source_error", "unavailable"].includes(reason);
 }
 
-export type EditionMapping = { hackathonId: number; externalId: number | null; externalSlug: string | null; projectsOpen: boolean; projectsAvailableAt: string | null };
+type EditionMapping = Pick<BuilderHackathon, "externalId" | "projectsOpen" | "projectsAvailableAt">;
 
-/**
- * The gate, over an already-fetched project. Pure decision, no I/O, so the
- * country and edition rules are testable directly against the fixtures and
- * the store's own re-check inside the import transaction can stay a thin
- * last line of defence rather than a second copy of the rules.
- */
+/** Pure country/edition/availability gate over the fetched project. */
 export function gateProject(
   project: { country: string | null; hackathon: { id: number } },
   edition: EditionMapping,
@@ -129,26 +79,13 @@ export function gateProject(
   return null;
 }
 
-/**
- * Fetch, gate, import. The single entry point behind the member action.
- *
- * Order matters and is deliberate: the edition mapping is checked before any
- * network call (an unconfigured edition is HQ's own state, not Colosseum's,
- * and must not look like a Colosseum outage), then the project is fetched,
- * then country and edition are compared against the response body, then the
- * write happens.
- */
-export async function importColosseumTeam(
-  user: BuilderIdentity,
-  input: { hackathonId: number; url: string; selectedUsername: string },
-  fetcher: ColosseumFetch = fetch,
-): Promise<ImportOutcome> {
-  const store = builderStore();
-  const editionRow = await store.hackathon(input.hackathonId);
-  const edition: EditionMapping = {
-    hackathonId: editionRow.id, externalId: editionRow.externalId, externalSlug: editionRow.externalSlug,
-    projectsOpen: editionRow.projectsOpen, projectsAvailableAt: editionRow.projectsAvailableAt,
-  };
+/** The preview and commit share preflight; the store rechecks while holding its write locks. */
+async function importCandidate(
+  store: BuilderStore,
+  input: { hackathonId: number; url: string },
+  fetcher: ColosseumFetch,
+): Promise<{ ok: true; project: ImportedProject } | Extract<ImportOutcome, { ok: false }>> {
+  const edition = await store.hackathon(input.hackathonId);
   if (edition.externalId == null) return refusal("edition_not_configured");
   if (!edition.projectsOpen || (edition.projectsAvailableAt && Date.parse(edition.projectsAvailableAt) > Date.now())) {
     return refusal("imports_closed");
@@ -170,10 +107,20 @@ export async function importColosseumTeam(
   // simultaneous case safe; this read is what makes the ordinary one clear.
   if (await store.importedProject(input.hackathonId, project.externalId)) return refusal("already_imported");
 
+  return { ok: true, project };
+}
+
+export async function importColosseumTeam(
+  user: BuilderIdentity,
+  input: { hackathonId: number; url: string; selectedUsername: string },
+  fetcher: ColosseumFetch = fetch,
+): Promise<ImportOutcome> {
+  const store = builderStore();
+  const result = await importCandidate(store, input, fetcher);
+  if (!result.ok) return result;
+  const { project } = result;
+
   try {
-    // The `project.imported` audit event is written inside importTeam's own
-    // transaction, so it cannot survive a rolled-back import or go missing
-    // from a committed one.
     const projectId = await store.importTeam(user, {
       hackathonId: input.hackathonId,
       project,
@@ -187,28 +134,13 @@ export async function importColosseumTeam(
   }
 }
 
-/**
- * Fetch, gate, attach: the same journey `importColosseumTeam` makes, ending
- * on a project HQ already has instead of on a new one.
- *
- * The plan's "Later source reconciliation attaches the real source ID without
- * replacing the HQ project or its history": a project an admin created from a
- * help request keeps its id, its ownership, its Captain and every weekly
- * update it has already collected, and gains the Colosseum snapshot and the
- * roster. Every gate the import path applies applies here too, checked
- * against the response body rather than assumed, so a hand-created project
- * cannot be used to attach a project from another edition or another country.
- */
+/** Attach a validated source to an existing HQ project, retaining ownership and history. */
 export async function attachColosseumSource(
   input: { projectId: string; hackathonId: number; url: string; operatorId: string },
   fetcher: ColosseumFetch = fetch,
 ): Promise<ImportOutcome> {
   const store = builderStore();
-  const editionRow = await store.hackathon(input.hackathonId);
-  const edition: EditionMapping = {
-    hackathonId: editionRow.id, externalId: editionRow.externalId, externalSlug: editionRow.externalSlug,
-    projectsOpen: editionRow.projectsOpen, projectsAvailableAt: editionRow.projectsAvailableAt,
-  };
+  const edition = await store.hackathon(input.hackathonId);
   if (edition.externalId == null) return refusal("edition_not_configured");
 
   let project;
@@ -265,11 +197,7 @@ export async function previewTeamInvitation(code: string, fetcher: ColosseumFetc
   }
 }
 
-/**
- * A fresh snapshot for a team already in HQ: idempotent, and separate from
- * importing. A failed check records the failure and keeps the previous known
- * submission status rather than turning a green badge red.
- */
+/** Refresh in place; failure preserves prior source data and records the failed attempt. */
 export async function refreshColosseumTeam(
   input: { projectId: string; hackathonId: number; projectUrl: string },
   fetcher: ColosseumFetch = fetch,

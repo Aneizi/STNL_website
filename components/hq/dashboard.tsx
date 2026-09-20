@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import { card, cardTitle, pageTitle } from "@/components/hq/ui";
 import { daysUntilLabel, fmtDate, isStale } from "@/lib/hq/format";
-import type { Classifiers, Milestone, Project, Settings } from "@/lib/hq/types";
+import type { Classifiers, DashboardProject, Milestone, Settings } from "@/lib/hq/types";
 
 // Cards inside the two grids sit on the grid gap alone; only the full-width
 // Needs attention card below them carries the shared 28px top margin.
@@ -19,7 +19,7 @@ export function Dashboard({
   todayText,
 }: {
   settings: Settings;
-  projects: Project[];
+  projects: DashboardProject[];
   milestones: Milestone[];
   classifiers: Classifiers;
   now: number;

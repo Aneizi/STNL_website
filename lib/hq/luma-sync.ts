@@ -26,7 +26,7 @@ import { buildSyncStatements, toSyncRow, type SyncRow, type Tagged } from "./lum
 
 const FRESH_FOR_MS = 5 * 60 * 1000;
 
-export type SyncResult =
+type SyncResult =
   | { ok: true; skipped: true }
   | { ok: true; skipped: false; seen: number; archived: number; reconciled: boolean }
   | { ok: false; error: string };

@@ -3,7 +3,7 @@ import {
   type ColosseumListingHackathon, type ColosseumProjectBody,
 } from "./colosseum-schema";
 
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type ColosseumFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /**
@@ -50,13 +50,8 @@ export class ColosseumApiError extends Error {
   }
 }
 
-/** Whether this failure is worth retrying, as opposed to a fact about the project or the link. */
-export function isRetryable(code: ColosseumErrorCode): boolean {
-  return ["RATE_LIMITED", "TIMED_OUT", "UNREACHABLE", "INVALID_RESPONSE", "SOURCE_REJECTED", "UNAVAILABLE"].includes(code);
-}
-
 /** Readiness from the detail endpoint. Never a submission signal; see lib/hq/colosseum-snapshot.ts. */
-export type ProjectCompletion = { isComplete: boolean; missingFieldCount: number };
+type ProjectCompletion = { isComplete: boolean; missingFieldCount: number };
 
 export type ImportedProject = {
   externalId: number;
@@ -87,7 +82,7 @@ export type ImportedProject = {
 };
 
 /** The submission window of one edition, from the listing envelope's `hackathons` block. */
-export type EditionSubmissionWindow = {
+type EditionSubmissionWindow = {
   externalId: number;
   name: string;
   slug: string | null;
@@ -432,19 +427,4 @@ export async function fetchEditionSubmissionWindow(
     submissionEnd: edition.projectSubmissionEndDate ?? null,
     directoryEnabled: edition.isProjectDirectoryEnabled ?? null,
   };
-}
-
-/**
- * The edition match as a hard assertion, for callers that re-read a project
- * they already imported (the join flow's roster re-check). The self-service
- * import gate does NOT use this: it produces its own distinct, actionable
- * message per failure and lives in `lib/hq/project-import.ts`.
- */
-export function assertProjectHackathon(
-  project: ImportedProject,
-  expected: { externalId: number; slug: string },
-): void {
-  if (project.hackathon.id !== expected.externalId || project.hackathon.slug !== expected.slug) {
-    throw new ColosseumApiError("WRONG_HACKATHON");
-  }
 }

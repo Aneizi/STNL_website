@@ -1,5 +1,4 @@
 import "server-only";
-import { revalidatePath } from "next/cache";
 // From the leaf module, not from ../authz: every operator action module
 // imports this file, and ../authz reaches the public member auth graph.
 import { assertHackathonMatches } from "../authz-sql";
@@ -44,7 +43,4 @@ export function activityStmt(userId: string, hackathonId: number, message: strin
   `;
 }
 
-/** Invalidate every /hq page after a mutation. */
-export function refreshHq() {
-  revalidatePath("/hq", "layout");
-}
+export { refreshHq } from "../revalidation";

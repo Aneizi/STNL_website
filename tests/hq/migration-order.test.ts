@@ -1,4 +1,4 @@
-// The whole migration, the way scripts/hq/migrate.ts runs it: schema.sql,
+// Legacy compatibility coverage: schema.sql,
 // applyUpgrades(), member-auth-schema.sql, builder-schema.sql, one statement
 // per call through the same splitter. Twice on a fresh PGlite, so every
 // statement is proven idempotent, and once more over a populated database
@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { describe, expect, it } from "vitest";
 import { CLEAR_TABLES, KEEP_TABLES } from "@/scripts/hq/reset-statements";
-import { applyMigrations, createMigratedDatabase, readSqlFile, splitStatements } from "./helpers/db";
+import { applyLegacyMigrations as applyMigrations, createMigratedDatabase, readSqlFile, splitStatements } from "./helpers/db";
 
 type Row = Record<string, unknown>;
 
@@ -257,7 +257,8 @@ describe("a fresh database", () => {
     try {
       // hq_luma_sync is in neither list: RESET_STATEMENTS rewinds its single
       // row with a dedicated UPDATE instead of clearing or keeping it.
-      const listed = new Set<string>([...CLEAR_TABLES, ...KEEP_TABLES, "hq_luma_sync"]);
+      // Migration history is infrastructure state; operational resets leave it alone.
+      const listed = new Set<string>([...CLEAR_TABLES, ...KEEP_TABLES, "hq_luma_sync", "hq_migrations"]);
       const tables = await hqTables(pg);
       expect(tables.filter((t) => !listed.has(t))).toEqual([]);
       expect([...listed].filter((t) => !tables.includes(t))).toEqual([]);
@@ -672,12 +673,14 @@ describe("phase 3: the Colosseum source snapshot and the removed challenge", () 
         .toEqual([{ category: "Operator corrected" }]);
       // Current public payloads have only project.hackathonId. Invalid
       // legacy values must not abort every other migration statement.
-      await run(pg, `UPDATE hq_project_onboarding SET external_hackathon_id=NULL,
+      // Restore the legacy 'never' marker to exercise each backfill case;
+      // already checked snapshots must never be reconstructed from raw.
+      await run(pg, `UPDATE hq_project_onboarding SET external_hackathon_id=NULL,source_status='never',
         raw=raw #- '{project,hackathon}' WHERE project_id='${id}'`);
       await applyMigrations(pg);
       expect(await run(pg, `SELECT external_hackathon_id FROM hq_project_onboarding WHERE project_id='${id}'`))
         .toEqual([{ external_hackathon_id: 6 }]);
-      await run(pg, `UPDATE hq_project_onboarding SET external_hackathon_id=NULL,
+      await run(pg, `UPDATE hq_project_onboarding SET external_hackathon_id=NULL,source_status='never',
         raw=jsonb_set(raw,'{project,hackathonId}','99999999999999999999'::jsonb) WHERE project_id='${id}'`);
       await applyMigrations(pg);
       expect(await run(pg, `SELECT external_hackathon_id FROM hq_project_onboarding WHERE project_id='${id}'`))
@@ -697,7 +700,7 @@ describe("phase 3: the Colosseum source snapshot and the removed challenge", () 
         image: { url: "data:image/svg+xml,<svg/>" },
         tracks: { unexpected: "object" },
       } });
-      await run(pg, `UPDATE hq_project_onboarding SET raw=$2::jsonb, website=NULL, repo_link=NULL,
+      await run(pg, `UPDATE hq_project_onboarding SET raw=$2::jsonb,source_status='never', website=NULL, repo_link=NULL,
         presentation_link=NULL, technical_demo_link=NULL, pitch_video_link=NULL, demo_video_link=NULL,
         image_url=NULL, tracks='{}' WHERE project_id=$1`, [id, unsafeRaw]);
       await applyMigrations(pg);
