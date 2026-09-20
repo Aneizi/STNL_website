@@ -5,6 +5,7 @@ import { TeamWorkspace, type TeamReportingProps, type TeamSnapshotProps } from '
 import { requireMemberActor } from '@/lib/hq/actor';
 import { nowMs } from '@/lib/hq/format';
 import { memberProjectView, memberTeamView } from '@/lib/hq/member-teams';
+import { getTelegramBotUrl } from '@/lib/hq/member-auth-config';
 import { teamReportingPanel, type TeamReportingPanel } from '@/lib/hq/reporting-surface';
 import { getBotConsent } from '@/lib/hq/telegram-consent';
 import type { MemberTeamView } from '@/lib/hq/view-models';
@@ -62,6 +63,7 @@ export default async function TeamPage({params}:{params:Promise<{id:string}>}){
       nowMs={at}
       hasTelegram={actor.telegram!==null}
       botAllowed={consent?.messagingEnabled??false}
+      botUrl={getTelegramBotUrl()}
     />
   </BuilderShell>;
 }

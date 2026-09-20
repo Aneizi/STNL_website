@@ -6,6 +6,12 @@ export type MemberAuthAvailability = {
 
 type AuthEnvironment = Record<string, string | undefined>;
 
+/** Public bot link for the UI. Read on the server; no bot credentials reach the client. */
+export function getTelegramBotUrl(env: AuthEnvironment = process.env): string | null {
+  const username = env.TELEGRAM_BOT_USERNAME?.trim().replace(/^@/, "");
+  return username && /^[A-Za-z0-9_]{5,32}$/.test(username) ? `https://t.me/${username}` : null;
+}
+
 export function memberAuthOrigin(env: AuthEnvironment = process.env): string | null {
   try {
     const url = new URL(env.BETTER_AUTH_URL ?? "");

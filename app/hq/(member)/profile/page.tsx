@@ -3,7 +3,7 @@ import Image from "next/image";
 import { redirect } from "next/navigation";
 import { hasTelegramIdentity } from "@/lib/hq/identity";
 import { currentMember, redirectToMemberSignIn } from "@/lib/hq/member-auth";
-import { safeMemberNext } from "@/lib/hq/member-auth-config";
+import { getTelegramBotUrl, safeMemberNext } from "@/lib/hq/member-auth-config";
 import { ProfileForm } from "./profile-form";
 import styles from "../account.module.css";
 
@@ -33,7 +33,7 @@ export default async function ProfilePage({ searchParams }: { searchParams: Prom
         <div className={styles.content}>
           <h1>What&apos;s your <em>name?</em></h1>
           <p className={styles.introduction}>One last detail before you join Superteam NL HQ.</p>
-          <ProfileForm next={next} hasTelegram={hasTelegram} />
+          <ProfileForm next={next} hasTelegram={hasTelegram} botUrl={getTelegramBotUrl()} />
         </div>
       </main>
     </div>

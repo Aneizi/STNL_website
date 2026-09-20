@@ -1,0 +1,5 @@
+.notice { margin: 8px 0 16px; min-width: 0; color: var(--muted); font-size: 15px; line-height: 1.5; }
+.inverse { color: var(--cream); }
+.notice p { margin: 0; font-size: inherit; line-height: inherit; }
+.notice .link, .notice .link:hover { display: inline-flex; align-items: center; min-height: 44px; color: inherit; font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+.notice .link:focus-visible { outline: 2px solid var(--orange); outline-offset: 4px; }

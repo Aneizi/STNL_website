@@ -8,6 +8,7 @@ import { builderStore } from '@/lib/hq/builder-store';
 import { listAssignments } from '@/lib/hq/captains';
 import { projectNeedsAttention } from '@/lib/hq/dashboard-attention';
 import { nowMs } from '@/lib/hq/format';
+import { getTelegramBotUrl } from '@/lib/hq/member-auth-config';
 import { memberWeekSummaries } from '@/lib/hq/reporting-surface';
 import { weekOfLabel } from '@/lib/hq/reporting-view';
 import styles from './dashboard.module.css';
@@ -36,7 +37,7 @@ export default async function DashboardPage({searchParams}:{searchParams:Promise
   const firstName=actor.name.trim().split(/\s+/)[0];
 
   return <BuilderShell bare>
-    {captain&&params.welcome==='captain'&&<BuilderCaptainWelcome/>}
+    {captain&&params.welcome==='captain'&&<BuilderCaptainWelcome botUrl={actor.telegram?getTelegramBotUrl():null}/>}
     <div className={styles.home}>
       <h1 className={styles.title}>{firstName?`Where to, ${firstName}?`:'Where to?'}</h1>
       <MenuGrid>

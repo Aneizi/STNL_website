@@ -28,7 +28,7 @@ const intro = () => createElement("p", null, "intro-copy");
 
 // Every render is held to the member copy rule: no em dash, no middot.
 const render = (children?: ReactNode, props: { hasTelegram?: boolean; botEnabled?: boolean } = {}) => {
-  const html = renderToStaticMarkup(createElement(AcceptInvitationForm, { hasTelegram: true, botEnabled: true, ...props }, children));
+  const html = renderToStaticMarkup(createElement(AcceptInvitationForm, { hasTelegram: true, botEnabled: true, botUrl: "https://t.me/fixture_bot", ...props }, children));
   expect(html).not.toMatch(/[—·]/);
   return html;
 };

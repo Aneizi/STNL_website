@@ -4,10 +4,11 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { CAPTAIN_PATH } from '@/lib/hq/member-routes';
 import { useModalFocus } from './use-modal-focus';
+import { TelegramBotStart } from './telegram-bot-start';
 import styles from './builder-captain-welcome.module.css';
 
 /** A one-time welcome after accepting Captain access, over the Home menu. */
-export function BuilderCaptainWelcome() {
+export function BuilderCaptainWelcome({botUrl=null}:{botUrl?:string|null}) {
   const [open,setOpen]=useState(true);
 
   useEffect(()=>{
@@ -20,20 +21,21 @@ export function BuilderCaptainWelcome() {
     }
   },[]);
 
-  return open?<CaptainWelcomeDialog onClose={()=>setOpen(false)}/>:null;
+  return open?<CaptainWelcomeDialog botUrl={botUrl} onClose={()=>setOpen(false)}/>:null;
 }
 
-function CaptainWelcomeDialog({onClose}:{onClose:()=>void}) {
+function CaptainWelcomeDialog({onClose,botUrl}:{onClose:()=>void;botUrl:string|null}) {
   const dialog=useRef<HTMLDivElement>(null);
   const [closing,setClosing]=useState(false);
   useModalFocus(dialog);
 
   useEffect(()=>{
-    const timer=window.setTimeout(()=>setClosing(true),10_000);
+    // Keep the bot setup link available until the new Captain dismisses the welcome.
+    const timer=botUrl?null:window.setTimeout(()=>setClosing(true),10_000);
     const escape=(event:KeyboardEvent)=>{if(event.key==='Escape')setClosing(true);};
     document.addEventListener('keydown',escape);
-    return ()=>{window.clearTimeout(timer);document.removeEventListener('keydown',escape);};
-  },[]);
+    return ()=>{if(timer!==null)window.clearTimeout(timer);document.removeEventListener('keydown',escape);};
+  },[botUrl]);
 
   useEffect(()=>{
     if(!closing)return;
@@ -47,6 +49,7 @@ function CaptainWelcomeDialog({onClose}:{onClose:()=>void}) {
       <p id='captain-welcome-description' className={styles.description}>
         <Link href={CAPTAIN_PATH}>Go to the Captain&apos;s Den</Link>
       </p>
+      {botUrl&&<TelegramBotStart botUrl={botUrl}/>}
       <button type='button' className={styles.okay} onClick={()=>setClosing(true)}>Okay</button>
     </div>
   </div>;

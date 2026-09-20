@@ -30,6 +30,7 @@ import {
 import { BuilderProjectImage } from './builder-project-image';
 import { LateUpdateModal } from './late-update-modal';
 import { ReportingEntryCard } from './reporting-entry-card';
+import { TelegramBotStart } from './telegram-bot-start';
 import styles from './team-workspace.module.css';
 
 /**
@@ -85,6 +86,7 @@ export type TeamWorkspaceProps = {
   hasTelegram: boolean;
   /** The stored bot consent, read on the server. False without a Telegram identity, which cannot hold one. */
   botAllowed: boolean;
+  botUrl: string | null;
 };
 
 type View = 'update' | 'settings' | 'contact';
@@ -312,11 +314,12 @@ function SettingsView({ reporting, team, onBack }: { reporting: TeamReportingPro
  * applies succeeded. Consent lives on the Telegram identity, so without one
  * the checkbox stays unchecked and inert rather than asking for a refusal.
  */
-function ContactView({ reporting, canEditTeam, hasTelegram, botAllowed: storedConsent, onBack }: {
+function ContactView({ reporting, canEditTeam, hasTelegram, botAllowed: storedConsent, botUrl, onBack }: {
   reporting: TeamReportingProps;
   canEditTeam: boolean;
   hasTelegram: boolean;
   botAllowed: boolean;
+  botUrl: string | null;
   onBack: () => void;
 }) {
   const router = useRouter();
@@ -360,6 +363,7 @@ function ContactView({ reporting, canEditTeam, hasTelegram, botAllowed: storedCo
         <input type='checkbox' checked={botAllowed} disabled={!hasTelegram} onChange={event => { setBotAllowed(event.target.checked); setSaved(false); }}/>
         Allow the Superteam NL bot to reach you on Telegram for reminders
       </label>
+      {hasTelegram && <TelegramBotStart botUrl={botUrl} />}
       {error && <p role='alert' className={styles.alert}>{error}</p>}
       <div className={styles.row}>
         <button type='submit' className={styles.saveButton} disabled={pending}>Save</button>
@@ -369,7 +373,7 @@ function ContactView({ reporting, canEditTeam, hasTelegram, botAllowed: storedCo
   </>;
 }
 
-export function TeamWorkspace({ project, team, reporting, canEditTeam, canInvite, nowMs, hasTelegram, botAllowed }: TeamWorkspaceProps) {
+export function TeamWorkspace({ project, team, reporting, canEditTeam, canInvite, nowMs, hasTelegram, botAllowed, botUrl }: TeamWorkspaceProps) {
   const [view, setView] = useState<View>('update');
   const [lateOpen, setLateOpen] = useState(false);
   const [saved, setSaved] = useState<ReportingEntryView[]>([]);
@@ -452,7 +456,7 @@ export function TeamWorkspace({ project, team, reporting, canEditTeam, canInvite
           <EarlierList reporting={reporting} entries={entries} onSaved={record}/>
         </div>
         {view === 'settings' && team && <SettingsView reporting={reporting} team={team} onBack={backToUpdate}/>}
-        {view === 'contact' && <ContactView reporting={reporting} canEditTeam={canEditTeam && team !== null} hasTelegram={hasTelegram} botAllowed={botAllowed} onBack={backToUpdate}/>}
+        {view === 'contact' && <ContactView reporting={reporting} canEditTeam={canEditTeam && team !== null} hasTelegram={hasTelegram} botAllowed={botAllowed} botUrl={botUrl} onBack={backToUpdate}/>}
       </div>
     </div>
     {lateOpen && <LateUpdateModal projectId={reporting.projectId} hackathonId={reporting.hackathonId} periods={reporting.history} nowMs={nowMs} onClose={closeLate} onSaved={record}/>}

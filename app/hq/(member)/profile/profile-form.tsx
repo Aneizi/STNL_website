@@ -2,10 +2,11 @@
 
 import { useActionState, useState, type FormEvent } from "react";
 import { IconArrowRight } from "symbols-react";
+import { TelegramBotStart } from "@/components/hq/telegram-bot-start";
 import { completeMemberProfile } from "./actions";
 import styles from "../account.module.css";
 
-export function ProfileForm({ next, hasTelegram }: { next: string; hasTelegram: boolean }) {
+export function ProfileForm({ next, hasTelegram, botUrl }: { next: string; hasTelegram: boolean; botUrl: string | null }) {
   const [result, action, pending] = useActionState(completeMemberProfile, null);
   const [name, setName] = useState("");
   const [botAllowed, setBotAllowed] = useState(true);
@@ -36,6 +37,7 @@ export function ProfileForm({ next, hasTelegram }: { next: string; hasTelegram: 
           Allow the Superteam NL bot to reach you on Telegram for reminders
         </label>
       )}
+      {hasTelegram && <TelegramBotStart botUrl={botUrl} />}
       <button className={styles.submit} type="submit" disabled={pending}>
         {pending ? "Saving…" : "Continue"}
         <IconArrowRight width={19} height={19} fill="currentColor" aria-hidden="true" />

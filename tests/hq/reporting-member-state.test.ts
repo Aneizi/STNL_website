@@ -145,7 +145,7 @@ const team: TeamSnapshotProps = {
 };
 const props = (overrides: Partial<TeamWorkspaceProps> = {}): TeamWorkspaceProps => ({
   project: { name: "Grachtenpay", captain: null }, team, reporting: reporting(), canEditTeam: true, canInvite: true,
-  nowMs: IN_WEEK_ONE, hasTelegram: true, botAllowed: true, ...overrides,
+  nowMs: IN_WEEK_ONE, hasTelegram: true, botAllowed: true, botUrl: "https://t.me/fixture_bot", ...overrides,
 });
 const dossier = (overrides: Partial<TeamWorkspaceProps> = {}) => new Hooks(TeamWorkspace as unknown as Component, props(overrides)).render();
 const change = (value: string) => ({ target: { value } });

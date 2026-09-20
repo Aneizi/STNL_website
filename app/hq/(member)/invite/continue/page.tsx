@@ -8,6 +8,7 @@ import { builderDatabase } from "@/lib/hq/builder-db";
 import { getTelegramIdentity } from "@/lib/hq/identity";
 import { INVITE_CONTINUATION_COOKIE, readInviteContinuation } from "@/lib/hq/invite-continuation";
 import { currentMember } from "@/lib/hq/member-auth";
+import { getTelegramBotUrl } from "@/lib/hq/member-auth-config";
 import { INVITE_CONTINUE_PATH } from "@/lib/hq/member-routes";
 import { getBotConsent } from "@/lib/hq/telegram-consent";
 import { INVITE_INTRO, inviteOutcomeCopy, type InviteOutcome } from "../copy";
@@ -76,6 +77,7 @@ export default async function InviteContinuePage() {
         <AcceptInvitationForm
           hasTelegram={telegram !== null}
           botEnabled={telegram !== null && (consent?.messagingEnabled ?? true)}
+          botUrl={getTelegramBotUrl()}
         >
           <p>{INVITE_INTRO}</p>
         </AcceptInvitationForm>

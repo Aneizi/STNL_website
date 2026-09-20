@@ -3,7 +3,7 @@ import { BuilderShell } from "@/components/hq/builder-shell";
 import { requireMemberActor } from "@/lib/hq/actor";
 import { builderStore } from "@/lib/hq/builder-store";
 import { getLoginMethods } from "@/lib/hq/identity";
-import { getMemberAuthAvailability } from "@/lib/hq/member-auth-config";
+import { getMemberAuthAvailability, getTelegramBotUrl } from "@/lib/hq/member-auth-config";
 import { getBotConsent } from "@/lib/hq/telegram-consent";
 import { lastParam, telegramErrorMessage } from "../telegram-copy";
 import { AccountPassport, type AccountRole } from "./account-passport";
@@ -53,6 +53,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Sear
         telegram={methods.telegram ? { username: methods.telegram.username } : null}
         teamName={team?.name ?? null}
         bot={consent?.messagingEnabled ?? false}
+        botUrl={getTelegramBotUrl()}
         emailAvailable={availability.email}
         telegramAvailable={availability.telegram}
         initialNotice={lastParam(params.connected) === "telegram" ? "Telegram connected." : null}

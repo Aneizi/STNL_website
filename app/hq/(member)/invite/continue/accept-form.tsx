@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useActionState, useEffect } from "react";
 import { IconArrowRight } from "symbols-react";
+import { TelegramBotStart } from "@/components/hq/telegram-bot-start";
 import styles from "@/components/hq/builder-shell.module.css";
 import { acceptCaptainInvitationFromContinuation, type AcceptCaptainInvitationActionResult } from "@/lib/hq/actions/invite";
 import { inviteOutcomeCopy } from "../copy";
@@ -22,10 +23,11 @@ const INITIAL: AcceptCaptainInvitationActionResult | null = null;
  * the open invitation, so it renders ahead of the button and goes with it
  * the moment any result takes their place; every result explains itself.
  */
-export function AcceptInvitationForm({ children, hasTelegram, botEnabled }: {
+export function AcceptInvitationForm({ children, hasTelegram, botEnabled, botUrl }: {
   children?: React.ReactNode;
   hasTelegram: boolean;
   botEnabled: boolean;
+  botUrl: string | null;
 }) {
   const router = useRouter();
   const [result, action, pending] = useActionState(acceptCaptainInvitationFromContinuation, INITIAL);
@@ -53,12 +55,15 @@ export function AcceptInvitationForm({ children, hasTelegram, botEnabled }: {
           </p>
         )}
         {copy.tone === "good" && (
-          <div className={styles.actions}>
-            <Link className={styles.button} href="/hq/dashboard">
-              Go to menu
-              <IconArrowRight width={18} height={18} fill="currentColor" aria-hidden="true" />
-            </Link>
-          </div>
+          <>
+            {hasTelegram && <TelegramBotStart botUrl={botUrl} />}
+            <div className={styles.actions}>
+              <Link className={styles.button} href="/hq/dashboard">
+                Go to menu
+                <IconArrowRight width={18} height={18} fill="currentColor" aria-hidden="true" />
+              </Link>
+            </div>
+          </>
         )}
       </div>
     );
@@ -90,6 +95,7 @@ export function AcceptInvitationForm({ children, hasTelegram, botEnabled }: {
               <>Recommended for captains. <Link className={styles.inlineLink} href="/hq/account">Connect Telegram in Account</Link>, then return here to enable reminders. You can also accept now and set this up later.</>
             )}
           </p>
+          {hasTelegram && <TelegramBotStart botUrl={botUrl} />}
         </div>
         <div className={styles.actions}>
           <button className={styles.button} type="submit" disabled={pending}>

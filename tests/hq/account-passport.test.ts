@@ -25,7 +25,7 @@ import { AccountModal, AccountPassport, type AccountModalProps, type AccountPass
 
 const base: AccountPassportProps = {
   name: "Nienke Visser", role: "Builder", email: "nienke@grachtenpay.nl", hasEmail: true, telegram: { username: "nienkev" }, teamName: "Grachtenpay",
-  bot: true, emailAvailable: true, telegramAvailable: true, initialNotice: null, initialError: null,
+  bot: true, botUrl: "https://t.me/fixture_bot", emailAvailable: true, telegramAvailable: true, initialNotice: null, initialError: null,
 };
 const render = (props: Partial<AccountPassportProps> = {}) => renderToStaticMarkup(createElement(AccountPassport, { ...base, ...props }));
 

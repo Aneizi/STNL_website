@@ -1,5 +1,7 @@
 "use client";
 
+import { TelegramBotStart } from "@/components/hq/telegram-bot-start";
+
 import { useModalFocus } from '@/components/hq/use-modal-focus';
 
 import Link from "next/link";
@@ -35,6 +37,7 @@ export type AccountPassportProps = {
   teamName: string | null;
   /** The stored bot-messaging decision; never inferred from the connection. */
   bot: boolean;
+  botUrl: string | null;
   /** Whether each method is configured; an unavailable one has no row. */
   emailAvailable: boolean;
   telegramAvailable: boolean;
@@ -261,6 +264,7 @@ export function AccountPassport(props: AccountPassportProps) {
                 <input type="checkbox" className={styles.switchInput} checked={bot} disabled={switchPending} onChange={(event) => toggleBot(event.target.checked)} />
                 <span aria-hidden="true" className={`${styles.switchTrack} ${bot ? styles.switchTrackOn : ""}`}><span className={styles.switchKnob} /></span>
               </label>
+              <TelegramBotStart botUrl={props.botUrl} inverse />
               {switchError && <p role="alert" className={styles.switchError}>{switchError}</p>}
             </div>
           )}
