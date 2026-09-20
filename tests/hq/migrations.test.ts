@@ -25,6 +25,8 @@ async function schemaShape(pg: PGlite) {
 }
 
 describe("versioned HQ migrations", () => {
+  // Two cold Postgres instances and two complete schemas exceed Vitest's
+  // default five seconds on the shared GitHub runner.
   it("installs the complete legacy schema and records the bootstrap exactly once", async () => {
     const pg = new PGlite();
     const legacy = new PGlite();
@@ -44,7 +46,7 @@ describe("versioned HQ migrations", () => {
       expect((await pg.query("SELECT label FROM hq_partner_stages WHERE slug='rejected'")).rows)
         .toEqual([{ label: "Operator custom label" }]);
     } finally { await Promise.all([pg.close(), legacy.close()]); }
-  });
+  }, 30_000);
 
   it("adopts an existing unversioned database without losing accounts or project data", async () => {
     const pg = new PGlite();
