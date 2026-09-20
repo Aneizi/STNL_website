@@ -31,6 +31,8 @@ import { BuilderProjectImage } from './builder-project-image';
 import { LateUpdateModal } from './late-update-modal';
 import { ReportingEntryCard } from './reporting-entry-card';
 import { TelegramBotStart } from './telegram-bot-start';
+import { validUpdateBody } from "@/lib/hq/reporting-body";
+import { UpdateTextarea } from "./update-textarea";
 import styles from './team-workspace.module.css';
 
 /**
@@ -46,8 +48,6 @@ import styles from './team-workspace.module.css';
  * save triggers.
  */
 
-/** The same limit the service enforces (`MAX_BODY_LENGTH`), repeated here because that module is server only. */
-const MAX_BODY = 4000;
 const SAVE_FAILED = 'The update could not be saved. Your text is kept. Try again.';
 const SETTINGS_FAILED = 'Could not save. Try again.';
 const LINK_FAILED = 'Could not create the link. Try again.';
@@ -174,7 +174,7 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!current || !body.trim()) return;
+    if (!current || !validUpdateBody(body)) return;
     start(async () => {
       setError('');
       let result;
@@ -209,16 +209,16 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
     <h2 className={styles.heading}>{completed ? HEADING_DONE : HEADING_OPEN}</h2>
     {saved && <p role='status' className={styles.savedStatus}>{UPDATE_SAVED}</p>}
     <form className={styles.composer} onSubmit={submit} aria-busy={pending}>
-      <textarea className={styles.updateBox} value={body} onChange={event => {
+      <UpdateTextarea className={styles.updateBox} value={body} onChange={event => {
         if (!body.trim()) setDraftPeriodId(current.periodId);
         setBody(event.target.value); setSaved(false);
-      }} maxLength={MAX_BODY} rows={6} aria-label='Your update' placeholder='What moved, what is in the way, what is next.'/>
+      }} rows={6} aria-label='Your update' placeholder='What moved, what is in the way, what is next.'/>
       {body.trim() && draftPeriodId !== null && draftPeriodId !== current.periodId && <div>
         <p role='alert' className={styles.alert}>The week changed while you were writing. Your draft is kept.</p>
         <button type='button' className={styles.lateLink} onClick={() => { setDraftPeriodId(current.periodId); setError(''); }}>Use current week</button>
       </div>}
       <div className={styles.row}>
-        <button type='submit' className={styles.addButton} disabled={!body.trim() || pending}>Add update</button>
+        <button type='submit' className={styles.addButton} disabled={!validUpdateBody(body) || pending}>Add update</button>
         {lateLink}
       </div>
       {error && <p role='alert' className={styles.alert}>{error}</p>}

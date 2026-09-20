@@ -9,10 +9,10 @@ import { addReportingUpdate, loadTeamUpdates } from "@/lib/hq/actions/reporting"
 import type { ReportingEntryView } from "@/lib/hq/reporting";
 import { captainMetaLabel, dueLine, mergeUpdatePages, NOTE_ADDED, PRIVATE_TOOLTIP, telegramContactHref, weekOfLabel } from "@/lib/hq/reporting-view";
 import { ReportingEntryCard } from "./reporting-entry-card";
+import { validUpdateBody } from "@/lib/hq/reporting-body";
+import { UpdateTextarea } from "./update-textarea";
 import styles from "./builder-captain-den.module.css";
 
-/** The same limit the service enforces (`MAX_BODY_LENGTH`), repeated here because that module is server only. */
-const MAX_BODY = 4000;
 
 /**
  * One of the Captain's assigned teams, as the page serializes it: what the
@@ -123,11 +123,11 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
     patchLoaded(projectId, (current) => ({ ...current, extra: mergeUpdatePages(current.extra, [entry]) }));
 
   const canNote = team !== null && !team.paused && team.current !== null;
-  const blank = !draft.body.trim();
+  const invalid = !validUpdateBody(draft.body);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!team?.current || blank) return;
+    if (!team?.current || invalid) return;
     const { projectId, hackathonId } = team;
     const periodId = draft.periodId ?? team.current.periodId;
     const { body, priv } = draft;
@@ -243,7 +243,7 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
               <>
                 <p className={styles.kicker}>{team.current?.completed ? "Your note (optional)" : "Your note"}</p>
                 <form className={styles.form} onSubmit={submit} aria-busy={pending}>
-                  <textarea
+                  <UpdateTextarea
                     className={styles.textarea}
                     value={draft.body}
                     onChange={(event) => patchDraft(team.projectId, {
@@ -251,7 +251,6 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
                       periodId: draft.body.trim() ? draft.periodId : team.current!.periodId,
                       saved: false,
                     })}
-                    maxLength={MAX_BODY}
                     rows={5}
                     aria-label="Your note"
                     placeholder="What you saw, what you told them, what to watch."
@@ -261,7 +260,7 @@ export function BuilderCaptainDen({ teams, week, timezone, contact }: BuilderCap
                     <button type="button" className={styles.older} onClick={() => patchDraft(team.projectId, { periodId: team.current!.periodId, error: "" })}>Use current week</button>
                   </div>}
                   <div className={styles.row}>
-                    <button type="submit" className={styles.add} disabled={blank || pending}>Add note</button>
+                    <button type="submit" className={styles.add} disabled={invalid || pending}>Add note</button>
                     <span
                       className={styles.privWrap}
                       onMouseEnter={() => setTipOpen(true)}

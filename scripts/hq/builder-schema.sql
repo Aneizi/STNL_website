@@ -478,7 +478,7 @@ CREATE TABLE IF NOT EXISTS hq_reporting_entries (
   period_id uuid NOT NULL REFERENCES hq_reporting_periods(id) ON DELETE CASCADE,
   author_kind text NOT NULL CONSTRAINT hq_reporting_entries_author_kind_check CHECK (author_kind IN ('member','operator')),
   author_id text NOT NULL,
-  body text NOT NULL CONSTRAINT hq_reporting_entries_body_check CHECK (btrim(body) <> '' AND length(body) <= 4000),
+  body text NOT NULL CONSTRAINT hq_reporting_entries_body_check CHECK (btrim(body) <> ''),
   visibility text NOT NULL DEFAULT 'shared' CONSTRAINT hq_reporting_entries_visibility_check CHECK (visibility IN ('shared','sensitive')),
   source text NOT NULL DEFAULT 'hq' CONSTRAINT hq_reporting_entries_source_check CHECK (source IN ('hq','telegram')),
   version int NOT NULL DEFAULT 1 CONSTRAINT hq_reporting_entries_version_check CHECK (version > 0),
@@ -489,6 +489,12 @@ CREATE TABLE IF NOT EXISTS hq_reporting_entries (
   voided_by_user_id uuid REFERENCES hq_users(id) ON DELETE SET NULL,
   void_reason text
 );
+-- The reporting service enforces the shared 280 non-whitespace character
+-- budget on create and edit. Remove the old raw-length cap so whitespace
+-- does not consume that budget and existing longer updates remain readable.
+ALTER TABLE hq_reporting_entries DROP CONSTRAINT IF EXISTS hq_reporting_entries_body_check;
+ALTER TABLE hq_reporting_entries ADD CONSTRAINT hq_reporting_entries_body_check CHECK (btrim(body) <> '');
+
 -- The dashboard's grouped completion read and a project's own entry list.
 CREATE INDEX IF NOT EXISTS hq_reporting_entries_period_idx ON hq_reporting_entries (period_id, project_id) WHERE voided_at IS NULL;
 CREATE INDEX IF NOT EXISTS hq_reporting_entries_project_idx ON hq_reporting_entries (project_id, submitted_at DESC);

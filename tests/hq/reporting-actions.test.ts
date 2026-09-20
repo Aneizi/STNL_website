@@ -219,6 +219,18 @@ describe("adding an update from a member surface", () => {
     expect(result.entry.visibility).toBe("shared");
   });
 
+  it("uses the whitespace-free character budget for HQ creates and edits", async () => {
+    asMember(member("lead"));
+    const body = "a".repeat(140) + " \n\t".repeat(1500) + "🚀".repeat(140);
+    const saved = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body });
+    expect(saved).toMatchObject({ ok: true, entry: { body } });
+    if (!saved.ok) throw new Error("fixture save failed");
+    expect(await editReportingUpdate({ entryId: saved.entry.id, expectedVersion: 1, body: body.replaceAll("a", "b") })).toMatchObject({ ok: true });
+    const overLimit = await addReportingUpdate({ projectId: PROJECT, hackathonId: EDITION, body: body + "x" });
+    expect(overLimit).toMatchObject({ ok: false, reason: "body_too_long", error: expect.stringContaining("280") });
+    expect(await editReportingUpdate({ entryId: saved.entry.id, expectedVersion: 2, body: body + "x" })).toMatchObject({ ok: false, reason: "body_too_long" });
+  });
+
   it("names the week that is open now when the draft's week closed under it, and keeps nothing of the text", async () => {
     asMember(member("lead"));
     const [first, second] = await listReportingPeriods(db, EDITION);

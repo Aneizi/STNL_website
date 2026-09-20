@@ -22,6 +22,7 @@ import {
   type ReportingPeriod,
 } from "./reporting";
 import { byOutstandingFirst } from "./reporting-view";
+import { updateCharacterCount } from "./reporting-body";
 import { setBotConsent } from "./telegram-consent";
 import {
   advanceBotDraft,
@@ -493,7 +494,7 @@ async function handleMessage(session: Session, message: TelegramMessage): Promis
   }
   const body = text.trim();
   if (!body) return { replies: [{ chatId: session.chatId, text: BOT_COPY.composeEmpty, keyboard: [] }], answer: null, queued: false, outcome: "empty" };
-  if (body.length > MAX_BODY_LENGTH) {
+  if (updateCharacterCount(body) > MAX_BODY_LENGTH) {
     return { replies: [{ chatId: session.chatId, text: BOT_COPY.composeTooLong, keyboard: [] }], answer: null, queued: false, outcome: "too_long" };
   }
 
@@ -578,10 +579,13 @@ async function dispatch(session: Session, action: BotAction): Promise<Dispatched
   if (isDraftAction(action.kind)) {
     const draft = await boundDraft(session, action);
     if (!draft) {
-      // A previous attempt may have advanced this draft before its preview
-      // send failed. Rebuild the current controls without replaying the edit.
-      const current = session.retry ? await readBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId }, session.now) : null;
-      if (current?.id === action.draftId) return resumeDraft(session, current, action.kind === "draft.preview" ? action.page : 0);
+      // A quick second tap or a failed message edit can leave the visible
+      // keyboard behind the draft. Restore the current preview, without
+      // replaying an old Save or audience choice. A replaced draft stays dead.
+      const current = await readBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId }, session.now);
+      if (current?.id === action.draftId && (!action.projectId || action.projectId === current.projectId)) {
+        return resumeDraft(session, current, action.kind === "draft.preview" ? action.page : 0);
+      }
       return staleReply(session, "stale_draft");
     }
     switch (action.kind) {
@@ -764,7 +768,11 @@ async function setDraftVisibility(session: Session, action: BotAction, draft: Bo
     { userId: session.actor.id, chatId: session.chatId, draftId: draft.id, expectedRevision: draft.revision, visibility },
     session.now,
   );
-  if (!saved) return staleReply(session, "stale_draft");
+  if (!saved) {
+    const current = await readBotDraft(session.db, { userId: session.actor.id, chatId: session.chatId }, session.now);
+    if (current?.id === draft.id) return resumeDraft(session, current);
+    return staleReply(session, "stale_draft");
+  }
   if (saved.step !== "preview") return composePrompt(session, saved, composeHeader(project.summary), "compose");
   return { replies: await previewReplies(session, saved, project.summary, project.mayUseSensitive), queued: false, outcome: "preview" };
 }

@@ -6,11 +6,11 @@ import { addReportingUpdate } from '@/lib/hq/actions/reporting';
 import type { ReportingEntryView } from '@/lib/hq/reporting';
 import type { TeamPeriodView } from '@/lib/hq/reporting-surface';
 import { isWeekCurrent, isWeekStarted, LATE_NOTE, periodRangeShortLabel } from '@/lib/hq/reporting-view';
+import { validUpdateBody } from "@/lib/hq/reporting-body";
+import { UpdateTextarea } from "./update-textarea";
 import styles from './late-update-modal.module.css';
 import { useModalFocus } from './use-modal-focus';
 
-/** The same limit the service enforces (`MAX_BODY_LENGTH`), repeated here because that module is server only. */
-const MAX_BODY = 4000;
 const SAVE_FAILED = 'The update could not be saved. Your text is kept. Try again.';
 
 export type LateUpdateModalProps = {
@@ -46,7 +46,7 @@ export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClos
   const [body, setBody] = useState('');
   const [error, setError] = useState('');
   const [pending, start] = useTransition();
-  const ready = Boolean(body.trim()) && periodId !== null;
+  const ready = validUpdateBody(body) && periodId !== null;
 
   useModalFocus(dialogRef);
 
@@ -58,7 +58,7 @@ export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClos
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (periodId === null || !body.trim()) return;
+    if (periodId === null || !validUpdateBody(body)) return;
     start(async () => {
       setError('');
       let result;
@@ -92,7 +92,7 @@ export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClos
             </button>;
           })}
         </div>
-        <textarea className={styles.textarea} value={body} onChange={event => setBody(event.target.value)} rows={5} maxLength={MAX_BODY} aria-label='Your late update' placeholder='What moved, what was in the way, what came next.'/>
+        <UpdateTextarea className={styles.textarea} value={body} onChange={event => setBody(event.target.value)} rows={5} aria-label='Your late update' placeholder='What moved, what was in the way, what came next.'/>
         <p className={styles.note}>{LATE_NOTE}</p>
         {error && <p role='alert' className={styles.alert}>{error}</p>}
         <div className={styles.actions}>

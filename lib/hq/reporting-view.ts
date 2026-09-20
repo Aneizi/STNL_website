@@ -1,3 +1,5 @@
+import { UPDATE_LENGTH_HINT } from "./reporting-body";
+
 // The reporting screens' presentation rules, as pure functions and copy.
 //
 // No `server-only`, no database handle and no session: this module is
@@ -207,7 +209,7 @@ export const PRIVATE_TOOLTIP = "Only visible to you and HQ admins";
 export const ADD_UPDATE_MESSAGES = {
   not_authorized: "This team is not available to your account.",
   empty_body: "Write your update before saving it.",
-  body_too_long: "This update is too long. Shorten it and save again.",
+  body_too_long: `This update is too long. ${UPDATE_LENGTH_HINT}`,
   not_eligible: "This team is not in weekly reporting yet. Ask Superteam NL to add it.",
   no_open_period: "There is no open reporting week right now, so there is nothing to update.",
   period_not_found: "That reporting week is not part of this hackathon.",
@@ -220,7 +222,7 @@ export const EDIT_UPDATE_MESSAGES = {
   not_found: "That update is no longer there.",
   not_authorized: "This update is not yours to change.",
   empty_body: "An update cannot be empty. Write something, or ask an admin to remove it.",
-  body_too_long: "This update is too long. Shorten it and save again.",
+  body_too_long: `This update is too long. ${UPDATE_LENGTH_HINT}`,
   conflict: "This update changed while you were editing. Your text is kept below, next to the version that is saved now.",
   voided: "An admin removed this update, so it can no longer be edited.",
   visibility_not_allowed: "Only the team's Captain can save a note as sensitive.",

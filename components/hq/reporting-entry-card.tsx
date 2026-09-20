@@ -4,10 +4,10 @@ import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { editReportingUpdate } from "@/lib/hq/actions/reporting";
 import type { ReportingEntryView } from "@/lib/hq/reporting";
+import { validUpdateBody } from "@/lib/hq/reporting-body";
+import { UpdateTextarea } from "./update-textarea";
 import styles from "./reporting-entry-card.module.css";
 
-/** The same limit the service enforces (`MAX_BODY_LENGTH`), repeated here because that module is server only. */
-const MAX_BODY = 4000;
 
 export type ReportingEntryCardProps = {
   entry: ReportingEntryView;
@@ -68,6 +68,7 @@ export function ReportingEntryCard({ entry, meta, canEdit, tag, onSaved }: Repor
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
+    if (!validUpdateBody(draft)) return;
     start(async () => {
       setError("");
       let result;
@@ -107,12 +108,11 @@ export function ReportingEntryCard({ entry, meta, canEdit, tag, onSaved }: Repor
       )}
       {editing && (
         <form className={styles.form} onSubmit={submit}>
-          <textarea
+          <UpdateTextarea
             className={styles.textarea}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             rows={5}
-            maxLength={MAX_BODY}
             aria-label="Edit update"
           />
           {conflict && (
@@ -124,7 +124,7 @@ export function ReportingEntryCard({ entry, meta, canEdit, tag, onSaved }: Repor
           )}
           {error && <p role="alert" className={styles.alert}>{error}</p>}
           <div className={styles.actions}>
-            <button type="submit" className={styles.save} disabled={pending}>{conflict ? "Save my text anyway" : "Save"}</button>
+            <button type="submit" className={styles.save} disabled={!validUpdateBody(draft) || pending}>{conflict ? "Save my text anyway" : "Save"}</button>
             <button type="button" className={styles.cancel} disabled={pending} onClick={close}>Cancel</button>
           </div>
         </form>

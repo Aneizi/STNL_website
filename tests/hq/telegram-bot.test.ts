@@ -462,10 +462,16 @@ describe("adding an update", () => {
     const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
     const list = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "Add update")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(list, "Vault Team")));
-    const tooLong = await run(messageUpdate(CAPTAIN_TELEGRAM, "x".repeat(4001)));
+    const tooLong = await run(messageUpdate(CAPTAIN_TELEGRAM, "x ".repeat(281)));
     expect(tooLong.outcome).toBe("too_long");
+    expect(allText(tooLong)).toContain("280 characters maximum, excluding whitespace");
     const draft = await readBotDraft(db, { userId: CAPTAIN, chatId: CHAT });
     expect(draft?.step).toBe("awaiting_text");
+    const body = "🚀 \n".repeat(280).trim();
+    const preview = await run(messageUpdate(CAPTAIN_TELEGRAM, body));
+    expect(preview.outcome).toBe("preview");
+    expect((await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")))).outcome).toBe("saved");
+    expect(await rows("SELECT body FROM hq_reporting_entries")).toEqual([{ body }]);
   });
 
   it("does not read free text as a command outside the input step", async () => {
@@ -476,9 +482,43 @@ describe("adding an update", () => {
 });
 
 describe("sensitive notes", () => {
+  it("restores the private preview after repeated privacy clicks and a Save from its previous keyboard", async () => {
+    const { preview } = await composeTo("Vault Team", "Keep this private draft");
+    const keepPrivate = buttonId(preview, "Keep private");
+    const [first, second] = await Promise.all([
+      run(callbackUpdate(CAPTAIN_TELEGRAM, keepPrivate)),
+      run(callbackUpdate(CAPTAIN_TELEGRAM, keepPrivate)),
+    ]);
+    for (const result of [first, second]) {
+      expect(result.outcome).toBe("preview");
+      expect(allText(result)).toContain("Only you and Superteam NL admins");
+      expect(allText(result)).not.toContain("no longer active");
+    }
+    const oldSave = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")));
+    expect(oldSave.outcome).toBe("preview");
+    expect(await rows("SELECT id FROM hq_reporting_entries")).toHaveLength(0);
+    expect((await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(oldSave, "Save")))).outcome).toBe("saved");
+    expect(await rows("SELECT body,visibility FROM hq_reporting_entries")).toEqual([{ body: "Keep this private draft", visibility: "sensitive" }]);
+  });
+
+  it("never replays an older Share button against the same draft after Keep private", async () => {
+    const { preview } = await composeTo("Vault Team", "Private again");
+    const privatePreview = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
+    const share = buttonId(privatePreview, "Share with Vault Team");
+    const sharedPreview = await run(callbackUpdate(CAPTAIN_TELEGRAM, share));
+    await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(sharedPreview, "Keep private")));
+    const recovered = await run(callbackUpdate(CAPTAIN_TELEGRAM, share));
+    expect(recovered.outcome).toBe("preview");
+    expect(allText(recovered)).toContain("Only you and Superteam NL admins");
+    expect(await readBotDraft(db, { userId: CAPTAIN, chatId: CHAT })).toMatchObject({ visibility: "sensitive", body: "Private again" });
+  });
+
   it("reads a long private note in place after reassignment, preserving every word", async () => {
     const body = "&".repeat(1000);
-    expect((await createUpdate(member(CAPTAIN, ["captain"]), { projectId: PROJECT, hackathonId: EDITION, body, visibility: "sensitive" }, db)).ok).toBe(true);
+    const saved = await createUpdate(member(CAPTAIN, ["captain"]), { projectId: PROJECT, hackathonId: EDITION, body: "Legacy note", visibility: "sensitive" }, db);
+    if (!saved.ok) throw new Error("fixture save failed");
+    // Existing notes from before the shorter limit remain readable in full.
+    await rows("UPDATE hq_reporting_entries SET body=$2 WHERE id=$1", [saved.entry.id, body]);
     await unassignCaptain(db, { actorOperatorId: OPERATOR, projectId: PROJECT, hackathonId: EDITION });
     const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
     const notes = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "My notes")));
@@ -568,7 +608,7 @@ describe("sensitive notes", () => {
   it("opens one of the author's own notes in full after a reassignment, read only", async () => {
     // Longer than any snippet, so a list that only summarised it left
     // everything after the summary unreachable.
-    const body = `${"A".repeat(300)} END_OF_NOTE`;
+    const body = `${"A".repeat(250)} END_OF_NOTE`;
     const { preview } = await composeTo("Vault Team", body);
     const marked = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Keep private")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(marked, "Save")));
@@ -639,12 +679,12 @@ describe("editing a note", () => {
     const action = await createBotAction(db, { userId: CAPTAIN, chatId: CHAT, kind: "note.edit", projectId: PROJECT, entryId: created.entry.id });
     await run(callbackUpdate(CAPTAIN_TELEGRAM, action.id));
     const preview = await run(messageUpdate(CAPTAIN_TELEGRAM, "My draft"));
-    await editUpdate(actor, { entryId: created.entry.id, expectedVersion: 1, body: "A".repeat(4000), visibility: "shared" }, db);
+    await editUpdate(actor, { entryId: created.entry.id, expectedVersion: 1, body: "AAAA" + " ".repeat(4000) + "A", visibility: "shared" }, db);
     const refused = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(preview, "Save")));
     expect(refused.outcome).toBe("conflict");
     expect(allText(refused)).toContain("Page 1 of");
     const next = buttonId(refused, "Next");
-    await editUpdate(actor, { entryId: created.entry.id, expectedVersion: 2, body: "B".repeat(4000), visibility: "shared" }, db);
+    await editUpdate(actor, { entryId: created.entry.id, expectedVersion: 2, body: "BBBB" + " ".repeat(4000) + "B", visibility: "shared" }, db);
     const restarted = await run(callbackUpdate(CAPTAIN_TELEGRAM, next));
     expect(allText(restarted)).toContain("Page 1 of");
     expect(allText(restarted)).toContain("BBBB");
@@ -875,7 +915,8 @@ describe("a button belongs to one draft, and to one state of it", () => {
     ]);
     const [saved, dead] = first.outcome === "saved" ? [first, second] : [second, first];
     expect(saved.outcome).toBe("saved");
-    expectDeadButton(dead);
+    // The older Save either restores a preview or observes the completed save.
+    if (dead.outcome !== "preview") expectDeadButton(dead);
     expect(await rows("SELECT id FROM hq_reporting_entries")).toHaveLength(1);
     expect(await rows("SELECT version FROM hq_reporting_entry_revisions")).toHaveLength(1);
   });
@@ -1141,7 +1182,7 @@ describe("escaping and delivery", () => {
   });
 
   it("pages a long preview in place without losing text or allowing Save before the audience", async () => {
-    const body = "&".repeat(1000);
+    const body = "&".repeat(140) + " ".repeat(3000) + "&".repeat(140);
     const menu = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
     const list = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(menu, "Add update")));
     await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(list, "Vault Team")));
@@ -1169,7 +1210,7 @@ describe("escaping and delivery", () => {
       next = keys().find((key) => key.text === "Next");
     }
     const joined = sent.map((message) => message.text).join("");
-    expect((joined.match(/&amp;/g) ?? []).length).toBe(1000);
+    expect((joined.match(/&amp;/g) ?? []).length).toBe(280);
     expect(joined).not.toMatch(/&(?!amp;|lt;|gt;|quot;|#39;)/);
     expect(sent.at(-1)?.text).toContain("Shared with Vault Team members");
     expect(keys().some((key) => key.text === "Save")).toBe(true);

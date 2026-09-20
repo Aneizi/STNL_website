@@ -430,8 +430,18 @@ describe("createUpdate", () => {
 
   it("refuses an empty body and one over the maximum, and saves neither", async () => {
     expect(await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "   ", atMs: WEEK_ONE })).toEqual({ ok: false, reason: "empty_body" });
-    expect(await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "x".repeat(4001), atMs: WEEK_ONE })).toEqual({ ok: false, reason: "body_too_long" });
+    expect(await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "x ".repeat(281), atMs: WEEK_ONE })).toEqual({ ok: false, reason: "body_too_long" });
     expect(await rows(`SELECT count(*)::int AS n FROM hq_reporting_entries`)).toEqual([{ n: 0 }]);
+  });
+
+  it("preserves whitespace while applying the 280-character limit on create and edit", async () => {
+    const body = "🚀".repeat(140) + " \n\t\u00a0".repeat(1200) + "é".repeat(140);
+    const saved = await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body, atMs: WEEK_ONE });
+    expect(saved).toMatchObject({ ok: true, entry: { body } });
+    if (!saved.ok) throw new Error("fixture save failed");
+    const edited = await editUpdate(member("lead-a"), { entryId: saved.entry.id, expectedVersion: 1, body: body.replaceAll("é", "b") });
+    expect(edited).toMatchObject({ ok: true, entry: { body: body.replaceAll("é", "b"), version: 2 } });
+    expect(await editUpdate(member("lead-a"), { entryId: saved.entry.id, expectedVersion: 2, body: body + "x" })).toEqual({ ok: false, reason: "body_too_long" });
   });
 
   it("refuses an account with no relationship to the team, and tells it nothing about the project", async () => {

@@ -803,17 +803,22 @@ describe("phase 5: the reporting tables", () => {
     }
   });
 
-  it("refuses an empty entry body, one over the 4000 character maximum, and an unknown visibility", async () => {
+  it("removes the old raw-length cap without changing existing notes or the other constraints", async () => {
     const pg = await createMigratedDatabase();
     try {
       const { projectId, periodId } = await seed(pg);
       const insert = (body: string, visibility = "shared") =>
         run(pg, `INSERT INTO hq_reporting_entries (project_id, period_id, author_kind, author_id, body, visibility) VALUES ($1, $2, 'member', 'author-1', $3, $4)`,
           [projectId, periodId, body, visibility]);
+      await run(pg, "ALTER TABLE hq_reporting_entries DROP CONSTRAINT hq_reporting_entries_body_check");
+      await run(pg, "ALTER TABLE hq_reporting_entries ADD CONSTRAINT hq_reporting_entries_body_check CHECK (btrim(body) <> '' AND length(body) <= 4000)");
+      const legacy = "x".repeat(4000);
+      await insert(legacy);
+      await applyMigrations(pg);
+      expect(await run(pg, "SELECT body FROM hq_reporting_entries")).toEqual([{ body: legacy }]);
+      await expect(insert("a" + " ".repeat(5000) + "b")).resolves.toBeDefined();
       await expect(insert("   ")).rejects.toThrow(/hq_reporting_entries_body_check/);
-      await expect(insert("x".repeat(4001))).rejects.toThrow(/hq_reporting_entries_body_check/);
       await expect(insert("fine", "secret")).rejects.toThrow(/hq_reporting_entries_visibility_check/);
-      await expect(insert("x".repeat(4000))).resolves.toBeDefined();
     } finally {
       await pg.close();
     }

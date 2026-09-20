@@ -19,6 +19,7 @@ import {
   type ReportingPeriod,
 } from "./reporting-enrolment";
 import { periodForInstant, type ReportingPeriodMode } from "./reporting-periods";
+import { MAX_BODY_LENGTH, updateCharacterCount } from "./reporting-body";
 
 /**
  * The reporting service (contracts.md's "Reporting service" row): the one
@@ -123,13 +124,7 @@ export type {
 } from "./reporting-enrolment";
 export type { GeneratedPeriod, ReportingPeriodMode, ReportingSchedule } from "./reporting-periods";
 
-/**
- * The plan's plain-text update: one field, 4,000 characters. A constant here
- * rather than configuration, because the same number is the CHECK constraint
- * on `hq_reporting_entries.body`, and two places to change it would mean a
- * save the application accepts and the database refuses.
- */
-export const MAX_BODY_LENGTH = 4000;
+export { MAX_BODY_LENGTH } from "./reporting-body";
 
 export type ReportingEntrySource = "hq" | "telegram";
 
@@ -220,7 +215,7 @@ type BodyProblem = "empty_body" | "body_too_long";
 function checkBody(raw: string): { body: string } | { problem: BodyProblem } {
   const body = String(raw ?? "").trim();
   if (!body) return { problem: "empty_body" };
-  if (body.length > MAX_BODY_LENGTH) return { problem: "body_too_long" };
+  if (updateCharacterCount(body) > MAX_BODY_LENGTH) return { problem: "body_too_long" };
   return { body };
 }
 

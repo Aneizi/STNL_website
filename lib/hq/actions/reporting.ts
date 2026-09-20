@@ -13,7 +13,6 @@ import {
 import {
   createUpdate,
   editUpdate,
-  MAX_BODY_LENGTH,
   readAuthorizedUpdates,
   type ReportingEntryView,
   type ReportingPeriod,
@@ -50,7 +49,8 @@ import { ADD_UPDATE_MESSAGES, EDIT_UPDATE_MESSAGES } from "../reporting-view";
 
 const uuid = z.string().uuid();
 const hackathonIdSchema = z.number().int().positive();
-const bodySchema = z.string().max(MAX_BODY_LENGTH + 1);
+// The reporting service checks the shared non-whitespace character budget.
+const bodySchema = z.string();
 const visibilitySchema = z.enum(["shared", "sensitive"]);
 const contactSchema = z.string().max(MAX_CONTACT_LENGTH + 50);
 /** The page size the member screens read, matching `lib/hq/reporting-surface.ts`'s first page so Load more continues rather than restarts. */
@@ -189,4 +189,3 @@ export async function saveTeamContact(input: { projectId: string; hackathonId: n
   refresh();
   return { ok: true, contact };
 }
-

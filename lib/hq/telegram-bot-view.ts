@@ -25,6 +25,7 @@
  *   a value edited in a client is a miss rather than an instruction.
  */
 
+import { UPDATE_LENGTH_HINT } from "./reporting-body";
 import {
   ADD_UPDATE_MESSAGES,
   deadlineLabel,
@@ -255,8 +256,8 @@ export const BOT_COPY = {
     "No projects assigned yet. They will appear here when Superteam NL assigns you as captain.",
   projectsTitle: "Your projects",
   chooseProject: "Choose a project for your update.",
-  compose: "Send your update as one message. Plain text, no attachments.",
-  composeTooLong: "That is longer than an update can be. Shorten it and send it again.",
+  compose: `Send your update as one message. ${UPDATE_LENGTH_HINT} Plain text, no attachments.`,
+  composeTooLong: `This update is too long. ${UPDATE_LENGTH_HINT} Shorten it and send it again.`,
   composeEmpty: "That came through empty. Send the text of your update.",
   attachmentIgnored: "I can only read plain text here. Send your update as a message.",
   previewTitle: "Here is what will be saved.",
