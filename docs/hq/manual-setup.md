@@ -1,5 +1,10 @@
 # HQ owner setup and testing handoff
 
+**Production release, 20 September 2026:** use the
+[production setup guide](production-setup.md) for the live site, required
+provider credentials, current production configuration, and owner checks.
+The staging instructions below are historical preparation material.
+
 Updated 15 September 2026 after the integrated review of phases 0–8 and 10.
 Phase 9 is removed. This is the current setup guide; older implementation-log
 entries describe the state at the time they were written.

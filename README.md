@@ -37,6 +37,9 @@ CI runs these checks on pushes to `main` and `staging`, and on pull requests.
 
 ## HQ maintenance and deployment
 
+For the live site's Vercel, Telegram, email, and campaign setup, follow the
+[production setup guide](docs/hq/production-setup.md).
+
 [Module contracts](docs/hq/contracts.md) describe the current boundaries and
 invariants. [Audit cleanup notes](docs/hq/audit-cleanup.md) record the internal
 cleanup, validation scope, and intentionally deferred recommendations.
