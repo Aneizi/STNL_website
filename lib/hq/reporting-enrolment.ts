@@ -33,6 +33,17 @@ const DEFAULT_TIMEZONE = "Europe/Amsterdam";
 const DEFAULT_NUDGE_WEEKDAY = 3;
 const DEFAULT_NUDGE_TIME = "12:00";
 
+/**
+ * Optional per-edition launch setting in hq_settings. It controls when
+ * updates become required without renumbering the hackathon's weeks.
+ * The SQL references are internal constants, never user input.
+ */
+const configuredReportingStartSql = (edition: "$2" | "e.hackathon_id") => `(
+  SELECT (s.value #>> '{}')::date::timestamp AT TIME ZONE
+    COALESCE((SELECT t.value #>> '{}' FROM hq_settings t WHERE t.hackathon_id = ${edition} AND t.key = 'timezone'), '${DEFAULT_TIMEZONE}')
+  FROM hq_settings s WHERE s.hackathon_id = ${edition} AND s.key = 'reporting_start_date'
+)`;
+
 export const toIso = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
 /** A `date` column as an ISO day. The pg driver hands back a Date at local midnight, so the UTC slice would be the wrong day in a negative offset. */
 export const toDay = (value: unknown): string => {
@@ -610,7 +621,7 @@ export type ReportingEligibility = {
 const ELIGIBILITY_SELECT =
   `SELECT e.project_id::text AS project_id, p.name AS project_name, e.hackathon_id,
      EXISTS (SELECT 1 FROM hq_project_onboarding o WHERE o.project_id = e.project_id) AS imported,
-     e.eligible_from, e.paused_at,
+     GREATEST(e.eligible_from, ${configuredReportingStartSql("e.hackathon_id")}) AS eligible_from, e.paused_at,
      COALESCE((SELECT json_agg(json_build_object('pausedAt', i.paused_at, 'resumedAt', i.resumed_at) ORDER BY i.paused_at)
                FROM hq_reporting_pause_intervals i WHERE i.project_id = e.project_id), '[]'::json) AS pauses
    FROM hq_reporting_eligibility e JOIN hq_projects p ON p.id = e.project_id`;
@@ -690,8 +701,8 @@ export async function enableReporting(
     const { rows: project } = await tx.query("SELECT id::text AS id FROM hq_projects WHERE id = $1::uuid AND hackathon_id = $2", [input.projectId, input.hackathonId]);
     if (!project.length) return { ok: false, reason: "not_found" };
     const { rows: inserted } = await tx.query(
-      `INSERT INTO hq_reporting_eligibility (project_id, hackathon_id, enabled_by_user_id)
-       VALUES ($1::uuid, $2, $3::uuid)
+      `INSERT INTO hq_reporting_eligibility (project_id, hackathon_id, enabled_by_user_id, eligible_from)
+       VALUES ($1::uuid, $2, $3::uuid, GREATEST(now(), ${configuredReportingStartSql("$2")}))
        ON CONFLICT (project_id) DO UPDATE SET paused_at = NULL, updated_at = now()
        RETURNING (xmax = 0) AS created`,
       [input.projectId, input.hackathonId, input.operatorId ?? null],

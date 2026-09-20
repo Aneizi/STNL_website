@@ -282,6 +282,46 @@ describe("enableReporting", () => {
     expect((await reportingEligibility(db, PROJECT_A))?.eligibleFrom).toBe(first?.eligibleFrom);
   });
 
+  it("uses the configured launch date in the edition timezone for new enrolments without renumbering weeks", async () => {
+    await rows("UPDATE hq_hackathons SET start_date='2099-09-14',end_date='2099-10-12' WHERE id=$1", [EDITION]);
+    await rows("UPDATE hq_reporting_config SET final_period_start_date=NULL WHERE hackathon_id=$1", [EDITION]);
+    await rows(`INSERT INTO hq_settings(hackathon_id,key,value) VALUES($1,'timezone','"America/New_York"'::jsonb)`, [EDITION]);
+    const { periods } = await ensureReportingPeriods(db, EDITION);
+    const launch = periods[1];
+    await rows(`INSERT INTO hq_settings(hackathon_id,key,value) VALUES($1,'reporting_start_date',to_jsonb($2::text))`, [EDITION, launch.startDate]);
+    await seedProject(PROJECT_A);
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+    expect((await reportingEligibility(db, PROJECT_A))?.eligibleFrom).toBe(launch.startsAt);
+    const [status] = await reportingStatus(db, { hackathonId: EDITION, atMs: Date.parse(launch.startsAt), includeHistory: true });
+    expect(status.current?.periodSequence).toBe(2);
+    expect(status.history[0]).toMatchObject({ exempt: true, completed: false });
+    expect(status.current?.exempt).toBe(false);
+    expect(status.missedPeriods).toBe(0);
+    await closePeriod(db, { periodId: periods[0].id, atMs: Date.parse(launch.startsAt), actor: OPERATOR });
+    const [later] = await reportingStatus(db, { hackathonId: EDITION, atMs: Date.parse(launch.endsAt) + 1, includeHistory: true });
+    expect(later.missedPeriods).toBe(1);
+    expect(later.history[0].exempt).toBe(true);
+
+    await seedProject(PROJECT_B, OTHER_EDITION);
+    await enableReporting(db, { projectId: PROJECT_B, hackathonId: OTHER_EDITION });
+    expect(Date.parse((await reportingEligibility(db, PROJECT_B))!.eligibleFrom)).toBeLessThan(Date.parse(launch.startsAt));
+  });
+
+  it("applies a launch setting to early enrolments while preserving their stored dates and later join dates", async () => {
+    await seedProject(PROJECT_A);
+    await seedProject(PROJECT_B);
+    await enableReporting(db, { projectId: PROJECT_A, hackathonId: EDITION });
+    await enableReporting(db, { projectId: PROJECT_B, hackathonId: EDITION });
+    const periods = await listReportingPeriods(db, EDITION);
+    await rows("UPDATE hq_reporting_eligibility SET eligible_from=$2 WHERE project_id=$1", [PROJECT_A, periods[0].startsAt]);
+    await rows("UPDATE hq_reporting_eligibility SET eligible_from=$2 WHERE project_id=$1", [PROJECT_B, periods[2].startsAt]);
+    await rows(`INSERT INTO hq_settings(hackathon_id,key,value) VALUES($1,'reporting_start_date',to_jsonb($2::text))`, [EDITION, periods[1].startDate]);
+    expect((await reportingEligibility(db, PROJECT_A))?.eligibleFrom).toBe(periods[1].startsAt);
+    expect((await reportingEligibility(db, PROJECT_B))?.eligibleFrom).toBe(periods[2].startsAt);
+    const [stored] = await rows("SELECT eligible_from FROM hq_reporting_eligibility WHERE project_id=$1", [PROJECT_A]);
+    expect(new Date(String(stored.eligible_from)).toISOString()).toBe(periods[0].startsAt);
+  });
+
   it("enables a project an admin created directly, which has no imported team at all", async () => {
     await seedProject(BARE_PROJECT, EDITION, "CRM only");
     expect(await enableReporting(db, { projectId: BARE_PROJECT, hackathonId: EDITION, operatorId: OPERATOR_ID }))
