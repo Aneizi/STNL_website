@@ -305,8 +305,8 @@ async function previewReplies(session: Session, draft: BotDraft, summary: Projec
  * ---------------------------------------------------------------------- */
 
 /**
- * Gate each update on live identity, messaging consent, then Captain access.
- * A refusal exposes no project data.
+ * Gate each update on live identity and messaging consent. Starting the bot
+ * confirms reminders for any member; reporting also requires Captain access.
  */
 export async function handleTelegramUpdate(update: TelegramUpdate, context: BotContext = {}): Promise<BotOutcome> {
   const db = context.db ?? builderDatabase();
@@ -364,10 +364,23 @@ export async function handleTelegramUpdate(update: TelegramUpdate, context: BotC
     };
   }
 
+  const isCaptain = (await getActorCapabilities(actor)).has("captain");
+  if (message?.text && commandOf(message.text) === "/start") {
+    const reply = isCaptain
+      ? await mainMenu(session)
+      : { chatId, keyboard: [openHqButton(hqLink(hqOrigin, "/hq/dashboard"))].filter((row) => row.length) };
+    return {
+      replies: [{ ...reply, text: BOT_COPY.remindersEnabled }],
+      answer: null,
+      queued: false,
+      outcome: "started",
+    };
+  }
+
   // Captain access, read now as well: a grant revoked a minute ago closes the
   // bot on the next press, and the message says how to get access without
   // naming a single project.
-  if (!(await getActorCapabilities(actor)).has("captain")) {
+  if (!isCaptain) {
     return {
       replies: [{ chatId, text: BOT_COPY.noCaptainAccess, keyboard: [openHqButton(hqLink(hqOrigin, CAPTAIN_PATH))].filter((row) => row.length) }],
       answer: callback ? { callbackQueryId: callback.id } : null,

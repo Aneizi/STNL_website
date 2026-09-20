@@ -246,6 +246,7 @@ export const BOT_COPY = {
   messagingOff:
     "Turn on bot messages to receive updates and reminders here. You can turn them off in your HQ account.",
   messagingOn: "Bot messages are on. You can turn them off again from your HQ account page at any time.",
+  remindersEnabled: "You have enabled Telegram reminders, you may return to the HQ",
   noCaptainAccess:
     "This bot needs Captain access. Ask in the Superteam NL Telegram group or accept a captain invitation in HQ.",
   menuTitle: "Superteam NL HQ",

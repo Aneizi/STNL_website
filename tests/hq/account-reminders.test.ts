@@ -1,7 +1,7 @@
 import { isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ state: [] as unknown[], position: 0, guideDone: false, work: null as Promise<unknown> | null, save: vi.fn(), refresh: vi.fn(), navigate: vi.fn() }));
+const mocks = vi.hoisted(() => ({ state: [] as unknown[], position: 0, guideDone: false, work: null as Promise<unknown> | null, save: vi.fn(), refresh: vi.fn(), open: vi.fn(), close: vi.fn(), navigate: vi.fn(), navigateHq: vi.fn() }));
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useState: (initial: unknown) => {
@@ -44,21 +44,27 @@ function toggle(tree: Element[], enabled: boolean) {
 
 beforeEach(() => {
   vi.resetAllMocks(); mocks.state = []; mocks.work = null; mocks.guideDone = false;
-  vi.stubGlobal("window", { location: { assign: mocks.navigate } });
+  mocks.open.mockReturnValue({ opener: {}, closed: false, location: { replace: mocks.navigate }, close: mocks.close });
+  vi.stubGlobal("window", { open: mocks.open, location: { assign: mocks.navigateHq } });
 });
 afterEach(() => vi.unstubAllGlobals());
 
 describe("enabling Telegram reminders", () => {
-  it("waits for persisted consent before opening the bot, and refreshes the account", async () => {
+  it("opens a separate tab during the click and loads Telegram only after consent is saved", async () => {
     let finish!: (value: unknown) => void;
     mocks.save.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     toggle(render(), true);
     expect(render().some(element => String(element.props.className).includes('switchArrows'))).toBe(false);
     expect(mocks.save).toHaveBeenCalledWith(true);
+    expect(mocks.open).toHaveBeenCalledExactlyOnceWith("about:blank", "_blank");
+    expect(mocks.open.mock.invocationCallOrder[0]).toBeLessThan(mocks.save.mock.invocationCallOrder[0]);
+    expect(mocks.open.mock.results[0].value.opener).toBeNull();
     expect(mocks.navigate).not.toHaveBeenCalled();
     finish({ ok: true, enabled: true });
     await mocks.work;
     expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith(base.botUrl);
+    expect(mocks.navigateHq).not.toHaveBeenCalled();
+    expect(mocks.close).not.toHaveBeenCalled();
     expect(mocks.refresh).toHaveBeenCalledOnce();
     expect(render().find(element => element.props.type === "checkbox")?.props.checked).toBe(true);
   });
@@ -69,6 +75,8 @@ describe("enabling Telegram reminders", () => {
     toggle(render(), true);
     await mocks.work;
     expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(mocks.navigateHq).not.toHaveBeenCalled();
+    expect(mocks.close).toHaveBeenCalledOnce();
     const tree = render();
     expect(tree.find(element => element.props.type === "checkbox")?.props.checked).toBe(false);
     expect(tree.find(element => element.props.role === "alert")).toBeDefined();
@@ -80,6 +88,7 @@ describe("enabling Telegram reminders", () => {
     toggle(render({ bot: true }), false);
     await mocks.work;
     expect(mocks.save).toHaveBeenCalledWith(false);
+    expect(mocks.open).not.toHaveBeenCalled();
     expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
@@ -96,7 +105,30 @@ describe("enabling Telegram reminders", () => {
     mocks.save.mockResolvedValue({ ok: true, enabled: true });
     toggle(render({ botUrl: null }), true);
     await mocks.work;
+    expect(mocks.open).not.toHaveBeenCalled();
     expect(mocks.navigate).not.toHaveBeenCalled();
     expect(render({ botUrl: null }).find(element => element.props.type === "checkbox")?.props.checked).toBe(true);
+  });
+
+  it("keeps consent enabled and stays in HQ if the browser blocks the new tab", async () => {
+    mocks.open.mockReturnValue(null);
+    mocks.save.mockResolvedValue({ ok: true, enabled: true });
+    toggle(render(), true);
+    await mocks.work;
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(mocks.navigateHq).not.toHaveBeenCalled();
+    expect(render().find(element => element.props.type === "checkbox")?.props.checked).toBe(true);
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("does not undo saved consent when the new tab can no longer be navigated", async () => {
+    mocks.navigate.mockImplementation(() => { throw new Error("tab unavailable"); });
+    mocks.save.mockResolvedValue({ ok: true, enabled: true });
+    toggle(render(), true);
+    await mocks.work;
+    expect(mocks.close).toHaveBeenCalledOnce();
+    expect(mocks.navigateHq).not.toHaveBeenCalled();
+    expect(render().find(element => element.props.type === "checkbox")?.props.checked).toBe(true);
+    expect(render().find(element => element.props.role === "alert")).toBeUndefined();
   });
 });

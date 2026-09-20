@@ -216,22 +216,36 @@ export function AccountPassport(props: AccountPassportProps) {
     if (switchPending || next === bot) return;
     dismissReminderGuide();
     const previous = bot;
+    // Reserve the tab during the click so browsers allow it, but only load
+    // Telegram after consent is saved. HQ stays open in the original tab.
+    const botTab = next && props.botUrl ? window.open("about:blank", "_blank") : null;
+    if (botTab) botTab.opener = null;
     setBot(next);
     setSwitchError("");
     startSwitch(async () => {
       try {
         const result = await setBotMessaging(next);
         if (!result.ok) {
+          botTab?.close();
           setBot(previous);
           setSwitchError(telegramErrorMessage(result.code) ?? "We could not save this. Please try again.");
           return;
         }
         setBot(result.enabled);
         router.refresh();
-        // Save consent before leaving HQ. Same-tab navigation also works
-        // after an async save on mobile, where a popup may be blocked.
-        if (next && result.enabled && props.botUrl) window.location.assign(props.botUrl);
+        if (next && result.enabled && props.botUrl) {
+          try {
+            if (botTab && !botTab.closed) botTab.location.replace(props.botUrl);
+          } catch {
+            // Consent is saved; the existing Open Telegram bot link remains
+            // available if the new tab was blocked or navigated elsewhere.
+            botTab?.close();
+          }
+        } else {
+          botTab?.close();
+        }
       } catch {
+        botTab?.close();
         setBot(previous);
         setSwitchError(CONNECTION_FAILED);
       }
@@ -275,7 +289,7 @@ export function AccountPassport(props: AccountPassportProps) {
             {hasTelegram && (
               <div>
                 <TelegramBotStart botUrl={props.botUrl} inverse />
-                {!bot && props.botUrl && <p className={styles.switchHint}>Turning this on opens the bot chat.</p>}
+                {!bot && props.botUrl && <p className={styles.switchHint}>Turning this on opens the bot in a new tab.</p>}
                 {switchError && <p role="alert" className={styles.switchError}>{switchError}</p>}
                 <label className={styles.switchRow}>
                   <span>Bot reminders on Telegram</span>

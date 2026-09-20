@@ -252,10 +252,13 @@ describe("identity binding", () => {
     expect(buttons(result).map((button) => button.url)).toEqual(["https://hq.example.test/hq/account"]);
   });
 
-  it("resolves the account from the identity row, not from the payload", async () => {
+  it("confirms reminders for the linked Captain and keeps the reporting menu available", async () => {
     const result = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
-    expect(result.outcome).toBe("menu");
-    expect(allText(result)).toContain("Superteam NL HQ");
+    expect(result.outcome).toBe("started");
+    expect(allText(result)).toBe("You have enabled Telegram reminders, you may return to the HQ");
+    expect(buttons(result).map(button => button.text)).toContain("My projects");
+    const [consent] = await rows("SELECT messaging_enabled, chat_id::text AS chat_id FROM hq_telegram_bot_consent WHERE user_id = $1", [CAPTAIN]);
+    expect(consent).toEqual({ messaging_enabled: true, chat_id: CHAT });
   });
 
   it("closes the bot the moment Telegram is unlinked, with nothing else to revoke", async () => {
@@ -280,6 +283,7 @@ describe("permissions", () => {
     await rows("UPDATE hq_telegram_bot_consent SET messaging_enabled = false WHERE user_id = $1", [CAPTAIN]);
     const asked = await run(messageUpdate(CAPTAIN_TELEGRAM, "/start"));
     expect(asked.outcome).toBe("messaging_off");
+    expect(allText(asked)).not.toContain("You have enabled Telegram reminders");
     expect(allText(asked)).not.toContain("Vault Team");
 
     const enabled = await run(callbackUpdate(CAPTAIN_TELEGRAM, buttonId(asked, "Turn on bot messages")));
@@ -293,11 +297,24 @@ describe("permissions", () => {
     await seedAccount("plain", "Plain Member");
     await connectTelegram("plain", LEAD_TELEGRAM);
     await allowMessages("plain", LEAD_TELEGRAM);
-    const result = await run(messageUpdate(LEAD_TELEGRAM, "/start"));
+    const result = await run(messageUpdate(LEAD_TELEGRAM, "/menu"));
     expect(result.outcome).toBe("no_capability");
     expect(allText(result)).toContain("Captain access");
     expect(allText(result)).not.toContain("Vault Team");
     expect(allText(result)).not.toContain("Bridge Team");
+  });
+
+  it.each(["/start", "/start@superteamnl_bot"])("confirms reminders for a member without Captain access on %s", async command => {
+    await seedAccount("plain", "Plain Member");
+    await connectTelegram("plain", LEAD_TELEGRAM);
+    await allowMessages("plain", LEAD_TELEGRAM);
+    const result = await run(messageUpdate(LEAD_TELEGRAM, command));
+    expect(result.outcome).toBe("started");
+    expect(allText(result)).toBe("You have enabled Telegram reminders, you may return to the HQ");
+    expect(buttons(result)).toEqual([{ text: "Open HQ", url: `${HQ}/hq/dashboard` }]);
+    expect(await rows("SELECT id FROM hq_telegram_actions WHERE user_id = 'plain'")).toHaveLength(0);
+    const [consent] = await rows("SELECT messaging_enabled, chat_id::text AS chat_id FROM hq_telegram_bot_consent WHERE user_id = 'plain'");
+    expect(consent).toEqual({ messaging_enabled: true, chat_id: LEAD_TELEGRAM });
   });
 
   it("shows a Captain only their own assignments", async () => {
