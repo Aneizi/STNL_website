@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useTransition } from 'react';
 import { addReportingUpdate } from '@/lib/hq/actions/reporting';
 import type { ReportingEntryView } from '@/lib/hq/reporting';
 import type { TeamPeriodView } from '@/lib/hq/reporting-surface';
-import { isWeekCurrent, isWeekStarted, LATE_NOTE, periodRangeShortLabel } from '@/lib/hq/reporting-view';
+import { isWeekEnded, LATE_NOTE, periodRangeShortLabel } from '@/lib/hq/reporting-view';
 import { validUpdateBody } from "@/lib/hq/reporting-body";
 import { UpdateTextarea } from "./update-textarea";
 import styles from './late-update-modal.module.css';
@@ -16,37 +16,36 @@ const SAVE_FAILED = 'The update could not be saved. Your text is kept. Try again
 export type LateUpdateModalProps = {
   projectId: string;
   hackathonId: number;
-  /** Every week of the edition, oldest first. A week that has not started yet renders disabled. */
+  /** Every week of the edition, oldest first. Only ended weeks are offered. */
   periods: readonly TeamPeriodView[];
   /** The page's request instant, so the modal's week states agree with the kicker above it. */
   nowMs: number;
   onClose: () => void;
-  /** The entry as saved, and whether it completed its week (only when the chosen week is the open one). */
+  /** The entry as saved; late updates never complete their week. */
   onSaved: (entry: ReportingEntryView, completesPeriod: boolean) => void;
 };
 
-/** The latest week that has started: preselected, so a late update lands on the week just missed unless another is chosen. */
-export function latestStartedPeriod(periods: readonly TeamPeriodView[], nowMs: number): TeamPeriodView | null {
-  return [...periods].reverse().find(period => isWeekStarted(period, nowMs)) ?? null;
+/** Preselect the most recently ended week, so a late update lands on the week just missed. */
+export function latestEndedPeriod(periods: readonly TeamPeriodView[], nowMs: number): TeamPeriodView | null {
+  return [...periods].reverse().find(period => isWeekEnded(period, nowMs)) ?? null;
 }
 
 /**
  * "Missed a week's update?": one update added to a chosen week.
  *
  * The save carries `periodId` alone, never `expectedPeriodId`. The service
- * marks the entry late once that week has ended, which never completes or
- * un-misses the week, and saves it as an ordinary update when the chosen
- * week is the one open now. A week that has not started is refused by the
- * service too; the disabled button only says so first.
+ * marks the entry late, which never completes or un-misses the week.
+ * Current-week updates belong in the main composer.
  */
 export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClose, onSaved }: LateUpdateModalProps) {
   const router = useRouter();
   const dialogRef = useRef<HTMLDivElement>(null);
-  const [periodId, setPeriodId] = useState<string | null>(() => latestStartedPeriod(periods, nowMs)?.periodId ?? null);
+  const [periodId, setPeriodId] = useState<string | null>(() => latestEndedPeriod(periods, nowMs)?.periodId ?? null);
   const [body, setBody] = useState('');
   const [error, setError] = useState('');
   const [pending, start] = useTransition();
-  const ready = validUpdateBody(body) && periodId !== null;
+  const pastPeriods = periods.filter(period => isWeekEnded(period, nowMs));
+  const ready = validUpdateBody(body) && pastPeriods.some(period => period.periodId === periodId);
 
   useModalFocus(dialogRef);
 
@@ -58,7 +57,7 @@ export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClos
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (periodId === null || !validUpdateBody(body)) return;
+    if (periodId === null || !ready || pending) return;
     start(async () => {
       setError('');
       let result;
@@ -84,11 +83,11 @@ export function LateUpdateModal({ projectId, hackathonId, periods, nowMs, onClos
       <h2 id='late-title' className={styles.title}>Which week?</h2>
       <form className={styles.form} onSubmit={submit} aria-busy={pending}>
         <div role='group' aria-label='Week' className={styles.weeks}>
-          {periods.map(period => {
+          {pastPeriods.map(period => {
             const range = periodRangeShortLabel(period.startDate, period.endDate);
-            return <button key={period.periodId} type='button' className={styles.week} disabled={!isWeekStarted(period, nowMs)} aria-pressed={period.periodId === periodId} onClick={() => setPeriodId(period.periodId)}>
+            return <button key={period.periodId} type='button' className={styles.week} aria-pressed={period.periodId === periodId} onClick={() => setPeriodId(period.periodId)}>
               <span className={styles.weekName}>Week {period.periodSequence}</span>
-              <span className={styles.weekRange}>{isWeekCurrent(period, nowMs) ? `${range}, current` : range}</span>
+              <span className={styles.weekRange}>{range}</span>
             </button>;
           })}
         </div>

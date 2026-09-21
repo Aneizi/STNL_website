@@ -25,6 +25,7 @@ import {
   HEADING_DONE,
   HEADING_OPEN,
   isWeekCurrent,
+  isWeekEnded,
   isWeekStarted,
   LATE_NOTE,
   MAX_CONTACT_LENGTH,
@@ -163,7 +164,7 @@ describe("the redesigned member screens' words for a week", () => {
     }
   });
 
-  it("decides whether a week has started or is the current one from its own instants", () => {
+  it("decides whether a week has started, is current or has ended from its own instants", () => {
     const before = Date.parse(WEEK_ONE.startsAt) - 1;
     const start = Date.parse(WEEK_ONE.startsAt);
     const end = Date.parse(WEEK_ONE.endsAt);
@@ -175,6 +176,10 @@ describe("the redesigned member screens' words for a week", () => {
     expect(isWeekCurrent(WEEK_ONE, end - 1)).toBe(true);
     expect(isWeekCurrent(WEEK_ONE, end)).toBe(false);
     expect(isWeekCurrent(WEEK_ONE, Number.NaN)).toBe(false);
+    expect(isWeekEnded(WEEK_ONE, before)).toBe(false);
+    expect(isWeekEnded(WEEK_ONE, end - 1)).toBe(false);
+    expect(isWeekEnded(WEEK_ONE, end)).toBe(true);
+    expect(isWeekEnded(WEEK_ONE, Number.NaN)).toBe(false);
   });
 
   it("carries the design's copy exactly", () => {

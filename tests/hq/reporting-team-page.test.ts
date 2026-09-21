@@ -170,7 +170,7 @@ describe("the team page's week", () => {
       expect(html).toContain('aria-label="Your update"');
       expect(html).toContain("What moved, what is in the way, what is next.");
       expect(html).toMatch(/<button type="submit"[^>]*disabled=""[^>]*>Add update<\/button>/);
-      expect(html).toContain("Missed a week&#x27;s update?");
+      expect(html).not.toContain("Missed a week&#x27;s update?");
       expect(html).toContain('id="earlier-title"');
       expect(html).toContain(EARLIER_NOTE);
       expect(html).not.toContain("Updated");

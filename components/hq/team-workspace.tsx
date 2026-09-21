@@ -19,7 +19,7 @@ import {
   entryMetaLabel,
   HEADING_DONE,
   HEADING_OPEN,
-  isWeekStarted,
+  isWeekEnded,
   MAX_CONTACT_LENGTH,
   mergeUpdatePages,
   SAVED_LABEL,
@@ -153,7 +153,7 @@ function InviteControl({ projectId, hackathonId }: { projectId: string; hackatho
  * the box was opened against (`expectedPeriodId`), so a save that crossed
  * midnight comes back as a refusal with the text kept rather than landing
  * on a week nobody chose. Without an open week there is nothing to add to,
- * so only the late-update link remains, and only once a week has started.
+ * so only the late-update link remains, and only once a week has ended.
  */
 function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, lateButtonRef }: {
   reporting: TeamReportingProps;
@@ -171,7 +171,7 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
   const [pending, start] = useTransition();
   const { projectId, hackathonId, current, enrolled, paused, history, totalPeriods, timezone } = reporting;
   const canCompose = enrolled && !paused && current !== null;
-  const lateAvailable = enrolled && !paused && history.some(period => isWeekStarted(period, nowMs));
+  const lateAvailable = enrolled && !paused && history.some(period => isWeekEnded(period, nowMs));
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -220,7 +220,7 @@ function UpdateComposer({ reporting, completed, nowMs, onSaved, onOpenLate, late
       </div>}
       <div className={styles.row}>
         <button type='submit' className={styles.addButton} disabled={!validUpdateBody(body) || pending}>Add update</button>
-        {lateLink}
+        {lateAvailable && lateLink}
       </div>
       {error && <p role='alert' className={styles.alert}>{error}</p>}
     </form>

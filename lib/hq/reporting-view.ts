@@ -177,11 +177,13 @@ export function telegramContactHref(contact: string | null | undefined): string 
   return TELEGRAM_HANDLE.test(text) ? `https://t.me/${text.replace(/^@/, "")}` : null;
 }
 
-/** A week's two boundary questions, over the same `startsAt`/`endsAt` instants the service compares. */
+/** Week boundaries use the same `startsAt`/`endsAt` instants the service compares. */
 export const isWeekStarted = (period: { startsAt: string }, nowMs: number): boolean => Date.parse(period.startsAt) <= nowMs;
 
 export const isWeekCurrent = (period: { startsAt: string; endsAt: string }, nowMs: number): boolean =>
   isWeekStarted(period, nowMs) && nowMs < Date.parse(period.endsAt);
+
+export const isWeekEnded = (period: { endsAt: string }, nowMs: number): boolean => Date.parse(period.endsAt) <= nowMs;
 
 /** The kicker's underlined half once the week is done. */
 export const UPDATED_LABEL = "Updated";

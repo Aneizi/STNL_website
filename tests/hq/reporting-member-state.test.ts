@@ -34,7 +34,7 @@ vi.mock("react", async (original) => ({
   useTransition: () => [false, (run: () => Promise<unknown>) => { mocks.work.push(run()); }],
 }));
 
-import { LateUpdateModal, latestStartedPeriod } from "@/components/hq/late-update-modal";
+import { LateUpdateModal, latestEndedPeriod } from "@/components/hq/late-update-modal";
 import { ReportingEntryCard } from "@/components/hq/reporting-entry-card";
 import { TeamWorkspace, type TeamReportingProps, type TeamSnapshotProps, type TeamWorkspaceProps } from "@/components/hq/team-workspace";
 
@@ -224,7 +224,10 @@ describe("this week's update", () => {
     expect(view.find("UpdateComposer").props.completed).toBe(false);
   });
 
-  it("offers nothing to add without an open week, while paused or before enrolment, keeping only the late link once a week has started", () => {
+  it("offers nothing to add without an open week, while paused or before enrolment, keeping only the late link once a week has ended", () => {
+    const firstWeek = dossier().child("UpdateComposer");
+    expect(firstWeek.has("button", "Add update")).toBe(true);
+    expect(firstWeek.has("button", "Missed a week's update?")).toBe(false);
     const paused = dossier({ reporting: reporting({ paused: true }) }).child("UpdateComposer");
     expect(paused.tree).toBeNull();
     const unenrolled = dossier({ reporting: reporting({ enrolled: false, current: null, history: [] }) }).child("UpdateComposer");
@@ -239,18 +242,19 @@ describe("this week's update", () => {
 });
 
 describe("a late update", () => {
-  it("preselects the latest started week, disables the ones to come and marks the current one", () => {
-    expect(latestStartedPeriod([week(1), week(2), week(3)], IN_WEEK_THREE)?.periodId).toBe("week-3");
-    expect(latestStartedPeriod([week(1), week(2)], Date.parse("2026-09-01T12:00:00Z"))).toBeNull();
+  it("offers only ended weeks and preselects the latest one, leaving current-week updates in the main composer", () => {
+    expect(latestEndedPeriod([week(1), week(2), week(3)], IN_WEEK_THREE)?.periodId).toBe("week-2");
+    expect(latestEndedPeriod([week(1), week(2)], IN_WEEK_ONE)).toBeNull();
+    expect(latestEndedPeriod([week(1), week(2)], Date.parse(week(1).endsAt))?.periodId).toBe("week-1");
+    expect(latestEndedPeriod([week(1), week(2)], Date.parse("2026-10-20T12:00:00Z"))?.periodId).toBe("week-2");
     const view = dossier({ nowMs: IN_WEEK_THREE, reporting: reporting({ current: week(3) }) });
     expect(view.has("LateUpdateModal")).toBe(false);
     view.child("UpdateComposer").event("button", "onClick", undefined, "Missed a week's update?");
     view.render();
     const modal = view.child("LateUpdateModal");
     const buttons = weekButtons(modal);
-    expect(buttons.map((button) => button.props["aria-pressed"])).toEqual([false, false, true, false]);
-    expect(buttons.map((button) => button.props.disabled)).toEqual([false, false, false, true]);
-    expect(buttons.map(weekRange)).toEqual(["14 to 20 Sep", "21 to 27 Sep", "28 Sep to 4 Oct, current", "5 to 11 Oct"]);
+    expect(buttons.map((button) => button.props["aria-pressed"])).toEqual([false, true]);
+    expect(buttons.map(weekRange)).toEqual(["14 to 20 Sep", "21 to 27 Sep"]);
     expect(modal.find("button", "Add late update").props.disabled).toBe(true);
   });
 
@@ -262,7 +266,7 @@ describe("a late update", () => {
     const modal = view.child("LateUpdateModal");
     (weekButtons(modal)[0].props.onClick as () => void)();
     modal.render();
-    expect(weekButtons(modal).map((button) => button.props["aria-pressed"])).toEqual([true, false, false, false]);
+    expect(weekButtons(modal).map((button) => button.props["aria-pressed"])).toEqual([true, false]);
     modal.event("textarea", "onChange", change("What moved back then."));
     expect(modal.find("button", "Add late update").props.disabled).toBe(false);
     modal.event("form", "onSubmit", submit); await settle();
@@ -279,7 +283,7 @@ describe("a late update", () => {
   it("keeps the draft and shows the refusal when the save fails, and closes on Cancel, the overlay or Escape", async () => {
     mocks.add.mockResolvedValueOnce({ ok: false, reason: "no_open_period", error: "No open week" });
     const onClose = vi.fn();
-    const modal = new Hooks(LateUpdateModal as unknown as Component, { projectId: "project", hackathonId: 1, periods: [week(1), week(2)], nowMs: IN_WEEK_ONE, onClose, onSaved: vi.fn() }).render();
+    const modal = new Hooks(LateUpdateModal as unknown as Component, { projectId: "project", hackathonId: 1, periods: [week(1), week(2)], nowMs: IN_WEEK_THREE, onClose, onSaved: vi.fn() }).render();
     modal.event("textarea", "onChange", change("Kept"));
     modal.event("form", "onSubmit", submit); await settle(); modal.render();
     expect(modal.find("textarea").props.value).toBe("Kept");
