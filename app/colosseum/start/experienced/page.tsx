@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { IconArrowRight } from "symbols-react";
-import { COLOSSEUM_REGISTER_URL, COLOSSEUM_COPILOT_URL } from "@/lib/colosseum";
+import { COLOSSEUM_REGISTER_URL } from "@/lib/colosseum";
 import { GuideShell, ExternalLink } from "../guide-shell";
-import { BuildNotes, LocalSupport } from "../build-notes";
+import { BuildNotes } from "../build-notes";
 import styles from "../beginner/beginner.module.css";
 
 export const metadata: Metadata = {
@@ -21,7 +21,7 @@ export default function ExperiencedPage() {
         <li>
           <span className={styles.number} aria-hidden="true">1</span>
           <div>
-            <h2>Register under Netherlands</h2>
+            <h2>Register your project on Colosseum</h2>
             <p>Join the hackathon in Arena, even if you already have an account. Check that your country is <strong>Netherlands</strong> and include <strong>Solana</strong> in your selected chains if you&apos;re building on it.</p>
             <ExternalLink href={COLOSSEUM_REGISTER_URL}>Register for the hackathon</ExternalLink>
           </div>
@@ -29,16 +29,12 @@ export default function ExperiencedPage() {
         <li>
           <span className={styles.number} aria-hidden="true">2</span>
           <div>
-            <h2>Set up your team</h2>
-            <p>Keep your project and team details up to date on Colosseum. Make sure every team member is included in your submission.</p>
-          </div>
-        </li>
-        <li>
-          <span className={styles.number} aria-hidden="true">3</span>
-          <div>
-            <h2>Pressure-test the idea</h2>
-            <p>Use Colosseum Copilot to research previous projects. Talk to potential users, identify what existing products miss, and narrow the scope to a demo that proves your approach.</p>
-            <ExternalLink href={COLOSSEUM_COPILOT_URL}>Research with Copilot</ExternalLink>
+            <h2>Import your project into the HQ</h2>
+            <p>Log in to Superteam NL HQ to import your project from Colosseum.</p>
+            <Link href="/hq/login" className={styles.externalLink}>
+              Log in to HQ
+              <IconArrowRight width={16} height={16} fill="currentColor" aria-hidden="true" />
+            </Link>
           </div>
         </li>
       </ol>
@@ -51,7 +47,6 @@ export default function ExperiencedPage() {
         </Link>
       </section>
       <BuildNotes />
-      <LocalSupport path="experienced" />
     </GuideShell>
   );
 }
