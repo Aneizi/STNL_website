@@ -285,7 +285,7 @@
 }
 .hq .hq-chrome-tab:hover {
   color: var(--accent-deep);
-  text-decoration: underline;
+  text-decoration: none;
 }
 
 /* style-hover ports from the design */
