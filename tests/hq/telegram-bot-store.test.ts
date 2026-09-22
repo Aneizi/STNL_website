@@ -38,6 +38,7 @@ import {
   advanceBotDraft,
   UPDATE_LEASE_MS,
 } from "@/lib/hq/telegram-bot-store";
+import { getBotConsent, setBotConsent } from "@/lib/hq/telegram-consent";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const USER = "acct-bot";
@@ -212,6 +213,30 @@ describe("the chat binding", () => {
     await rows("UPDATE hq_telegram_bot_consent SET messaging_enabled = true, consented_at = now() WHERE user_id = $1", [USER]);
     await bindBotChat(db, { userId: USER, telegramUserId: CHAT, chatId: OTHER_CHAT });
     expect(await deliverableBotChat(db, USER)).toEqual({ userId: USER, chatId: OTHER_CHAT, messagingEnabled: true });
+  });
+
+  // What the account page asks before it sends anyone to Telegram: the bot is
+  // initialized once, and turning reminders off is not undoing that.
+  it("stays started once the chat is open, through turning reminders off and on again", async () => {
+    await bindBotChat(db, { userId: USER, telegramUserId: CHAT, chatId: CHAT });
+    expect(await getBotConsent(USER)).toMatchObject({ chatStarted: true, messagingEnabled: false });
+    expect(await setBotConsent({ kind: "member", id: USER }, true)).toMatchObject({ chatStarted: true });
+    expect(await setBotConsent({ kind: "member", id: USER }, false)).toMatchObject({ chatStarted: true });
+    expect(await setBotConsent({ kind: "member", id: USER }, true)).toMatchObject({ chatStarted: true, messagingEnabled: true });
+  });
+
+  it("is not started before the person has messaged the bot", async () => {
+    expect(await getBotConsent(USER)).toBeNull();
+    expect(await setBotConsent({ kind: "member", id: USER }, true)).toMatchObject({ chatStarted: false });
+    expect(await getBotConsent(USER)).toMatchObject({ chatStarted: false });
+  });
+
+  it("is not started again by a chat the previous Telegram account opened", async () => {
+    await bindBotChat(db, { userId: USER, telegramUserId: CHAT, chatId: CHAT });
+    await rows("UPDATE hq_auth_telegram_identity SET telegram_user_id = $2::bigint, provider_subject = $3 WHERE user_id = $1", [USER, OTHER_CHAT, `telegram:${OTHER_CHAT}`]);
+    await rows(`UPDATE hq_auth_account SET "accountId" = $2 WHERE "userId" = $1 AND "providerId" = 'telegram'`, [USER, `telegram:${OTHER_CHAT}`]);
+    expect(await getBotConsent(USER)).toMatchObject({ chatStarted: false });
+    expect(await setBotConsent({ kind: "member", id: USER }, true)).toMatchObject({ chatStarted: false });
   });
 
   it("offers nothing to deliver into when messaging is off, even with a chat on file", async () => {

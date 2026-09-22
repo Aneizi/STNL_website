@@ -27,8 +27,9 @@
 .facts dt { color:#b4ac9d; }
 .facts dd { margin:0; }
 .factEmail { overflow-wrap:anywhere; }
+.switchNotice { margin:0; color:var(--cream); font-size:15px; line-height:1.5; }
 /* The switch: the checkbox is real but hidden, the track and knob draw its state. `position:relative` keeps the hidden input inside the row; the ring lands on the track when the input has keyboard focus. */
-.switchRow { position:relative; display:flex; flex-direction:column; align-items:center; gap:16px; padding-top:24px; border-top:1px dashed #57534a; font-size:16px; text-align:center; cursor:pointer; }
+.switchRow { position:relative; display:flex; flex-direction:column; align-items:center; gap:16px; padding-top:24px; font-size:16px; text-align:center; cursor:pointer; }
 .switchInput { position:absolute; opacity:0; width:1px; height:1px; }
 .switchTarget { position:relative; display:flex; align-items:center; justify-content:center; width:48px; min-height:48px; flex:none; }
 .switchArrows { position:absolute; inset:0; color:var(--accent); pointer-events:none; }
@@ -40,7 +41,6 @@
 .arrowLeft { height:20px; top:calc(50% - 10px); --bounce-x:8px; --bounce-y:0px; }
 .arrowCorner { height:104px; top:calc(50% + 12px); --bounce-x:6px; --bounce-y:-6px; }
 .arrowBottom { width:20px; height:112px; left:calc(50% - 10px); top:calc(50% + 24px); --bounce-x:0px; --bounce-y:-8px; }
-.switchHint { margin:0 0 12px; font-size:14px; color:var(--cream); }
 @media (prefers-reduced-motion:no-preference) {
   .guideBounce { animation:pointToSwitch 1.4s ease-in-out 1; }
 }

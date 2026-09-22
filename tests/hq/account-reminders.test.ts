@@ -25,7 +25,7 @@ import { AccountPassport, type AccountPassportProps } from "@/app/hq/(member)/ac
 
 const base: AccountPassportProps = {
   name: "Test Builder", role: "User", email: null, hasEmail: false, telegram: { username: "test_builder" }, teamName: null,
-  bot: false, botUrl: "https://t.me/fixture_bot", emailAvailable: true, telegramAvailable: true, initialNotice: null, initialError: null,
+  bot: false, botStarted: false, botUrl: "https://t.me/fixture_bot", emailAvailable: true, telegramAvailable: true, initialNotice: null, initialError: null,
 };
 type Element = ReactElement<Record<string, unknown>>;
 function elements(node: ReactNode): Element[] {
@@ -36,6 +36,13 @@ function elements(node: ReactNode): Element[] {
 function render(props: Partial<AccountPassportProps> = {}) {
   mocks.position = 0;
   return elements(AccountPassport({ ...base, ...props }));
+}
+/** Every string under a node, so copy split across a fragment reads as the sentence a member sees. */
+function text(node: ReactNode): string {
+  if (typeof node === "string") return node;
+  if (Array.isArray(node)) return node.map(text).join("");
+  if (isValidElement<Record<string, unknown>>(node)) return text(node.props.children as ReactNode);
+  return "";
 }
 function toggle(tree: Element[], enabled: boolean) {
   const input = tree.find(element => element.props.type === "checkbox")!;
@@ -60,7 +67,7 @@ describe("enabling Telegram reminders", () => {
     expect(mocks.open.mock.invocationCallOrder[0]).toBeLessThan(mocks.save.mock.invocationCallOrder[0]);
     expect(mocks.open.mock.results[0].value.opener).toBeNull();
     expect(mocks.navigate).not.toHaveBeenCalled();
-    finish({ ok: true, enabled: true });
+    finish({ ok: true, enabled: true, chatStarted: false });
     await mocks.work;
     expect(mocks.navigate).toHaveBeenCalledExactlyOnceWith(base.botUrl);
     expect(mocks.navigateHq).not.toHaveBeenCalled();
@@ -84,7 +91,7 @@ describe("enabling Telegram reminders", () => {
   });
 
   it("does not open Telegram when disabling reminders", async () => {
-    mocks.save.mockResolvedValue({ ok: true, enabled: false });
+    mocks.save.mockResolvedValue({ ok: true, enabled: false, chatStarted: true });
     toggle(render({ bot: true }), false);
     await mocks.work;
     expect(mocks.save).toHaveBeenCalledWith(false);
@@ -93,7 +100,7 @@ describe("enabling Telegram reminders", () => {
   });
 
   it("does not bring the arrows back after enabling and then disabling reminders", async () => {
-    mocks.save.mockImplementation(async enabled => ({ ok: true, enabled }));
+    mocks.save.mockImplementation(async enabled => ({ ok: true, enabled, chatStarted: false }));
     toggle(render(), true);
     await mocks.work;
     toggle(render(), false);
@@ -101,8 +108,39 @@ describe("enabling Telegram reminders", () => {
     expect(render().some(element => String(element.props.className).includes('switchArrows'))).toBe(false);
   });
 
+  it("stays in HQ when the chat with the bot is already open", async () => {
+    mocks.save.mockResolvedValue({ ok: true, enabled: true, chatStarted: true });
+    toggle(render({ botStarted: true }), true);
+    await mocks.work;
+    expect(mocks.save).toHaveBeenCalledWith(true);
+    // Nothing is reserved during the click, so no tab appears and none has to be closed.
+    expect(mocks.open).not.toHaveBeenCalled();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(mocks.navigateHq).not.toHaveBeenCalled();
+    expect(render({ botStarted: true }).find(element => element.props.type === "checkbox")?.props.checked).toBe(true);
+  });
+
+  it("closes the reserved tab when the chat was opened after this page was rendered", async () => {
+    // The page still says the bot has never been started; the saved answer knows better.
+    mocks.save.mockResolvedValue({ ok: true, enabled: true, chatStarted: true });
+    toggle(render(), true);
+    await mocks.work;
+    expect(mocks.open).toHaveBeenCalledOnce();
+    expect(mocks.navigate).not.toHaveBeenCalled();
+    expect(mocks.close).toHaveBeenCalledOnce();
+    expect(render().find(element => element.props.type === "checkbox")?.props.checked).toBe(true);
+  });
+
+  it("offers the trip to Telegram only while the bot still has to be started", () => {
+    const copy = (tree: Element[]) => text(tree.find(element => String(element.props.className).includes("switchNotice")));
+    expect(copy(render())).toContain("press the toggle button");
+    expect(copy(render())).toContain("will take you to Telegram");
+    expect(copy(render({ botStarted: true }))).toContain("press the toggle button");
+    expect(copy(render({ botStarted: true }))).not.toContain("will take you to Telegram");
+  });
+
   it("still saves when no bot link is configured", async () => {
-    mocks.save.mockResolvedValue({ ok: true, enabled: true });
+    mocks.save.mockResolvedValue({ ok: true, enabled: true, chatStarted: false });
     toggle(render({ botUrl: null }), true);
     await mocks.work;
     expect(mocks.open).not.toHaveBeenCalled();
@@ -112,7 +150,7 @@ describe("enabling Telegram reminders", () => {
 
   it("keeps consent enabled and stays in HQ if the browser blocks the new tab", async () => {
     mocks.open.mockReturnValue(null);
-    mocks.save.mockResolvedValue({ ok: true, enabled: true });
+    mocks.save.mockResolvedValue({ ok: true, enabled: true, chatStarted: false });
     toggle(render(), true);
     await mocks.work;
     expect(mocks.navigate).not.toHaveBeenCalled();
@@ -123,7 +161,7 @@ describe("enabling Telegram reminders", () => {
 
   it("does not undo saved consent when the new tab can no longer be navigated", async () => {
     mocks.navigate.mockImplementation(() => { throw new Error("tab unavailable"); });
-    mocks.save.mockResolvedValue({ ok: true, enabled: true });
+    mocks.save.mockResolvedValue({ ok: true, enabled: true, chatStarted: false });
     toggle(render(), true);
     await mocks.work;
     expect(mocks.close).toHaveBeenCalledOnce();

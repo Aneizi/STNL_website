@@ -1,6 +1,5 @@
 "use client";
 
-import { TelegramBotStart } from "@/components/hq/telegram-bot-start";
 import { useMemberAccount } from "@/components/hq/builder-account-menu";
 import { useReminderGuide } from "@/components/hq/use-reminder-guide";
 
@@ -39,6 +38,8 @@ export type AccountPassportProps = {
   teamName: string | null;
   /** The stored bot-messaging decision; never inferred from the connection. */
   bot: boolean;
+  /** Whether the connected Telegram has already opened the bot chat. Initialized once, it survives turning reminders off and on. */
+  botStarted: boolean;
   botUrl: string | null;
   /** Whether each method is configured; an unavailable one has no row. */
   emailAvailable: boolean;
@@ -218,7 +219,9 @@ export function AccountPassport(props: AccountPassportProps) {
     const previous = bot;
     // Reserve the tab during the click so browsers allow it, but only load
     // Telegram after consent is saved. HQ stays open in the original tab.
-    const botTab = next && props.botUrl ? window.open("about:blank", "_blank") : null;
+    // An account whose chat is already open needs nothing from Telegram, so
+    // turning reminders on again stays on this page and no tab is reserved.
+    const botTab = next && props.botUrl && !props.botStarted ? window.open("about:blank", "_blank") : null;
     if (botTab) botTab.opener = null;
     setBot(next);
     setSwitchError("");
@@ -233,12 +236,14 @@ export function AccountPassport(props: AccountPassportProps) {
         }
         setBot(result.enabled);
         router.refresh();
-        if (next && result.enabled && props.botUrl) {
+        // The stored answer decides, not the prop this page was rendered with:
+        // a chat opened since then means the reserved tab is not needed.
+        if (next && result.enabled && props.botUrl && !result.chatStarted) {
           try {
             if (botTab && !botTab.closed) botTab.location.replace(props.botUrl);
           } catch {
-            // Consent is saved; the existing Open Telegram bot link remains
-            // available if the new tab was blocked or navigated elsewhere.
+            // Consent is saved. A blocked or navigated-away tab costs nothing:
+            // turning reminders off and on again offers the trip once more.
             botTab?.close();
           }
         } else {
@@ -288,8 +293,10 @@ export function AccountPassport(props: AccountPassportProps) {
             </dl>
             {hasTelegram && (
               <div>
-                <TelegramBotStart botUrl={props.botUrl} inverse />
-                {!bot && props.botUrl && <p className={styles.switchHint}>Turning this on opens the bot in a new tab.</p>}
+                <p className={styles.switchNotice}>
+                  To receive updates and reminders, press the toggle button.
+                  {!props.botStarted && props.botUrl && <> Turning this on will take you to Telegram, simply click <strong>Start</strong> to initialize the bot.</>}
+                </p>
                 {switchError && <p role="alert" className={styles.switchError}>{switchError}</p>}
                 <label className={styles.switchRow}>
                   <span>Bot reminders on Telegram</span>

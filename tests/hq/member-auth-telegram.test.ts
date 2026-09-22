@@ -1381,16 +1381,16 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect(html).not.toMatch(/<input type="checkbox"[^>]*checked/);
     expect(html).not.toMatch(/[—·]/);
 
-    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
+    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true, chatStarted: false });
     expect(await consentRows()).toEqual([{ user_id: userId, telegram_user_id: String(TELEGRAM_ID), messaging_enabled: true, consented: true, revoked: false }]);
     expect(await getBotConsent(userId)).toMatchObject({ userId, telegramUserId: String(TELEGRAM_ID), messagingEnabled: true, revokedAt: null });
     html = await render();
     expect(html).toMatch(/<input type="checkbox"[^>]*checked=""/);
     // Saying it again records nothing; declining records once and keeps the website.
-    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
-    expect(await setBotMessaging(false)).toEqual({ ok: true, enabled: false });
+    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true, chatStarted: false });
+    expect(await setBotMessaging(false)).toEqual({ ok: true, enabled: false, chatStarted: false });
     expect(await consentRows()).toEqual([{ user_id: userId, telegram_user_id: String(TELEGRAM_ID), messaging_enabled: false, consented: true, revoked: true }]);
-    expect(await setBotMessaging(false)).toEqual({ ok: true, enabled: false });
+    expect(await setBotMessaging(false)).toEqual({ ok: true, enabled: false, chatStarted: false });
     expect(await auditEvents()).toEqual([
       identityEvent("identity.linked", userId),
       memberEvent("bot.consent_changed", userId, { enabled: true }),
@@ -1417,7 +1417,7 @@ describe("Telegram OIDC sign-in through Better Auth", () => {
     expect((await linkTelegramTo(emailUser.cookie)).status).toBe(302);
     state.cookie = emailUser.cookie;
     const { confirmUnlinkTelegram, setBotMessaging } = await import("@/lib/hq/actions/telegram");
-    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true });
+    expect(await setBotMessaging(true)).toEqual({ ok: true, enabled: true, chatStarted: false });
     const accountId = (await state.pg!.query<{ id: string }>("SELECT id FROM hq_auth_account")).rows[0].id;
 
     expect(await confirmUnlinkTelegram()).toEqual({ ok: true, accountId });

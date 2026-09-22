@@ -53,6 +53,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Sear
         telegram={methods.telegram ? { username: methods.telegram.username } : null}
         teamName={team?.name ?? null}
         bot={consent?.messagingEnabled ?? false}
+        botStarted={consent?.chatStarted ?? false}
         botUrl={getTelegramBotUrl()}
         emailAvailable={availability.email}
         telegramAvailable={availability.telegram}

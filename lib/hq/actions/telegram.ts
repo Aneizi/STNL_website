@@ -29,7 +29,8 @@ type TelegramUnlinkConfirmation = { ok: true; accountId: string } | { ok: false;
 type EmailChangeConfirmationCode = "SESSION_NOT_FRESH" | "EMAIL_UNAVAILABLE" | "INVALID_EMAIL" | "EMAIL_UNCHANGED";
 /** `newEmail` is the normalized address the intent was recorded for; the client sends exactly that to the endpoints. */
 type EmailChangeConfirmation = { ok: true; newEmail: string } | { ok: false; code: EmailChangeConfirmationCode };
-type BotMessagingResult = { ok: true; enabled: boolean } | { ok: false; code: "TELEGRAM_NOT_CONNECTED" };
+/** `chatStarted` says the connected Telegram has already opened the bot chat, so the caller has no reason to send anyone to Telegram. */
+type BotMessagingResult = { ok: true; enabled: boolean; chatStarted: boolean } | { ok: false; code: "TELEGRAM_NOT_CONNECTED" };
 
 /** Shape only; the endpoints validate again and refuse anything they cannot mail. */
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -103,7 +104,7 @@ export async function setBotMessaging(enabled: boolean): Promise<BotMessagingRes
   try {
     const consent = await setBotConsent(actor, enabled === true);
     refreshHq("dashboard");
-    return { ok: true, enabled: consent.messagingEnabled };
+    return { ok: true, enabled: consent.messagingEnabled, chatStarted: consent.chatStarted };
   } catch (error) {
     if (error instanceof TelegramNotConnectedError) return { ok: false, code: "TELEGRAM_NOT_CONNECTED" };
     throw error;

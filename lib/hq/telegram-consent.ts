@@ -3,6 +3,7 @@ import type { MemberActor } from "./actor";
 import { recordAuditEvent } from "./audit";
 import { builderDatabase, type BuilderQuery } from "./builder-db";
 import { getTelegramIdentity } from "./identity";
+import { activeTelegramIdentitySql } from "./telegram-identity-sql";
 
 /**
  * Permission to be messaged by the HQ Telegram bot, kept apart from the
@@ -18,6 +19,12 @@ type BotConsent = {
   /** The Telegram user id the consent was given for, as a string like everywhere else. */
   telegramUserId: string;
   messagingEnabled: boolean;
+  /**
+   * Whether the Telegram connected now has already opened the bot chat, so
+   * nothing more is needed to reach this account. Turning messaging off never
+   * loses it: the binding is kept until the identity behind it goes away.
+   */
+  chatStarted: boolean;
   consentedAt: string | null;
   revokedAt: string | null;
   updatedAt: string;
@@ -31,7 +38,19 @@ export class TelegramNotConnectedError extends Error {
   }
 }
 
-const COLUMNS = `user_id, telegram_user_id::text AS telegram_user_id, messaging_enabled, consented_at, revoked_at, updated_at`;
+/**
+ * A bound chat counts only while the identity that opened it is the one still
+ * connected, the same rule deliverableBotChat() sends by. Computed rather
+ * than stored, so a relink or an unlink cleanup cannot leave it stale.
+ */
+const CHAT_STARTED = `(chat_id IS NOT NULL AND EXISTS (
+    SELECT 1 FROM hq_auth_telegram_identity i
+    WHERE i.user_id = hq_telegram_bot_consent.user_id
+      AND i.telegram_user_id = hq_telegram_bot_consent.chat_bound_telegram_user_id
+      AND ${activeTelegramIdentitySql()}
+  )) AS chat_started`;
+
+const COLUMNS = `user_id, telegram_user_id::text AS telegram_user_id, messaging_enabled, ${CHAT_STARTED}, consented_at, revoked_at, updated_at`;
 
 const toIso = (value: unknown) => (value instanceof Date ? value : new Date(String(value))).toISOString();
 
@@ -40,6 +59,7 @@ function toConsent(row: Record<string, unknown>): BotConsent {
     userId: String(row.user_id),
     telegramUserId: String(row.telegram_user_id),
     messagingEnabled: Boolean(row.messaging_enabled),
+    chatStarted: Boolean(row.chat_started),
     consentedAt: row.consented_at == null ? null : toIso(row.consented_at),
     revokedAt: row.revoked_at == null ? null : toIso(row.revoked_at),
     updatedAt: toIso(row.updated_at),
@@ -68,7 +88,7 @@ export async function setBotConsent(actor: Pick<MemberActor, "kind" | "id">, ena
   return builderDatabase().transaction(async (db) => {
     const current = await getBotConsent(actor.id, db);
     if ((current?.messagingEnabled ?? false) === enabled) {
-      return current ?? { userId: actor.id, telegramUserId: identity.telegramUserId, messagingEnabled: false, consentedAt: null, revokedAt: null, updatedAt: new Date().toISOString() };
+      return current ?? { userId: actor.id, telegramUserId: identity.telegramUserId, messagingEnabled: false, chatStarted: false, consentedAt: null, revokedAt: null, updatedAt: new Date().toISOString() };
     }
     const { rows } = await db.query(
       `INSERT INTO hq_telegram_bot_consent (user_id, telegram_user_id, messaging_enabled, consented_at, revoked_at)

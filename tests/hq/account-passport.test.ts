@@ -26,7 +26,7 @@ import { AccountModal, AccountPassport, type AccountModalProps, type AccountPass
 
 const base: AccountPassportProps = {
   name: "Nienke Visser", role: "Builder", email: "nienke@grachtenpay.nl", hasEmail: true, telegram: { username: "nienkev" }, teamName: "Grachtenpay",
-  bot: true, botUrl: "https://t.me/fixture_bot", emailAvailable: true, telegramAvailable: true, initialNotice: null, initialError: null,
+  bot: true, botStarted: true, botUrl: "https://t.me/fixture_bot", emailAvailable: true, telegramAvailable: true, initialNotice: null, initialError: null,
 };
 const render = (props: Partial<AccountPassportProps> = {}) => renderToStaticMarkup(createElement(AccountPassport, { ...base, ...props }));
 
@@ -128,7 +128,13 @@ describe("AccountPassport", () => {
     expect(off.match(/<svg[^>]*guideArrow/g)).toHaveLength(3);
     expect(off).not.toMatch(/<path[^>]*d="[^"]*[QC]/);
     expect(on).not.toContain("switchArrows");
-    for (const html of [on, off]) expect(html).toContain('href="https://t.me/fixture_bot"');
+    // The toggle is the whole instruction: the card links nowhere and an account whose bot is running is not told it will be taken to Telegram.
+    for (const html of [on, off]) {
+      expect(html).toContain("press the toggle button");
+      expect(html).not.toContain("t.me/fixture_bot");
+      expect(html).not.toContain("will take you to Telegram");
+    }
+    expect(render({ bot: false, botStarted: false })).toContain("will take you to Telegram");
   });
 
   it("shows the round trip's notice as a status and its failure as an alert, in the notice slot before the rows", () => {
