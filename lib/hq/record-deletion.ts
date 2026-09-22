@@ -1,6 +1,7 @@
 import "server-only";
 import { recordAuditEvent } from "./audit";
 import { atomically, type BuilderDatabase, type BuilderQuery } from "./builder-db";
+import { normalizeColosseumUsername } from "./crm-identity";
 
 /**
  * Operator actions authorize and scope records before calling these services.
@@ -11,6 +12,8 @@ import { atomically, type BuilderDatabase, type BuilderQuery } from "./builder-d
  * scores, assignments, reporting rows and submission reconciliations cascade.
  * Awards lose their winner; import requests lose their project link. Edition
  * periods and Captain reminder history survive.
+ * Roster usernames lose their provisional CRM match so any account can import
+ * the project again. Accounts, People cards and other projects' links survive.
  *
  * Transient Telegram drafts/actions have no project foreign key. Every use
  * reauthorizes the live project, and expired state is purged separately.
@@ -94,10 +97,26 @@ export async function deleteTeamRecord(
   input: { projectId: string; hackathonId: number; operatorId: string },
 ): Promise<TeamRemovalImpact | null> {
   return atomically(db, async (tx) => {
+    // Joining and source refresh lock this same row. Wait for them before
+    // reading the roster whose provisional matches this deletion releases.
+    await tx.query("SELECT project_id FROM hq_project_onboarding WHERE project_id=$1::uuid AND hackathon_id=$2 FOR UPDATE",
+      [input.projectId, input.hackathonId]);
     const impact = await teamRemovalImpact(tx, input.projectId);
     if (!impact || impact.hackathonId !== input.hackathonId) return null;
+    const { rows: roster } = await tx.query("SELECT colosseum_username FROM hq_project_members WHERE project_id=$1::uuid", [input.projectId]);
+    const usernames = [...new Set(roster.map(member => normalizeColosseumUsername(member.colosseum_username as string | null))
+      .filter((username): username is string => username !== null))];
     const { rows } = await tx.query("DELETE FROM hq_projects WHERE id = $1::uuid AND hackathon_id = $2 RETURNING id", [input.projectId, input.hackathonId]);
     if (!rows.length) return null;
+    // This key is a provisional lookup for future claims, not an account or
+    // membership. Keeping it would reserve the deleted roster for its old
+    // accounts. Existing person_id links on other teams remain authoritative.
+    const { rows: released } = await tx.query(`WITH released AS (
+      SELECT id, normalized_colosseum_username FROM hq_crm_persons
+      WHERE normalized_colosseum_username = ANY($1::text[]) FOR UPDATE
+    )
+    UPDATE hq_crm_persons c SET normalized_colosseum_username=NULL, updated_at=now()
+    FROM released WHERE c.id=released.id RETURNING released.normalized_colosseum_username`, [usernames]);
     await recordAuditEvent(tx, {
       kind: "project.deleted",
       actor: { kind: "operator", id: input.operatorId },
@@ -110,6 +129,7 @@ export async function deleteTeamRecord(
         notes: impact.notes, gates: impact.gates, finalist: impact.finalist, judgeScores: impact.judgeScores,
         reportingEnrolled: impact.reportingEnrolled, reportingEntries: impact.reportingEntries,
         reportingRevisions: impact.reportingRevisions, reportingOutcomes: impact.reportingOutcomes,
+        releasedColosseumUsernames: released.map(person => String(person.normalized_colosseum_username)),
       },
     });
     await tx.query("INSERT INTO hq_activity (hackathon_id, user_id, message) VALUES ($1, $2::uuid, $3)",

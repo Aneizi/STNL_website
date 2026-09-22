@@ -11,6 +11,7 @@ import type { BuilderIdentity } from "@/lib/hq/builder-types";
 import { grantCapability } from "@/lib/hq/capabilities";
 import { assignCaptain } from "@/lib/hq/captains";
 import { correctPersonMatch, ensurePersonForRosterMember, linkPersonToAccount, normalizeColosseumUsername } from "@/lib/hq/crm-identity";
+import { deleteTeamRecord } from "@/lib/hq/record-deletion";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
 import { pgliteBuilderDatabase } from "./helpers/db";
 
@@ -461,6 +462,86 @@ describe("correcting a person match", () => {
     expect((await card(OWNER.id, 41)).person_id).toBe(own);
     expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons")).toEqual([{ n: 3 }]);
     expect(await events()).toEqual([]);
+  });
+});
+
+describe("re-import after an admin deletes a project", () => {
+  const operatorId = "00000000-0000-4000-8000-000000000001";
+
+  beforeEach(async () => {
+    await db.query(`INSERT INTO hq_users(id,username,display_name,password_hash)
+      VALUES($1,'removal-operator','Operator','unused') ON CONFLICT(id) DO NOTHING`, [operatorId]);
+  });
+
+  it.each([OWNER, TEAMMATE, OUTSIDER])("lets $name import again and claim a previously occupied roster entry", async (user) => {
+    const { projectId, memberId, code } = await invite();
+    await store.redeemInvite(TEAMMATE, code, memberId);
+    const people = await rows("SELECT id,builder_user_id,person_id FROM hq_people ORDER BY id");
+    const accounts = await rows("SELECT id,email,name FROM hq_builder_profiles ORDER BY id");
+
+    expect(await deleteTeamRecord(db, { projectId, hackathonId: 41, operatorId })).toMatchObject({ imported: true });
+    expect(await store.importedProject(41, PROJECT.externalId)).toBeNull();
+    expect(await store.invitation(code)).toMatchObject({ ok: false });
+
+    const importedId = await importProject(PROJECT, user);
+    expect(importedId).not.toBe(projectId);
+    expect(await store.importedProject(41, PROJECT.externalId)).toEqual({ projectId: importedId });
+    expect(await rows("SELECT owner_user_id FROM hq_project_ownership WHERE project_id=$1", [importedId]))
+      .toEqual([{ owner_user_id: user.id }]);
+    expect(await rows("SELECT builder_user_id FROM hq_project_members WHERE project_id=$1 ORDER BY sort", [importedId]))
+      .toEqual([{ builder_user_id: user.id }, { builder_user_id: null }]);
+
+    // The other formerly occupied seat is available to a different account too.
+    const joining = user.id === OUTSIDER.id ? OWNER : OUTSIDER;
+    const newTeam = await ownTeam(user.id, importedId);
+    const secondSeat = newTeam.members.find(member => member.username === PROJECT.members[1].username)!;
+    await store.redeemInvite(joining, await store.createInvite(user.id, importedId), secondSeat.id);
+    expect(await store.joinedSeat(importedId, joining.id)).toBe(secondSeat.id);
+    expect(await rows("SELECT id,builder_user_id,person_id FROM hq_people ORDER BY id")).toEqual(people);
+    expect(await rows("SELECT id,email,name FROM hq_builder_profiles ORDER BY id")).toEqual(accounts);
+    await expect(importProject(PROJECT, joining)).rejects.toMatchObject({ reason: "already_imported" });
+  });
+
+  it("preserves the previous account's memberships and People cards in other projects and editions", async () => {
+    const projectId = await importProject();
+    const otherProjectId = await importInEdition(OWNER, 42);
+    const otherRoster = await rows("SELECT id,person_id,builder_user_id FROM hq_project_members WHERE project_id=$1 ORDER BY sort", [otherProjectId]);
+    const people = await rows("SELECT id,builder_user_id,person_id FROM hq_people ORDER BY id");
+    await deleteTeamRecord(db, { projectId, hackathonId: 41, operatorId });
+
+    const importedId = await importProject(PROJECT, OUTSIDER);
+    expect((await store.teams(OUTSIDER.id)).map(team => team.id)).toEqual([importedId]);
+    expect((await store.teams(OWNER.id)).map(team => team.id)).toEqual([otherProjectId]);
+    expect(await rows("SELECT id,person_id,builder_user_id FROM hq_project_members WHERE project_id=$1 ORDER BY sort", [otherProjectId])).toEqual(otherRoster);
+    expect(await rows("SELECT id,builder_user_id,person_id FROM hq_people ORDER BY id")).toEqual(people);
+  });
+
+  it("keeps unrelated Colosseum identity matches", async () => {
+    const otherProject = { ...PROJECT, externalId: 90002, slug: "other-team", members: [
+      { username: "unrelated_builder", displayName: "Another Builder", avatarUrl: null },
+    ] };
+    await importProject(otherProject, OUTSIDER);
+    const projectId = await importProject();
+    await deleteTeamRecord(db, { projectId, hackathonId: 41, operatorId });
+    expect(await rows("SELECT normalized_colosseum_username FROM hq_crm_persons WHERE builder_user_id=$1", [OUTSIDER.id]))
+      .toEqual([{ normalized_colosseum_username: "unrelated_builder" }]);
+    await expect(importProject(PROJECT, OUTSIDER)).resolves.toEqual(expect.any(String));
+  });
+
+  it("does not release the project or its roster identities when deletion is refused or rolls back", async () => {
+    const projectId = await importProject();
+    expect(await deleteTeamRecord(db, { projectId, hackathonId: 42, operatorId })).toBeNull();
+    await db.query("ALTER TABLE hq_audit_events ADD CONSTRAINT test_deletion_failure CHECK (kind <> 'project.deleted')");
+    try {
+      await expect(deleteTeamRecord(db, { projectId, hackathonId: 41, operatorId })).rejects.toThrow(/test_deletion_failure/);
+    } finally {
+      await db.query("ALTER TABLE hq_audit_events DROP CONSTRAINT test_deletion_failure");
+    }
+    expect(await store.importedProject(41, PROJECT.externalId)).toEqual({ projectId });
+    expect(await rows("SELECT normalized_colosseum_username FROM hq_crm_persons WHERE builder_user_id=$1", [OWNER.id]))
+      .toEqual([{ normalized_colosseum_username: PROJECT.members[0].username }]);
+    expect(await ownTeam(OWNER.id, projectId)).toMatchObject({ id: projectId });
+    await expect(importProject(PROJECT, OUTSIDER)).rejects.toMatchObject({ reason: "already_imported" });
   });
 });
 
