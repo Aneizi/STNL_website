@@ -73,12 +73,12 @@ describe("AccountForm", () => {
     expect(html).toContain('fill="currentColor"');
   });
 
-  it("keeps its own header with a plain brand and no navigation out of HQ", () => {
+  it("links the header brand to the landing page", () => {
     const html = render();
     expect(html).toContain("Superteam NL");
     expect(html).not.toContain("superteam NL");
-    expect(html).toMatch(/<span[^>]*><img[^>]*><span>Superteam NL<\/span><\/span>/);
-    expect(html).not.toMatch(/<a\b/);
+    expect(html).toMatch(/<a\b[^>]*href="\/"[^>]*><img[^>]*><span>Superteam NL<\/span><\/a>/);
+    expect(html).toContain('aria-label="Superteam NL home"');
     expect(html).not.toContain("Account menu");
   });
 

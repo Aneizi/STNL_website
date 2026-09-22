@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { IconArrowRight, IconPaperplaneFill } from "symbols-react";
 import { memberAuthClient } from "@/lib/hq/member-auth-client";
@@ -150,10 +151,10 @@ export function AccountForm({ next, availability, error: initialError }: Props) 
   return (
     <div className={styles.page}>
       <header className={styles.header}>
-        <span className={styles.brand}>
+        <Link href="/" className={styles.brand} aria-label="Superteam NL home">
           <Image src="/landing/st-orange.png" alt="" width={2154} height={2116} sizes="28px" />
           <span>Superteam NL</span>
-        </span>
+        </Link>
       </header>
       <main className={styles.main}>
         <div className={styles.content}>
