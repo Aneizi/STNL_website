@@ -135,17 +135,46 @@ describe("builder accounts and edition-scoped People", () => {
     await expect(pg.exec(readFileSync(join(process.cwd(), "scripts/hq/builder-schema.sql"), "utf8"))).resolves.toBeDefined();
   });
 
-  it("creates one Builder card per authenticated account and selected edition", async () => {
+  it("creates a User card at sign-in and a Builder card only in editions with a successfully initialized team", async () => {
     await Promise.all(Array.from({ length: 4 }, () => store.syncAccount(OWNER)));
     await Promise.all(Array.from({ length: 3 }, (_, i) => importInEdition(OWNER, 42, PROJECT.externalId + i)));
     expect(await rows(`SELECT p.hackathon_id,p.name,p.contact,r.label FROM hq_people p
       JOIN hq_people_roles r ON r.id=p.role_id WHERE builder_user_id=$1 ORDER BY hackathon_id`, [OWNER.id]))
       .toEqual([
-        { hackathon_id: 41, name: "Owner", contact: OWNER.email, label: "Builder" },
+        { hackathon_id: 41, name: "Owner", contact: OWNER.email, label: "User" },
         { hackathon_id: 42, name: "Owner", contact: OWNER.email, label: "Builder" },
       ]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_builder_profiles WHERE id=$1", [OWNER.id])).toEqual([{ n: 1 }]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_users")).toEqual([{ n: 0 }]);
+    expect(await rows("SELECT hackathon_id,participation FROM hq_builder_enrollments WHERE user_id=$1 ORDER BY hackathon_id", [OWNER.id]))
+      .toEqual([{ hackathon_id: 41, participation: "supporter" }, { hackathon_id: 42, participation: "builder" }]);
+  });
+
+  it("promotes only the importer and teammates who successfully join", async () => {
+    const role = async (user: BuilderIdentity) => rows(`SELECT r.label FROM hq_people p
+      JOIN hq_people_roles r ON r.id=p.role_id WHERE p.builder_user_id=$1 AND p.hackathon_id=41`, [user.id]);
+    const { projectId, memberId, code } = await invite();
+    expect(await role(OWNER)).toEqual([{ label: "Builder" }]);
+    expect(await role(TEAMMATE)).toEqual([{ label: "User" }]);
+    expect(await role(OUTSIDER)).toEqual([{ label: "User" }]);
+    await expect(importProject(PROJECT, OUTSIDER)).rejects.toMatchObject({ reason: "already_imported" });
+    await expect(store.redeemInvite(OUTSIDER, code, projectId)).rejects.toThrow();
+    expect(await role(OUTSIDER)).toEqual([{ label: "User" }]);
+    await store.redeemInvite(TEAMMATE, code, memberId);
+    expect(await role(TEAMMATE)).toEqual([{ label: "Builder" }]);
+  });
+
+  it("rolls back Builder promotion when initialization fails after claiming the roster entry", async () => {
+    await db.query("ALTER TABLE hq_audit_events ADD CONSTRAINT test_import_failure CHECK (kind <> 'project.imported')");
+    try {
+      await expect(importProject()).rejects.toThrow(/test_import_failure/);
+    } finally {
+      await db.query("ALTER TABLE hq_audit_events DROP CONSTRAINT test_import_failure");
+    }
+    expect(await rows(`SELECT r.label,e.participation FROM hq_people p JOIN hq_people_roles r ON r.id=p.role_id
+      JOIN hq_builder_enrollments e ON e.user_id=p.builder_user_id AND e.hackathon_id=p.hackathon_id
+      WHERE p.builder_user_id=$1`, [OWNER.id])).toEqual([{ label: "User", participation: "supporter" }]);
+    expect(await store.teams(OWNER.id)).toEqual([]);
   });
 
   it("keeps a supporter's Community role and an operator's card notes after later logins", async () => {
@@ -211,7 +240,7 @@ describe("accounts without an email, contact email and CRM person identity", () 
     expect(linked).toMatchObject({ display_name: "Telegram Builder", normalized_colosseum_username: null });
     expect(await rows(`SELECT p.hackathon_id,p.name,p.contact,p.person_id,r.label FROM hq_people p
       JOIN hq_people_roles r ON r.id=p.role_id WHERE p.builder_user_id=$1`, [TELEGRAM_ONLY.id]))
-      .toEqual([{ hackathon_id: 41, name: "Telegram Builder", contact: "", person_id: linked!.id, label: "Builder" }]);
+      .toEqual([{ hackathon_id: 41, name: "Telegram Builder", contact: "", person_id: linked!.id, label: "User" }]);
     expect(await store.profile(TELEGRAM_ONLY.id)).toEqual({ id: TELEGRAM_ONLY.id, email: null, contactEmail: null, name: "Telegram Builder" });
     expect(await rows("SELECT count(*)::int AS n FROM hq_crm_persons WHERE builder_user_id=$1", [TELEGRAM_ONLY.id])).toEqual([{ n: 1 }]);
   });
@@ -996,6 +1025,25 @@ describe("manual requests", () => {
     expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual([{ n: 0 }]);
     expect((await rows("SELECT hackathon_id FROM hq_builder_enrollments WHERE user_id=$1", [OWNER.id])).map(row => row.hackathon_id).sort()).toEqual([41, 42]);
     expect(await rows("SELECT count(*)::int AS n FROM hq_project_import_requests WHERE user_id=$1", [TEAMMATE.id])).toEqual([{ n: 0 }]);
+    expect(await rows(`SELECT p.hackathon_id,r.label FROM hq_people p JOIN hq_people_roles r ON r.id=p.role_id
+      WHERE p.builder_user_id=$1 ORDER BY p.hackathon_id`, [OWNER.id]))
+      .toEqual([{ hackathon_id: 41, label: "User" }, { hackathon_id: 42, label: "User" }]);
+  });
+
+  it("promotes a help requester only once an admin successfully creates their team", async () => {
+    const operatorId = "00000000-0000-4000-8000-000000000001";
+    await db.query(`INSERT INTO hq_users(id,username,display_name,password_hash)
+      VALUES($1,'setup-operator','Operator','unused') ON CONFLICT(id) DO NOTHING`, [operatorId]);
+    await store.requestReview(OWNER, 41, PROJECT_URL, "Please help");
+    const [request] = await rows("SELECT id FROM hq_project_import_requests WHERE user_id=$1", [OWNER.id]);
+    const result = await store.createProjectForRequest({ requestId: String(request.id), hackathonId: 41, name: PROJECT.name, operatorId });
+    expect(result).toMatchObject({ ownerUserId: OWNER.id });
+    const role = () => rows(`SELECT r.label FROM hq_people p JOIN hq_people_roles r ON r.id=p.role_id WHERE p.builder_user_id=$1`, [OWNER.id]);
+    expect(await role()).toEqual([{ label: "Builder" }]);
+    // Asking for help with another import and later sign-ins do not undo setup.
+    await store.requestReview(OWNER, 41, `${PROJECT_URL}-another`, "Another project");
+    await store.syncAccount({ ...OWNER, name: "Updated Owner" });
+    expect(await role()).toEqual([{ label: "Builder" }]);
   });
 
   it("bounds per-account action attempts and resets the expired window", async () => {

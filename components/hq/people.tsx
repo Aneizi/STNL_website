@@ -6,6 +6,7 @@ import type { CSSProperties, KeyboardEvent } from "react";
 import { showToast } from "@/components/hq/toast";
 import { FormField, card, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { correctPersonMatch, createPerson, deletePerson, setPersonCaptain, updatePerson } from "@/lib/hq/actions/people";
+import { personRoleTags } from "@/lib/hq/people-tags";
 import type { Person, Role } from "@/lib/hq/types";
 
 // Name, Tags, Contact and a chevron; a row expands in place to its editor
@@ -406,7 +407,7 @@ export function People({
           return {
             ...p,
             roleId: edit.value,
-            tags: p.tags.map((tag) => (tag.kind === "role" && label ? { ...tag, label } : tag)),
+            tags: [...personRoleTags(label ?? ""), ...p.tags.filter((tag) => tag.kind === "capability")],
           };
         }
         return { ...p, [edit.field]: edit.value };
@@ -451,7 +452,7 @@ export function People({
       personId: null,
       account: null,
       captain: false,
-      tags: [{ kind: "role", label: roles.find((r) => r.id === drafts.roleId)?.label ?? "", protected: false }],
+      tags: personRoleTags(roles.find((r) => r.id === drafts.roleId)?.label ?? ""),
       // An optimistic row has nothing attached to it yet; the server's own
       // counts replace this the moment the revalidation lands.
       removal: { cardId: "", name, hackathonId: 0, personId: null, hasAccount: false, rosterRows: 0, otherEditionCards: 0, judgeScores: 0, enrollments: 0 },

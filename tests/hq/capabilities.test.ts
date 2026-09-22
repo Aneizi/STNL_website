@@ -176,6 +176,13 @@ describe("reading capabilities", () => {
       { kind: "capability", label: "Captain", protected: true },
     ]);
   });
+
+  it("leaves new signups untagged and still shows explicitly granted capabilities", () => {
+    expect(personTags("User", [])).toEqual([]);
+    expect(personTags("User", ["captain"])).toEqual([
+      { kind: "capability", label: "Captain", protected: true },
+    ]);
+  });
 });
 
 describe("the audit module", () => {

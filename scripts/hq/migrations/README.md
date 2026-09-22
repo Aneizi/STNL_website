@@ -25,7 +25,14 @@ CRM identities, open pause history and ownership records still receive their
 guarded legacy backfills; existing records are retained. All schema upgrades
 still run, without inferring schema completeness from these data markers.
 
-For the next schema change, add `0002-description.sql` here, followed by ascending
+`0002-builder-role-after-team-setup` adds the neutral User role (no visible tag) and corrects account-linked
+Builder cards that have no successfully initialized team in that edition. Verified
+owners and joined teammates, admin-created project owners, hand-entered cards and
+custom roles are preserved. No accounts, project data, notes or capabilities are
+removed. Deploy the matching enrollment change so new sign-ins and help requests
+remain untagged until their team setup succeeds or a capability is granted.
+
+For the next schema change, add `0003-description.sql` here, followed by ascending
 four-digit versions. SQL files execute whole, so quoted semicolons and `DO $$`
 bodies work. Do not put transaction control or operations that cannot run inside
 a transaction (such as `CREATE INDEX CONCURRENTLY`) in a migration. Never change

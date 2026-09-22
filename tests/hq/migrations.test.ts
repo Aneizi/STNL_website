@@ -32,7 +32,7 @@ describe("versioned HQ migrations", () => {
     const legacy = new PGlite();
     try {
       const migrations = loadMigrations();
-      expect(await runMigrations(pgliteMigrationConnection(pg), migrations)).toEqual(["0001-legacy-bootstrap"]);
+      expect(await runMigrations(pgliteMigrationConnection(pg), migrations)).toEqual(migrations.map(migration => migration.id));
       await applyLegacyMigrations(legacy);
       expect(await schemaShape(pg)).toEqual(await schemaShape(legacy));
       const { rows } = await pg.query(`SELECT to_regclass('hq_reporting_entries') IS NOT NULL AS reporting,
@@ -65,7 +65,7 @@ describe("versioned HQ migrations", () => {
       expect((await pg.query("SELECT id, name, hackathon_id FROM hq_projects")).rows).toEqual(before);
       expect((await pg.query("SELECT body FROM hq_project_notes")).rows).toEqual([{ body: "Keep this note" }]);
       expect((await pg.query("SELECT password_hash FROM hq_users")).rows).toEqual([{ password_hash: "existing-hash" }]);
-      expect(await history(pg)).toHaveLength(1);
+      expect(await history(pg)).toHaveLength(loadMigrations().length);
     } finally { await pg.close(); }
   });
 
@@ -75,6 +75,7 @@ describe("versioned HQ migrations", () => {
       await applyLegacyMigrations(pg);
       await pg.exec(`UPDATE hq_people_roles SET filter_label='Guest judges',color='purple',bg='purple-fill',is_judge=true,sort=81
           WHERE label='Other';
+        INSERT INTO hq_people_roles (label,filter_label,color,bg,is_judge,sort) VALUES ('User','New accounts','label-3','fill-3',false,82);
         UPDATE hq_partner_stages SET label='Closed conversation',drop_color='#123456',sort=82 WHERE slug='rejected';
         INSERT INTO hq_partner_stages (slug,label,drop_color,sort) VALUES ('call','Follow-up scheduled','#654321',83);
         INSERT INTO hq_exchange_items (slug,label,sort) VALUES ('mailing','Community announcement agreed',84);`);
@@ -85,9 +86,9 @@ describe("versioned HQ migrations", () => {
       });
       const before = await classifications();
 
-      expect(await runMigrations(pgliteMigrationConnection(pg), loadMigrations())).toEqual(["0001-legacy-bootstrap"]);
+      expect(await runMigrations(pgliteMigrationConnection(pg), loadMigrations())).toEqual(loadMigrations().map(migration => migration.id));
       expect(await classifications()).toEqual(before);
-      expect(await history(pg)).toHaveLength(1);
+      expect(await history(pg)).toHaveLength(loadMigrations().length);
     } finally { await pg.close(); }
   });
 
@@ -162,7 +163,7 @@ describe("versioned HQ migrations", () => {
         .toEqual([{ filter_label: "Other", is_judge: false, sort: 4 }]);
       expect((await pg.query("SELECT label, drop_color, sort FROM hq_partner_stages WHERE slug='rejected'")).rows)
         .toEqual([{ label: "Rejected", drop_color: "#c03b2d", sort: 4 }]);
-      expect(await history(pg)).toHaveLength(1);
+      expect(await history(pg)).toHaveLength(loadMigrations().length);
     } finally { await pg.close(); }
   });
 

@@ -93,19 +93,25 @@ async function upsertRoster(db: BuilderQuery, input: { projectId: string; member
   }
 }
 
-async function enroll(db: BuilderQuery, user: BuilderIdentity, hackathonId: number) {
+/** A sign-in or help request creates a User card; only a committed team setup promotes it. */
+async function enroll(db: BuilderQuery, user: BuilderIdentity, hackathonId: number, hasTeam = false) {
   const { rows: editions } = await db.query('SELECT id FROM hq_hackathons WHERE id=$1 AND archived_at IS NULL', [hackathonId]);
   if (!editions.length) throw new BuilderError('Choose an available hackathon.');
-  await db.query(`INSERT INTO hq_builder_enrollments(user_id,hackathon_id,participation) VALUES($1,$2,'builder')
-    ON CONFLICT(user_id,hackathon_id) DO UPDATE SET participation=EXCLUDED.participation`, [user.id, hackathonId]);
+  // `supporter` is the existing non-building enrollment state. A help request
+  // must not undo an account's already completed team setup in this edition.
+  await db.query(`INSERT INTO hq_builder_enrollments(user_id,hackathon_id,participation) VALUES($1,$2,$3)
+    ON CONFLICT(user_id,hackathon_id) DO UPDATE SET participation=
+      CASE WHEN EXCLUDED.participation='builder' THEN EXCLUDED.participation ELSE hq_builder_enrollments.participation END`,
+    [user.id, hackathonId, hasTeam ? 'builder' : 'supporter']);
   const { rows: roles } = await db.query(`INSERT INTO hq_people_roles(label,filter_label,color,bg,is_judge,sort)
-    VALUES('Builder','Builders','accent','accent-fill',false,100)
-    ON CONFLICT(label) DO UPDATE SET label=EXCLUDED.label RETURNING id`);
+    VALUES($1,$2,$3,$4,false,$5)
+    ON CONFLICT(label) DO UPDATE SET label=EXCLUDED.label RETURNING id`,
+    hasTeam ? ['Builder','Builders','accent','accent-fill',100] : ['User','Users','label-2','fill-4',101]);
   const roleId = String(roles[0].id);
   // The card's contact is the login email when there is one; a card without
   // a contact is the normal state for a Telegram-only account. On conflict
-  // only the role follows the enrollment and a card that has no person yet
-  // gets one; an operator's edits and a corrected person link both survive.
+  // only a completed team setup changes the role and a card that has no
+  // person yet gets one; an operator's other edits and person links survive.
   // The person is stamped only when no other card of that edition already
   // carries it (hq_people_person_idx, one card per person per edition), on
   // insert and on conflict alike: a roster card that kept the person after a
@@ -115,8 +121,9 @@ async function enroll(db: BuilderQuery, user: BuilderIdentity, hackathonId: numb
     VALUES($1,$2,$3,$4,$5,
       CASE WHEN EXISTS (SELECT 1 FROM hq_people q WHERE q.hackathon_id=$1 AND q.person_id=$6::uuid) THEN NULL ELSE $6::uuid END)
     ON CONFLICT(hackathon_id,builder_user_id)
-    DO UPDATE SET role_id=EXCLUDED.role_id,person_id=COALESCE(hq_people.person_id,EXCLUDED.person_id)`,
-    [hackathonId, user.id, user.name, roleId, realEmail(user.email) ?? '', personId]);
+    DO UPDATE SET role_id=CASE WHEN $7::boolean THEN EXCLUDED.role_id ELSE hq_people.role_id END,
+      person_id=COALESCE(hq_people.person_id,EXCLUDED.person_id)`,
+    [hackathonId, user.id, user.name, roleId, realEmail(user.email) ?? '', personId, hasTeam]);
 }
 
 /** Called only while holding the project's onboarding row lock. */
@@ -148,7 +155,7 @@ async function claimRosterSeat(db: BuilderQuery, user: BuilderIdentity, input: {
     personId, toUserId: user.id, reason: 'Selected their own Colosseum team entry', actor: { kind: 'member', id: user.id },
   });
   await db.query('UPDATE hq_project_members SET builder_user_id=$1,joined_at=now() WHERE id=$2::uuid', [user.id, input.memberId]);
-  await enroll(db, user, input.hackathonId);
+  await enroll(db, user, input.hackathonId, true);
 }
 
 /** The same initial snapshot is stored for a self-service import or an operator attachment. */
@@ -329,7 +336,7 @@ export class BuilderStore {
       await db.query(`UPDATE hq_project_import_requests SET status='resolved',project_id=$2::uuid WHERE id=$1::uuid`, [input.requestId, id]);
       // The owner is enrolled in the edition the way an importer is, so the
       // project shows up on their dashboard and their People card exists.
-      await enroll(db, { id: ownerUserId, name: String(request.owner_name), email: realEmail(request.email) ?? '' }, input.hackathonId);
+      await enroll(db, { id: ownerUserId, name: String(request.owner_name), email: realEmail(request.email) ?? '' }, input.hackathonId, true);
       await recordAuditEvent(db, {
         kind: 'project.created',
         actor: { kind: 'operator', id: input.operatorId },

@@ -2,6 +2,7 @@ import "server-only";
 import { recordAuditEvent, type AuditActor } from "./audit";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
 import { BuilderError } from "./builder-types";
+import { personRoleTags } from "./people-tags";
 import type { PersonTag } from "./types";
 
 /**
@@ -208,13 +209,13 @@ export async function listCapabilityGrants(
 }
 
 /**
- * The tags a People card shows: its editable role first, then one locked tag
- * per active capability of the linked account. Presentation only; nothing
- * reads a tag back to decide access.
+ * The tags a People card shows: its editable role (unless neutral) first,
+ * then one locked tag per active capability of the linked account.
+ * Presentation only; nothing reads a tag back to decide access.
  */
 export function personTags(roleLabel: string, capabilities: readonly Capability[]): PersonTag[] {
   return [
-    { kind: "role", label: roleLabel, protected: false },
+    ...personRoleTags(roleLabel),
     ...capabilities.map((capability): PersonTag => ({ kind: "capability", label: CAPABILITY_LABELS[capability], protected: true })),
   ];
 }

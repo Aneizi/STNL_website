@@ -413,7 +413,7 @@ describe("People tags, Captain grants and person-match correction", () => {
     return String(card.id);
   }
 
-  it("shows a role tag on every card and a locked Captain tag only from an active grant, read in one batched query", async () => {
+  it("shows assigned role tags and a locked Captain tag only from an active grant, read in one batched query", async () => {
     await rows("INSERT INTO hq_builder_profiles(id,email,name) VALUES('second','second@example.test','Second Builder')");
     await rows("INSERT INTO hq_people(hackathon_id,builder_user_id,name,role_id) SELECT 11,'second','Second Builder',id FROM hq_people_roles");
     await rows("INSERT INTO hq_people(hackathon_id,name,role_id) SELECT 11,'Hand Entered',id FROM hq_people_roles");
@@ -432,6 +432,15 @@ describe("People tags, Captain grants and person-match correction", () => {
       { rank: 1, captainUserId: "selected", displayName: "Selected Builder", assignedCount: 0, projectNames: [] },
     ]);
     expect((await getPeople(12)).map((p) => p.tags)).toEqual([[{ kind: "role", label: "Builder", protected: false }]]);
+  });
+
+  it("keeps an account with no team visible without tags until a capability is granted", async () => {
+    await rows(`INSERT INTO hq_people_roles(label,filter_label,color,bg,is_judge,sort)
+      VALUES('User','Users','label-2','fill-4',false,101)`);
+    await rows("UPDATE hq_people SET role_id=(SELECT id FROM hq_people_roles WHERE label='User') WHERE builder_user_id='selected'");
+    expect((await getPeople(11))[0]).toMatchObject({ builderUserId: "selected", captain: false, tags: [] });
+    await grantCapability(builderDb, { actor: { kind: "operator", id: OPERATOR }, byOperatorId: OPERATOR, userId: "selected", capability: "captain", reason: "Leads the cohort" });
+    expect((await getPeople(11))[0].tags).toEqual([{ kind: "capability", label: "Captain", protected: true }]);
   });
 
   it("grants and revokes Captain from Admin with the operator recorded, visible on the next read", async () => {
