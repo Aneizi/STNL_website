@@ -193,7 +193,9 @@ export async function createUpdate(
     if (late && !input.periodId) {
       return { ok: false, reason: "period_changed", currentPeriod: periodForInstant(await listReportingPeriods(tx, input.hackathonId), savedAtMs) };
     }
-    if (Date.parse(eligibility.eligibleFrom) >= Date.parse(current.endsAt)) return { ok: false, reason: "not_eligible" };
+    // A week that ended before the team joined reporting still takes a late
+    // update: a team that imports after the fact can backfill its history.
+    // Late entries never count, so the week stays exempt rather than completed.
     // Read straight off the decision: `via: "member"` is the team writing
     // for itself, anything else is a note about the team.
     const countsTowardCompletion = decision.via === "member";

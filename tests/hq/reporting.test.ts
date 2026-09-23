@@ -493,6 +493,19 @@ describe("createUpdate", () => {
     expect(result.entry.late).toBe(true);
   });
 
+  it("takes a late update for a week that ended before the team joined reporting, without completing it", async () => {
+    const periods = await listReportingPeriods(db, EDITION);
+    const afterWeekOne = Date.parse("2026-09-24T09:00:00Z");
+    await rows("UPDATE hq_reporting_eligibility SET eligible_from=$2 WHERE project_id=$1", [PROJECT_A, new Date(afterWeekOne - 60_000).toISOString()]);
+    const result = await createUpdate(member("lead-a"), {
+      projectId: PROJECT_A, hackathonId: EDITION, body: "What we did before joining HQ", periodId: periods[0].id, atMs: afterWeekOne,
+    });
+    expect(result).toMatchObject({ ok: true, completesPeriod: false, entry: { late: true } });
+    const [status] = await reportingStatus(db, { hackathonId: EDITION, atMs: afterWeekOne, includeHistory: true });
+    expect(status.history[0]).toMatchObject({ exempt: true, completed: false, entries: 0 });
+    expect(status.missedPeriods).toBe(0);
+  });
+
   it("refuses a period from another edition", async () => {
     await ensureReportingPeriods(db, OTHER_EDITION);
     const other = await listReportingPeriods(db, OTHER_EDITION);
