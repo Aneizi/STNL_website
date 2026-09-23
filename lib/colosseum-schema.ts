@@ -21,8 +21,11 @@ import { z } from "zod";
  * tests and the normalizer can both import it.
  */
 
-/** A project slug as it appears in a Colosseum project URL. */
-export const slugSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,159}$/);
+/**
+ * A project slug as it appears in a Colosseum project URL. Dots are real
+ * (`wurk.fun`); the leading alphanumeric keeps `.` and `..` out.
+ */
+export const slugSchema = z.string().regex(/^[a-z0-9][a-z0-9.-]{0,159}$/);
 export const idSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const usernameSchema = z.string().min(1).max(120).regex(/^\S+$/);
 const optionalText = z.string().max(4_000).nullish();

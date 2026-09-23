@@ -56,6 +56,17 @@ describe("Colosseum project links", () => {
     expect(String(fetcher.mock.calls[0][0])).toBe("https://api.colosseum.com/api/project?slug=nihilium-recovery&type=HACKATHON");
   });
 
+  it.each([
+    "https://colosseum.com/arena/projects/wurk.fun",
+    "https://colosseum.com/arena/projects/explore/wurk.fun/?utm_source=share",
+  ])("accepts a dotted slug in %s", async (url) => {
+    expect(parseColosseumProjectUrl(url)).toBe("wurk.fun");
+    expect(colosseumProjectUrl("wurk.fun")).toBe("https://colosseum.com/arena/projects/wurk.fun");
+    const fetcher = mockFetch([json(projectResponse({ slug: "wurk.fun" }))]);
+    expect((await fetchColosseumProject(url, fetcher)).slug).toBe("wurk.fun");
+    expect(String(fetcher.mock.calls[0][0])).toBe("https://api.colosseum.com/api/project?slug=wurk.fun&type=HACKATHON");
+  });
+
   it("keeps a legacy project whose slug is explore distinct from the directory when saving its link", () => {
     const saved = colosseumProjectUrl(parseColosseumProjectUrl("https://colosseum.com/arena/projects/explore/explore"));
     expect(saved).toBe("https://colosseum.com/arena/projects/explore/explore");
@@ -86,6 +97,7 @@ describe("Colosseum project links", () => {
     "https://colosseum.com/arena/projects/explore/%2E%2E/nihilium-recovery",
     "https://colosseum.com/arena/projects/explore/.%2e/nihilium-recovery",
     "https://colosseum.com/arena/projects/explore/%2e./nihilium-recovery",
+    "https://colosseum.com/arena/projects/.hidden",
     "https://colosseum.com.evil.test/arena/projects/nihilium-recovery",
     "https://colosseum.com@evil.test/arena/projects/nihilium-recovery",
     "https://evil@colosseum.com/arena/projects/nihilium-recovery",
