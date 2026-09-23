@@ -122,9 +122,9 @@ describe("Dashboard", () => {
       (label) => html.indexOf(`<div style="font-size:16px;color:var(--label-2)">${label}</div>`),
     );
     expect(labels.every((index, i) => index > (labels[i - 1] ?? -1))).toBe(true);
-    expect(textsAt(html, 40)).toEqual(["14", "2"]);
+    expect(textsAt(html, 40)).toEqual(["3", "2"]);
     expect(textsAt(html, 14).slice(0, 2)).toEqual([
-      "3 of 6 tracked here are committed",
+      "Of 6 projects tracked here",
       "Every submission gate checked",
     ]);
     expect(html).toContain("repeat(auto-fit,minmax(264px,1fr))");
@@ -198,7 +198,7 @@ describe("Dashboard", () => {
     const html = render({ projects: [], milestones: [] });
     expect(html).toContain(">Milestones</h2>");
     expect(html).toContain(">Needs attention</h2>");
-    expect(html).toContain("0 of 0 tracked here are committed");
+    expect(html).toContain("Of 0 projects tracked here");
     expect(html).not.toContain("Check-ins");
     expect(html).not.toMatch(/No |Nothing|yet/);
     expect(html).not.toMatch(FORBIDDEN);

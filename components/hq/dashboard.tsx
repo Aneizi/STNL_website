@@ -42,8 +42,8 @@ export function Dashboard({
   const funnel = [
     {
       label: "Committed projects",
-      cur: settings.committedManual,
-      sub: `${committed} of ${projects.length} tracked here are committed`,
+      cur: committed,
+      sub: `Of ${projects.length} projects tracked here`,
     },
     {
       label: "Verified submissions",
