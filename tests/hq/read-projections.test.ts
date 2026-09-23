@@ -205,3 +205,35 @@ describe("batched search", () => {
     expect(statements).toHaveLength(0);
   });
 });
+
+describe("imported roster contacts", () => {
+  it("fills each claimed teammate's contact from their account and never ships the raw addresses", async () => {
+    await pg.exec(`
+      INSERT INTO hq_auth_user(id,name,email) VALUES ('lead','Lead','lead@example.test');
+      INSERT INTO hq_builder_profiles(id,email,contact_email,name) VALUES
+        ('lead','lead@example.test',NULL,'Lead'),
+        ('mate','mate@example.test','mate.contact@example.test','Mate'),
+        ('login','login@example.test',NULL,'Login'),
+        ('typed','typed@example.test',NULL,'Typed');
+      INSERT INTO hq_auth_telegram_identity(user_id,provider_subject,telegram_user_id,username) VALUES ('lead','tg-lead',1001,'lead_tg');
+    `);
+    await db.query(`INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,project_url,slug,raw,owner_user_id,verification,lead_username)
+      VALUES($1,12,43,'https://colosseum.com/arena/projects/other','other','{}','lead','verified','Lead_Handle')`, [OTHER]);
+    await db.query(`INSERT INTO hq_project_members(project_id,name,contact,colosseum_username,builder_user_id,sort) VALUES
+      ($1,'Lead','','lead_handle','lead',1),($1,'Mate','','mate','mate',2),($1,'Login','','login','login',3),
+      ($1,'Typed','@typed_by_operator','typed','typed',4),($1,'Unclaimed','','unclaimed',NULL,5)`, [OTHER]);
+
+    const [project] = await getProjects(12);
+    expect(project.leadContact).toBe("@lead_tg");
+    expect(project.members).toEqual([
+      { id: expect.any(String), name: "Lead", contact: "@lead_tg", username: "lead_handle" },
+      { id: expect.any(String), name: "Mate", contact: "mate.contact@example.test", username: "mate" },
+      { id: expect.any(String), name: "Login", contact: "login@example.test", username: "login" },
+      { id: expect.any(String), name: "Typed", contact: "@typed_by_operator", username: "typed" },
+      { id: expect.any(String), name: "Unclaimed", contact: "", username: "unclaimed" },
+    ]);
+
+    await db.query("UPDATE hq_projects SET lead_contact='lead@operator.test' WHERE id=$1", [OTHER]);
+    expect((await getProjects(12))[0].leadContact).toBe("lead@operator.test");
+  });
+});

@@ -22,6 +22,7 @@ import type {
   PartnerDetail,
   Person,
   Project,
+  ProjectMember,
   Role,
   Score,
   SearchResult,
@@ -140,6 +141,18 @@ export async function getDashboardProjects(hackathonId: number): Promise<Dashboa
   }));
 }
 
+type RosterRow = ProjectMember & { telegram: string | null; contactEmail: string | null; loginEmail: string | null };
+
+/**
+ * A roster row's contact: what an operator typed, else the account of the
+ * teammate who claimed the row (Telegram, then contact email, then login
+ * email). Only the resolved contact leaves the server, never the addresses.
+ */
+function rosterMember({ telegram, contactEmail, loginEmail, ...member }: RosterRow): ProjectMember {
+  const contact = member.contact || (telegram ? `@${telegram}` : realEmail(contactEmail) ?? realEmail(loginEmail) ?? "");
+  return { ...member, contact };
+}
+
 export async function getProjects(hackathonId: number): Promise<Project[]> {
   const sql = getSql();
   // The Colosseum snapshot rides along from hq_project_onboarding (one row
@@ -161,9 +174,13 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
       COALESCE(owner.name, '') AS imported_by, o.created_at::date::text AS imported_at,
       COALESCE(
         (SELECT json_agg(json_build_object(
-            'id', m.id, 'name', m.name, 'contact', m.contact, 'username', m.colosseum_username)
+            'id', m.id, 'name', m.name, 'contact', m.contact, 'username', m.colosseum_username,
+            'telegram', mt.username, 'contactEmail', mb.contact_email, 'loginEmail', mb.email)
            ORDER BY m.sort, m.id)
-         FROM hq_project_members m WHERE m.project_id = p.id),
+         FROM hq_project_members m
+         LEFT JOIN hq_builder_profiles mb ON mb.id = m.builder_user_id
+         LEFT JOIN hq_auth_telegram_identity mt ON mt.user_id = mb.id
+         WHERE m.project_id = p.id),
         '[]'
       ) AS members,
       COALESCE(
@@ -195,41 +212,48 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
     WHERE p.hackathon_id = ${hackathonId}
     ORDER BY p.created_at DESC
   `;
-  return rows.map((r) => ({
-    id: r.id,
-    name: r.name,
-    leadName: r.lead_name,
-    leadContact: r.lead_contact,
-    members: r.members ?? [],
-    createdAt: r.created_at,
-    highPotential: Boolean(r.high_potential),
-    colosseum: r.imported
-      ? {
-          url: r.project_url,
-          imageUrl: r.image_url ?? null,
-          description: r.description ?? "",
-          stage: r.stage,
-          category: r.category ?? null,
-          submissionStatus: r.submission_status ?? "not_checked",
-          leadUsername: r.lead_username,
-          importedByName: r.imported_by,
-          importedAt: r.imported_at,
-        }
-      : null,
-    partnerId: r.partner_id,
-    partnerName: r.partner_name,
-    captainUserId: r.captain_user_id,
-    captainName: r.captain_name,
-    eventSrc: r.event_src,
-    statusSlug: r.status_slug,
-    forecastSlug: r.forecast_slug,
-    lastCheckIn: r.last_check_in,
-    blocker: r.blocker,
-    touchedBy: r.touched_by,
-    touchedAt: r.touched_at,
-    gates: r.gates ?? [],
-    notes: r.notes ?? [],
-  }));
+  return rows.map((r) => {
+    const members = ((r.members ?? []) as RosterRow[]).map(rosterMember);
+    // An imported lead's contact comes from their roster row unless an
+    // operator typed one onto the project.
+    const leadUsername = typeof r.lead_username === "string" ? r.lead_username.trim().toLowerCase() : "";
+    const leadRow = leadUsername ? members.find((m) => m.username?.trim().toLowerCase() === leadUsername) : undefined;
+    return {
+      id: r.id,
+      name: r.name,
+      leadName: r.lead_name,
+      leadContact: r.lead_contact || leadRow?.contact || "",
+      members,
+      createdAt: r.created_at,
+      highPotential: Boolean(r.high_potential),
+      colosseum: r.imported
+        ? {
+            url: r.project_url,
+            imageUrl: r.image_url ?? null,
+            description: r.description ?? "",
+            stage: r.stage,
+            category: r.category ?? null,
+            submissionStatus: r.submission_status ?? "not_checked",
+            leadUsername: r.lead_username,
+            importedByName: r.imported_by,
+            importedAt: r.imported_at,
+          }
+        : null,
+      partnerId: r.partner_id,
+      partnerName: r.partner_name,
+      captainUserId: r.captain_user_id,
+      captainName: r.captain_name,
+      eventSrc: r.event_src,
+      statusSlug: r.status_slug,
+      forecastSlug: r.forecast_slug,
+      lastCheckIn: r.last_check_in,
+      blocker: r.blocker,
+      touchedBy: r.touched_by,
+      touchedAt: r.touched_at,
+      gates: r.gates ?? [],
+      notes: r.notes ?? [],
+    };
+  });
 }
 
 function mapPartner(r: Record<string, unknown>): Partner {
