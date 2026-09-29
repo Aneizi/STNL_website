@@ -95,6 +95,26 @@ describe("Colosseum history sync", () => {
     expect(await syncColosseumUpdates(db, PROJECT, { now: NOW + 15 * 60_000, fetcher })).toBe("synced");
     expect(await rows("SELECT cursor,last_error FROM hq_colosseum_update_sync")).toEqual([{ cursor: null, last_error: null }]);
   });
+  it("records a project with no posts on Colosseum yet as checked, not as failing", async () => {
+    // Colosseum answers its build-log listing with a 404 until the first post.
+    const fetcher = vi.fn<ColosseumFetch>().mockResolvedValue(new Response(JSON.stringify({ message: "Project not found.", code: "NOT_FOUND", known: true }),
+      { status: 404, headers: { "Content-Type": "application/json" } }));
+    expect(await syncColosseumUpdates(db, PROJECT, { now: NOW, fetcher })).toBe("synced");
+    expect(await rows("SELECT cursor,last_error,checked_at IS NOT NULL AS checked FROM hq_colosseum_update_sync")).toEqual([{ cursor: null, last_error: null, checked: true }]);
+  });
+  it("serves the longest-waiting project first, so repeatedly failing ones cannot starve the rest", async () => {
+    const OTHER = "00000000-0000-4000-9000-000000000003";
+    await rows(`INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
+      SELECT $1,91,'Failing',s.id,f.id,current_date FROM hq_project_statuses s CROSS JOIN hq_project_forecasts f LIMIT 1`, [OTHER]);
+    await rows(`INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,external_hackathon_id,project_url,slug,raw,owner_user_id,verification,lead_username,created_at)
+      VALUES($1,91,90002,6,'https://colosseum.com/arena/projects/failing','failing','{}','history-owner','verified','fictional_builder_2','2026-09-22')`, [OTHER]);
+    // Healthy: due again from NOW+30m. Failing: never checked, due again from NOW+35m.
+    await syncColosseumUpdates(db, PROJECT, { now: NOW, fetcher: transport() });
+    await syncColosseumUpdates(db, OTHER, { now: NOW + 20 * 60_000, fetcher: vi.fn<ColosseumFetch>().mockRejectedValue(new Error("offline")) });
+    const fetcher = transport();
+    await syncDueColosseumUpdates(db, { now: NOW + 40 * 60_000, fetcher, limit: 1 });
+    expect(String(fetcher.mock.calls[0][0])).toContain("/by-slug/tulip-ledger/");
+  });
   it("claims overlapping syncs once and does not duplicate records on later sweeps", async () => {
     const fetcher = transport();
     expect((await Promise.all([syncColosseumUpdates(db, PROJECT, { now: NOW, fetcher }), syncColosseumUpdates(db, PROJECT, { now: NOW, fetcher })])).sort()).toEqual(["skipped", "synced"]);

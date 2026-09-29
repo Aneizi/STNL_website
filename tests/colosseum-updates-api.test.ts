@@ -31,6 +31,12 @@ describe("Colosseum public update history", () => {
     body.buildLogs[0].content.content[0].content[0].text = "A".repeat(2_000);
     expect((await fetchColosseumUpdatePage(input, transport(body))).updates[0].body.length).toBeGreaterThan(2_000);
   });
+  it("reads Colosseum's 404 for a project with no posts yet as an empty first page, and nowhere else", async () => {
+    const notFound = () => vi.fn<ColosseumFetch>().mockResolvedValue(new Response(JSON.stringify({ message: "Project not found.", code: "NOT_FOUND", known: true }),
+      { status: 404, headers: { "Content-Type": "application/json" } }));
+    expect(await fetchColosseumUpdatePage(input, notFound())).toEqual({ updates: [], nextCursor: null });
+    await expect(fetchColosseumUpdatePage({ ...input, cursor: "older" }, notFound())).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
   it.each([
     { ...fixture, project: { ...fixture.project, id: 99999 } },
     { ...fixture, project: { ...fixture.project, hackathonId: 99 } },

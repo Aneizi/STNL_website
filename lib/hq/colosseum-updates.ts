@@ -84,7 +84,9 @@ export async function syncColosseumUpdates(
 }
 
 /** Existing imports are discovered every pass, including those initialized
- * before this feature was installed. A bounded pass resumes on the next run. */
+ * before this feature was installed. A bounded pass resumes on the next run,
+ * longest-waiting first: a failure leaves `checked_at` unset, so ordering by
+ * it would put the same failing projects ahead of every healthy one. */
 export async function syncDueColosseumUpdates(
   db: BuilderDatabase,
   options: SyncOptions & { hackathonId?: number; deadlineMs?: number; limit?: number } = {},
@@ -96,7 +98,7 @@ export async function syncDueColosseumUpdates(
     WHERE ($2::int IS NULL OR o.hackathon_id=$2)
       AND (s.project_id IS NULL OR (s.next_attempt_at <= $1::timestamptz
         AND (s.lease_until IS NULL OR s.lease_until <= $1::timestamptz)))
-    ORDER BY s.checked_at ASC NULLS FIRST,o.project_id LIMIT $3`,
+    ORDER BY s.next_attempt_at ASC NULLS FIRST,o.project_id LIMIT $3`,
   [new Date(now).toISOString(), options.hackathonId ?? null, Math.max(1, Math.min(50, options.limit ?? 10))]);
   const summary = { synced: 0, failed: 0, skipped: 0, stoppedOnBudget: false };
   const deadline = Math.min(options.deadlineMs ?? Infinity, Date.now() + 20_000);
@@ -108,7 +110,8 @@ export async function syncDueColosseumUpdates(
 }
 
 /** Check HQ access before fetching anything from the source. Imported history
- * remains separate from authored reports and never changes a closed week. */
+ * is stored apart from authored reports; `reportingStatus` counts each post
+ * toward the week it was published in. */
 export async function readColosseumHistory(
   actor: Actor,
   input: ColosseumHistoryInput,

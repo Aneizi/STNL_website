@@ -343,7 +343,11 @@ function updateContent(value: unknown): { body: string; links: string[] } {
 }
 
 /** One cursor page, without a date cutoff: every sweep can recover old posts
- * and edits, including posts published before the project was imported. */
+ * and edits, including posts published before the project was imported.
+ *
+ * Colosseum answers the first page with a 404 "Project not found." until a
+ * project's first post (observed 2026-09-29 on imported, live projects), so
+ * there that is an empty history. A 404 on a later page is still an error. */
 export async function fetchColosseumUpdatePage(
   input: { projectUrl: string; externalId: number; externalHackathonId: number | null; cursor?: string | null },
   fetcher: ColosseumFetch = fetch,
@@ -352,7 +356,14 @@ export async function fetchColosseumUpdatePage(
   const url = new URL(`/api/projects/by-slug/${slug}/build-logs`, API_ORIGIN);
   url.searchParams.set("limit", "20");
   if (input.cursor) url.searchParams.set("cursor", input.cursor);
-  const parsed = projectUpdatesSchema.safeParse(await readJson(url, fetcher));
+  let body: JsonValue;
+  try {
+    body = await readJson(url, fetcher);
+  } catch (error) {
+    if (!input.cursor && error instanceof ColosseumApiError && error.code === "NOT_FOUND") return { updates: [], nextCursor: null };
+    throw error;
+  }
+  const parsed = projectUpdatesSchema.safeParse(body);
   if (!parsed.success) throw new ColosseumApiError("INVALID_RESPONSE");
   const { project, buildLogs, nextCursor } = parsed.data;
   if (project.id !== input.externalId || (input.externalHackathonId !== null && project.hackathonId !== input.externalHackathonId) || project.slug !== slug
