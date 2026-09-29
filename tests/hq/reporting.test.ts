@@ -101,6 +101,15 @@ function hashCode(value: string): number {
   return hash;
 }
 
+/** A post on the project's Colosseum page, as the history sync stores it. */
+async function seedColosseumUpdate(projectId: string, publishedAt: string, externalId = 1) {
+  await rows(
+    `INSERT INTO hq_colosseum_updates(project_id,external_id,author_name,body,source_url,published_at,source_updated_at)
+     VALUES($1,$2,'Builder','Shipped on Colosseum',$3,$4,$4)`,
+    [projectId, externalId, `https://colosseum.com/arena/projects/example/updates/${externalId}`, publishedAt],
+  );
+}
+
 /** An account with an active `captain` grant, assigned to the project. */
 async function seedAssignedCaptain(userId: string, projectId: string) {
   await seedAccount(userId);
@@ -819,6 +828,28 @@ describe("reportingStatus", () => {
     expect(of(statuses, PROJECT_A).missedPeriods).toBe(1);
   });
 
+  it("counts an update posted on Colosseum during the week the same as one written in HQ", async () => {
+    await seedColosseumUpdate(PROJECT_B, "2026-09-15T10:00:00Z");
+    const statuses = await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_ONE });
+    expect(of(statuses, PROJECT_B).current).toMatchObject({ periodSequence: 1, completed: true, basis: "colosseum", entries: 0 });
+  });
+
+  it("counts a Colosseum update only for the week it was published in", async () => {
+    // Before the first week opened, and inside the second.
+    await seedColosseumUpdate(PROJECT_B, "2026-09-13T21:00:00Z", 1);
+    await seedColosseumUpdate(PROJECT_B, "2026-09-22T10:00:00Z", 2);
+    const project = of(await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_TWO, includeHistory: true }), PROJECT_B);
+    expect(project.history.slice(0, 2).map((period) => period.completed)).toEqual([false, true]);
+    expect(project.missedPeriods).toBe(1);
+  });
+
+  it("keeps an HQ entry as the week's basis when the team also posted on Colosseum", async () => {
+    await createUpdate(member("lead-a"), { projectId: PROJECT_A, hackathonId: EDITION, body: "Done", atMs: WEEK_ONE });
+    await seedColosseumUpdate(PROJECT_A, "2026-09-15T10:00:00Z");
+    expect(of(await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_ONE }), PROJECT_A).current)
+      .toMatchObject({ completed: true, basis: "entry", entries: 1 });
+  });
+
   it("fabricates no missed week before a project entered reporting", async () => {
     await rows(`UPDATE hq_reporting_eligibility SET eligible_from='2026-09-22T08:00:00Z' WHERE project_id=$1`, [PROJECT_B]);
     expect(of(await reportingStatus(db, { hackathonId: EDITION, atMs: WEEK_TWO }), PROJECT_B))
@@ -923,6 +954,33 @@ describe("closePeriod", () => {
     const project = status.find((row) => row.projectId === PROJECT_A);
     expect(project?.history[0]).toMatchObject({ completed: false, closed: true });
     expect(project?.missedPeriods).toBe(1);
+  });
+
+  it("counts Colosseum updates from inside the week, including one HQ only fetched after the close", async () => {
+    await seedColosseumUpdate(PROJECT_A, "2026-09-18T10:00:00Z", 1);
+    const closed = await closePeriod(db, { periodId: periodOne, actor: OPERATOR, atMs: AFTER_WEEK_ONE });
+    expect(closed).toMatchObject({ ok: true, alreadyClosed: false, completed: 1, missed: 1 });
+    if (!closed.ok) throw new Error("expected a close");
+    // The outcome row keeps HQ's own record; the Colosseum post is read beside it.
+    expect(closed.outcomes.find((outcome) => outcome.projectId === PROJECT_A)).toMatchObject({ completed: false, basis: "none" });
+
+    // Posted before the deadline, synced after it: still on time.
+    await seedColosseumUpdate(PROJECT_B, "2026-09-20T21:30:00Z", 2);
+    const statuses = await reportingStatus(db, { hackathonId: EDITION, atMs: AFTER_WEEK_ONE, includeHistory: true });
+    for (const status of statuses) {
+      expect(status.history[0]).toMatchObject({ completed: true, basis: "colosseum", closed: true });
+      expect(status.missedPeriods).toBe(0);
+    }
+    expect(await closePeriod(db, { periodId: periodOne, actor: OPERATOR, atMs: AFTER_WEEK_ONE }))
+      .toMatchObject({ ok: true, alreadyClosed: true, completed: 2, missed: 0 });
+  });
+
+  it("does not let a Colosseum update published after the deadline complete a closed week", async () => {
+    await closePeriod(db, { periodId: periodOne, actor: OPERATOR, atMs: AFTER_WEEK_ONE });
+    await seedColosseumUpdate(PROJECT_B, "2026-09-20T22:00:00Z");
+    const project = (await reportingStatus(db, { hackathonId: EDITION, atMs: AFTER_WEEK_ONE, includeHistory: true }))
+      .find((row) => row.projectId === PROJECT_B);
+    expect(project?.history[0]).toMatchObject({ completed: false, basis: "none" });
   });
 
   it("leaves out a project that had not entered reporting by the period's end", async () => {
@@ -1179,14 +1237,14 @@ describe("the performance rules", () => {
     const statuses = await reportingStatus(countingDb, { hackathonId: EDITION, atMs: WEEK_ONE });
     expect(statuses.length).toBe(12);
     expect(statuses.filter((row) => row.current?.completed).length).toBe(6);
-    // Periods, eligibility, config, then four grouped reads: no per-project loop.
-    expect(counted.queries).toBe(7);
+    // Periods, eligibility, config, then five grouped reads: no per-project loop.
+    expect(counted.queries).toBe(8);
 
     // The same fixed cost for one project as for twelve, which is what
     // "no per-project request loop" actually means.
     counted.queries = 0;
     await reportingStatus(countingDb, { hackathonId: EDITION, projectIds: ["00000000-0000-4000-9000-000000000100"], atMs: WEEK_ONE });
-    expect(counted.queries).toBe(7);
+    expect(counted.queries).toBe(8);
   });
 
   it("carries no entry body and no revision in a dashboard response", async () => {

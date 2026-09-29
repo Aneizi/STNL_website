@@ -10,7 +10,11 @@ import { reportingStatus } from "./status";
 export type PeriodOutcome = {
   periodId: string;
   projectId: string;
-  /** The factual on-time outcome recorded at close. Never rewritten. */
+  /**
+   * HQ's own on-time record at close: an entry or a submission. Never
+   * rewritten. A Colosseum post published inside the period also completes
+   * it; `reportingStatus` reads those beside this row rather than from it.
+   */
   completed: boolean;
   basis: "entry" | "submission" | "none";
   /** The project was paused when this period closed, so the period was excused rather than missed. */
@@ -71,16 +75,19 @@ export async function closePeriod(
     if (!rows.length) return { ok: false, reason: "not_found" };
     const period = toPeriod(rows[0]);
     if (atMs < Date.parse(period.endsAt)) return { ok: false, reason: "not_ended" };
+    const statuses = await reportingStatus(tx, { hackathonId: period.hackathonId, atMs, includeHistory: true });
+    const onColosseum = new Set(statuses.filter((status) =>
+      status.history.some((state) => state.periodId === period.id && state.colosseumUpdates > 0)).map((status) => status.projectId));
+    const done = (outcome: PeriodOutcome) => outcome.completed || onColosseum.has(outcome.projectId);
     if (period.closedAt) {
       const stored = await listPeriodOutcomes(tx, period.id);
       return {
         ok: true, alreadyClosed: true, outcomes: stored,
-        completed: stored.filter((outcome) => outcome.completed && !outcome.exempt).length,
-        missed: stored.filter((outcome) => !outcome.completed && !outcome.exempt).length,
+        completed: stored.filter((outcome) => done(outcome) && !outcome.exempt).length,
+        missed: stored.filter((outcome) => !done(outcome) && !outcome.exempt).length,
       };
     }
 
-    const statuses = await reportingStatus(tx, { hackathonId: period.hackathonId, atMs, includeHistory: true });
     const eligibility = new Map((await listReportingEligibility(tx, period.hackathonId)).map((row) => [row.projectId, row]));
     const { rows: firstEntries } = await tx.query(
       `SELECT DISTINCT ON (project_id) project_id::text AS project_id, id::text AS id FROM hq_reporting_entries
@@ -112,19 +119,22 @@ export async function closePeriod(
       const state = status.history.find((candidate) => candidate.periodId === period.id);
       if (!state) continue;
       const exempt = !accountable(row, period);
+      // The basis column has no Colosseum value: a week completed only there
+      // stores HQ's own record, and the post keeps completing it on read.
+      const authored = state.basis === "colosseum" ? { completed: false, basis: "none" } : state;
       await tx.query(
         `INSERT INTO hq_reporting_outcomes (period_id, project_id, completed, basis, exempt, entry_id, captain_user_id)
          VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::uuid, $7) ON CONFLICT (period_id, project_id) DO NOTHING`,
-        [period.id, status.projectId, state.completed, state.basis, exempt, entryByProject.get(status.projectId) ?? null, captainAtEnd.get(status.projectId) ?? null],
+        [period.id, status.projectId, authored.completed, authored.basis, exempt, entryByProject.get(status.projectId) ?? null, captainAtEnd.get(status.projectId) ?? null],
       );
     }
     await tx.query("UPDATE hq_reporting_periods SET closed_at = now() WHERE id = $1::uuid AND closed_at IS NULL", [period.id]);
     const outcomes = await listPeriodOutcomes(tx, period.id);
-    const completed = outcomes.filter((outcome) => outcome.completed && !outcome.exempt).length;
+    const completed = outcomes.filter((outcome) => done(outcome) && !outcome.exempt).length;
     // An excused week is neither completed nor missed: counting it as missed
     // here would put a paused team into the very number the pause exists to
     // keep them out of.
-    const missed = outcomes.filter((outcome) => !outcome.completed && !outcome.exempt).length;
+    const missed = outcomes.filter((outcome) => !done(outcome) && !outcome.exempt).length;
     const exempt = outcomes.filter((outcome) => outcome.exempt).length;
     await recordAuditEvent(tx, {
       kind: "reporting.period_closed",

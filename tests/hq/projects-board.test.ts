@@ -86,7 +86,7 @@ const kaasketen: Project = {
 const week: PeriodStatus = {
   periodId: "week-1", periodSequence: 1, mode: "weekly", startDate: "2026-09-14", endDate: "2026-09-20",
   startsAt: "2026-09-13T22:00:00Z", endsAt: "2026-09-20T22:00:00Z", nudgeAt: null, completed: true, basis: "entry",
-  entries: 1, latestEntryAt: "2026-09-16T10:00:00Z", closed: false, exempt: false,
+  entries: 1, latestEntryAt: "2026-09-16T10:00:00Z", colosseumUpdates: 0, closed: false, exempt: false,
 };
 
 const reporting: ProjectReportingStatus[] = [{

@@ -5,7 +5,11 @@ import { listReportingEligibility, listReportingPeriods, toIso, type ReportingEl
 import type { ReportingPeriodMode } from "../reporting-periods";
 import { accountable, toBasis } from "./shared";
 
-/** One period's state for one project. `basis` says how a completed period was completed, mirroring the stored outcome's own column. */
+/**
+ * One period's state for one project. `basis` says how a completed period was
+ * completed: the stored outcome's own column, or `colosseum` when the only
+ * thing that completed it is a post on the project's Colosseum page.
+ */
 export type PeriodStatus = {
   periodId: string;
   periodSequence: number;
@@ -18,10 +22,12 @@ export type PeriodStatus = {
   endsAt: string;
   nudgeAt: string | null;
   completed: boolean;
-  basis: "entry" | "submission" | "none";
+  basis: "entry" | "submission" | "colosseum" | "none";
   /** Qualifying entries: written by the team, neither voided nor late. A Captain's or an operator's note is not one. Never the bodies. */
   entries: number;
   latestEntryAt: string | null;
+  /** Posts on the project's Colosseum page published inside the period. Any one completes it, as an HQ entry does. */
+  colosseumUpdates: number;
   closed: boolean;
   /**
    * The project was not being counted for this period: it was paused. Never
@@ -85,6 +91,8 @@ function submissionSatisfies(
  * Fixed grouped reads for the edition, with no entry or revision bodies.
  * Stored outcomes and corrections take precedence. Until closure, derive the
  * same result that closePeriod will record, including historical exemptions.
+ * A Colosseum post published inside a week completes it open or closed, since
+ * the history sync can fetch it after the week has ended.
  */
 export async function reportingStatus(db: BuilderQuery, input: ReportingStatusInput): Promise<ProjectReportingStatus[]> {
   const atMs = input.atMs ?? Date.now();
@@ -102,7 +110,7 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
   if (!projects.length || !periods.length) return projects.map((row) => bareStatus(row, "not_checked"));
   const projectIds = projects.map((row) => row.projectId);
 
-  const [tallies, outcomes, submissions, assignments] = await Promise.all([
+  const [tallies, colosseum, outcomes, submissions, assignments] = await Promise.all([
     db.query(
       `SELECT e.project_id::text AS project_id, e.period_id::text AS period_id, count(*)::int AS entries,
               max(e.submitted_at) AS latest
@@ -111,6 +119,17 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
          AND e.counts_toward_completion
          AND e.submitted_at >= p.starts_at AND e.submitted_at < p.ends_at
        GROUP BY e.project_id, e.period_id`,
+      [input.hackathonId, projectIds],
+    ),
+    // Placed by Colosseum's own publish time, so a post synced after its
+    // week ended still counts for that week, and an old post edited later
+    // does not count again.
+    db.query(
+      `SELECT u.project_id::text AS project_id, p.id::text AS period_id, count(*)::int AS updates
+       FROM hq_colosseum_updates u
+       JOIN hq_reporting_periods p ON p.hackathon_id = $1 AND u.published_at >= p.starts_at AND u.published_at < p.ends_at
+       WHERE u.project_id = ANY($2::uuid[])
+       GROUP BY u.project_id, p.id`,
       [input.hackathonId, projectIds],
     ),
     db.query(
@@ -135,6 +154,7 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
     key(String(row.project_id), String(row.period_id)),
     { entries: Number(row.entries), latestEntryAt: row.latest == null ? null : toIso(row.latest) },
   ]));
+  const colosseumBy = new Map(colosseum.rows.map((row) => [key(String(row.project_id), String(row.period_id)), Number(row.updates)]));
   const outcomeBy = new Map(outcomes.rows.map((row) => [key(String(row.project_id), String(row.period_id)), row]));
   const submissionBy = new Map(submissions.rows.map((row) => [
     String(row.project_id),
@@ -150,10 +170,20 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
     for (const period of periods) {
       const tally = tallyBy.get(key(project.projectId, period.id));
       const outcome = outcomeBy.get(key(project.projectId, period.id));
+      const colosseumUpdates = colosseumBy.get(key(project.projectId, period.id)) ?? 0;
       const isAccountable = accountable(project, period);
-      const live: PeriodStatus["basis"] = tally ? "entry" : submissionSatisfies(period, submission, officialDeadline) ? "submission" : "none";
+      const live: PeriodStatus["basis"] = tally ? "entry"
+        : submissionSatisfies(period, submission, officialDeadline) ? "submission"
+        : colosseumUpdates ? "colosseum" : "none";
+      // A stored outcome is HQ's own record. Colosseum posts are not stored
+      // in it, so they are read beside it; an admin's correction still wins.
+      const onColosseumOnly = Boolean(outcome && !outcome.completed && outcome.corrected_completed == null && colosseumUpdates);
       const recorded = outcome
-        ? { completed: Boolean(outcome.corrected_completed ?? outcome.completed), basis: toBasis(outcome.basis), exempt: Boolean(outcome.exempt) }
+        ? {
+          completed: Boolean(outcome.corrected_completed ?? outcome.completed) || onColosseumOnly,
+          basis: onColosseumOnly ? "colosseum" as const : toBasis(outcome.basis),
+          exempt: Boolean(outcome.exempt),
+        }
         // Before closure the pause history answers it; afterwards the row
         // does, which is what stops a lifted pause from turning into missed
         // weeks.
@@ -162,7 +192,7 @@ export async function reportingStatus(db: BuilderQuery, input: ReportingStatusIn
         periodId: period.id, periodSequence: period.sequence, mode: period.mode,
         startDate: period.startDate, endDate: period.endDate, startsAt: period.startsAt, endsAt: period.endsAt, nudgeAt: period.nudgeAt,
         completed: recorded.completed, basis: recorded.basis, exempt: recorded.exempt,
-        entries: tally?.entries ?? 0, latestEntryAt: tally?.latestEntryAt ?? null,
+        entries: tally?.entries ?? 0, latestEntryAt: tally?.latestEntryAt ?? null, colosseumUpdates,
         closed: period.closedAt != null,
       };
       history.push(status);
