@@ -24,7 +24,7 @@ vi.mock("@/lib/hq/builder-db", async (importOriginal) => ({
 }));
 
 import {
-  resolveBuilderImportRequest, updateBuilderOnboardingConfig, updateBuilderProjectLead,
+  deleteBuilderImportRequest, resolveBuilderImportRequest, updateBuilderOnboardingConfig, updateBuilderProjectLead,
 } from "@/lib/hq/actions/builders-admin";
 import { grantCaptainCapability, revokeCaptainCapability } from "@/lib/hq/actions/capabilities";
 import {
@@ -149,6 +149,7 @@ describe("builder administration authorization and scoping", () => {
     ["renaming a teammate", () => updateProjectMember(PROJECT, { field: "name", value: "Forged" })],
     ["editing a lead", () => updateProjectDetail(PROJECT, { field: "leadName", value: "Forged" })],
     ["import requests", () => resolveBuilderImportRequest(REQUEST)],
+    ["clearing an import request", () => deleteBuilderImportRequest(REQUEST)],
     ["admin queries", () => getBuilderAdminData()],
     ["import requests query", () => getImportRequests()],
     ["granting Captain", () => grantCaptainCapability("selected", "Leads the cohort")],
@@ -319,6 +320,20 @@ describe("builder administration authorization and scoping", () => {
     expect(await rows("SELECT status FROM hq_project_import_requests WHERE id=$1", [REQUEST])).toEqual([{ status: "resolved" }]);
   });
 
+  it("clears an import request in its own hackathon only, and never the HQ project it became", async () => {
+    await rows("UPDATE hq_project_import_requests SET status='resolved', project_id=$2 WHERE id=$1", [REQUEST, BARE_PROJECT]);
+    const projects = await rows("SELECT count(*)::int AS n FROM hq_projects");
+    expect(await deleteBuilderImportRequest(OTHER_REQUEST)).toMatchObject({ ok: false });
+    expect(await deleteBuilderImportRequest("not-a-uuid")).toMatchObject({ ok: false });
+    expect(await rows("SELECT count(*)::int AS n FROM hq_activity")).toEqual([{ n: 0 }]);
+    expect(await deleteBuilderImportRequest(REQUEST)).toEqual({ ok: true });
+    expect(await rows("SELECT id::text AS id FROM hq_project_import_requests ORDER BY id")).toEqual([{ id: OTHER_REQUEST }]);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_projects")).toEqual(projects);
+    expect(await rows("SELECT id::text AS id FROM hq_projects WHERE id=$1", [BARE_PROJECT])).toEqual([{ id: BARE_PROJECT }]);
+    expect(await rows("SELECT hackathon_id, message FROM hq_activity")).toEqual([{ hackathon_id: 11, message: "Cleared a project import request" }]);
+    expect(await deleteBuilderImportRequest(REQUEST)).toMatchObject({ ok: false });
+  });
+
   it("flags a project created in HQ high potential and clears it again, on the project row itself", async () => {
     expect(await setProjectHighPotential(BARE_PROJECT, true)).toEqual({ ok: true });
     expect((await getProjects(11)).find((project) => project.id === BARE_PROJECT)?.highPotential).toBe(true);
@@ -391,6 +406,8 @@ describe("accounts without a login email in Admin", () => {
     const html = renderToStaticMarkup(createElement(BuilderAdmin, { ...admin, timezone: "Europe/Amsterdam" }))
       + renderToStaticMarkup(createElement(ImportRequests, { requests }));
     expect(html).toContain("Telegram: @tg_handle");
+    // Every request card carries its own clear button.
+    expect(html.match(/<button type="button" aria-label="Clear the import request from [^"]+"[^>]*>×<\/button>/g)).toHaveLength(requests.length);
     expect(html).toContain("Telegram account");
     expect(html).toContain("selected@example.test");
     expect(html).not.toContain("placeholder.invalid");

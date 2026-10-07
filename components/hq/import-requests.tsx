@@ -1,11 +1,13 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import { useTransition, type CSSProperties } from "react";
 import {
-  attachColosseumProject, createProjectFromImportRequest, resolveBuilderImportRequest,
+  attachColosseumProject, createProjectFromImportRequest, deleteBuilderImportRequest, resolveBuilderImportRequest,
 } from "@/lib/hq/actions/builders-admin";
 import type { BuilderImportRequest } from "@/lib/hq/builder-admin-queries";
 import { ActionForm, loginLabel, projectHref } from "./builder-admin";
+import { showToast } from "./toast";
+import { useConfirmDelete } from "./ui-client";
 
 /**
  * The Projects page's Import requests section: the help requests builders
@@ -102,16 +104,46 @@ const button: CSSProperties = {
 };
 
 export function ImportRequests({ requests }: { requests: BuilderImportRequest[] }) {
+  const armedDelete = useConfirmDelete();
+  const [, startTransition] = useTransition();
   return (
     <section style={section} aria-labelledby="import-requests-title">
       <h2 id="import-requests-title" style={heading}>Import requests</h2>
       {requests.map((request) => {
         const href = projectHref(request.projectUrl);
+        // A second click confirms, as with the Projects board's own ×.
+        const clear = armedDelete(`import-request-${request.id}`, "×", () => startTransition(async () => {
+          const result = await deleteBuilderImportRequest(request.id);
+          if (!result.ok) showToast(result.error ?? "Could not clear the request.");
+        }));
         return (
           <article style={article} key={request.id}>
             <div style={header}>
               <h3 style={title}>{request.name}</h3>
-              <span style={badge}>{request.status}</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={badge}>{request.status}</span>
+                <button
+                  type="button"
+                  aria-label={clear.armed ? "Confirm clearing this import request" : `Clear the import request from ${request.name}`}
+                  title={clear.armed ? clear.title : "Clear this request"}
+                  onClick={clear.onClick}
+                  className="hq-hover-accent"
+                  style={{
+                    minWidth: 44,
+                    minHeight: 44,
+                    border: "none",
+                    background: "none",
+                    cursor: "pointer",
+                    padding: 0,
+                    color: clear.color,
+                    fontSize: clear.armed ? 14 : 22,
+                    fontWeight: clear.fontWeight,
+                    lineHeight: 1,
+                  }}
+                >
+                  {clear.label}
+                </button>
+              </span>
             </div>
             <p style={line}>{loginLabel(request)}</p>
             <p style={line}>

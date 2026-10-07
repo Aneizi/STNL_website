@@ -113,6 +113,30 @@ export async function resolveBuilderImportRequest(requestId: string): Promise<Ac
 }
 
 /**
+ * Clears an import request off the Projects page. Only the request row goes:
+ * an HQ project created from it is untouched (the request points at the
+ * project, never the reverse), and the builder can send a new request.
+ */
+export async function deleteBuilderImportRequest(requestId: string): Promise<ActionResult> {
+  const user = await requireUser();
+  const hackathon = await requireHackathon();
+  if (!uuid.safeParse(requestId).success) return { ok: false, error: "Invalid request." };
+  const sql = getSql();
+  const rows = await sql`
+    WITH removed AS (
+      DELETE FROM hq_project_import_requests
+      WHERE id = ${requestId}::uuid AND hackathon_id = ${hackathon.id} RETURNING id
+    ), logged AS (
+      INSERT INTO hq_activity (hackathon_id, user_id, message)
+      SELECT ${hackathon.id}, ${user.id}::uuid, 'Cleared a project import request' FROM removed
+    ) SELECT id FROM removed
+  `;
+  if (!rows.length) return { ok: false, error: "Request not found in this hackathon." };
+  refreshHq("builders");
+  return { ok: true };
+}
+
+/**
  * The plan's fallback for a project Colosseum cannot return yet: an admin
  * creates the HQ project by hand, owned by the account that asked for help.
  *
