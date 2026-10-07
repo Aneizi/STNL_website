@@ -696,8 +696,9 @@ describe("runDueWork", () => {
       [PROJECT_A],
     );
     const summary = await runDueWork({ db, sender: null, now: NUDGE_1 });
-    expect(summary.submissions.gatesTicked).toBe(3);
-    expect(await rows("SELECT count(*)::int AS n FROM hq_project_gates WHERE project_id=$1", [PROJECT_A])).toEqual([{ n: 3 }]);
+    // The links prove the pitch and demo gates; nothing has confirmed a submission.
+    expect(summary.submissions.gatesTicked).toBe(2);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_project_gates WHERE project_id=$1", [PROJECT_A])).toEqual([{ n: 2 }]);
   });
 
   it("sweeps expired bot state on the same pass", async () => {

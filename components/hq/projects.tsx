@@ -32,7 +32,7 @@ import {
   updateProjectMember,
 } from "@/lib/hq/actions/projects";
 import { PROJECT_STAGES } from "@/lib/hq/builder-types";
-import { MAYBE_SUBMITTED_LABEL, SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
+import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
 import type { ProjectReportingStatus } from "@/lib/hq/reporting";
 import { SUBMISSION_FILTER_LABEL, statusLabel } from "@/lib/hq/reporting-view";
@@ -173,13 +173,13 @@ const segmentButton = (on: boolean): CSSProperties => ({
 // needs no more than the glyph. Weekly holds "Not updated" plus a missed
 // count, so it needs a little more than Check-in. The last track is the
 // action column, wide enough for the two-step delete's "Sure?".
-const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 150px 77px 55px";
+const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 125px 77px 55px";
 
-/** Colosseum hides submittedAt while an edition runs, so a pitch and a demo in place is the best signal HQ has. */
-function MaybeSubmittedTag() {
+/** Colosseum's own submittedAt, read from the public project API: an official, confirmed submission. */
+function SubmittedTag() {
   return (
     <span
-      title="A pitch and a demo are on Colosseum, but Colosseum has not confirmed the submission"
+      title="Colosseum confirmed this project's submission"
       style={{
         display: "inline-block",
         fontSize: 12,
@@ -192,7 +192,7 @@ function MaybeSubmittedTag() {
         color: "var(--gold)",
       }}
     >
-      {MAYBE_SUBMITTED_LABEL}
+      {SUBMISSION_LABELS.submitted}
     </span>
   );
 }
@@ -902,12 +902,12 @@ export function Projects({
                         {fmtDate(p.lastCheckIn)}
                       </span>
                       {/* The week as HQ records it, with any earlier weeks
-                          missed underneath. A Maybe submitted project shows
-                          the tag instead; the filters above still read the
-                          weekly and Colosseum signals separately. */}
+                          missed underneath. A project Colosseum confirms as
+                          submitted shows the Submitted tag instead; the
+                          filters above still read the two signals separately. */}
                       <span data-label="Weekly" style={{ fontSize: 16, color: "var(--label-2)", lineHeight: 1.25 }}>
-                        {p.colosseum?.maybeSubmitted
-                          ? <MaybeSubmittedTag />
+                        {p.colosseum?.submissionStatus === "submitted"
+                          ? <SubmittedTag />
                           : weekly
                           ? <>
                               <span style={{ color: weekly.paused ? "var(--label-3)" : weekly.current?.completed ? "var(--green)" : "var(--label-1)" }}>
@@ -989,8 +989,8 @@ export function Projects({
                               <span style={microLabel}>Category</span>
                               <span>{p.colosseum?.category || "Uncategorised"}</span>
                               <span style={microLabel}>Submission</span>
-                              {p.colosseum?.maybeSubmitted
-                                ? <span><MaybeSubmittedTag /></span>
+                              {p.colosseum?.submissionStatus === "submitted"
+                                ? <span><SubmittedTag /></span>
                                 : <span>{SUBMISSION_LABELS[p.colosseum?.submissionStatus ?? "not_checked"]}</span>}
                             </div>
                             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>

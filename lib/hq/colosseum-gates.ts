@@ -21,7 +21,7 @@ export function gateEvidence(label: string): GateEvidence | null {
   return null;
 }
 
-/** The submission gate follows a confirmed submission, or both materials being in. */
+/** The submission gate follows Colosseum's confirmed submission (submittedAt), never the materials. */
 function proves(evidence: GateEvidence, row: Record<string, unknown>): boolean {
   const links = {
     presentation: row.presentation_link as string | null,
@@ -31,7 +31,7 @@ function proves(evidence: GateEvidence, row: Record<string, unknown>): boolean {
   };
   if (evidence === "pitch") return hasPitchMaterial(links);
   if (evidence === "demo") return hasDemoMaterial(links);
-  return (row.submission_status as SubmissionStatus) === "submitted" || (hasPitchMaterial(links) && hasDemoMaterial(links));
+  return (row.submission_status as SubmissionStatus) === "submitted";
 }
 
 /**

@@ -66,7 +66,7 @@ const grachtenpay: Project = {
   colosseum: {
     url: "https://colosseum.com/arena/projects/grachtenpay", imageUrl: null,
     description: "Tap-to-pay for Amsterdam canal boats and market stalls, settled in USDC on Solana.",
-    stage: "beta", category: "Payments", submissionStatus: "submitted", maybeSubmitted: false, leadUsername: "nienkev",
+    stage: "beta", category: "Payments", submissionStatus: "not_submitted", leadUsername: "nienkev",
     importedByName: "Nienke Visser", importedAt: "2026-09-15",
   },
   partnerId: "pt3", partnerName: "Rabobank Innovation", captainUserId: "c1", captainName: "Femke de Jong",
@@ -159,7 +159,7 @@ describe("the Projects board", () => {
     expect(html).toContain("Tap-to-pay for Amsterdam canal boats and market stalls, settled in USDC on Solana.");
     expect(html).toContain(">Beta / devnet testing<");
     expect(html).toContain(">Payments<");
-    expect(html).toContain(">Submitted<");
+    expect(html).toContain("<span>Not submitted</span>");
     expect(html).toMatch(/<a[^>]*href="https:\/\/colosseum\.com\/arena\/projects\/grachtenpay"[^>]*target="_blank"[^>]*rel="noopener noreferrer"[^>]*>View on Colosseum<\/a>/);
     expect(html).toMatch(/<button[^>]*aria-pressed="true"[^>]*>High potential ✓<\/button>/);
     expect(html).toContain("Imported from Colosseum by Nienke Visser on Sep 15.");
@@ -187,22 +187,24 @@ describe("the Projects board", () => {
     expect(html).not.toMatch(/[—·]/);
   });
 
-  it("tags a project with a pitch and a demo but no confirmed submission as Maybe submitted, in gold", () => {
-    const maybe: Project = { ...grachtenpay, colosseum: { ...grachtenpay.colosseum!, submissionStatus: "not_submitted", maybeSubmitted: true } };
-    const tag = /<span title="A pitch and a demo are on Colosseum, but Colosseum has not confirmed the submission"[^>]*background:var\(--gold-fill\);color:var\(--gold\)[^>]*>Maybe submitted<\/span>/g;
-    const collapsed = render(null, [maybe, kaasketen], [{ ...reporting[0], missedPeriods: 2 }]);
-    expect(render(null, [grachtenpay, kaasketen], [{ ...reporting[0], missedPeriods: 2 }])).toContain(">2 missed<");
-    expect(collapsed.match(tag)).toHaveLength(1);
-    // The row carries it in the Weekly column, in place of the week's state and missed weeks.
-    const weeklyCell = /data-label="Weekly"[^>]*>([\s\S]*?)<span class="[^"]*" data-label="Blocker"/.exec(collapsed)?.[1] ?? "";
-    expect(weeklyCell.match(tag)).toHaveLength(1);
-    expect(weeklyCell).not.toMatch(/Updated|missed|Not in reporting/);
-    // Expanded, the Submission line reads the same tag instead of Not submitted.
-    const expanded = render(GRACHTENPAY, [maybe, kaasketen]);
+  it("tags a project Colosseum confirms as submitted with a gold Submitted tag in place of its weekly state", () => {
+    const submitted: Project = { ...grachtenpay, colosseum: { ...grachtenpay.colosseum!, submissionStatus: "submitted" } };
+    const missedTwo = [{ ...reporting[0], missedPeriods: 2 }];
+    const tag = /<span title="Colosseum confirmed this project&#x27;s submission"[^>]*background:var\(--gold-fill\);color:var\(--gold\)[^>]*>Submitted<\/span>/g;
+    const weeklyCell = (html: string) => /data-label="Weekly"[^>]*>([\s\S]*?)<span class="[^"]*" data-label="Blocker"/.exec(html)?.[1] ?? "";
+    // Not submitted: the Weekly column keeps the week's state and missed weeks.
+    const before = render(null, [grachtenpay, kaasketen], missedTwo);
+    expect(weeklyCell(before)).toMatch(/>Updated<[\s\S]*>2 missed</);
+    expect(before.match(tag)).toBeNull();
+    // Submitted: the tag replaces them.
+    const after = render(null, [submitted, kaasketen], missedTwo);
+    expect(weeklyCell(after).match(tag)).toHaveLength(1);
+    expect(weeklyCell(after)).not.toMatch(/Updated|missed|Not in reporting/);
+    expect(after.match(tag)).toHaveLength(1);
+    // Expanded, the Submission line reads the same tag.
+    const expanded = render(GRACHTENPAY, [submitted, kaasketen]);
     expect(expanded.match(tag)).toHaveLength(2);
     expect(expanded).not.toContain("<span>Not submitted</span>");
-    expect(render()).not.toContain("Maybe submitted");
-    expect(render(GRACHTENPAY)).not.toContain("Maybe submitted");
   });
 
   it("expands a project created in HQ with the unlinked Colosseum copy, a free-text lead and the team modal button", () => {

@@ -17,8 +17,10 @@ export const SUBMISSION_LABELS: Record<SubmissionStatus, string> = {
 
 /**
  * A present, null submittedAt means a draft. Confirmed from public detail
- * responses in different editions; revert if a submitted project contradicts it.
- * Readiness is never submission evidence.
+ * responses in different editions, and live within one running edition on
+ * 2026-10-07: a project read null, then its submission time minutes after the
+ * team submitted. Revert if a submitted project contradicts it. Readiness is
+ * never submission evidence.
  */
 export const DRAFT_SIGNAL_CONFIRMED = true;
 
@@ -36,19 +38,6 @@ export const hasPitchMaterial = (links: PitchAndDemoLinks): boolean => Boolean(l
 
 /** A demo is on the snapshot: a demo or a technical demo video, mirrored the same way. */
 export const hasDemoMaterial = (links: PitchAndDemoLinks): boolean => Boolean(links.demoVideo || links.technicalDemo);
-
-export const MAYBE_SUBMITTED_LABEL = "Maybe submitted";
-
-/**
- * A pitch and a demo are in, but Colosseum has not confirmed a submission.
- * Its public API leaves submittedAt null while an edition is still running
- * (observed on 2026-10-07 for a team that had submitted), so this is the best
- * signal HQ has before results. Display only: it never sets a submission
- * status, a reporting outcome or a reconciliation.
- */
-export function isMaybeSubmitted(status: SubmissionStatus, links: PitchAndDemoLinks): boolean {
-  return status !== "submitted" && hasPitchMaterial(links) && hasDemoMaterial(links);
-}
 
 /** Whether a submission timestamp beat the edition's deadline. Null when either side is unknown. */
 export function submittedOnTime(submittedAt: string | null, submissionEnd: string | null, exclusiveEnd = false): boolean | null {

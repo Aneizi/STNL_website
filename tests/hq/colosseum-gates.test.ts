@@ -1,7 +1,7 @@
 // Ticking submission gates from the Colosseum snapshot, against the real
-// schema on PGlite. Colosseum's public API leaves submittedAt null while an
-// edition runs, so a pitch and a demo on the snapshot is the best evidence HQ
-// has: it ticks the matching gates once, and an operator who unticks one wins.
+// schema on PGlite. A pitch link ticks the pitch gate, a demo link the demo
+// gate, and Colosseum's confirmed submission (submittedAt) the submission
+// gate. Each is ticked once, and an operator who unticks one wins.
 import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -9,7 +9,6 @@ vi.mock("server-only", () => ({}));
 
 import type { BuilderDatabase } from "@/lib/hq/builder-db";
 import { gateEvidence, tickColosseumGates } from "@/lib/hq/colosseum-gates";
-import { isMaybeSubmitted } from "@/lib/hq/colosseum-snapshot";
 import { createMigratedDatabase, pgliteBuilderDatabase } from "./helpers/db";
 
 const EDITION = 81;
@@ -21,7 +20,6 @@ const GATES = ["Colosseum registration", "Working MVP", "Pitch video, 2 min max"
 
 const PITCH = "https://www.youtube.com/watch?v=pitch";
 const DEMO = "https://www.youtube.com/watch?v=demo";
-const noLinks = { presentation: null, pitchVideo: null, technicalDemo: null, demoVideo: null };
 
 let pg: PGlite;
 let db: BuilderDatabase;
@@ -77,16 +75,6 @@ beforeEach(async () => {
   }
 });
 
-describe("maybe submitted", () => {
-  it("needs a pitch and a demo, and never overrides a confirmed submission", () => {
-    expect(isMaybeSubmitted("not_submitted", { ...noLinks, presentation: PITCH, demoVideo: DEMO })).toBe(true);
-    expect(isMaybeSubmitted("not_checked", { ...noLinks, pitchVideo: PITCH, technicalDemo: DEMO })).toBe(true);
-    expect(isMaybeSubmitted("not_submitted", { ...noLinks, presentation: PITCH })).toBe(false);
-    expect(isMaybeSubmitted("not_submitted", { ...noLinks, demoVideo: DEMO })).toBe(false);
-    expect(isMaybeSubmitted("submitted", { ...noLinks, presentation: PITCH, demoVideo: DEMO })).toBe(false);
-  });
-});
-
 describe("gate evidence", () => {
   it("recognises the pitch, demo and submission gates by their wording", () => {
     expect(gateEvidence("Pitch video, 2 min max")).toBe("pitch");
@@ -102,10 +90,10 @@ describe("gate evidence", () => {
 });
 
 describe("tickColosseumGates", () => {
-  it("ticks the pitch, demo and submission gates when both materials are on the snapshot", async () => {
+  it("ticks the pitch and demo gates from their links, but not the submission gate without a confirmed submission", async () => {
     await seedProject(PROJECT_A, EDITION, { presentation: PITCH, pitchVideo: PITCH, demoVideo: DEMO, technicalDemo: DEMO });
-    expect(await tickColosseumGates(db)).toBe(3);
-    expect(await ticked(PROJECT_A)).toEqual(["Pitch video, 2 min max", "Technical video, 2 min max", "Colosseum submission"]);
+    expect(await tickColosseumGates(db)).toBe(2);
+    expect(await ticked(PROJECT_A)).toEqual(["Pitch video, 2 min max", "Technical video, 2 min max"]);
   });
 
   it("ticks only the gate a single material proves, and leaves the submission gate alone", async () => {
@@ -123,8 +111,8 @@ describe("tickColosseumGates", () => {
   });
 
   it("does not tick a gate again after an operator unticks it", async () => {
-    await seedProject(PROJECT_A, EDITION, { presentation: PITCH, demoVideo: DEMO });
-    await tickColosseumGates(db);
+    await seedProject(PROJECT_A, EDITION, { status: "submitted", presentation: PITCH, demoVideo: DEMO });
+    expect(await tickColosseumGates(db)).toBe(3);
     await rows(
       `DELETE FROM hq_project_gates WHERE project_id = $1 AND gate_id = (SELECT id FROM hq_submission_gates WHERE hackathon_id = $2 AND label = 'Colosseum submission')`,
       [PROJECT_A, EDITION],
@@ -139,8 +127,8 @@ describe("tickColosseumGates", () => {
       `INSERT INTO hq_project_gates(project_id,gate_id) SELECT $1, id FROM hq_submission_gates WHERE hackathon_id = $2 AND label IN ('Working MVP','Pitch video, 2 min max')`,
       [PROJECT_A, EDITION],
     );
-    expect(await tickColosseumGates(db)).toBe(2);
-    expect(await ticked(PROJECT_A)).toEqual(["Working MVP", "Pitch video, 2 min max", "Technical video, 2 min max", "Colosseum submission"]);
+    expect(await tickColosseumGates(db)).toBe(1);
+    expect(await ticked(PROJECT_A)).toEqual(["Working MVP", "Pitch video, 2 min max", "Technical video, 2 min max"]);
   });
 
   it("scopes to the projects or edition asked for and skips archived editions", async () => {
@@ -149,10 +137,10 @@ describe("tickColosseumGates", () => {
     await seedProject(OLD_PROJECT, ARCHIVED, { presentation: PITCH, demoVideo: DEMO });
     await tickColosseumGates(db, { projectIds: [PROJECT_B] });
     expect(await ticked(PROJECT_A)).toEqual([]);
-    expect(await ticked(PROJECT_B)).toHaveLength(3);
+    expect(await ticked(PROJECT_B)).toHaveLength(2);
     expect(await tickColosseumGates(db, { projectIds: [] })).toBe(0);
     await tickColosseumGates(db, { hackathonId: EDITION });
-    expect(await ticked(PROJECT_A)).toHaveLength(3);
+    expect(await ticked(PROJECT_A)).toHaveLength(2);
     await tickColosseumGates(db);
     expect(await ticked(OLD_PROJECT)).toEqual([]);
   });
