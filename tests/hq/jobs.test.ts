@@ -685,6 +685,21 @@ describe("runDueWork", () => {
     expect((await outgoing())[0]).toMatchObject({ state: "queued" });
   });
 
+  it("ticks submission gates from the stored Colosseum snapshots on the same pass", async () => {
+    await rows(
+      `INSERT INTO hq_submission_gates(hackathon_id,label,sort) VALUES($1,'Pitch video, 2 min max',0),($1,'Technical video, 2 min max',1),($1,'Colosseum submission',2),($1,'Working MVP',3)`,
+      [EDITION],
+    );
+    await seedTeamMember(PROJECT_A, TEAM_MEMBER);
+    await rows(
+      `UPDATE hq_project_onboarding SET presentation_link='https://www.youtube.com/watch?v=pitch', demo_video_link='https://www.youtube.com/watch?v=demo' WHERE project_id=$1`,
+      [PROJECT_A],
+    );
+    const summary = await runDueWork({ db, sender: null, now: NUDGE_1 });
+    expect(summary.submissions.gatesTicked).toBe(3);
+    expect(await rows("SELECT count(*)::int AS n FROM hq_project_gates WHERE project_id=$1", [PROJECT_A])).toEqual([{ n: 3 }]);
+  });
+
   it("sweeps expired bot state on the same pass", async () => {
     await rows(
       `INSERT INTO hq_telegram_drafts(user_id,chat_id,project_id,hackathon_id,step,expires_at) VALUES($1,$2::bigint,$3::uuid,$4,'awaiting_text',$5::timestamptz)`,

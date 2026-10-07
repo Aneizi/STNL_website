@@ -13,7 +13,7 @@ import { assignCaptain } from "@/lib/hq/captains";
 import { correctPersonMatch, ensurePersonForRosterMember, linkPersonToAccount, normalizeColosseumUsername } from "@/lib/hq/crm-identity";
 import { deleteTeamRecord } from "@/lib/hq/record-deletion";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
-import { pgliteBuilderDatabase } from "./helpers/db";
+import { applyNumberedMigrations, pgliteBuilderDatabase } from "./helpers/db";
 
 vi.mock("server-only", () => ({}));
 const actionMocks = vi.hoisted(() => ({ requireMember: vi.fn() }));
@@ -100,6 +100,7 @@ beforeAll(async () => {
   await pg.exec(readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8"));
   await applyUpgrades({ query: async text => rows(text) });
   await pg.exec(readFileSync(join(process.cwd(), "scripts/hq/builder-schema.sql"), "utf8"));
+  await applyNumberedMigrations(pg);
   store = new BuilderStore(db);
 }, 30_000);
 
@@ -746,6 +747,20 @@ describe("refreshing a team's Colosseum snapshot", () => {
     await store.refreshTeam({ projectId: id, hackathonId: 41, project: PROJECT });
     expect(await rows("SELECT id,name,colosseum_username,person_id FROM hq_project_members WHERE project_id=$1 ORDER BY sort", [id])).toEqual(first);
     expect(await rows("SELECT count(*)::int AS n FROM hq_people WHERE hackathon_id=41")).toEqual([{ n: 3 }]);
+  });
+
+  it("ticks the submission gates the snapshot proves, on import and on refresh", async () => {
+    for (const [sort, label] of ["Pitch video, 2 min max", "Technical video, 2 min max", "Colosseum submission", "Working MVP"].entries()) {
+      await db.query("INSERT INTO hq_submission_gates(hackathon_id,label,sort) VALUES(41,$1,$2)", [label, sort]);
+    }
+    const gates = async (id: string) => (await rows(`SELECT g.label FROM hq_project_gates t JOIN hq_submission_gates g ON g.id=t.gate_id
+      WHERE t.project_id=$1 ORDER BY g.sort`, [id])).map(row => row.label);
+    // Colosseum confirmed this one, so its submission gate is ticked on import.
+    const id = await importProject();
+    expect(await gates(id)).toEqual(["Colosseum submission"]);
+    await store.refreshTeam({ projectId: id, hackathonId: 41, project: { ...PROJECT, submittedAt: null,
+      links: { ...PROJECT.links, pitchVideoLink: "https://www.youtube.com/watch?v=pitch", demoVideoLink: "https://www.youtube.com/watch?v=demo" } } });
+    expect(await gates(id)).toEqual(["Pitch video, 2 min max", "Technical video, 2 min max", "Colosseum submission"]);
   });
 
   it("a failed check records the failure and keeps the last known submission status", async () => {

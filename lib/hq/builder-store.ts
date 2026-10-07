@@ -4,6 +4,7 @@ import type { ImportedProject } from '@/lib/colosseum-api';
 import { recordAuditEvent } from './audit';
 import { builderDatabase, type BuilderDatabase, type BuilderQuery } from './builder-db';
 import { BuilderError, ImportRefusedError, isNetherlands, type BuilderHackathon, type BuilderIdentity, type BuilderTeam, type BuilderUser, type JoinLinkLookup, type ProjectStage } from './builder-types';
+import { tickColosseumGates } from './colosseum-gates';
 import { interpretSubmission, toSnapshotFields, type SubmissionStatus } from './colosseum-snapshot';
 import { correctPersonMatch, ensurePersonForAccount, ensurePersonForRosterMember, normalizeColosseumUsername } from './crm-identity';
 import { isPlaceholderEmail } from './placeholder-email';
@@ -179,6 +180,7 @@ async function insertSnapshot(db: BuilderQuery, input: {
       interpretSubmission({ checked: true, submittedAt: snapshot.submittedAt }),
       JSON.stringify(snapshot.raw), input.ownerUserId, input.leadUsername],
   );
+  if (created.length) await tickColosseumGates(db, { projectIds: [input.projectId] });
   return created.length > 0;
 }
 
@@ -429,6 +431,7 @@ export class BuilderStore {
       if (!rows.length) throw new BuilderError('This team is no longer in HQ.');
       await db.query('UPDATE hq_projects SET name=$2 WHERE id=$1::uuid', [input.projectId, snapshot.name]);
       await upsertRoster(db, { projectId: input.projectId, members: input.project.members });
+      await tickColosseumGates(db, { projectIds: [input.projectId] });
     });
     return submission;
   }

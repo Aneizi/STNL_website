@@ -1,5 +1,6 @@
 import "server-only";
 import type { ColosseumFetch } from "@/lib/colosseum-api";
+import { tickColosseumGates } from "./colosseum-gates";
 import { syncDueColosseumUpdates } from "./colosseum-updates";
 import type { Actor } from "./actor";
 import { atomically, builderDatabase, type BuilderDatabase, type BuilderQuery } from "./builder-db";
@@ -534,9 +535,10 @@ export type JobRunSummary = {
   delivery: FlushResult | null;
   /**
    * Configured source refresh and closing reconciliation, both bounded by batch
-   * and time budgets because they call Colosseum.
+   * and time budgets because they call Colosseum. `gatesTicked` counts the
+   * submission gates newly ticked from stored snapshots, a database-only sweep.
    */
-  submissions: { refreshed: SubmissionRefreshSummary; reconciled: ReconcileSummary; reconciliationsOpened: number };
+  submissions: { refreshed: SubmissionRefreshSummary; reconciled: ReconcileSummary; reconciliationsOpened: number; gatesTicked: number };
   purged: PurgeResult & { reminders: number };
 };
 
@@ -631,6 +633,10 @@ export async function runDueWork(
     ...(options.colosseumFetch ? { fetcher: options.colosseumFetch } : {}),
   });
 
+  // Import and refresh tick gates as they write a snapshot; this catches the
+  // snapshots stored before gate ticking existed, and any gate added since.
+  const gatesTicked = await tickColosseumGates(db, options.hackathonId != null ? { hackathonId: options.hackathonId } : {});
+
   const reconciled = await reconcileReminderDeliveries(db);
   const colosseumUpdates = await syncDueColosseumUpdates(db, {
     now, deadlineMs, hackathonId: options.hackathonId, fetcher: options.colosseumFetch,
@@ -645,7 +651,7 @@ export async function runDueWork(
     closures: { closed: closures.closed.length, periods: closures.closed },
     reminders: { due: due.length, queued, skipped, alreadyRecorded, expired, reconciled },
     delivery,
-    submissions: { refreshed, reconciled: reconciledSubmissions, reconciliationsOpened: closures.reconciliationsOpened },
+    submissions: { refreshed, reconciled: reconciledSubmissions, reconciliationsOpened: closures.reconciliationsOpened, gatesTicked },
     purged: { ...purged, reminders: purgedReminders },
   };
 }

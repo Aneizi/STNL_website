@@ -1,4 +1,5 @@
 import type { ImportedProject } from "@/lib/colosseum-api";
+import type { SubmissionMaterialLinks } from "./submission-readiness";
 
 /** Pure snapshot normalization and submission interpretation shared by every surface. */
 
@@ -26,6 +27,27 @@ export function interpretSubmission(input: { checked: boolean; submittedAt: stri
   if (!input.checked) return "not_checked";
   if (input.submittedAt) return "submitted";
   return DRAFT_SIGNAL_CONFIRMED ? "not_submitted" : "not_checked";
+}
+
+type PitchAndDemoLinks = Pick<SubmissionMaterialLinks, "presentation" | "pitchVideo" | "technicalDemo" | "demoVideo">;
+
+/** A pitch is on the snapshot: a deck or a pitch video. Colosseum mirrors one into the other, so either counts. */
+export const hasPitchMaterial = (links: PitchAndDemoLinks): boolean => Boolean(links.presentation || links.pitchVideo);
+
+/** A demo is on the snapshot: a demo or a technical demo video, mirrored the same way. */
+export const hasDemoMaterial = (links: PitchAndDemoLinks): boolean => Boolean(links.demoVideo || links.technicalDemo);
+
+export const MAYBE_SUBMITTED_LABEL = "Maybe submitted";
+
+/**
+ * A pitch and a demo are in, but Colosseum has not confirmed a submission.
+ * Its public API leaves submittedAt null while an edition is still running
+ * (observed on 2026-10-07 for a team that had submitted), so this is the best
+ * signal HQ has before results. Display only: it never sets a submission
+ * status, a reporting outcome or a reconciliation.
+ */
+export function isMaybeSubmitted(status: SubmissionStatus, links: PitchAndDemoLinks): boolean {
+  return status !== "submitted" && hasPitchMaterial(links) && hasDemoMaterial(links);
 }
 
 /** Whether a submission timestamp beat the edition's deadline. Null when either side is unknown. */
