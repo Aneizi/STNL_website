@@ -96,10 +96,14 @@ const reporting: ProjectReportingStatus[] = [{
 
 const NOW = Date.parse("2026-09-16T18:00:00Z");
 
-const render = (expandId: string | null = null, projects: Project[] = [grachtenpay, kaasketen]) => renderToStaticMarkup(createElement(Projects, {
+const render = (
+  expandId: string | null = null,
+  projects: Project[] = [grachtenpay, kaasketen],
+  reportingRows: ProjectReportingStatus[] = reporting,
+) => renderToStaticMarkup(createElement(Projects, {
   projects,
   captainOptions: [{ id: "c1", name: "Femke de Jong" }, { id: "c2", name: "Joost Vermeer" }],
-  reporting, classifiers, settings, now: NOW, expandId,
+  reporting: reportingRows, classifiers, settings, now: NOW, expandId,
 }));
 
 describe("the Projects board", () => {
@@ -186,7 +190,13 @@ describe("the Projects board", () => {
   it("tags a project with a pitch and a demo but no confirmed submission as Maybe submitted, in gold", () => {
     const maybe: Project = { ...grachtenpay, colosseum: { ...grachtenpay.colosseum!, submissionStatus: "not_submitted", maybeSubmitted: true } };
     const tag = /<span title="A pitch and a demo are on Colosseum, but Colosseum has not confirmed the submission"[^>]*background:var\(--gold-fill\);color:var\(--gold\)[^>]*>Maybe submitted<\/span>/g;
-    expect(render(null, [maybe, kaasketen]).match(tag)).toHaveLength(1);
+    const collapsed = render(null, [maybe, kaasketen], [{ ...reporting[0], missedPeriods: 2 }]);
+    expect(render(null, [grachtenpay, kaasketen], [{ ...reporting[0], missedPeriods: 2 }])).toContain(">2 missed<");
+    expect(collapsed.match(tag)).toHaveLength(1);
+    // The row carries it in the Weekly column, in place of the week's state and missed weeks.
+    const weeklyCell = /data-label="Weekly"[^>]*>([\s\S]*?)<span class="[^"]*" data-label="Blocker"/.exec(collapsed)?.[1] ?? "";
+    expect(weeklyCell.match(tag)).toHaveLength(1);
+    expect(weeklyCell).not.toMatch(/Updated|missed|Not in reporting/);
     // Expanded, the Submission line reads the same tag instead of Not submitted.
     const expanded = render(GRACHTENPAY, [maybe, kaasketen]);
     expect(expanded.match(tag)).toHaveLength(2);

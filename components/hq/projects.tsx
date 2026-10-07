@@ -173,7 +173,7 @@ const segmentButton = (on: boolean): CSSProperties => ({
 // needs no more than the glyph. Weekly holds "Not updated" plus a missed
 // count, so it needs a little more than Check-in. The last track is the
 // action column, wide enough for the two-step delete's "Sure?".
-const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 125px 77px 55px";
+const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 150px 77px 55px";
 
 /** Colosseum hides submittedAt while an edition runs, so a pitch and a demo in place is the best signal HQ has. */
 function MaybeSubmittedTag() {
@@ -890,7 +890,6 @@ export function Projects({
                           {done}/{gatesTotal}
                         </span>
                       </span>
-                      {p.colosseum?.maybeSubmitted ? <span style={{ display: "block", marginTop: 4 }}><MaybeSubmittedTag /></span> : null}
                       </span>
                       <span
                         data-label="Check-in"
@@ -903,11 +902,13 @@ export function Projects({
                         {fmtDate(p.lastCheckIn)}
                       </span>
                       {/* The week as HQ records it, with any earlier weeks
-                          missed underneath. Colosseum's own submitted signal
-                          stays out of this column: they are separate facts,
-                          and the filters above keep them separate too. */}
+                          missed underneath. A Maybe submitted project shows
+                          the tag instead; the filters above still read the
+                          weekly and Colosseum signals separately. */}
                       <span data-label="Weekly" style={{ fontSize: 16, color: "var(--label-2)", lineHeight: 1.25 }}>
-                        {weekly
+                        {p.colosseum?.maybeSubmitted
+                          ? <MaybeSubmittedTag />
+                          : weekly
                           ? <>
                               <span style={{ color: weekly.paused ? "var(--label-3)" : weekly.current?.completed ? "var(--green)" : "var(--label-1)" }}>
                                 {weekly.paused ? "Paused" : weekly.current ? statusLabel(weekly.current.completed) : "No open week"}
