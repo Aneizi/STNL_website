@@ -121,7 +121,7 @@ async function seedAssignedCaptain(userId: string, projectId: string) {
  * `submittedAt` is the whole point: null is a draft, a timestamp is a
  * submission, and `interpretSubmission` is the one thing that reads it.
  */
-function detailBody(slug: string, options: { submittedAt?: string | null; links?: Record<string, string> } = {}) {
+function detailBody(slug: string, options: { submittedAt?: string | null; links?: Record<string, string>; country?: string | null } = {}) {
   return {
     projectType: "HACKATHON",
     project: {
@@ -133,7 +133,7 @@ function detailBody(slug: string, options: { submittedAt?: string | null; links?
       slug,
       name: `Project ${slug}`,
       description: "A fictional project used only in tests.",
-      country: "Netherlands",
+      country: options.country === undefined ? "Netherlands" : options.country,
       submittedAt: options.submittedAt ?? null,
       hackathon: { id: 4242, slug: "fictional-edition", name: "Fictional Edition" },
       teamMembers: [{ username: slug, displayName: slug, avatarUrl: null }],
@@ -453,31 +453,40 @@ describe("what an authorized member is shown in the final period", () => {
 });
 
 describe("checking submissions from the Projects board", () => {
-  it("re-reads every imported project not yet confirmed and counts the ones Colosseum now confirms", async () => {
+  const none = { checked: 0, submitted: 0, newlySubmitted: 0, notNetherlands: 0, failed: 0 };
+
+  it("re-reads every imported project and counts the ones Colosseum confirms", async () => {
     const fetcher = stubFetch({ alice: detailBody("alice", { submittedAt: "2026-10-07T14:32:39.206Z" }), bob: detailBody("bob") });
-    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher })).toEqual({ checked: 2, submitted: 1, failed: 0 });
+    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher })).toEqual({ ...none, checked: 2, submitted: 1, newlySubmitted: 1 });
     expect([...fetcher.calls].sort()).toEqual(["alice", "bob"]);
     const snapshots = await readSubmissionSnapshots(db, [PROJECT_A, PROJECT_B]);
     expect(snapshots.get(PROJECT_A)).toMatchObject({ submissionStatus: "submitted", submittedAt: "2026-10-07T14:32:39.206Z", sourceStatus: "ok" });
     expect(snapshots.get(PROJECT_B)).toMatchObject({ submissionStatus: "not_submitted", sourceStatus: "ok" });
   });
 
-  it("skips a project Colosseum already confirmed, and one with no Colosseum link", async () => {
+  it("re-reads a project already confirmed, so a country changed at submission is caught, and skips one with no Colosseum link", async () => {
     await seedProject(BARE_PROJECT, "Bare");
-    await rows(`UPDATE hq_project_onboarding SET submission_status='submitted', submitted_at='2026-10-06T10:00:00Z' WHERE project_id=$1`, [PROJECT_A]);
-    const fetcher = stubFetch({ bob: detailBody("bob") });
-    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher })).toEqual({ checked: 1, submitted: 0, failed: 0 });
-    expect(fetcher.calls).toEqual(["bob"]);
+    await rows(`UPDATE hq_project_onboarding SET submission_status='submitted', submitted_at='2026-10-06T10:00:00Z', country='Netherlands' WHERE project_id=$1`, [PROJECT_A]);
+    const fetcher = stubFetch({
+      alice: detailBody("alice", { submittedAt: "2026-10-06T10:00:00Z", country: "Germany" }),
+      bob: detailBody("bob", { country: null }),
+    });
+    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher }))
+      .toEqual({ ...none, checked: 2, submitted: 1, newlySubmitted: 0, notNetherlands: 2 });
+    expect([...fetcher.calls].sort()).toEqual(["alice", "bob"]);
+    // The snapshot records what Colosseum says now; nothing is refused or removed.
+    expect(await rows(`SELECT country, submission_status FROM hq_project_onboarding WHERE project_id=$1`, [PROJECT_A]))
+      .toEqual([{ country: "Germany", submission_status: "submitted" }]);
   });
 
   it("checks only the selected edition", async () => {
     const fetcher = stubFetch({ alice: detailBody("alice"), bob: detailBody("bob") });
-    expect(await checkSubmissions(db, { hackathonId: EDITION + 1, fetcher })).toEqual({ checked: 0, submitted: 0, failed: 0 });
+    expect(await checkSubmissions(db, { hackathonId: EDITION + 1, fetcher })).toEqual(none);
     expect(fetcher.calls).toEqual([]);
   });
 
   it("keeps the last known status and records the failure when the source cannot be read", async () => {
-    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher: brokenFetch })).toEqual({ checked: 2, submitted: 0, failed: 2 });
+    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher: brokenFetch })).toEqual({ ...none, checked: 2, failed: 2 });
     expect((await readSubmissionSnapshots(db, [PROJECT_A])).get(PROJECT_A)).toMatchObject({ submissionStatus: "not_checked", sourceStatus: "error" });
   });
 });

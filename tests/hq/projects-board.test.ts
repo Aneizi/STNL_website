@@ -66,7 +66,7 @@ const grachtenpay: Project = {
   colosseum: {
     url: "https://colosseum.com/arena/projects/grachtenpay", imageUrl: null,
     description: "Tap-to-pay for Amsterdam canal boats and market stalls, settled in USDC on Solana.",
-    stage: "beta", category: "Payments", submissionStatus: "not_submitted", leadUsername: "nienkev",
+    stage: "beta", category: "Payments", country: "Netherlands", submissionStatus: "not_submitted", leadUsername: "nienkev",
     importedByName: "Nienke Visser", importedAt: "2026-09-15",
   },
   partnerId: "pt3", partnerName: "Rabobank Innovation", captainUserId: "c1", captainName: "Femke de Jong",
@@ -207,6 +207,24 @@ describe("the Projects board", () => {
     const expanded = render(GRACHTENPAY, [submitted, kaasketen]);
     expect(expanded.match(tag)).toHaveLength(2);
     expect(expanded).not.toContain("<span>Not submitted</span>");
+  });
+
+  it("flags a project Colosseum no longer lists in the Netherlands, beside any Submitted tag", () => {
+    const moved: Project = { ...grachtenpay, colosseum: { ...grachtenpay.colosseum!, country: "Germany", submissionStatus: "submitted" } };
+    const flag = /<span title="Colosseum lists Germany, not the Netherlands"[^>]*background:var\(--red\);color:var\(--card\)[^>]*>Not in NL<\/span>/g;
+    const weeklyCell = (html: string) => /data-label="Weekly"[^>]*>([\s\S]*?)<span class="[^"]*" data-label="Blocker"/.exec(html)?.[1] ?? "";
+    const collapsed = weeklyCell(render(null, [moved, kaasketen]));
+    expect(collapsed).toMatch(/>Not in NL<\/span>[\s\S]*>Submitted<\/span>/);
+    expect(collapsed.match(flag)).toHaveLength(1);
+    expect(collapsed).not.toContain(">Updated<");
+    // Not submitted and not in the Netherlands: the flag alone replaces the week.
+    const draft: Project = { ...moved, colosseum: { ...moved.colosseum!, submissionStatus: "not_submitted" } };
+    expect(weeklyCell(render(null, [draft, kaasketen]))).toMatch(/^<span title="Colosseum lists Germany[^>]*>Not in NL<\/span><\/span>$/);
+    // Expanded, the Colosseum block names the country, in red.
+    expect(render(GRACHTENPAY, [moved, kaasketen])).toMatch(/>Country<\/span><span style="color:var\(--red\)">Germany<\/span>/);
+    // A Netherlands project carries neither.
+    expect(render()).not.toContain("Not in NL");
+    expect(render(GRACHTENPAY)).toMatch(/>Country<\/span><span>Netherlands<\/span>/);
   });
 
   it("expands a project created in HQ with the unlinked Colosseum copy, a free-text lead and the team modal button", () => {

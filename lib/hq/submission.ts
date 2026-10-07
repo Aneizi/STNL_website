@@ -2,6 +2,7 @@ import "server-only";
 import type { ColosseumFetch } from "@/lib/colosseum-api";
 import type { Actor } from "./actor";
 import type { BuilderDatabase, BuilderQuery } from "./builder-db";
+import { isNetherlands } from "./builder-types";
 import { submittedOnTime, type SubmissionStatus } from "./colosseum-snapshot";
 import { HQ_JOBS_AUDIENCE } from "./github-actions-auth";
 import { refreshColosseumTeam } from "./project-import";
@@ -158,33 +159,38 @@ export async function readSubmissionReconciliations(
 }
 
 export type SubmissionCheckSummary = {
-  /** Imported projects read from Colosseum: every one in the edition not already confirmed as submitted. */
+  /** Imported projects read from Colosseum. */
   checked: number;
-  /** How many of those Colosseum now confirms as submitted. */
+  /** How many of those Colosseum confirms as submitted. */
   submitted: number;
+  /** How many of those were not confirmed before this check. */
+  newlySubmitted: number;
+  /** How many of those Colosseum no longer lists in the Netherlands (the import rule). */
+  notNetherlands: number;
   /** Reads that failed; those projects keep their last snapshot. */
   failed: number;
 };
 
 /**
  * The Projects board's Check submissions button: re-read Colosseum for every
- * imported project in the edition that has no confirmed submission yet, a few
- * at a time. A confirmed submission is final, so it is not read again. Each
- * refresh updates the snapshot and ticks the gates it proves.
+ * imported project in the edition, a few at a time. Projects already
+ * confirmed are read again too, so a country changed at submission is caught.
+ * Each refresh records what Colosseum says now (country included, never
+ * refused) and ticks the gates it proves.
  */
 export async function checkSubmissions(
   db: BuilderQuery,
   input: { hackathonId: number; fetcher?: ColosseumFetch },
 ): Promise<SubmissionCheckSummary> {
   const { rows } = await db.query(
-    `SELECT o.project_id::text AS project_id, o.project_url
+    `SELECT o.project_id::text AS project_id, o.project_url, o.submission_status
      FROM hq_project_onboarding o
      JOIN hq_projects p ON p.id = o.project_id
-     WHERE p.hackathon_id = $1 AND o.submission_status <> 'submitted'
+     WHERE p.hackathon_id = $1
      ORDER BY p.name, o.project_id`,
     [input.hackathonId],
   );
-  const summary: SubmissionCheckSummary = { checked: 0, submitted: 0, failed: 0 };
+  const summary: SubmissionCheckSummary = { checked: 0, submitted: 0, newlySubmitted: 0, notNetherlands: 0, failed: 0 };
   let next = 0;
   const worker = async () => {
     while (next < rows.length) {
@@ -194,8 +200,15 @@ export async function checkSubmissions(
         input.fetcher ?? fetch,
       );
       summary.checked += 1;
-      if (!outcome.ok) summary.failed += 1;
-      else if (outcome.submission === "submitted") summary.submitted += 1;
+      if (!outcome.ok) {
+        summary.failed += 1;
+        continue;
+      }
+      if (outcome.submission === "submitted") {
+        summary.submitted += 1;
+        if (row.submission_status !== "submitted") summary.newlySubmitted += 1;
+      }
+      if (!isNetherlands(outcome.country)) summary.notNetherlands += 1;
     }
   };
   await Promise.all(Array.from({ length: Math.min(CHECK_CONCURRENCY, rows.length) }, worker));

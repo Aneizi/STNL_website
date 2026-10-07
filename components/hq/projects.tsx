@@ -32,10 +32,11 @@ import {
   updateProjectDetail,
   updateProjectMember,
 } from "@/lib/hq/actions/projects";
-import { PROJECT_STAGES } from "@/lib/hq/builder-types";
+import { PROJECT_STAGES, isNetherlands } from "@/lib/hq/builder-types";
 import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
 import type { ProjectReportingStatus } from "@/lib/hq/reporting";
+import type { SubmissionCheckSummary } from "@/lib/hq/submission";
 import { SUBMISSION_FILTER_LABEL, statusLabel } from "@/lib/hq/reporting-view";
 import type {
   Classifiers,
@@ -176,12 +177,35 @@ const segmentButton = (on: boolean): CSSProperties => ({
 // action column, wide enough for the two-step delete's "Sure?".
 const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 125px 77px 55px";
 
+const tagStyle: CSSProperties = {
+  display: "inline-block",
+  fontSize: 12,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  whiteSpace: "nowrap",
+  padding: "2px 6px",
+};
+
 /** The toast after Check submissions. */
-function submissionCheckMessage(summary: { checked: number; submitted: number; failed: number }): string {
-  if (!summary.checked) return "Every imported project is already confirmed as submitted.";
+function submissionCheckMessage(summary: SubmissionCheckSummary): string {
+  if (!summary.checked) return "No imported projects to check.";
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-  return `Checked ${plural(summary.checked, "project")}: ${summary.submitted} newly submitted.`
+  return `Checked ${plural(summary.checked, "project")}: ${summary.submitted} submitted, ${summary.newlySubmitted} of them new.`
+    + (summary.notNetherlands ? ` ${plural(summary.notNetherlands, "project")} no longer in the Netherlands.` : "")
     + (summary.failed ? ` ${plural(summary.failed, "project")} could not be read from Colosseum.` : "");
+}
+
+/** Imports require the Netherlands; a team can change the country on Colosseum afterwards, at submission or later. */
+function NotNetherlandsTag({ country }: { country: string | null }) {
+  return (
+    <span
+      title={`Colosseum lists ${country || "no country"}, not the Netherlands`}
+      style={{ ...tagStyle, background: "var(--red)", color: "var(--card)" }}
+    >
+      Not in NL
+    </span>
+  );
 }
 
 /** Colosseum's own submittedAt, read from the public project API: an official, confirmed submission. */
@@ -189,17 +213,7 @@ function SubmittedTag() {
   return (
     <span
       title="Colosseum confirmed this project's submission"
-      style={{
-        display: "inline-block",
-        fontSize: 12,
-        fontWeight: 600,
-        textTransform: "uppercase",
-        letterSpacing: "0.08em",
-        whiteSpace: "nowrap",
-        padding: "2px 6px",
-        background: "var(--gold-fill)",
-        color: "var(--gold)",
-      }}
+      style={{ ...tagStyle, background: "var(--gold-fill)", color: "var(--gold)" }}
     >
       {SUBMISSION_LABELS.submitted}
     </span>
@@ -801,6 +815,8 @@ export function Projects({
                 const weekly = reportingBy.get(p.id) ?? null;
                 const expanded = expandedId === p.id;
                 const colosseumUrl = p.colosseum ? projectHref(p.colosseum.url) : undefined;
+                const notNetherlands = p.colosseum ? !isNetherlands(p.colosseum.country) : false;
+                const submitted = p.colosseum?.submissionStatus === "submitted";
                 // Imported rosters include the lead, who already has a dedicated
                 // chip below. Match the username so namesakes stay on the team.
                 const leadUsername = p.colosseum?.leadUsername.trim().toLowerCase();
@@ -933,12 +949,16 @@ export function Projects({
                         {fmtDate(p.lastCheckIn)}
                       </span>
                       {/* The week as HQ records it, with any earlier weeks
-                          missed underneath. A project Colosseum confirms as
-                          submitted shows the Submitted tag instead; the
-                          filters above still read the two signals separately. */}
+                          missed underneath. A project no longer listed in the
+                          Netherlands, or confirmed as submitted, shows those
+                          tags instead; the filters above still read the
+                          weekly and Colosseum signals separately. */}
                       <span data-label="Weekly" style={{ fontSize: 16, color: "var(--label-2)", lineHeight: 1.25 }}>
-                        {p.colosseum?.submissionStatus === "submitted"
-                          ? <SubmittedTag />
+                        {notNetherlands || submitted
+                          ? <>
+                              {notNetherlands ? <NotNetherlandsTag country={p.colosseum?.country ?? null} /> : null}
+                              {submitted ? <span style={{ display: "block", marginTop: notNetherlands ? 4 : 0 }}><SubmittedTag /></span> : null}
+                            </>
                           : weekly
                           ? <>
                               <span style={{ color: weekly.paused ? "var(--label-3)" : weekly.current?.completed ? "var(--green)" : "var(--label-1)" }}>
@@ -1019,8 +1039,14 @@ export function Projects({
                               <span>{p.colosseum ? stageLabel(p.colosseum.stage) : "Unknown"}</span>
                               <span style={microLabel}>Category</span>
                               <span>{p.colosseum?.category || "Uncategorised"}</span>
+                              {p.colosseum ? (
+                                <>
+                                  <span style={microLabel}>Country</span>
+                                  <span style={notNetherlands ? { color: "var(--red)" } : undefined}>{p.colosseum.country || "Not set"}</span>
+                                </>
+                              ) : null}
                               <span style={microLabel}>Submission</span>
-                              {p.colosseum?.submissionStatus === "submitted"
+                              {submitted
                                 ? <span><SubmittedTag /></span>
                                 : <span>{SUBMISSION_LABELS[p.colosseum?.submissionStatus ?? "not_checked"]}</span>}
                             </div>

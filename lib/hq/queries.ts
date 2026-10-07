@@ -169,7 +169,7 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
       COALESCE(u.display_name, '') AS touched_by, p.touched_at::text AS touched_at,
       p.created_at::date::text AS created_at,
       o.project_id IS NOT NULL AS imported,
-      o.project_url, o.image_url, o.description, o.stage, o.category, o.submission_status,
+      o.project_url, o.image_url, o.description, o.stage, o.category, o.country, o.submission_status,
       COALESCE(o.lead_username, '') AS lead_username,
       COALESCE(owner.name, '') AS imported_by, o.created_at::date::text AS imported_at,
       COALESCE(
@@ -233,6 +233,7 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
             description: r.description ?? "",
             stage: r.stage,
             category: r.category ?? null,
+            country: r.country ?? null,
             submissionStatus: r.submission_status ?? "not_checked",
             leadUsername: r.lead_username,
             importedByName: r.imported_by,

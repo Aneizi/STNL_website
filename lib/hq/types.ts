@@ -97,6 +97,8 @@ type ProjectColosseum = {
   /** A PROJECT_STAGES value; the board renders its label. */
   stage: string;
   category: string | null;
+  /** The country Colosseum lists, as of the last snapshot. Imports require the Netherlands. */
+  country: string | null;
   submissionStatus: SubmissionStatus;
   /** The roster username the team chose as its lead, or "" before one is chosen. */
   leadUsername: string;

@@ -174,7 +174,7 @@ describe("builder administration authorization and scoping", () => {
   });
 
   it("carries the Colosseum snapshot, the roster usernames and the importer onto the board's own rows", async () => {
-    await rows("UPDATE hq_project_onboarding SET description='Cheese provenance', stage='mvp', category='Supply chain', image_url='https://images.example.test/kaas.png' WHERE project_id=$1", [PROJECT]);
+    await rows("UPDATE hq_project_onboarding SET description='Cheese provenance', stage='mvp', category='Supply chain', country='Belgium', image_url='https://images.example.test/kaas.png' WHERE project_id=$1", [PROJECT]);
     const board = await getProjects(11);
     expect(board.map((project) => project.id).sort()).toEqual([BARE_PROJECT, PROJECT].sort());
     const imported = board.find((project) => project.id === PROJECT);
@@ -182,7 +182,7 @@ describe("builder administration authorization and scoping", () => {
       highPotential: false,
       colosseum: {
         url: "https://colosseum.com/arena/projects/explore/selected", imageUrl: "https://images.example.test/kaas.png",
-        description: "Cheese provenance", stage: "mvp", category: "Supply chain", submissionStatus: "not_checked",
+        description: "Cheese provenance", stage: "mvp", category: "Supply chain", country: "Belgium", submissionStatus: "not_checked",
         leadUsername: "selected", importedByName: "Selected Builder",
       },
     });

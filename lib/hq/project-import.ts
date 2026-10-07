@@ -201,12 +201,12 @@ export async function previewTeamInvitation(code: string, fetcher: ColosseumFetc
 export async function refreshColosseumTeam(
   input: { projectId: string; hackathonId: number; projectUrl: string },
   fetcher: ColosseumFetch = fetch,
-): Promise<{ ok: true; submission: string } | { ok: false; reason: ImportFailureReason; message: string }> {
+): Promise<{ ok: true; submission: string; country: string | null } | { ok: false; reason: ImportFailureReason; message: string }> {
   const store = builderStore();
   try {
     const project = await fetchColosseumProject(input.projectUrl, fetcher);
     const submission = await store.refreshTeam({ projectId: input.projectId, hackathonId: input.hackathonId, project });
-    return { ok: true, submission };
+    return { ok: true, submission, country: project.country };
   } catch (error) {
     if (error instanceof ColosseumApiError) {
       await store.recordSourceFailure(input.projectId, error.code, error.sourceMessage);

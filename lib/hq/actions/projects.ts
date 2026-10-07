@@ -408,14 +408,16 @@ export async function deleteProject(projectId: string): Promise<ActionResult> {
 
 /**
  * The Projects board's Check submissions button: re-read Colosseum for every
- * imported project in the selected edition that has no confirmed submission.
+ * imported project in the selected edition, submission and country included.
  */
 export async function checkProjectSubmissions(): Promise<{ ok: true; summary: SubmissionCheckSummary }> {
   const user = await requireUser();
   const selected = await requireHackathon();
   const summary = await checkSubmissions(builderDatabase(), { hackathonId: selected.id });
   await activityStmt(user.id, selected.id,
-    `Checked Colosseum submissions: ${summary.submitted} of ${summary.checked} confirmed${summary.failed ? `, ${summary.failed} could not be read` : ""}`);
+    `Checked Colosseum submissions: ${summary.submitted} of ${summary.checked} confirmed`
+      + (summary.notNetherlands ? `, ${summary.notNetherlands} not in the Netherlands` : "")
+      + (summary.failed ? `, ${summary.failed} could not be read` : ""));
   refreshHq("projects");
   return { ok: true, summary };
 }
