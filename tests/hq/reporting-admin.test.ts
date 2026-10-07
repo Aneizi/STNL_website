@@ -42,7 +42,7 @@ const data: ReportingAdminData = {
   config: {
     hackathonId: 6, finalPeriodStartDate: "2026-10-05", officialSubmissionDeadline: "2026-10-12T16:00:00.000Z",
     officialDeadlineSource: "admin", officialDeadlineCheckedAt: null,
-    requiredMaterials: ["repo", "demoVideo"], optionalMaterials: ["presentation"], submissionRefreshMinutes: null,
+    requiredMaterials: ["repo", "demoVideo"], optionalMaterials: ["presentation"],
     nudgeWeekday: 3, nudgeTime: "12:00", stored: true,
   },
   plan: {
@@ -91,13 +91,15 @@ describe("Reporting settings", () => {
   it("shows the kickers, the deadline in the campaign timezone and one selected requirement per material", () => {
     const html = render();
     for (const copy of [
-      "Reporting settings", "Final period starts", "Reminder day", "Reminder time", "Auto-check submissions", "Minutes, final period only",
+      "Reporting settings", "Final period starts", "Reminder day", "Reminder time",
       "Colosseum deadline", "Read from Colosseum", "Colosseum&#x27;s cutoff. Does not move the weeks.", "Submission materials", "Save settings",
       "Presentation or pitch deck", "Code repository", "Project website",
     ]) expect(html, copy).toContain(copy);
     // 16:00 UTC on 12 October is 18:00 in Amsterdam, and the field carries no offset of its own.
     expect(html).toMatch(/name="officialDeadline"[^>]*value="2026-10-12T18:00"/);
-    expect(html).toMatch(/placeholder="Off"/);
+    // Submissions are checked from the Projects board, not on a clock.
+    expect(html).not.toContain("Auto-check submissions");
+    expect(html).not.toContain('name="submissionRefresh"');
     // Six materials, one pressed button each: two Required, one Optional, three Not known.
     expect(html.match(/aria-pressed="true"/g)).toHaveLength(6);
     expect(html.match(/aria-pressed="true"[^>]*>Required</g)).toHaveLength(2);

@@ -81,8 +81,6 @@ export type ReportingConfig = {
   requiredMaterials: string[];
   /** The material keys this edition offers but does not require. Anything in neither list is Unknown. */
   optionalMaterials: string[];
-  /** How stale a snapshot may get during the final period before the job re-reads it, or null for no automatic refresh. */
-  submissionRefreshMinutes: number | null;
   nudgeWeekday: number;
   nudgeTime: string;
   /** Whether a row exists, so a screen can say "not set yet" rather than showing a default as a decision. */
@@ -91,7 +89,7 @@ export type ReportingConfig = {
 
 const CONFIG_COLUMNS =
   "hackathon_id, final_period_start_date, official_submission_deadline, official_deadline_source, official_deadline_checked_at, "
-  + "required_materials, optional_materials, submission_refresh_minutes, nudge_weekday, nudge_time";
+  + "required_materials, optional_materials, nudge_weekday, nudge_time";
 
 /** A `text[]` column as a string list, tolerating the driver handing back a JSON-ish string rather than an array. */
 const toKeyList = (value: unknown): string[] => {
@@ -110,7 +108,6 @@ const toConfig = (hackathonId: number, row: Record<string, unknown> | undefined)
   officialDeadlineCheckedAt: row?.official_deadline_checked_at == null ? null : toIso(row.official_deadline_checked_at),
   requiredMaterials: toKeyList(row?.required_materials),
   optionalMaterials: toKeyList(row?.optional_materials),
-  submissionRefreshMinutes: row?.submission_refresh_minutes == null ? null : Number(row.submission_refresh_minutes),
   nudgeWeekday: row?.nudge_weekday == null ? DEFAULT_NUDGE_WEEKDAY : Number(row.nudge_weekday),
   nudgeTime: row?.nudge_time == null ? DEFAULT_NUDGE_TIME : toTimeOfDay(row.nudge_time),
   stored: row != null,
@@ -133,15 +130,14 @@ export async function writeReportingConfig(
     /** Phase 10. Omitted keys keep whatever is stored, so the weekly form does not clear the submission settings. */
     requiredMaterials?: readonly string[];
     optionalMaterials?: readonly string[];
-    submissionRefreshMinutes?: number | null;
   },
 ): Promise<ReportingConfig> {
   return atomically(db, async (tx) => {
     const { rows } = await tx.query(
       `INSERT INTO hq_reporting_config (hackathon_id, final_period_start_date, official_submission_deadline, official_deadline_source,
-         required_materials, optional_materials, submission_refresh_minutes, nudge_weekday, nudge_time)
+         required_materials, optional_materials, nudge_weekday, nudge_time)
        VALUES ($1, $2::date, $3::timestamptz, CASE WHEN $3::timestamptz IS NULL THEN NULL ELSE 'admin' END,
-         COALESCE($6::text[], '{}'), COALESCE($7::text[], '{}'), $8, $4, $5::time)
+         COALESCE($6::text[], '{}'), COALESCE($7::text[], '{}'), $4, $5::time)
        ON CONFLICT (hackathon_id) DO UPDATE SET
          final_period_start_date = EXCLUDED.final_period_start_date,
          official_submission_deadline = EXCLUDED.official_submission_deadline,
@@ -156,7 +152,6 @@ export async function writeReportingConfig(
            ELSE 'admin' END,
          required_materials = COALESCE($6::text[], hq_reporting_config.required_materials),
          optional_materials = COALESCE($7::text[], hq_reporting_config.optional_materials),
-         submission_refresh_minutes = CASE WHEN $9 THEN $8 ELSE hq_reporting_config.submission_refresh_minutes END,
          nudge_weekday = EXCLUDED.nudge_weekday,
          nudge_time = EXCLUDED.nudge_time,
          updated_at = now()
@@ -165,8 +160,6 @@ export async function writeReportingConfig(
         input.hackathonId, input.finalPeriodStartDate, input.officialSubmissionDeadline, input.nudgeWeekday, input.nudgeTime,
         input.requiredMaterials ? [...input.requiredMaterials] : null,
         input.optionalMaterials ? [...input.optionalMaterials] : null,
-        input.submissionRefreshMinutes ?? null,
-        input.submissionRefreshMinutes !== undefined,
       ],
     );
     return toConfig(input.hackathonId, rows[0]);

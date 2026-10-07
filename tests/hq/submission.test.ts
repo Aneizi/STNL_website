@@ -46,12 +46,11 @@ import {
   writeReportingConfig,
 } from "@/lib/hq/reporting";
 import {
-  dueSubmissionRefreshes,
+  checkSubmissions,
   readSubmissionReconciliations,
   openSubmissionReconciliations,
   readSubmissionSnapshots,
   reconcileSubmissions,
-  refreshDueSubmissions,
 } from "@/lib/hq/submission";
 import { captainReportingBoard, memberWeekSummaries, teamReportingPanel } from "@/lib/hq/reporting-surface";
 import { projectNeedsAttention } from "@/lib/hq/dashboard-attention";
@@ -249,8 +248,7 @@ describe("what does and does not complete the final period", () => {
         links: { presentationLink: "https://example.test/deck", pitchVideoLink: "https://example.test/pitch", repoLink: "https://example.test/code" },
       }),
     });
-    await rows(`UPDATE hq_reporting_config SET submission_refresh_minutes=15 WHERE hackathon_id=$1`, [EDITION]);
-    await refreshDueSubmissions(db, { atMs: IN_FINAL, hackathonId: EDITION, fetcher });
+    await checkSubmissions(db, { hackathonId: EDITION, fetcher });
 
     const snapshot = (await readSubmissionSnapshots(db, [PROJECT_A])).get(PROJECT_A)!;
     expect(snapshot.submissionStatus).toBe("not_submitted");
@@ -454,60 +452,33 @@ describe("what an authorized member is shown in the final period", () => {
   });
 });
 
-describe("the bounded refresh during the final period", () => {
-  it("leaves source work for another pass when the caller's deadline is too close", async () => {
-    await rows(`UPDATE hq_reporting_config SET submission_refresh_minutes=15 WHERE hackathon_id=$1`, [EDITION]);
+describe("checking submissions from the Projects board", () => {
+  it("re-reads every imported project not yet confirmed and counts the ones Colosseum now confirms", async () => {
+    const fetcher = stubFetch({ alice: detailBody("alice", { submittedAt: "2026-10-07T14:32:39.206Z" }), bob: detailBody("bob") });
+    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher })).toEqual({ checked: 2, submitted: 1, failed: 0 });
+    expect([...fetcher.calls].sort()).toEqual(["alice", "bob"]);
+    const snapshots = await readSubmissionSnapshots(db, [PROJECT_A, PROJECT_B]);
+    expect(snapshots.get(PROJECT_A)).toMatchObject({ submissionStatus: "submitted", submittedAt: "2026-10-07T14:32:39.206Z", sourceStatus: "ok" });
+    expect(snapshots.get(PROJECT_B)).toMatchObject({ submissionStatus: "not_submitted", sourceStatus: "ok" });
+  });
+
+  it("skips a project Colosseum already confirmed, and one with no Colosseum link", async () => {
+    await seedProject(BARE_PROJECT, "Bare");
+    await rows(`UPDATE hq_project_onboarding SET submission_status='submitted', submitted_at='2026-10-06T10:00:00Z' WHERE project_id=$1`, [PROJECT_A]);
+    const fetcher = stubFetch({ bob: detailBody("bob") });
+    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher })).toEqual({ checked: 1, submitted: 0, failed: 0 });
+    expect(fetcher.calls).toEqual(["bob"]);
+  });
+
+  it("checks only the selected edition", async () => {
     const fetcher = stubFetch({ alice: detailBody("alice"), bob: detailBody("bob") });
-    expect(await refreshDueSubmissions(db, { atMs: IN_FINAL, fetcher, deadlineMs: Date.now() + 500 }))
-      .toMatchObject({ attempted: 0, stoppedOnBudget: true });
-    expect(fetcher.calls).toHaveLength(0);
-  });
-  it("does nothing at all until an admin configures an interval", async () => {
-    expect(await dueSubmissionRefreshes(db, { atMs: IN_FINAL, hackathonId: EDITION })).toEqual([]);
-  });
-
-  it("offers every stale project once an interval is set, and nothing outside the final period", async () => {
-    await rows(`UPDATE hq_reporting_config SET submission_refresh_minutes=60 WHERE hackathon_id=$1`, [EDITION]);
-    expect((await dueSubmissionRefreshes(db, { atMs: IN_FINAL, hackathonId: EDITION })).map((row) => row.projectId).sort())
-      .toEqual([PROJECT_A, PROJECT_B].sort());
-    // A weekly week is not the final period, and neither is the time after it.
-    expect(await dueSubmissionRefreshes(db, { atMs: Date.parse("2026-09-16T09:00:00Z"), hackathonId: EDITION })).toEqual([]);
-    expect(await dueSubmissionRefreshes(db, { atMs: AFTER_FINAL, hackathonId: EDITION })).toEqual([]);
-  });
-
-  it("leaves a project alone until its interval has passed, and skips a paused one", async () => {
-    await rows(`UPDATE hq_reporting_config SET submission_refresh_minutes=60 WHERE hackathon_id=$1`, [EDITION]);
-    await rows(`UPDATE hq_project_onboarding SET source_checked_at=$2 WHERE project_id=$1`, [PROJECT_A, new Date(IN_FINAL - 10 * 60_000).toISOString()]);
-    await rows(`UPDATE hq_reporting_eligibility SET paused_at=now() WHERE project_id=$1`, [PROJECT_B]);
-    expect(await dueSubmissionRefreshes(db, { atMs: IN_FINAL, hackathonId: EDITION })).toEqual([]);
-  });
-
-  it("uses the last attempt to back off failing sources and lets other projects get checked", async () => {
-    await rows(`UPDATE hq_reporting_config SET submission_refresh_minutes=60 WHERE hackathon_id=$1`, [EDITION]);
-    await rows(`UPDATE hq_project_onboarding SET source_status='error', source_checked_at='2026-09-20T10:00:00Z', source_attempted_at=$2 WHERE project_id=$1`,
-      [PROJECT_A, new Date(IN_FINAL - 5 * 60_000).toISOString()]);
-    expect((await dueSubmissionRefreshes(db, { atMs: IN_FINAL, hackathonId: EDITION, limit: 1 })).map((row) => row.projectId))
-      .toEqual([PROJECT_B]);
-    expect((await dueSubmissionRefreshes(db, { atMs: IN_FINAL + 3_600_000, hackathonId: EDITION })).map((row) => row.projectId))
-      .toContain(PROJECT_A);
-    expect((await readSubmissionSnapshots(db, [PROJECT_A])).get(PROJECT_A)?.sourceCheckedAt)
-      .toBe("2026-09-20T10:00:00.000Z");
-  });
-
-  it("takes no more than the batch it is given", async () => {
-    await rows(`UPDATE hq_reporting_config SET submission_refresh_minutes=15 WHERE hackathon_id=$1`, [EDITION]);
-    expect(await dueSubmissionRefreshes(db, { atMs: IN_FINAL, hackathonId: EDITION, limit: 1 })).toHaveLength(1);
+    expect(await checkSubmissions(db, { hackathonId: EDITION + 1, fetcher })).toEqual({ checked: 0, submitted: 0, failed: 0 });
+    expect(fetcher.calls).toEqual([]);
   });
 
   it("keeps the last known status and records the failure when the source cannot be read", async () => {
-    await rows(`UPDATE hq_reporting_config SET submission_refresh_minutes=15 WHERE hackathon_id=$1`, [EDITION]);
-    await rows(`UPDATE hq_project_onboarding SET submission_status='submitted',submitted_at='2026-10-06T10:00:00Z',source_status='ok',source_checked_at='2026-10-06T10:00:00Z' WHERE project_id=$1`, [PROJECT_A]);
-    const summary = await refreshDueSubmissions(db, { atMs: IN_FINAL, hackathonId: EDITION, fetcher: brokenFetch });
-    expect(summary.failed).toBeGreaterThan(0);
-    const snapshot = (await readSubmissionSnapshots(db, [PROJECT_A])).get(PROJECT_A)!;
-    // Green does not turn red because a request failed.
-    expect(snapshot).toMatchObject({ submissionStatus: "submitted", sourceStatus: "error" });
-    expect(snapshot.sourceCheckedAt).toBe("2026-10-06T10:00:00.000Z");
+    expect(await checkSubmissions(db, { hackathonId: EDITION, fetcher: brokenFetch })).toEqual({ checked: 2, submitted: 0, failed: 2 });
+    expect((await readSubmissionSnapshots(db, [PROJECT_A])).get(PROJECT_A)).toMatchObject({ submissionStatus: "not_checked", sourceStatus: "error" });
   });
 });
 

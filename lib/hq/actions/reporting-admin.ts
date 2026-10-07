@@ -30,8 +30,6 @@ const isoDate = z.string().refine(isCalendarDate);
 const LOCAL_DATE_TIME = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2})?$/;
 /** The same fallback `readReportingSchedule` uses when an edition has no timezone setting of its own. */
 const CAMPAIGN_TIMEZONE_FALLBACK = "Europe/Amsterdam";
-/** The floor on automatic submission checks, matching the CHECK constraint on the column. */
-const MIN_SUBMISSION_REFRESH_MINUTES = 15;
 
 type ProjectUpdatesResult =
   | { ok: true; page: ReportingEntryPage }
@@ -131,8 +129,6 @@ export async function saveReportingConfiguration(input: {
   /** Phase 10: which submission materials this edition asks for. Anything in neither list stays Unknown on every screen. */
   requiredMaterials?: string[];
   optionalMaterials?: string[];
-  /** Minutes between automatic submission checks during the final period. Empty or zero turns them off. */
-  submissionRefreshMinutes?: number | null;
 }): Promise<ActionResult> {
   await requireUser();
   const hackathon = await requireHackathon();
@@ -145,7 +141,6 @@ export async function saveReportingConfiguration(input: {
       nudgeTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
       requiredMaterials: materials,
       optionalMaterials: materials,
-      submissionRefreshMinutes: z.number().int().min(0).max(10_080).nullish(),
     })
     .safeParse(input);
   if (!parsed.success) return { ok: false, error: "Check the reporting settings and try again." };
@@ -174,13 +169,6 @@ export async function saveReportingConfiguration(input: {
   } catch {
     return { ok: false, error: "That submission deadline is not a valid date and time." };
   }
-  // An interval below the column's floor would be a rate-limit incident
-  // rather than a setting, so it is refused here with its own sentence rather
-  // than by the CHECK constraint. Zero and empty both mean off.
-  const refresh = parsed.data.submissionRefreshMinutes;
-  if (refresh != null && refresh > 0 && refresh < MIN_SUBMISSION_REFRESH_MINUTES) {
-    return { ok: false, error: `Automatic submission checks cannot run more often than every ${MIN_SUBMISSION_REFRESH_MINUTES} minutes.` };
-  }
   // An unrecognised material key is dropped rather than refused: the arrays
   // are configuration, and a key left behind by a renamed material must not
   // make the whole form unsaveable.
@@ -193,7 +181,6 @@ export async function saveReportingConfiguration(input: {
     nudgeTime: parsed.data.nudgeTime,
     ...(keys(parsed.data.requiredMaterials) !== undefined ? { requiredMaterials: keys(parsed.data.requiredMaterials) } : {}),
     ...(keys(parsed.data.optionalMaterials) !== undefined ? { optionalMaterials: keys(parsed.data.optionalMaterials) } : {}),
-    ...(refresh !== undefined ? { submissionRefreshMinutes: refresh ? refresh : null } : {}),
   });
   refreshHq("reporting");
   return { ok: true };

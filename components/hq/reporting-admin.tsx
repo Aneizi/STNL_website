@@ -232,7 +232,6 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
         `${closures.closed} week${closures.closed === 1 ? "" : "s"} closed`,
       ];
       if (delivery) parts.push(`${delivery.sent} delivered`);
-      if (submissions.refreshed.attempted) parts.push(`${submissions.refreshed.refreshed} submission check${submissions.refreshed.refreshed === 1 ? "" : "s"} refreshed`);
       if (submissions.reconciled.attempted) {
         parts.push(`${submissions.reconciled.resolved} submission${submissions.reconciled.resolved === 1 ? "" : "s"} confirmed`);
         if (submissions.reconciled.stillPending) parts.push(`${submissions.reconciled.stillPending} still not established`);
@@ -298,7 +297,6 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
             startSave(async () => {
               setSaved("");
               setSaveError(false);
-              const refresh = String(formData.get("submissionRefresh") ?? "").trim();
               const result = await saveReportingConfiguration({
                 finalPeriodStartDate: String(formData.get("finalStart") ?? ""),
                 officialSubmissionDeadline: deadline,
@@ -309,7 +307,6 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
                 // the last one back to Not known would never save.
                 requiredMaterials: MATERIAL_KEYS.filter((key) => materials[key] === "required"),
                 optionalMaterials: MATERIAL_KEYS.filter((key) => materials[key] === "optional"),
-                submissionRefreshMinutes: refresh === "" ? 0 : Number(refresh),
               });
               setSaveError(!result.ok);
               setSaved(result.ok ? "Saved" : result.error ?? "Could not save. Try again.");
@@ -332,11 +329,6 @@ export function ReportingAdmin({ data }: { data: ReportingAdminData }) {
               <label className={styles.field}>
                 <span className={styles.kicker}>Reminder time</span>
                 <input name="nudgeTime" type="time" defaultValue={data.config.nudgeTime} required />
-              </label>
-              <label className={styles.field}>
-                <span className={styles.kicker}>Auto-check submissions</span>
-                <input name="submissionRefresh" type="number" min={0} step={5} placeholder="Off" defaultValue={data.config.submissionRefreshMinutes ?? ""} />
-                <span className={styles.hint}>Minutes, final period only</span>
               </label>
             </div>
             <div className={styles.settingsBlock}>

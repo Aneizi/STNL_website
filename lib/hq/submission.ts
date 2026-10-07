@@ -24,9 +24,9 @@ import { materialLinks, type SubmissionMaterialLinks } from "./submission-readin
 const CORRECTION_REASON = (submittedAt: string) =>
   `Colosseum confirmed an on-time submission at ${submittedAt}, after this period closed.`;
 
-/** How many stale snapshots one scheduled pass refreshes. Small on purpose: each one is an outbound request. */
-const SUBMISSION_REFRESH_BATCH = 5;
-/** How many pending reconciliations one pass attempts, for the same reason. */
+/** How many projects the Projects board's check reads from Colosseum at once. */
+const CHECK_CONCURRENCY = 5;
+/** How many pending reconciliations one pass attempts. Small on purpose: each one is an outbound request. */
 const RECONCILE_BATCH = 5;
 /** Share the job endpoint's time budget with reminders; leave unfinished work for the next pass. */
 const SOURCE_BUDGET_MS = 12_000;
@@ -157,73 +157,48 @@ export async function readSubmissionReconciliations(
   return rows.map(toReconciliation);
 }
 
-type DueSubmissionRefresh = {
-  projectId: string;
-  hackathonId: number;
-  projectUrl: string;
+export type SubmissionCheckSummary = {
+  /** Imported projects read from Colosseum: every one in the edition not already confirmed as submitted. */
+  checked: number;
+  /** How many of those Colosseum now confirms as submitted. */
+  submitted: number;
+  /** Reads that failed; those projects keep their last snapshot. */
+  failed: number;
 };
 
-/** Refresh only configured, open submission periods; prioritize projects without a confirmed submission. */
-export async function dueSubmissionRefreshes(
+/**
+ * The Projects board's Check submissions button: re-read Colosseum for every
+ * imported project in the edition that has no confirmed submission yet, a few
+ * at a time. A confirmed submission is final, so it is not read again. Each
+ * refresh updates the snapshot and ticks the gates it proves.
+ */
+export async function checkSubmissions(
   db: BuilderQuery,
-  input: { atMs?: number; hackathonId?: number; limit?: number } = {},
-): Promise<DueSubmissionRefresh[]> {
-  const at = new Date(input.atMs ?? Date.now()).toISOString();
-  const limit = Math.max(1, Math.min(50, Math.floor(input.limit ?? SUBMISSION_REFRESH_BATCH)));
-  const values: unknown[] = [at, limit];
-  let edition = "";
-  if (input.hackathonId != null) {
-    values.push(input.hackathonId);
-    edition = ` AND p.hackathon_id = $${values.length}`;
-  }
+  input: { hackathonId: number; fetcher?: ColosseumFetch },
+): Promise<SubmissionCheckSummary> {
   const { rows } = await db.query(
-    `SELECT o.project_id::text AS project_id, o.hackathon_id, o.project_url
+    `SELECT o.project_id::text AS project_id, o.project_url
      FROM hq_project_onboarding o
-     JOIN hq_reporting_eligibility e ON e.project_id = o.project_id AND e.paused_at IS NULL
-     JOIN hq_hackathons h ON h.id = o.hackathon_id AND h.archived_at IS NULL
-     JOIN hq_reporting_config c ON c.hackathon_id = o.hackathon_id AND c.submission_refresh_minutes IS NOT NULL
-     JOIN hq_reporting_periods p ON p.hackathon_id = o.hackathon_id AND p.mode = 'submission'
-       AND p.closed_at IS NULL AND p.starts_at <= $1::timestamptz AND p.ends_at > $1::timestamptz
-     WHERE e.eligible_from <= $1::timestamptz
-       AND (GREATEST(o.source_attempted_at, o.source_checked_at) IS NULL
-            OR GREATEST(o.source_attempted_at, o.source_checked_at) <= $1::timestamptz - make_interval(mins => c.submission_refresh_minutes))${edition}
-     ORDER BY (o.submission_status = 'submitted'), GREATEST(o.source_attempted_at, o.source_checked_at) ASC NULLS FIRST, o.project_id
-     LIMIT $2`,
-    values,
+     JOIN hq_projects p ON p.id = o.project_id
+     WHERE p.hackathon_id = $1 AND o.submission_status <> 'submitted'
+     ORDER BY p.name, o.project_id`,
+    [input.hackathonId],
   );
-  return rows.map((row) => ({
-    projectId: String(row.project_id),
-    hackathonId: Number(row.hackathon_id),
-    projectUrl: String(row.project_url),
-  }));
-}
-
-export type SubmissionRefreshSummary = { attempted: number; refreshed: number; failed: number; stoppedOnBudget: boolean };
-
-/** Refresh a bounded batch; source failures retain the last successful snapshot. */
-export async function refreshDueSubmissions(
-  db: BuilderQuery,
-  input: { atMs?: number; hackathonId?: number; limit?: number; fetcher?: ColosseumFetch; deadlineMs?: number } = {},
-): Promise<SubmissionRefreshSummary> {
-  const due = await dueSubmissionRefreshes(db, input);
-  const summary: SubmissionRefreshSummary = { attempted: 0, refreshed: 0, failed: 0, stoppedOnBudget: false };
-  // The wall clock, not the injected instant: the budget is about how long
-  // this invocation has really been running, which a fixed test instant says
-  // nothing about.
-  const deadlineMs = Math.min(input.deadlineMs ?? Infinity, Date.now() + SOURCE_BUDGET_MS);
-  for (const project of due) {
-    if (Date.now() + SOURCE_ATTEMPT_BUDGET_MS > deadlineMs) {
-      summary.stoppedOnBudget = true;
-      break;
+  const summary: SubmissionCheckSummary = { checked: 0, submitted: 0, failed: 0 };
+  let next = 0;
+  const worker = async () => {
+    while (next < rows.length) {
+      const row = rows[next++];
+      const outcome = await refreshColosseumTeam(
+        { projectId: String(row.project_id), hackathonId: input.hackathonId, projectUrl: String(row.project_url) },
+        input.fetcher ?? fetch,
+      );
+      summary.checked += 1;
+      if (!outcome.ok) summary.failed += 1;
+      else if (outcome.submission === "submitted") summary.submitted += 1;
     }
-    summary.attempted += 1;
-    const outcome = await refreshColosseumTeam(
-      { projectId: project.projectId, hackathonId: project.hackathonId, projectUrl: project.projectUrl },
-      input.fetcher ?? fetch,
-    );
-    if (outcome.ok) summary.refreshed += 1;
-    else summary.failed += 1;
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(CHECK_CONCURRENCY, rows.length) }, worker));
   return summary;
 }
 

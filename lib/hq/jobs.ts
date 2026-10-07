@@ -19,9 +19,7 @@ import {
 import {
   openSubmissionReconciliations,
   reconcileSubmissions,
-  refreshDueSubmissions,
   type ReconcileSummary,
-  type SubmissionRefreshSummary,
 } from "./submission";
 import { isTelegramBotConfigured, telegramBotConfig, telegramSender, type TelegramSender } from "./telegram-bot-api";
 import {
@@ -534,11 +532,12 @@ export type JobRunSummary = {
    */
   delivery: FlushResult | null;
   /**
-   * Configured source refresh and closing reconciliation, both bounded by batch
-   * and time budgets because they call Colosseum. `gatesTicked` counts the
-   * submission gates newly ticked from stored snapshots, a database-only sweep.
+   * Closing reconciliation, bounded by batch and time budgets because it calls
+   * Colosseum. Snapshots are refreshed from the Projects board's Check
+   * submissions button, not here. `gatesTicked` counts the submission gates
+   * newly ticked from stored snapshots, a database-only sweep.
    */
-  submissions: { refreshed: SubmissionRefreshSummary; reconciled: ReconcileSummary; reconciliationsOpened: number; gatesTicked: number };
+  submissions: { reconciled: ReconcileSummary; reconciliationsOpened: number; gatesTicked: number };
   purged: PurgeResult & { reminders: number };
 };
 
@@ -616,16 +615,8 @@ export async function runDueWork(
     }
   }
 
-  // The final period, after the reminders: a stale snapshot refreshed now is
-  // read by the next pass's closure, and a reconciliation opened by this
-  // pass's closure is attempted from here on the pass after it. Both are
-  // no-ops on an edition with no submission period open and no pending row.
-  const refreshed = await refreshDueSubmissions(db, {
-    atMs: now,
-    deadlineMs,
-    ...(options.hackathonId != null ? { hackathonId: options.hackathonId } : {}),
-    ...(options.colosseumFetch ? { fetcher: options.colosseumFetch } : {}),
-  });
+  // After the reminders: a reconciliation opened by this pass's closure is
+  // attempted from here on the pass after it, and is a no-op with no pending row.
   const reconciledSubmissions = await reconcileSubmissions(db, {
     atMs: now,
     deadlineMs,
@@ -651,7 +642,7 @@ export async function runDueWork(
     closures: { closed: closures.closed.length, periods: closures.closed },
     reminders: { due: due.length, queued, skipped, alreadyRecorded, expired, reconciled },
     delivery,
-    submissions: { refreshed, reconciled: reconciledSubmissions, reconciliationsOpened: closures.reconciliationsOpened, gatesTicked },
+    submissions: { reconciled: reconciledSubmissions, reconciliationsOpened: closures.reconciliationsOpened, gatesTicked },
     purged: { ...purged, reminders: purgedReminders },
   };
 }

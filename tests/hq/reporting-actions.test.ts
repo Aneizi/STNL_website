@@ -504,23 +504,6 @@ describe("the admin schedule screen", () => {
     expect((await readReportingConfig(db, EDITION)).requiredMaterials).toEqual(["pitchVideo"]);
   });
 
-  it("refuses an automatic submission check more often than the floor, and takes zero as off", async () => {
-    expect(await saveReportingConfiguration({
-      finalPeriodStartDate: "", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
-      submissionRefreshMinutes: 5,
-    })).toMatchObject({ ok: false });
-    expect(await saveReportingConfiguration({
-      finalPeriodStartDate: "", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
-      submissionRefreshMinutes: 60,
-    })).toEqual({ ok: true });
-    expect((await readReportingConfig(db, EDITION)).submissionRefreshMinutes).toBe(60);
-    await saveReportingConfiguration({
-      finalPeriodStartDate: "", officialSubmissionDeadline: "", nudgeWeekday: 3, nudgeTime: "12:00",
-      submissionRefreshMinutes: 0,
-    });
-    expect((await readReportingConfig(db, EDITION)).submissionRefreshMinutes).toBeNull();
-  });
-
   it("says which of the two put the deadline there", async () => {
     await saveReportingConfiguration({
       finalPeriodStartDate: "", officialSubmissionDeadline: "2026-10-12T23:59", nudgeWeekday: 3, nudgeTime: "12:00",
