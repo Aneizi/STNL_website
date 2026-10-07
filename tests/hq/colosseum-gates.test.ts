@@ -1,6 +1,7 @@
 // Ticking submission gates from the Colosseum snapshot, against the real
-// schema on PGlite. A pitch link ticks the pitch gate, a demo link the demo
-// gate, and Colosseum's confirmed submission (submittedAt) the submission
+// schema on PGlite. An X handle ticks the social gate, a repo link the repo
+// gate, a website the MVP gate, a pitch link the pitch gate, a demo link the
+// demo gate, and Colosseum's confirmed submission (submittedAt) the submission
 // gate. Each is ticked once, and an operator who unticks one wins.
 import type { PGlite } from "@electric-sql/pglite";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,7 +17,9 @@ const ARCHIVED = 82;
 const PROJECT_A = "00000000-0000-4000-9200-000000000001";
 const PROJECT_B = "00000000-0000-4000-9200-000000000002";
 const OLD_PROJECT = "00000000-0000-4000-9200-000000000003";
-const GATES = ["Colosseum registration", "Working MVP", "Pitch video, 2 min max", "Technical video, 2 min max", "All links tested", "Colosseum submission"];
+// Crypto World's Fair's gates, plus two the snapshot cannot prove.
+const GATES = ["Social profile", "Working MVP", "Repo accessible", "Pitch video, 2 min max", "Technical video, 2 min max", "Colosseum submission",
+  "Colosseum registration", "All links tested"];
 
 const PITCH = "https://www.youtube.com/watch?v=pitch";
 const DEMO = "https://www.youtube.com/watch?v=demo";
@@ -30,6 +33,7 @@ async function rows(text: string, values: unknown[] = []) {
 
 async function seedProject(id: string, hackathonId: number, snapshot: {
   status?: string; presentation?: string | null; pitchVideo?: string | null; technicalDemo?: string | null; demoVideo?: string | null;
+  twitter?: string | null; repo?: string | null; website?: string | null;
 }) {
   await rows(
     `INSERT INTO hq_projects(id,hackathon_id,name,status_id,forecast_id,last_check_in)
@@ -38,11 +42,12 @@ async function seedProject(id: string, hackathonId: number, snapshot: {
   );
   await rows(
     `INSERT INTO hq_project_onboarding(project_id,hackathon_id,external_id,project_url,slug,raw,owner_user_id,verification,lead_username,
-       submission_status,presentation_link,pitch_video_link,technical_demo_link,demo_video_link)
-     VALUES($1,$2,$3,$4,$5,'{}','owner','verified','owner',$6,$7,$8,$9,$10)`,
+       submission_status,presentation_link,pitch_video_link,technical_demo_link,demo_video_link,twitter_handle,repo_link,website)
+     VALUES($1,$2,$3,$4,$5,'{}','owner','verified','owner',$6,$7,$8,$9,$10,$11,$12,$13)`,
     [id, hackathonId, Math.floor(Math.random() * 1e9), `https://colosseum.com/arena/projects/${id}`, id,
       snapshot.status ?? "not_submitted", snapshot.presentation ?? null, snapshot.pitchVideo ?? null,
-      snapshot.technicalDemo ?? null, snapshot.demoVideo ?? null],
+      snapshot.technicalDemo ?? null, snapshot.demoVideo ?? null,
+      snapshot.twitter ?? null, snapshot.repo ?? null, snapshot.website ?? null],
   );
 }
 
@@ -76,14 +81,20 @@ beforeEach(async () => {
 });
 
 describe("gate evidence", () => {
-  it("recognises the pitch, demo and submission gates by their wording", () => {
+  it("recognises the gates the snapshot can prove by their wording", () => {
+    expect(gateEvidence("Social profile")).toBe("social");
+    expect(gateEvidence("Twitter account live")).toBe("social");
+    expect(gateEvidence("Repo accessible")).toBe("repo");
+    expect(gateEvidence("Repo public on GitHub")).toBe("repo");
+    expect(gateEvidence("Code repository")).toBe("repo");
+    expect(gateEvidence("Working MVP")).toBe("mvp");
     expect(gateEvidence("Pitch video, 2 min max")).toBe("pitch");
     expect(gateEvidence("Pitch deck shared")).toBe("pitch");
     expect(gateEvidence("Technical video, 2 min max")).toBe("demo");
     expect(gateEvidence("Demo video uploaded")).toBe("demo");
     expect(gateEvidence("Colosseum submission")).toBe("submission");
     expect(gateEvidence("Colosseum submission filed")).toBe("submission");
-    for (const label of ["Colosseum registration", "Working MVP", "All links tested", "Repo accessible", "Ready for Demo Day"]) {
+    for (const label of ["Colosseum registration", "All links tested", "Validation evidence", "Team profiles complete", "Ready for Demo Day"]) {
       expect(gateEvidence(label), label).toBeNull();
     }
   });
@@ -94,6 +105,14 @@ describe("tickColosseumGates", () => {
     await seedProject(PROJECT_A, EDITION, { presentation: PITCH, pitchVideo: PITCH, demoVideo: DEMO, technicalDemo: DEMO });
     expect(await tickColosseumGates(db)).toBe(2);
     expect(await ticked(PROJECT_A)).toEqual(["Pitch video, 2 min max", "Technical video, 2 min max"]);
+  });
+
+  it("ticks the social, repo and MVP gates from the X handle, repo link and website", async () => {
+    await seedProject(PROJECT_A, EDITION, { twitter: "uavdotfun", repo: "https://github.com/uavdotfun/uavprgm", website: "https://uav.fun" });
+    await seedProject(PROJECT_B, EDITION, { repo: "https://github.com/example/code" });
+    expect(await tickColosseumGates(db)).toBe(4);
+    expect(await ticked(PROJECT_A)).toEqual(["Social profile", "Working MVP", "Repo accessible"]);
+    expect(await ticked(PROJECT_B)).toEqual(["Repo accessible"]);
   });
 
   it("ticks only the gate a single material proves, and leaves the submission gate alone", async () => {

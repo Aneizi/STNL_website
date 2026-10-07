@@ -11,17 +11,25 @@ import { hasDemoMaterial, hasPitchMaterial, type SubmissionStatus } from "./colo
  * hq_project_gate_autoticks, so a gate an operator unticks stays unticked.
  */
 
-type GateEvidence = "pitch" | "demo" | "submission";
+type GateEvidence = "pitch" | "demo" | "submission" | "social" | "repo" | "mvp";
 
 /** What a gate's label says it checks, when it is something the snapshot can prove. */
 export function gateEvidence(label: string): GateEvidence | null {
   if (/\b(?:pitch|deck|presentation)\b/i.test(label)) return "pitch";
   if (/\btechnical\b|\bdemo\b(?!\s*day)/i.test(label)) return "demo";
   if (/\bsubmi(?:t|ts|tted|ssion)\b/i.test(label)) return "submission";
+  if (/\bsocial\b|\btwitter\b/i.test(label)) return "social";
+  if (/\brepo(?:sitory)?\b|\bgithub\b/i.test(label)) return "repo";
+  if (/\bmvp\b/i.test(label)) return "mvp";
   return null;
 }
 
-/** The submission gate follows Colosseum's confirmed submission (submittedAt), never the materials. */
+/**
+ * The social gate follows the project's X handle, the repo gate its repo
+ * link and the MVP gate its website: each is a link the team filled in on
+ * Colosseum, not a check that the link works. The submission gate follows
+ * Colosseum's confirmed submission (submittedAt), never the materials.
+ */
 function proves(evidence: GateEvidence, row: Record<string, unknown>): boolean {
   const links = {
     presentation: row.presentation_link as string | null,
@@ -31,6 +39,9 @@ function proves(evidence: GateEvidence, row: Record<string, unknown>): boolean {
   };
   if (evidence === "pitch") return hasPitchMaterial(links);
   if (evidence === "demo") return hasDemoMaterial(links);
+  if (evidence === "social") return Boolean(row.twitter_handle);
+  if (evidence === "repo") return Boolean(row.repo_link);
+  if (evidence === "mvp") return Boolean(row.website);
   return (row.submission_status as SubmissionStatus) === "submitted";
 }
 
@@ -56,7 +67,8 @@ export async function tickColosseumGates(
   }
   const { rows } = await db.query(
     `SELECT o.project_id::text AS project_id, g.id::text AS gate_id, g.label, o.submission_status,
-            o.presentation_link, o.pitch_video_link, o.technical_demo_link, o.demo_video_link
+            o.presentation_link, o.pitch_video_link, o.technical_demo_link, o.demo_video_link,
+            o.twitter_handle, o.repo_link, o.website
      FROM hq_project_onboarding o
      JOIN hq_projects p ON p.id = o.project_id
      JOIN hq_hackathons h ON h.id = p.hackathon_id AND h.archived_at IS NULL
