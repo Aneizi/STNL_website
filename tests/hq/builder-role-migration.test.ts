@@ -57,7 +57,7 @@ it("corrects premature Builder tags per edition while preserving successful team
     const accounts = async () => (await pg.query("SELECT * FROM hq_builder_profiles ORDER BY id")).rows;
     const teams = async () => (await pg.query("SELECT * FROM hq_project_ownership ORDER BY project_id")).rows;
     const before = { people: await peopleData(), accounts: await accounts(), teams: await teams() };
-    expect(await runMigrations(connection, migrations)).toEqual(["0002-builder-role-after-team-setup"]);
+    expect(await runMigrations(connection, migrations.slice(0, 2))).toEqual(["0002-builder-role-after-team-setup"]);
     expect((await pg.query(`SELECT p.name,p.hackathon_id,r.label,e.participation FROM hq_people p
       JOIN hq_people_roles r ON r.id=p.role_id
       LEFT JOIN hq_builder_enrollments e ON e.user_id=p.builder_user_id AND e.hackathon_id=p.hackathon_id
@@ -74,7 +74,7 @@ it("corrects premature Builder tags per edition while preserving successful team
       { name: "unclaimed", hackathon_id: 41, label: "User", participation: "supporter" },
     ]);
     expect({ people: await peopleData(), accounts: await accounts(), teams: await teams() }).toEqual(before);
-    expect(await runMigrations(connection, migrations)).toEqual([]);
+    expect(await runMigrations(connection, migrations.slice(0, 2))).toEqual([]);
   } finally {
     await pg.close();
   }

@@ -12,7 +12,7 @@ import {
   RESET_STATEMENTS,
 } from "@/scripts/hq/reset-statements";
 import { applyUpgrades } from "@/scripts/hq/upgrades";
-import { applySqlFile } from "./helpers/db";
+import { applyNumberedMigrations, applySqlFile } from "./helpers/db";
 
 const SCHEMA = readFileSync(join(process.cwd(), "scripts/hq/schema.sql"), "utf8");
 
@@ -103,6 +103,7 @@ async function seedEverything() {
   await run(`INSERT INTO hq_events (hackathon_id,name,date,type_id)
              VALUES ('${hackathon}','Ev',current_date,'${type}')`);
   await run(`INSERT INTO hq_project_gates (project_id, gate_id) VALUES ('${project}','${gate}')`);
+  await run(`INSERT INTO hq_project_gate_autoticks (project_id, gate_id) VALUES ('${project}','${gate}')`);
   await run(`INSERT INTO hq_project_notes (project_id, body) VALUES ('${project}','note')`);
   await run(`INSERT INTO hq_partner_exchange (partner_id, item_id) VALUES ('${partner}','${item}')`);
   await run(`INSERT INTO hq_partner_contacts (partner_id, body) VALUES ('${partner}','hi')`);
@@ -212,6 +213,8 @@ beforeEach(async () => {
   // The public account and builder tables are classified too, so they have to exist here.
   await applySqlFile(pg, "member-auth-schema.sql");
   await applySqlFile(pg, "builder-schema.sql");
+  // Tables added by the numbered migrations after the legacy baseline.
+  await applyNumberedMigrations(pg);
   await seedEverything();
 });
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { PGlite } from "@electric-sql/pglite";
 import { describe, expect, it } from "vitest";
 import { loadMigrations, runMigrations, type Migration, type MigrationConnection } from "@/scripts/hq/migrations";
-import { applyLegacyMigrations, pgliteMigrationConnection } from "./helpers/db";
+import { applyLegacyMigrations, applyNumberedMigrations, pgliteMigrationConnection } from "./helpers/db";
 
 function sqlMigration(id: string, sql: string): Migration {
   return {
@@ -34,6 +34,8 @@ describe("versioned HQ migrations", () => {
       const migrations = loadMigrations();
       expect(await runMigrations(pgliteMigrationConnection(pg), migrations)).toEqual(migrations.map(migration => migration.id));
       await applyLegacyMigrations(legacy);
+      // The numbered migrations add tables of their own on top of the baseline.
+      await applyNumberedMigrations(legacy);
       expect(await schemaShape(pg)).toEqual(await schemaShape(legacy));
       const { rows } = await pg.query(`SELECT to_regclass('hq_reporting_entries') IS NOT NULL AS reporting,
         to_regclass('hq_colosseum_updates') IS NOT NULL AS updates,

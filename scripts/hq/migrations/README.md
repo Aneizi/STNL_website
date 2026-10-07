@@ -32,7 +32,11 @@ custom roles are preserved. No accounts, project data, notes or capabilities are
 removed. Deploy the matching enrollment change so new sign-ins and help requests
 remain untagged until their team setup succeeds or a capability is granted.
 
-For the next schema change, add `0003-description.sql` here, followed by ascending
+`0003-colosseum-gate-autoticks` adds `hq_project_gate_autoticks`, the record of which
+submission gates HQ ticked from a team's Colosseum snapshot (pitch, demo, submission).
+It changes no existing rows; the next job pass ticks the gates existing snapshots prove.
+
+For the next schema change, add `0004-description.sql` here, followed by ascending
 four-digit versions. SQL files execute whole, so quoted semicolons and `DO $$`
 bodies work. Do not put transaction control or operations that cannot run inside
 a transaction (such as `CREATE INDEX CONCURRENTLY`) in a migration. Never change

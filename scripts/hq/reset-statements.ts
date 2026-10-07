@@ -16,6 +16,9 @@ export const CLEAR_TABLES = [
   "hq_scores",
   "hq_finalists",
   "hq_project_gates",
+  // Which gates HQ ticked from a Colosseum snapshot. It belongs to the project
+  // rows below and goes with them, so a re-import ticks its gates afresh.
+  "hq_project_gate_autoticks",
   "hq_project_notes",
   // Captain assignment history belongs to the project rows below, the same
   // way People and notes do: it names who ran a project in an edition, not a

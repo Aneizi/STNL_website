@@ -49,6 +49,11 @@ export async function applyMigrations(pg: PGlite): Promise<void> {
   await runMigrations(pgliteMigrationConnection(pg), loadMigrations());
 }
 
+/** The numbered migrations after the legacy baseline, for a schema built from the legacy files by hand. */
+export async function applyNumberedMigrations(pg: PGlite): Promise<void> {
+  for (const migration of loadMigrations().slice(1)) await migration.apply(pgliteMigrationConnection(pg));
+}
+
 /** A fresh in-process Postgres with the whole migration applied. */
 export async function createMigratedDatabase(): Promise<PGlite> {
   const pg = new PGlite();
