@@ -4,6 +4,7 @@ import type { BuilderQuery } from "./builder-db";
 import { realEmail } from "./builder-store";
 import { listActiveCapabilitiesForUsers, personTags } from "./capabilities";
 import { CLASSIFIERS_SELECT, toClassifiers } from "./classifiers-sql";
+import { isMaybeSubmitted } from "./colosseum-snapshot";
 import { getSql } from "./db";
 import { attributeOutputs, type AttributableProject } from "./event-attribution";
 import { fmtDate } from "./format";
@@ -170,6 +171,7 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
       p.created_at::date::text AS created_at,
       o.project_id IS NOT NULL AS imported,
       o.project_url, o.image_url, o.description, o.stage, o.category, o.submission_status,
+      o.presentation_link, o.pitch_video_link, o.technical_demo_link, o.demo_video_link,
       COALESCE(o.lead_username, '') AS lead_username,
       COALESCE(owner.name, '') AS imported_by, o.created_at::date::text AS imported_at,
       COALESCE(
@@ -234,6 +236,10 @@ export async function getProjects(hackathonId: number): Promise<Project[]> {
             stage: r.stage,
             category: r.category ?? null,
             submissionStatus: r.submission_status ?? "not_checked",
+            maybeSubmitted: isMaybeSubmitted(r.submission_status ?? "not_checked", {
+              presentation: r.presentation_link, pitchVideo: r.pitch_video_link,
+              technicalDemo: r.technical_demo_link, demoVideo: r.demo_video_link,
+            }),
             leadUsername: r.lead_username,
             importedByName: r.imported_by,
             importedAt: r.imported_at,

@@ -20,6 +20,9 @@
   --green-fill: rgba(62, 124, 79, 0.12);
   --orange: #a8760f;
   --orange-fill: rgba(168, 118, 15, 0.12);
+  /* Maybe submitted. Text on its own fill clears 4.5:1 on --bg and --card. */
+  --gold: #7d5e00;
+  --gold-fill: rgba(212, 160, 23, 0.2);
   --red: #c03b2d;
   --red-fill: rgba(192, 59, 45, 0.1);
   --indigo: #16130f;

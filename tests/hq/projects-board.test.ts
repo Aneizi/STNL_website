@@ -66,7 +66,7 @@ const grachtenpay: Project = {
   colosseum: {
     url: "https://colosseum.com/arena/projects/grachtenpay", imageUrl: null,
     description: "Tap-to-pay for Amsterdam canal boats and market stalls, settled in USDC on Solana.",
-    stage: "beta", category: "Payments", submissionStatus: "submitted", leadUsername: "nienkev",
+    stage: "beta", category: "Payments", submissionStatus: "submitted", maybeSubmitted: false, leadUsername: "nienkev",
     importedByName: "Nienke Visser", importedAt: "2026-09-15",
   },
   partnerId: "pt3", partnerName: "Rabobank Innovation", captainUserId: "c1", captainName: "Femke de Jong",
@@ -181,6 +181,18 @@ describe("the Projects board", () => {
     expect(html).not.toContain("Saved versions");
     expect(html).not.toContain("Add to weekly reporting");
     expect(html).not.toMatch(/[—·]/);
+  });
+
+  it("tags a project with a pitch and a demo but no confirmed submission as Maybe submitted, in gold", () => {
+    const maybe: Project = { ...grachtenpay, colosseum: { ...grachtenpay.colosseum!, submissionStatus: "not_submitted", maybeSubmitted: true } };
+    const tag = /<span title="A pitch and a demo are on Colosseum, but Colosseum has not confirmed the submission"[^>]*background:var\(--gold-fill\);color:var\(--gold\)[^>]*>Maybe submitted<\/span>/g;
+    expect(render(null, [maybe, kaasketen]).match(tag)).toHaveLength(1);
+    // Expanded, the Submission line reads the same tag instead of Not submitted.
+    const expanded = render(GRACHTENPAY, [maybe, kaasketen]);
+    expect(expanded.match(tag)).toHaveLength(2);
+    expect(expanded).not.toContain("<span>Not submitted</span>");
+    expect(render()).not.toContain("Maybe submitted");
+    expect(render(GRACHTENPAY)).not.toContain("Maybe submitted");
   });
 
   it("expands a project created in HQ with the unlinked Colosseum copy, a free-text lead and the team modal button", () => {

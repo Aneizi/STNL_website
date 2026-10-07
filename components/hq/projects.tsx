@@ -32,7 +32,7 @@ import {
   updateProjectMember,
 } from "@/lib/hq/actions/projects";
 import { PROJECT_STAGES } from "@/lib/hq/builder-types";
-import { SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
+import { MAYBE_SUBMITTED_LABEL, SUBMISSION_LABELS } from "@/lib/hq/colosseum-snapshot";
 import { fmtDate, fmtWhen, isStale } from "@/lib/hq/format";
 import type { ProjectReportingStatus } from "@/lib/hq/reporting";
 import { SUBMISSION_FILTER_LABEL, statusLabel } from "@/lib/hq/reporting-view";
@@ -174,6 +174,28 @@ const segmentButton = (on: boolean): CSSProperties => ({
 // count, so it needs a little more than Check-in. The last track is the
 // action column, wide enough for the two-step delete's "Sure?".
 const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 125px 77px 55px";
+
+/** Colosseum hides submittedAt while an edition runs, so a pitch and a demo in place is the best signal HQ has. */
+function MaybeSubmittedTag() {
+  return (
+    <span
+      title="A pitch and a demo are on Colosseum, but Colosseum has not confirmed the submission"
+      style={{
+        display: "inline-block",
+        fontSize: 12,
+        fontWeight: 600,
+        textTransform: "uppercase",
+        letterSpacing: "0.08em",
+        whiteSpace: "nowrap",
+        padding: "2px 6px",
+        background: "var(--gold-fill)",
+        color: "var(--gold)",
+      }}
+    >
+      {MAYBE_SUBMITTED_LABEL}
+    </span>
+  );
+}
 
 /** The stage as the team's own settings name it; an unknown value shows as stored. */
 const stageLabel = (stage: string): string => PROJECT_STAGES.find((s) => s.value === stage)?.label ?? stage;
@@ -868,6 +890,7 @@ export function Projects({
                           {done}/{gatesTotal}
                         </span>
                       </span>
+                      {p.colosseum?.maybeSubmitted ? <span style={{ display: "block", marginTop: 4 }}><MaybeSubmittedTag /></span> : null}
                       </span>
                       <span
                         data-label="Check-in"
@@ -965,7 +988,9 @@ export function Projects({
                               <span style={microLabel}>Category</span>
                               <span>{p.colosseum?.category || "Uncategorised"}</span>
                               <span style={microLabel}>Submission</span>
-                              <span>{SUBMISSION_LABELS[p.colosseum?.submissionStatus ?? "not_checked"]}</span>
+                              {p.colosseum?.maybeSubmitted
+                                ? <span><MaybeSubmittedTag /></span>
+                                : <span>{SUBMISSION_LABELS[p.colosseum?.submissionStatus ?? "not_checked"]}</span>}
                             </div>
                             <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
                               {colosseumUrl ? (

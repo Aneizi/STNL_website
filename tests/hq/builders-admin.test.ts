@@ -187,6 +187,9 @@ describe("builder administration authorization and scoping", () => {
       },
     });
     expect(imported?.colosseum?.importedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(imported?.colosseum?.maybeSubmitted).toBe(false);
+    await rows("UPDATE hq_project_onboarding SET pitch_video_link='https://www.youtube.com/watch?v=pitch', technical_demo_link='https://www.youtube.com/watch?v=demo' WHERE project_id=$1", [PROJECT]);
+    expect((await getProjects(11)).find((project) => project.id === PROJECT)?.colosseum?.maybeSubmitted).toBe(true);
     expect(imported?.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(imported?.members.map((member) => member.username).sort()).toEqual(["notjoined", "selected"]);
     // A project created in HQ has no Colosseum block, and a hand-added teammate no username.

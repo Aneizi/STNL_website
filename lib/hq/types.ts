@@ -98,6 +98,8 @@ type ProjectColosseum = {
   stage: string;
   category: string | null;
   submissionStatus: SubmissionStatus;
+  /** A pitch and a demo are on Colosseum but the submission is not confirmed (lib/hq/colosseum-snapshot.ts#isMaybeSubmitted). */
+  maybeSubmitted: boolean;
   /** The roster username the team chose as its lead, or "" before one is chosen. */
   leadUsername: string;
   /** The builder who pasted the link, and the day they did. */
