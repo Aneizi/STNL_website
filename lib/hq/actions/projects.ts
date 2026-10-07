@@ -6,6 +6,7 @@ import { builderDatabase } from "../builder-db";
 import { getSql } from "../db";
 import { requireHackathon } from "../hackathon";
 import { deleteTeamRecord } from "../record-deletion";
+import { checkSubmissions, type SubmissionCheckSummary } from "../submission";
 import type { ActionResult } from "../types";
 import { activityStmt, hqToday, inHackathon, refreshHq } from "./util";
 
@@ -403,6 +404,20 @@ export async function deleteProject(projectId: string): Promise<ActionResult> {
   if (!removed) return { ok: false, error: "Project not found." };
   refreshHq("projects");
   return { ok: true };
+}
+
+/**
+ * The Projects board's Check submissions button: re-read Colosseum for every
+ * imported project in the selected edition that has no confirmed submission.
+ */
+export async function checkProjectSubmissions(): Promise<{ ok: true; summary: SubmissionCheckSummary }> {
+  const user = await requireUser();
+  const selected = await requireHackathon();
+  const summary = await checkSubmissions(builderDatabase(), { hackathonId: selected.id });
+  await activityStmt(user.id, selected.id,
+    `Checked Colosseum submissions: ${summary.submitted} of ${summary.checked} confirmed${summary.failed ? `, ${summary.failed} could not be read` : ""}`);
+  refreshHq("projects");
+  return { ok: true, summary };
 }
 
 /**

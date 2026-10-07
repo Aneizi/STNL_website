@@ -14,7 +14,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ replace() {}, refresh() 
 vi.mock("@/components/hq/toast", () => ({ showToast: vi.fn() }));
 vi.mock("@/lib/hq/actions/reporting-admin", () => ({ loadProjectReportingUpdates: vi.fn(), loadProjectColosseumUpdates: vi.fn() }));
 vi.mock("@/lib/hq/actions/projects", () => ({
-  addProjectMember: vi.fn(), addProjectNote: vi.fn(), createProject: vi.fn(), deleteProject: vi.fn(), editProjectNote: vi.fn(),
+  addProjectMember: vi.fn(), addProjectNote: vi.fn(), checkProjectSubmissions: vi.fn(), createProject: vi.fn(), deleteProject: vi.fn(), editProjectNote: vi.fn(),
   removeProjectMember: vi.fn(), saveProjectBlocker: vi.fn(), setProjectForecast: vi.fn(),
   setProjectHighPotential: vi.fn(), toggleProjectGate: vi.fn(), updateProjectDetail: vi.fn(),
   updateProjectMember: vi.fn(),
@@ -113,6 +113,8 @@ describe("the Projects board", () => {
     expect(html).not.toContain("Monday review");
     expect(html).not.toContain("Exit review");
     expect(html).toMatch(/<button[^>]*>New project<\/button>/);
+    // Check submissions sits beside New project, before it.
+    expect(html).toMatch(/<button type="button" aria-busy="false"[^>]*>Check submissions<\/button><button[^>]*>New project<\/button>/);
     expect(html).not.toContain("Assign Captains");
     expect(html).toContain('placeholder="Filter by name or lead"');
     expect(html).not.toContain(">All<");

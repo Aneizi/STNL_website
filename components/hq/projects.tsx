@@ -13,13 +13,14 @@ import {
 } from "react";
 import { IconBubbleAndPencil } from "@/components/hq/icons";
 import { showToast } from "@/components/hq/toast";
-import { FormField, card, input, pageTitle, primaryBtn } from "@/components/hq/ui";
+import { FormField, accentBtn, card, input, pageTitle, primaryBtn } from "@/components/hq/ui";
 import { CopyButton, useConfirmDelete, useSavedFlash } from "@/components/hq/ui-client";
 import { updateBuilderProjectLead } from "@/lib/hq/actions/builders-admin";
 import { assignProjectCaptain, unassignProjectCaptain } from "@/lib/hq/actions/captains";
 import {
   addProjectMember,
   addProjectNote,
+  checkProjectSubmissions,
   createProject,
   deleteProject,
   editProjectNote,
@@ -175,6 +176,14 @@ const segmentButton = (on: boolean): CSSProperties => ({
 // action column, wide enough for the two-step delete's "Sure?".
 const gridColumns = "minmax(0,2.4fr) minmax(0,1.3fr) 126px 211px 110px 125px 77px 55px";
 
+/** The toast after Check submissions. */
+function submissionCheckMessage(summary: { checked: number; submitted: number; failed: number }): string {
+  if (!summary.checked) return "Every imported project is already confirmed as submitted.";
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  return `Checked ${plural(summary.checked, "project")}: ${summary.submitted} newly submitted.`
+    + (summary.failed ? ` ${plural(summary.failed, "project")} could not be read from Colosseum.` : "");
+}
+
 /** Colosseum's own submittedAt, read from the public project API: an official, confirmed submission. */
 function SubmittedTag() {
   return (
@@ -325,6 +334,7 @@ export function Projects({
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
+  const [checking, startChecking] = useTransition();
   const [optimistic, patch] = useOptimistic(projects, applyPatch);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -612,14 +622,35 @@ export function Projects({
         <h1 style={pageTitle}>
           Projects <span style={{ fontWeight: 400, color: "var(--faded)" }}>{optimistic.length}</span>
         </h1>
-        <button
-          type="button"
-          aria-expanded={newProjectOpen}
-          onClick={() => setNewProjectOpen(!newProjectOpen)}
-          style={primaryBtn}
-        >
-          New project
-        </button>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+          {/* Re-reads Colosseum for every imported project without a
+              confirmed submission; the board re-renders when it is done. */}
+          <button
+            type="button"
+            disabled={checking}
+            aria-busy={checking}
+            onClick={() => {
+              startChecking(async () => {
+                try {
+                  showToast(submissionCheckMessage((await checkProjectSubmissions()).summary));
+                } catch {
+                  showToast("Could not check submissions. Try again.");
+                }
+              });
+            }}
+            style={{ ...accentBtn, cursor: checking ? "progress" : "pointer", opacity: checking ? 0.6 : 1 }}
+          >
+            {checking ? "Checking…" : "Check submissions"}
+          </button>
+          <button
+            type="button"
+            aria-expanded={newProjectOpen}
+            onClick={() => setNewProjectOpen(!newProjectOpen)}
+            style={primaryBtn}
+          >
+            New project
+          </button>
+        </div>
       </div>
 
       {newProjectOpen ? (
