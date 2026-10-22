@@ -2,7 +2,6 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { IconArrowRight } from "symbols-react";
-import { ColosseumInvitation } from "@/components/colosseum-invitation";
 import { ExternalMark } from "@/components/external-mark";
 import { JoinMenu } from "@/components/join-menu";
 import { LINKS } from "@/lib/links";
@@ -65,7 +64,6 @@ export default function HomePage() {
           <p className="text-center text-lg/[1.4] text-subtle">
             *In The Netherlands
           </p>
-          <ColosseumInvitation />
         </div>
 
         <nav

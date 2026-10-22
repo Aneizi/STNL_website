@@ -13,7 +13,7 @@ const NAV_ITEM = `py-2 -my-2 transition-colors duration-200 hover:text-orange ${
 // stays baseline-aligned with its siblings in the items-center flex row
 const ACTIVE_ITEM = `-mb-1 border-b-2 border-orange pb-0.5 text-orange ${FOCUS_RING}`;
 
-type NavPage = "about" | "colosseum" | "events";
+type NavPage = "about" | "events";
 
 export function SiteHeader({
   active,
@@ -59,18 +59,6 @@ export function SiteHeader({
           }
         >
           About
-        </Link>
-        <span aria-hidden="true" className="text-faded">
-          /
-        </span>
-        <Link
-          href="/colosseum"
-          aria-current={active === "colosseum" ? "page" : undefined}
-          className={
-            active === "colosseum" ? ACTIVE_ITEM : `text-ink ${NAV_ITEM}`
-          }
-        >
-          Colosseum
         </Link>
         <span aria-hidden="true" className="text-faded">
           /
